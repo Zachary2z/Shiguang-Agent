@@ -4,52 +4,101 @@
 
 ## 当前阶段
 
-项目当前处于 **M0 技术验证**。本分支完成的是 **M0-0A 项目基线与资料迁移**，仅建立正式仓库的规划、产品、技术和 UX 原型基线。
+项目处于 **M0 技术验证**。当前阶段 **M0-0B** 只建立可安装、可启动、可迁移和可测试的 FastAPI 后端工程骨架：Settings、`GET /healthz`、Request ID、安全请求日志、异步 SQLite/SQLAlchemy 和 Alembic 空基线迁移。
 
-当前尚未安装后端依赖，未创建后端、前端或数据库工程，也未接入模型、高德或其他外部服务。下一阶段是 **M0-0B 后端工程骨架**，必须在 M0-0A 经主控任务验收后再开始。
+当前尚未包含 Nanobot 核心、Agent、模型或高德 Provider、收藏/地点/计划/记忆等业务功能，也没有前端。下一阶段是 **M0-0C Nanobot 核心迁移**，但必须先通过主控任务对 M0-0B 的验收。
+
+Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
 ## 仓库目录
 
 ```text
 Shiguang_Nanobot/
-├── AGENTS.md                    # 仓库级开发与协作规则
-├── README.md                    # 项目入口与当前阶段说明
-├── NOTICE.md                    # 第三方来源与许可证说明
-├── docs/
-│   ├── DEVELOPMENT_STAGES.md   # 完整开发阶段、分支与验收标准
-│   ├── DEV_STATUS.md           # 当前阶段、状态和交接记录
-│   ├── product/                # 正式产品需求、流程与竞品文档
-│   └── technical/              # 正式技术方案
-└── prototypes/
-    └── ux/                     # 静态 HTML UX/UI 评审原型
+├── backend/
+│   ├── app/                    # FastAPI、配置、日志和数据库基础设施
+│   ├── migrations/             # Alembic 空基线迁移
+│   ├── tests/                  # 离线自动化测试
+│   ├── alembic.ini
+│   └── pyproject.toml
+├── docs/                       # 正式产品、技术、阶段与状态文档
+├── prototypes/ux/              # 静态 UX/UI 评审原型
+├── .env.example                # 无敏感信息的配置示例
+└── README.md
 ```
 
-目录会随阶段逐步创建，不预先生成 `backend`、`frontend`、`infra` 等空工程。
+## 后端本地开发
 
-## 开始开发前
-
-后续开发任务必须依次完整阅读：
-
-1. `AGENTS.md`
-2. `docs/DEVELOPMENT_STAGES.md`
-3. `docs/DEV_STATUS.md`
-4. `docs/product/` 与 `docs/technical/` 中和当前阶段相关的文档
-
-每个任务只处理 `docs/DEV_STATUS.md` 指定的一个阶段或子阶段，并遵守 `docs/DEVELOPMENT_STAGES.md` 中的分支与验收标准。
-
-## 查看 UX 原型
-
-原型是评审用静态页面，不是正式前端，也不连接真实 API 或用户数据。
-
-可以直接打开 `prototypes/ux/index.html`。若浏览器限制本地脚本，在仓库根目录运行：
+需要 Python 3.11 或更高版本。以下创建环境和安装命令从仓库根目录运行：
 
 ```bash
-cd prototypes/ux
-python3 -m http.server 4173 --bind 127.0.0.1
+python3 -m venv .venv
+source .venv/bin/activate
+python --version
+python -m pip install --upgrade pip
+python -m pip install -e "./backend[dev]"
+cd backend
 ```
 
-然后访问 <http://127.0.0.1:4173/>。
+Windows PowerShell 激活命令为 `.venv\Scripts\Activate.ps1`，之后同样进入 `backend` 目录运行后续命令。
 
-## 只读参考来源
+### 代码质量与测试
 
-旧的“Nanobot 学习”目录仅是 M0-0A 迁移前的只读资料来源和后续 Nanobot 核心迁移参考，不是本项目的运行依赖，也不进行双向同步。M0-0A 之后，产品、技术和原型资料以本仓库内版本为正式维护来源。
+以下命令均从 `backend` 目录运行：
+
+```bash
+python -m ruff check .
+python -m mypy app migrations
+python -m pytest -q
+```
+
+测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
+
+### 数据库迁移
+
+默认数据库是 `backend/data/shiguang.db`，目录和数据库文件均被 Git 忽略。从 `backend` 目录运行：
+
+```bash
+python -m alembic upgrade head
+python -m alembic downgrade base
+python -m alembic upgrade head
+```
+
+当前 revision 是无业务表的 M0-0B 基线。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+
+### 启动 API
+
+从 `backend` 目录运行：
+
+```bash
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+在另一个终端验证健康检查与 Request ID：
+
+```bash
+curl -i http://127.0.0.1:8000/healthz
+curl -i -H 'X-Request-ID: local-check-001' http://127.0.0.1:8000/healthz
+```
+
+响应 JSON 固定为 `{"status":"ok"}`，响应头包含 `X-Request-ID`。请求日志只记录 request ID、方法、路径、状态码和耗时，不记录正文、查询字符串、Authorization 或 Cookie。
+
+## 配置
+
+服务端默认读取仓库根目录 `.env`；可复制 `.env.example` 后按需覆盖。当前实现的变量为：
+
+| 变量 | 默认/示例 | 说明 |
+|---|---|---|
+| `APP_NAME` | `Shiguang API` | OpenAPI 应用标题 |
+| `APP_VERSION` | `0.1.0` | API 版本 |
+| `APP_ENV` | `development` | `development`、`test` 或 `production` |
+| `APP_TIMEZONE` | `Asia/Shanghai` | 有效 IANA 时区 |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./data/shiguang.db` | M0 异步 SQLite URL |
+| `LOG_LEVEL` | `INFO` | 标准 Python 日志级别 |
+
+`.env` 会被 Git 忽略，不要把真实密钥、Token、Cookie 或账号写入代码、示例、测试输出或提交。
+
+## 开发规则与 UX 原型
+
+后续任务开始前依次阅读 `AGENTS.md`、`docs/DEVELOPMENT_STAGES.md`、`docs/DEV_STATUS.md` 和当前阶段相关正式文档。每个任务只处理状态文档允许的一个阶段。
+
+UX 原型是评审用静态页面，不是正式前端。可直接打开 `prototypes/ux/index.html`，或从 `prototypes/ux` 运行 `python3 -m http.server 4173 --bind 127.0.0.1` 后访问 <http://127.0.0.1:4173/>。

@@ -1,0 +1,1 @@
+"""Shiguang backend application package."""
