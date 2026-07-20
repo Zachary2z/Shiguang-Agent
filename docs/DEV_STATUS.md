@@ -3,23 +3,23 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-0B 后端工程骨架 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-0b-backend-scaffold |
+| 当前子阶段 | M0-0C Nanobot 核心迁移 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-21 |
 | 阻塞项 | 无 |
 
 ## 当前任务
 
-M0-0B 实施与自测已完成，等待主控任务按阶段标准验收；验收前不开始 M0-0C。
+M0-0B 已通过主控集成与 QA 验收，阶段提交 `6cd5646` 已快进集成到 `main`；M0-0C 前置条件已满足，可以从最新 `main` 创建规定分支开始开发。
 
 ## M0 状态
 
 | 阶段 | 状态 | 说明 |
 |---|---|---|
 | M0-0A 项目基线与资料迁移 | 已完成 | 主控验收通过，阶段提交 `79848c7` 已集成到 `main` |
-| M0-0B 后端工程骨架 | 待验收 | FastAPI、配置、SQLite、Alembic、日志、Request ID 与测试骨架已完成自测 |
-| M0-0C Nanobot 核心迁移 | 未开始 | 依赖 M0-0B |
+| M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
+| M0-0C Nanobot 核心迁移 | 未开始 | 前置条件已满足，当前允许开始 |
 | M0-1 模型与运行记录 | 未开始 | 依赖 M0-0C |
 | M0-2 文字收藏 | 未开始 | 依赖 M0-1 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
@@ -36,16 +36,17 @@ M0-0B 实施与自测已完成，等待主控任务按阶段标准验收；验�
 - 已创建独立 Git 仓库 Shiguang_Nanobot。
 - 已建立完整开发阶段文档和仓库级开发规则。
 - M0-0A 已完成：正式产品文档、技术方案与 UX 原型已迁入本仓库，README、Git 忽略规则和 Nanobot 许可证归属说明已建立。
+- M0-0B 已完成：FastAPI 后端骨架、测试隔离配置、异步 SQLite、Alembic 空基线迁移、安全请求日志和自动化测试基线已通过主控验收。
 
 ## 下一步
 
-主控任务应执行：
+M0-0C 开发窗口应执行：
 
-1. 在 `codex/m0-0b-backend-scaffold` 上复核阶段提交、文件范围和依赖边界。
-2. 按根 README 在全新 Python 3.11+ 环境复现安装、Ruff、mypy、pytest、Alembic 往返和 Uvicorn 健康检查。
-3. 复核测试不读取真实 `.env`、请求日志不包含正文/查询字符串/凭证、迁移只有 `alembic_version` 表。
-4. 确认未引入 Nanobot 核心、业务实体、前端、外部 Provider、付费调用或 Docker Compose。
-5. 验收通过并集成后，才能另开 M0-0C Nanobot 核心迁移任务。
+1. 从最新 `main`（至少包含 `6cd5646`）创建 `codex/m0-0c-nanobot-core`。
+2. 只迁移 `DEVELOPMENT_STAGES.md` 规定的最小 Nanobot Core：Runner、循环、上下文、Tool/ToolRegistry、Provider 接口、Fake Provider 与结构化 ToolResult。
+3. 保持 `nanobot_core` 与 FastAPI、拾光业务、真实 Provider、文件系统工具、Markdown 记忆和 JSONL 会话解耦，不开始 M0-1。
+4. 使用 Fake、Stub 和固定 Fixture 覆盖无工具调用、单次/多次工具调用、工具不存在、参数错误、工具异常、循环上限和 Provider 空响应。
+5. 更新 Nanobot 来源与许可证说明，完成自测和阶段交接后停在待验收状态，不自行合并。
 
 ## 阶段交接记录
 
@@ -105,3 +106,16 @@ M0-0B 实施与自测已完成，等待主控任务按阶段标准验收；验�
 - 未完成：等待主控任务验收；未在 Python 3.11/3.12 和 Windows 上重复验证；未进行任何模型、高德、微信、PostgreSQL 或云环境验证
 - 已知风险：当前仅验证 SQLite/aiosqlite；默认本地数据库是开发用途，M1 才切换 PostgreSQL；日志仅提供 M0-0B 请求级追踪，不包含后续 AgentRun/ToolRun 可观测能力
 - 下一步：主控任务在全新 Python 3.11+ 环境复现验收并检查 staged diff；通过后集成本阶段，再另开 M0-0C，本分支不继续开发
+
+#### 2026-07-21｜M0-0B｜已完成（主控验收）
+
+- 分支：`main`（由 `codex/m0-0b-backend-scaffold` 快进集成）
+- 提交：`6cd5646`（完整提交 `6cd56463fda6fd55b12570fceed0e7aef84e8f86`）
+- 完成内容：主控任务确认待验收分支与指定提交一致，复核后端工程骨架、依赖和阶段边界；未发现 M0-0C 提前开发、业务实体、真实 Provider、前端、付费调用或第二套 AgentRunner/ToolRegistry/Provider；阶段提交已快进集成到 `main`
+- 主要文件：`backend/pyproject.toml`、`backend/app/config.py`、`backend/app/main.py`、`backend/app/observability.py`、`backend/app/infrastructure/db/*`、`backend/migrations/*`、`backend/tests/*`、`.env.example`、`README.md`
+- 验证命令：在指定提交的独立 `git archive` 快照和全新 Python 3.13.5 虚拟环境中执行 `python -m pip install -e './backend[dev]'`、`python -m pip check`、`python -m ruff check .`、`python -m mypy app migrations`、`python -m pytest -q`；在临时 SQLite 上执行 Alembic `upgrade head`、`downgrade base`、再次 `upgrade head`；启动 Uvicorn 后用 `curl` 验证健康检查、404、自动/显式/边界 Request ID 和敏感日志；另执行提交一致性、范围、生成产物、忽略规则、绝对路径和敏感信息扫描；合并后重复 Ruff、mypy 和 pytest
+- 验证结果：全新环境安装和依赖完整性检查通过；Ruff 通过；mypy 对 10 个源文件无问题；pytest 13 项全部通过、0 失败、0 跳过；Alembic 升降级往返通过且仅创建 `alembic_version` 表；Uvicorn 启停和 `/healthz` 通过；128 字符 Request ID 被保留，129 字符和非法值被安全替换；查询参数、Authorization 和 Cookie 标记未进入日志；启动连接失败会关闭数据库资源，Session 异常会回滚；合并未产生冲突或额外代码变化，合并后复检再次全部通过；没有未关闭的 P0/P1，未调用真实或付费 API
+- 异常、边界与幂等：覆盖无真实 `.env`、无效时区、非异步 SQLite URL、数据库启动失败、Session 异常、404、非法及长度边界 Request ID；健康检查为只读操作，迁移升级/降级/再次升级可重复执行；本阶段没有业务写接口、任务或外部副作用，因此业务幂等不适用
+- 未完成：未在 Python 3.11/3.12 和 Windows 上重复验证；未验证真实模型、高德、微信、PostgreSQL 或云环境，这些均不属于 M0-0B 验收范围
+- 已知风险：当前只支持并验证 SQLite/aiosqlite；M1 才切换 PostgreSQL；请求级日志不包含后续 AgentRun/ToolRun 可观测能力，这些是已记录的后续阶段事项，不阻塞 M0-0B
+- 下一步：M0-0C 前置条件已满足；从最新 `main` 创建 `codex/m0-0c-nanobot-core`，只迁移唯一且业务无关的最小 Nanobot Core，完成后交回主控验收
