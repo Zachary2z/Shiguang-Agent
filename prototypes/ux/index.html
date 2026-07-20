@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="拾光 UX/UI 浏览器评审原型" />
+    <title>拾光｜UX/UI 评审原型</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <svg class="svg-sprite" aria-hidden="true">
+      <symbol id="i-spark" viewBox="0 0 24 24">
+        <path d="M12 2.75c.48 4.94 2.76 7.22 7.7 7.7-4.94.48-7.22 2.76-7.7 7.7-.48-4.94-2.76-7.22-7.7-7.7 4.94-.48 7.22-2.76 7.7-7.7Z" />
+        <path d="M19 16.5c.2 2.05 1.15 3 3.2 3.2-2.05.2-3 1.15-3.2 3.2-.2-2.05-1.15-3-3.2-3.2 2.05-.2 3-1.15 3.2-3.2Z" />
+      </symbol>
+      <symbol id="i-agent" viewBox="0 0 24 24">
+        <path d="M5 5.5h14a2.5 2.5 0 0 1 2.5 2.5v7a2.5 2.5 0 0 1-2.5 2.5h-7l-4.5 3v-3H5A2.5 2.5 0 0 1 2.5 15V8A2.5 2.5 0 0 1 5 5.5Z" />
+        <path d="M8 11.5h.01M12 11.5h.01M16 11.5h.01" />
+      </symbol>
+      <symbol id="i-bookmark" viewBox="0 0 24 24">
+        <path d="M6.5 3.5h11v17l-5.5-3.4-5.5 3.4v-17Z" />
+      </symbol>
+      <symbol id="i-calendar" viewBox="0 0 24 24">
+        <path d="M5 4.5h14a2 2 0 0 1 2 2v13H3v-13a2 2 0 0 1 2-2ZM7.5 2.5v4M16.5 2.5v4M3 9h18" />
+        <path d="M7 13h3M14 13h3M7 16.5h3" />
+      </symbol>
+      <symbol id="i-user" viewBox="0 0 24 24">
+        <circle cx="12" cy="8" r="4" />
+        <path d="M4.5 21a7.5 7.5 0 0 1 15 0" />
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24">
+        <path d="m9.5 14.5 5-5M7.8 17.2l-1 1a3.54 3.54 0 0 1-5-5l3.4-3.4a3.54 3.54 0 0 1 5 0M16.2 6.8l1-1a3.54 3.54 0 0 1 5 5l-3.4 3.4a3.54 3.54 0 0 1-5 0" />
+      </symbol>
+      <symbol id="i-image" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m3 16 4.5-4 4 3 3-2.5L21 17" />
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="m3 4 18 8-18 8 3-8-3-8Z" /><path d="M6 12h15" /></symbol>
+      <symbol id="i-map-pin" viewBox="0 0 24 24">
+        <path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z" /><circle cx="12" cy="10" r="2.5" />
+      </symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></symbol>
+      <symbol id="i-wallet" viewBox="0 0 24 24"><path d="M3 6.5h16a2 2 0 0 1 2 2v10H5a2 2 0 0 1-2-2v-10Z" /><path d="M3 6.5 6 3.5h12v3M16 12h5" /></symbol>
+      <symbol id="i-route" viewBox="0 0 24 24"><circle cx="6" cy="18" r="2" /><circle cx="18" cy="6" r="2" /><path d="M8 18h3a3 3 0 0 0 3-3V9a3 3 0 0 1 3-3h1" /></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><path d="m4 20 4.5-1 10-10-3.5-3.5-10 10L4 20ZM13.5 7 17 10.5" /></symbol>
+      <symbol id="i-undo" viewBox="0 0 24 24"><path d="m8 7-5 5 5 5M3 12h10a7 7 0 0 1 7 7" /></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.2 4.2L19.5 6.5" /></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.5 15.5 5 5" /></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" /></symbol>
+      <symbol id="i-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5" /><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="19" r="2.5" /><path d="m8.3 10.8 7.4-4.5M8.3 13.2l7.4 4.5" /></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M5 17h14l-1.5-2.5V10a5.5 5.5 0 0 0-11 0v4.5L5 17ZM10 20h4" /></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.86 2.86-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21H9.55v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.86-2.86.06-.06A1.7 1.7 0 0 0 4.2 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H2.4V9.55h.1A1.7 1.7 0 0 0 4.2 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06L6.66 3.8l.06.06A1.7 1.7 0 0 0 8.6 4.2a1.7 1.7 0 0 0 1-.6A1.7 1.7 0 0 0 10 2.5v-.1h4.05v.1A1.7 1.7 0 0 0 15 4.2a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.86 2.86-.06.06A1.7 1.7 0 0 0 19.4 8.6a1.7 1.7 0 0 0 .6 1c.3.25.68.39 1.1.4h.1v4.05h-.1a1.7 1.7 0 0 0-1.7.95Z" />
+      </symbol>
+      <symbol id="i-note" viewBox="0 0 24 24"><path d="M5 3.5h14v17H5z" /><path d="M8 8h8M8 12h8M8 16h5" /></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12M7.5 11.5 12 16l4.5-4.5M4 20h16" /></symbol>
+      <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></symbol>
+      <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6.5" y="2.5" width="11" height="19" rx="2.5" /><path d="M10 5h4M11 18.5h2" /></symbol>
+    </svg>
+
+    <header class="review-header">
+      <div class="review-brand">
+        <span class="brand-mark"><svg><use href="#i-spark"></use></svg></span>
+        <div>
+          <strong>拾光 UX Lab</strong>
+          <span>浏览器评审原型 · 不接真实数据</span>
+        </div>
+      </div>
+
+      <div class="header-controls" aria-label="视图切换">
+        <div class="segmented-control" role="group" aria-label="原型视图">
+          <button class="segment is-active" type="button" data-view="single">
+            <svg><use href="#i-phone"></use></svg>单页体验
+          </button>
+          <button class="segment" type="button" data-view="overview">
+            <svg><use href="#i-grid"></use></svg>全部页面
+          </button>
+        </div>
+        <button class="header-action" id="restartFlow" type="button">从头体验</button>
+      </div>
+    </header>
+
+    <div class="review-layout">
+      <aside class="screen-rail" aria-label="页面目录">
+        <div class="rail-heading">
+          <span class="eyebrow">MOBILE FLOW</span>
+          <h1>从收藏<br />走到行动</h1>
+          <p>点击页面名称，或直接在中间的手机里完成主流程。</p>
+        </div>
+        <nav class="screen-list" id="screenList"></nav>
+        <div class="rail-footnote">
+          <span class="status-dot"></span>
+          <p>所有内容为深圳场景模拟数据；外部地点会显示来源。</p>
+        </div>
+      </aside>
+
+      <main class="prototype-stage">
+        <div class="stage-heading">
+          <div>
+            <span class="eyebrow" id="stageCode">M01 · AGENT</span>
+            <h2 id="stageTitle">Agent 首页</h2>
+          </div>
+          <div class="stage-meta">
+            <span>390 × 844</span>
+            <span class="stage-state" id="stageState">默认状态</span>
+          </div>
+        </div>
+
+        <section class="single-view is-active" id="singleView" aria-live="polite">
+          <div class="device-shadow">
+            <div class="device-frame" id="deviceFrame">
+              <div class="device-statusbar" aria-hidden="true">
+                <span>15:59</span>
+                <div><i></i><i></i><i></i><b>33</b></div>
+              </div>
+              <div class="prototype-screen" id="prototypeScreen"></div>
+            </div>
+          </div>
+          <p class="stage-hint">原型支持真实滚动。带箭头或强调色的控件可以点击。</p>
+        </section>
+
+        <section class="overview-view" id="overviewView">
+          <div class="overview-grid" id="overviewGrid"></div>
+        </section>
+      </main>
+
+      <aside class="review-panel">
+        <section class="review-section current-screen-summary">
+          <span class="eyebrow">REVIEW CONTEXT</span>
+          <h2 id="reviewTitle">这一页要验证什么</h2>
+          <p id="reviewPurpose"></p>
+          <ul id="reviewChecks"></ul>
+        </section>
+
+        <section class="review-section">
+          <div class="section-title-row">
+            <h3>状态演示</h3>
+            <span>点击切换</span>
+          </div>
+          <div class="state-controls" id="stateControls"></div>
+        </section>
+
+        <section class="review-section interaction-map">
+          <div class="section-title-row">
+            <h3>当前可操作</h3>
+            <span id="interactionCount">0 项</span>
+          </div>
+          <div id="interactionList"></div>
+        </section>
+
+        <section class="review-section notes-section">
+          <div class="section-title-row">
+            <h3>记录评审意见</h3>
+            <span>仅保存在本机</span>
+          </div>
+          <label class="note-field">
+            <span>关于 <b id="noteScreenName">M01 Agent 首页</b></span>
+            <textarea id="reviewNote" rows="4" placeholder="例如：输入框应该更突出；这张卡片信息太多……"></textarea>
+          </label>
+          <div class="note-actions">
+            <button class="secondary-button" id="saveNote" type="button">
+              <svg><use href="#i-note"></use></svg>保存意见
+            </button>
+            <button class="text-button" id="exportNotes" type="button">
+              <svg><use href="#i-download"></use></svg>导出
+            </button>
+          </div>
+          <div class="saved-notes" id="savedNotes"></div>
+        </section>
+      </aside>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="./app.js"></script>
+  </body>
+</html>
