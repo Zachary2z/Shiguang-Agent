@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。当前阶段 **M0-0B** 只建立可安装、可启动、可迁移和可测试的 FastAPI 后端工程骨架：Settings、`GET /healthz`、Request ID、安全请求日志、异步 SQLite/SQLAlchemy 和 Alembic 空基线迁移。
+项目处于 **M0 技术验证**。当前开发子阶段是 **M0-0C Nanobot 核心迁移**：在 M0-0B 的 FastAPI 后端骨架之外，新增与 FastAPI、数据库和拾光业务解耦的最小 Agent Runner、Loop、Context、Tool/ToolRegistry、`ToolResult` 与 `ModelProvider` 抽象。
 
-当前尚未包含 Nanobot 核心、Agent、模型或高德 Provider、收藏/地点/计划/记忆等业务功能，也没有前端。下一阶段是 **M0-0C Nanobot 核心迁移**，但必须先通过主控任务对 M0-0B 的验收。
+当前不包含真实模型或高德 Provider、AgentRun/ToolRun、收藏/地点/计划/记忆等业务功能，也没有前端。M0-0C 只使用离线 Fake 测试；通过主控验收前不会进入 M0-1。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -16,8 +16,9 @@ Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 Shiguang_Nanobot/
 ├── backend/
 │   ├── app/                    # FastAPI、配置、日志和数据库基础设施
+│   ├── nanobot_core/           # 与 Web、数据库和业务解耦的最小 Agent 核心
 │   ├── migrations/             # Alembic 空基线迁移
-│   ├── tests/                  # 离线自动化测试
+│   ├── tests/                  # 后端与 Nanobot Core 离线自动化测试
 │   ├── alembic.ini
 │   └── pyproject.toml
 ├── docs/                       # 正式产品、技术、阶段与状态文档
@@ -47,7 +48,7 @@ Windows PowerShell 激活命令为 `.venv\Scripts\Activate.ps1`，之后同样�
 
 ```bash
 python -m ruff check .
-python -m mypy app migrations
+python -m mypy app migrations nanobot_core
 python -m pytest -q
 ```
 

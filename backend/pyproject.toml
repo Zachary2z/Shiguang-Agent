@@ -29,7 +29,10 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["app*"]
+include = ["app*", "nanobot_core*"]
+
+[tool.setuptools.package-data]
+nanobot_core = ["THIRD_PARTY_LICENSES/*.txt"]
 
 [tool.pytest.ini_options]
 addopts = "--strict-markers --strict-config"
@@ -46,4 +49,4 @@ select = ["ASYNC", "B", "E", "F", "I", "UP"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
-files = ["app", "migrations"]
+files = ["app", "migrations", "nanobot_core"]
