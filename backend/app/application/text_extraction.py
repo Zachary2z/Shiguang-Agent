@@ -38,7 +38,8 @@ _GENERIC_INPUTS = frozenset(
 _SHENZHEN_EVIDENCE = re.compile(
     r"深圳|福田区|罗湖区|南山区|盐田区|宝安区|龙岗区|龙华区|坪山区|光明区|大鹏新区"
 )
-_OUT_OF_SCOPE_CITY_NAMES = (
+_CITY_NAMES = (
+    "深圳",
     "北京",
     "上海",
     "广州",
@@ -61,33 +62,61 @@ _OUT_OF_SCOPE_CITY_NAMES = (
     "三亚",
     "海口",
 )
-_OUT_OF_SCOPE_ENGLISH_CITY = re.compile(
-    r"\b(?:beijing|shanghai|guangzhou|hong\s*kong|macao|macau|chengdu|hangzhou)\b",
+_OUT_OF_SCOPE_CITY_ALTERNATION = "|".join(_CITY_NAMES[1:])
+_EXPLICIT_OUT_OF_SCOPE_CITY_STATEMENT = re.compile(
+    rf"(?:城市|所在城市|举办城市|目的地)\s*(?:是|为|在|：|:)\s*"
+    rf"(?:{_OUT_OF_SCOPE_CITY_ALTERNATION})(?:市)?(?=$|[\s，。！？,!?；;])|"
+    rf"(?:位于|地点在|地址在|举办于|举行于|发生于|展出于)\s*"
+    rf"(?:{_OUT_OF_SCOPE_CITY_ALTERNATION})(?:市)?(?=$|[\s，。！？,!?；;])|"
+    rf"(?:在|去|前往)\s*(?:{_OUT_OF_SCOPE_CITY_ALTERNATION})(?:市)?"
+    r"(?:举办|举行|展出|发生|旅游|出差|游玩|看展|看演出)"
+)
+_EXPLICIT_OUT_OF_SCOPE_ENGLISH_CITY = re.compile(
+    r"(?:city\s*(?:is|:)|located\s+in|destination\s*(?:is|:)|event\s+in)\s*"
+    r"(?:beijing|shanghai|guangzhou|hong\s*kong|macao|macau|chengdu|hangzhou)\b",
     re.IGNORECASE,
 )
-_UNSUPPORTED_PATTERNS: tuple[tuple[UnsupportedReason, re.Pattern[str]], ...] = (
-    (
-        UnsupportedReason.RECIPE,
-        re.compile(r"菜谱|食谱|怎么做|做法|烹饪步骤|配料表|食材清单"),
-    ),
-    (
-        UnsupportedReason.MULTI_CITY_TRAVEL,
-        re.compile(
-            r"跨城|多日旅行|旅行攻略|旅游行程|[一二两三四五六七八九十\d]+日游|"
-            r"[一二两三四五六七八九十\d]+天[一二两三四五六七八九十\d]*夜|"
-            r"深圳.{0,20}(?:广州|东莞|惠州|珠海|香港|澳门)|"
-            r"(?:广州|东莞|惠州|珠海|香港|澳门).{0,20}深圳"
-        ),
-    ),
-    (
-        UnsupportedReason.COMPLEX_OUTDOOR_ROUTE,
-        re.compile(r"复杂户外|徒步路线|穿越路线|登山路线|越野路线|轨迹文件|GPX", re.I),
-    ),
-    (
-        UnsupportedReason.PRODUCT,
-        re.compile(r"商品|开箱|型号参数|产品参数|选购攻略|商品比价"),
-    ),
+_OUT_OF_SCOPE_DESTINATION_LANDMARK = re.compile(
+    r"(?:想去|要去|计划去|准备去|前往|周末去).{0,6}(?:"
+    r"广州塔(?=$|[，。！？,!?；;]|看|逛|游|拍|观景|打卡)|"
+    r"上海外滩(?=$|[，。！？,!?；;]|看|逛|游|拍|观景|打卡)|"
+    r"北京故宫(?=$|[，。！？,!?；;]|看|逛|游|拍|参观|打卡)"
+    r")"
 )
+_RECIPE_FORMAT = re.compile(r"菜谱|食谱|做法|烹饪步骤|配料表|食材清单")
+_RECIPE_PROCEDURE_REQUEST = re.compile(
+    r"怎么做|如何做|教我做|怎么烹饪|烹饪步骤|制作步骤|"
+    r"(?:需要|准备)(?:哪些|什么)?(?:配料|食材)|给我(?:一份|一个)?(?:菜谱|食谱)"
+)
+_PRODUCT_REFERENCE = re.compile(
+    r"(?:这|那|该)(?:一)?款.{0,8}(?:商品|产品)|"
+    r"(?:商品|产品).{0,8}(?:型号|参数|价格|购买)|型号参数|产品参数|规格参数"
+)
+_PRODUCT_REQUEST = re.compile(
+    r"购买链接|怎么买|哪里买|值得买吗|下单|选购攻略|商品比价|"
+    r"(?:型号|产品|规格)?参数.{0,8}(?:是什么|多少|怎么样)|"
+    r"(?:是什么|查询|介绍).{0,8}(?:型号|参数)"
+)
+_MULTI_DAY_TRAVEL = re.compile(
+    r"(?:[2-9]\d*|[二两三四五六七八九十百]+)(?:日游|天(?:[一二两三四五六七八九十\d]+夜)?)|"
+    r"多日(?:旅行|旅游|行程)"
+)
+_TRAVEL_PLAN_REQUEST = re.compile(r"安排|规划|制定|帮我做|给我做|旅行攻略|旅游行程")
+_CITY_ALTERNATION = "|".join(_CITY_NAMES)
+_CROSS_CITY_ROUTE = re.compile(
+    rf"(?:从\s*)?({_CITY_ALTERNATION})(?:市)?\s*(?:到|至|去往|前往)\s*"
+    rf"({_CITY_ALTERNATION})(?:市)?"
+    r"(?=$|[\s，。！？,!?；;]|[二两三四五六七八九十\d])"
+)
+_COMPLEX_ROUTE_KIND = re.compile(
+    r"复杂户外路线|徒步路线|穿越路线|登山路线|越野路线",
+    re.IGNORECASE,
+)
+_COMPLEX_ROUTE_EVIDENCE = re.compile(
+    r"复杂|GPX|轨迹文件|轨迹下载|导航轨迹|穿越|越野",
+    re.IGNORECASE,
+)
+_ROUTE_REQUEST = re.compile(r"给我|帮我|规划|制定|生成|导航|下载|怎么走")
 
 _RESULT_SCHEMA = json.dumps(
     ExtractionResult.model_json_schema(),
@@ -198,11 +227,11 @@ def _preflight_result(text: str) -> ExtractionResult | None:
             reason=UnsupportedReason.CONTENT_TOO_LONG,
         )
 
-    for reason, pattern in _UNSUPPORTED_PATTERNS:
-        if pattern.search(text) is not None:
-            return _unsupported_result(reason=reason)
+    unsupported_reason = _explicit_unsupported_reason(text)
+    if unsupported_reason is not None:
+        return _unsupported_result(reason=unsupported_reason)
 
-    if not _has_shenzhen_evidence(text) and _has_out_of_scope_city(text):
+    if not _has_shenzhen_evidence(text) and _has_explicit_out_of_scope_city(text):
         return ExtractionResult.unsupported(
             reason_code=ExtractionReasonCode.OUT_OF_SCOPE_CITY,
             recovery_suggestions=("当前 MVP 只接受深圳地点和活动。",),
@@ -236,6 +265,27 @@ def _unsupported_result(*, reason: UnsupportedReason) -> ExtractionResult:
         unsupported_reason=reason,
         recovery_suggestions=(suggestions[reason],),
     )
+
+
+def _explicit_unsupported_reason(text: str) -> UnsupportedReason | None:
+    """Return only high-confidence unsupported intents; ambiguous text reaches the model."""
+    if _RECIPE_FORMAT.search(text) and _RECIPE_PROCEDURE_REQUEST.search(text):
+        return UnsupportedReason.RECIPE
+    if _PRODUCT_REFERENCE.search(text) and _PRODUCT_REQUEST.search(text):
+        return UnsupportedReason.PRODUCT
+    if (
+        _MULTI_DAY_TRAVEL.search(text)
+        and _TRAVEL_PLAN_REQUEST.search(text)
+        and _has_explicit_cross_city_route(text)
+    ):
+        return UnsupportedReason.MULTI_CITY_TRAVEL
+    if (
+        _COMPLEX_ROUTE_KIND.search(text)
+        and _COMPLEX_ROUTE_EVIDENCE.search(text)
+        and _ROUTE_REQUEST.search(text)
+    ):
+        return UnsupportedReason.COMPLEX_OUTDOOR_ROUTE
+    return None
 
 
 def _parse_and_canonicalize(
@@ -329,9 +379,16 @@ def _has_shenzhen_evidence(text: str) -> bool:
     return _SHENZHEN_EVIDENCE.search(text) is not None
 
 
-def _has_out_of_scope_city(text: str) -> bool:
-    return any(city in text for city in _OUT_OF_SCOPE_CITY_NAMES) or bool(
-        _OUT_OF_SCOPE_ENGLISH_CITY.search(text)
+def _has_explicit_cross_city_route(text: str) -> bool:
+    match = _CROSS_CITY_ROUTE.search(text)
+    return match is not None and match.group(1) != match.group(2)
+
+
+def _has_explicit_out_of_scope_city(text: str) -> bool:
+    return bool(
+        _EXPLICIT_OUT_OF_SCOPE_CITY_STATEMENT.search(text)
+        or _EXPLICIT_OUT_OF_SCOPE_ENGLISH_CITY.search(text)
+        or _OUT_OF_SCOPE_DESTINATION_LANDMARK.search(text)
     )
 
 

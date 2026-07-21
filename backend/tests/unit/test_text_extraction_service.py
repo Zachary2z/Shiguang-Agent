@@ -155,16 +155,73 @@ async def test_overly_generic_name_is_insufficient_without_provider_call() -> No
     assert provider.calls == []
 
 
+@pytest.mark.parametrize("text", ["周末想去广州塔看夜景", "这个展览在广州举办"])
 @pytest.mark.asyncio
-async def test_explicit_non_shenzhen_place_is_out_of_scope_without_candidate() -> None:
+async def test_explicit_non_shenzhen_place_is_out_of_scope_without_candidate(text: str) -> None:
     provider = FakeProvider([])
 
-    result = await TextExtractionService(provider).extract("周末想去广州塔看夜景")
+    result = await TextExtractionService(provider).extract(text)
 
     assert result.outcome is ExtractionOutcome.UNSUPPORTED
     assert result.reason_code is ExtractionReasonCode.OUT_OF_SCOPE_CITY
     assert result.candidates == ()
     assert provider.calls == []
+
+
+@pytest.mark.parametrize(
+    ("text", "title"),
+    [
+        ("想收藏深圳菜谱文化主题展", "深圳菜谱文化主题展"),
+        ("想收藏深圳产品参数设计展", "深圳产品参数设计展"),
+        ("想收藏深圳徒步路线文化展", "深圳徒步路线文化展"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_event_title_keywords_do_not_trigger_unsupported_preflight(
+    text: str,
+    title: str,
+) -> None:
+    event = _full_event(title=title)
+    provider = FakeProvider([_result_response(ExtractionResult.with_candidates((event,)))])
+
+    result = await TextExtractionService(provider).extract(text)
+
+    assert result.candidates == (event,)
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_shenzhen_day_trip_source_can_extract_multiple_requested_places() -> None:
+    candidates = (
+        _full_place(title="深圳博物馆"),
+        _full_place(title="莲花山公园"),
+    )
+    provider = FakeProvider([_result_response(ExtractionResult.with_candidates(candidates))])
+    text = "深圳一日游里提到深圳博物馆和莲花山公园，请收藏这两个地点"
+
+    result = await TextExtractionService(provider).extract(text)
+
+    assert result.candidates == candidates
+    assert len(result.candidates) == 2
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.parametrize("title", ["上海宾馆", "北京饭店", "广州酒家"])
+@pytest.mark.asyncio
+async def test_place_name_city_substring_does_not_confirm_or_reject_city(title: str) -> None:
+    provider = FakeProvider(
+        [_result_response(ExtractionResult.with_candidates((_only_name_place(title=title),)))]
+    )
+
+    result = await TextExtractionService(provider).extract(title)
+
+    candidate = result.candidates[0]
+    assert isinstance(candidate, PlaceCandidate)
+    assert candidate.title == title
+    assert candidate.city is None
+    assert candidate.search_scope_city is SupportedCity.SHENZHEN
+    assert any(item.field is CandidateField.CITY for item in candidate.uncertainties)
+    assert len(provider.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -422,13 +479,35 @@ async def test_cancelled_error_is_propagated_unchanged() -> None:
 
 @pytest.mark.asyncio
 async def test_input_and_provider_message_snapshots_are_not_mutated() -> None:
-    source_text = "  深圳博物馆，保留原始空格  "
-    provider = FakeProvider([_result_response(ExtractionResult.with_candidates((_full_place(),)))])
+    source_text = "  想收藏深圳菜谱文化主题展，保留原始空格  "
+    event = _full_event(title="深圳菜谱文化主题展")
+    provider = FakeProvider([_result_response(ExtractionResult.with_candidates((event,)))])
 
     await TextExtractionService(provider).extract(source_text)
 
-    assert source_text == "  深圳博物馆，保留原始空格  "
+    assert source_text == "  想收藏深圳菜谱文化主题展，保留原始空格  "
     assert provider.calls[0].messages[-1] == {"role": "user", "content": source_text}
+
+
+@pytest.mark.asyncio
+async def test_repeated_ambiguous_name_calls_do_not_share_city_uncertainty() -> None:
+    responses = [
+        _result_response(
+            ExtractionResult.with_candidates((_only_name_place(title="上海宾馆"),))
+        )
+        for _ in range(2)
+    ]
+    provider = FakeProvider(responses)
+    service = TextExtractionService(provider)
+
+    first = await service.extract("上海宾馆")
+    second = await service.extract("上海宾馆")
+
+    assert first == second
+    assert first is not second
+    assert first.candidates[0] is not second.candidates[0]
+    assert first.candidates[0].city is None
+    assert len(provider.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -449,19 +528,18 @@ async def test_repeated_calls_do_not_share_candidates_or_errors() -> None:
 
 @pytest.mark.asyncio
 async def test_concurrent_calls_do_not_share_result_state() -> None:
+    titles = ("深圳菜谱文化主题展", "深圳产品参数设计展", "上海宾馆", "北京饭店")
     responses = [
-        _result_response(
-            ExtractionResult.with_candidates((_full_place(title=f"深圳地点 {index}"),))
-        )
-        for index in range(4)
+        _result_response(ExtractionResult.with_candidates((_only_name_place(title=title),)))
+        for title in titles
     ]
     provider = FakeProvider(responses)
     service = TextExtractionService(provider)
 
-    results = await asyncio.gather(*(service.extract(f"深圳地点 {index}") for index in range(4)))
+    results = await asyncio.gather(*(service.extract(title) for title in titles))
 
-    titles = {result.candidates[0].title for result in results}
-    assert titles == {f"深圳地点 {index}" for index in range(4)}
+    result_titles = {result.candidates[0].title for result in results}
+    assert result_titles == set(titles)
     assert len({id(result) for result in results}) == 4
     assert len(provider.calls) == 4
 

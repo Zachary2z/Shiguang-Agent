@@ -369,3 +369,16 @@ M0-2A 保持已完成。M0-2B 已在指定基线 `76cbc96f9aa802496113f6e4216280
 - 已知风险与未验证：按任务禁令未用真实模型验证 Prompt 遵循率、供应商结构输出稳定性、真实延迟或 Token/费用；显式城市和不支持类型的离线预检采用保守固定规则，当前 Fixture 范围已通过但更广语言覆盖仍需后续评测集扩充；只在 macOS/Python 3.13.5 验证，未在 Python 3.11/3.12、Windows 或 PostgreSQL 复测；这些不构成当前纯离线 M0-2B 的已知 P0/P1
 - 主控复测范围：核对阶段提交直接父提交为指定基线且只含上述 6 个文件；全新 Python 3.11+ 环境复现安装、静态检查、68 项聚焦测试、非真实/核心/迁移/默认全集和 socket/DNS 封锁；重点复核缺失/不确定字段、Place/Event 时间边界、无城市不伪造深圳、明确非深圳/四类不支持、多个及混合候选、1/2 次 Provider 边界、连续无效输出、五类 ProviderError、取消透传、敏感输入/Prompt/响应脱敏、零持久化副作用、迁移数量、范围和唯一实现扫描
 - 下一步：等待主控独立验收并决定是否纯快进集成；验收通过前 M0-2B 保持待验收，M0-2A 保持已完成，M0-2C 保持未开始且暂不允许开始；本分支不合并 `main`、不推送、不执行任何真实或付费调用
+
+#### 2026-07-21｜M0-2B 预检误判 P1 修复｜待验收
+
+- 分支与提交关系：`codex/m0-2-text-collection`；本修复直接建立在验收失败提交 `993d41bb0a35963651bf0f4ba5bfa03a8aa4b2db` 之上，该提交的直接父提交与已验收 `main` 基线均为 `76cbc96f9aa802496113f6e4216280691edb74ce`；修复提交为本记录所在提交，不 amend、不合并、不推送
+- 误判修复：移除以单个无上下文关键词或任意城市子串直接拒绝整个输入的预检方式；菜谱、商品、跨城多日旅行和复杂户外路线仅在对象、请求意图及必要上下文形成高置信组合证据时零调用拒绝；非深圳范围只接受明确城市陈述或具有出行语义的确定地标，不再把 Place、品牌或 Event 标题中的城市词当作城市事实；歧义输入进入既有 Provider 抽取和 canonicalization
+- 原始失败样例：`想收藏深圳菜谱文化主题展` 返回 1 个 `EventCandidate`、Provider 1 次；深圳一日游来源中的博物馆与莲花山收藏请求返回 2 个独立 `PlaceCandidate`、Provider 1 次；`上海宾馆` 返回仅店名 `PlaceCandidate`、Provider 1 次，并被 canonicalization 收敛为 `city=None`、`search_scope_city=shenzhen` 和城市未确认项
+- 保持的确定性边界：空白与超长输入继续零调用；番茄炒蛋食谱、商品型号参数和购买链接、深圳到广州三日游、梧桐山复杂徒步路线及 GPX 继续分别以稳定原因零调用拒绝；`周末想去广州塔看夜景` 继续零调用返回 `OUT_OF_SCOPE_CITY`；合法 Event 标题包含“菜谱”“产品参数”“徒步路线”以及上海宾馆、北京饭店、广州酒家等名称均严格只调用 Provider 1 次
+- Provider 与安全：普通有效结构仍只有第 1 次调用；仅 JSON/Schema 结构错误可执行第 2 次修复，连续无效或修复阶段 ProviderError 均无第 3 次调用；ProviderError 与 `asyncio.CancelledError` 传播语义未变；输入消息快照不被修改，重复和并发歧义调用互不污染；未增加日志、原文、Prompt、响应、密钥、Header、Cookie 或供应商字段暴露
+- 验证环境与结果：macOS、Python 3.13.5、项目 `.venv`；editable 安装、`pip check`、Ruff 均退出 0，strict mypy 对 48 个源文件无问题；候选契约与服务聚焦测试 77 passed，非真实全集 425 passed/1 deselected，核心测试 118 passed，迁移测试 5 passed，默认全集 425 passed/1 skipped，全部规定命令退出 0
+- 封网与 QA 说明：临时 `/tmp` pytest 插件同时封锁 `socket.connect`、`connect_ex`、`create_connection` 和 DNS `getaddrinfo` 后，425 个非真实测试再次通过、1 deselected；首次封网命令因临时插件 hook 参数名不符合 pytest 9 规范而在收集前退出 1，项目测试未执行，修正插件后上述重跑退出 0，临时文件已删除
+- 迁移、范围与冗余：revisions 仍仅有 `20260721_0001`、`0002`、`0003`；未修改候选契约、`nanobot_core`、Provider、Runner、ToolRegistry、ToolResult、Repository、ORM、迁移、依赖或配置；未实现 CollectionItem 写入、M0-2C/M0-2D、Undo/幂等、POI/高德、URL/OCR、SSE、前端或渠道 Adapter；抽取服务、Place/Event 候选及全部核心公共实现保持唯一，`nanobot_core` 无 app 反向依赖，Git 未新增 `.env`、数据库、缓存、虚拟环境或测试生成物
+- 真实 API 与风险：未读取或打印本机 `.env`，未运行 `real_provider`，百炼、高德及其他真实/外部/付费 API 调用为 0；当前无已知未关闭 P0/P1。仍未验证真实模型对歧义标题的遵循率与更广自然语言表达，保守预检之外的内容分类依赖模型严格结构输出；仅在 Python 3.13.5/macOS 验证，未在 Python 3.11/3.12、Windows 或 PostgreSQL 复测
+- 主控复测范围：确认新提交的直接父提交为 `993d41bb0a35963651bf0f4ba5bfa03a8aa4b2db` 且只包含预检、回归测试和本交接；重点复测三个原始失败样例、三类 Event 标题、带城市词 Place/品牌名、明确广州范围外与四类真实不支持、输入隔离、重复/并发、1/2 次和禁止第 3 次调用、ProviderError/取消传播、完整离线及封网测试、revisions 数量、反向依赖、唯一实现和越界扫描；M0-2B 继续待验收，M0-2C 仍未开始且不允许开始
