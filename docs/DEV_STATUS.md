@@ -527,3 +527,15 @@ M0-3A 已在阶段分支实现内部 POI/坐标/路线/天气/导航 DTO、五�
 - 已知风险：M0-3A 只证明内部边界和确定性离线行为，尚未验证真实高德字段、坐标、POI ID、路线/天气响应、URI 格式、额度或错误映射；这些必须等待 M0-3B 的单独实现和用户明确真实调用授权。当前仅在 macOS/Python 3.13.5 复测，未在 Python 3.11/3.12、Windows 或真实供应商环境验证；当前没有已知未关闭 P0/P1
 - 主控复测重点：确认提交直接基于指定 baseline，复核五类请求均显式城市作用域、DTO 不含供应商字段、Stub 无网络/环境/队列/城市状态、深圳与广州并发隔离、取消及异常脱敏、无迁移/配置/后续阶段越界；在干净 Python 3.11+ 环境重跑 35 项聚焦、512 项非真实、118 项 core、15 项 migrations、默认全集、Alembic head/check 与网络封锁
 - 下一步：主控独立验收通过后才允许纯快进合并并另行安排 M0-3B；本开发窗口不合并 `main`、不推送、不调用真实高德、不进入 M0-3B/C/D
+
+#### 2026-07-22｜M0-3A 验收 P1 修复｜待主控复验
+
+- 分支与提交关系：`codex/m0-3-poi-matching`；修复直接建立在待修复提交 `576eea53d3096a2b5a5add068ceb54b7bba1b8d5` 上，不 amend。开始门禁确认该提交为干净工作区 HEAD，其直接父提交、`main` 和 `origin/main` 均为指定阶段基线 `5b64a58526910561494f0c6381f7671ce80c30c3`；修复提交随本记录创建，完整 SHA 见开发窗口最终交接报告
+- P1 修复：唯一公开 `NavigationUri` 契约现在先拒绝空白、ASCII/Unicode 控制或格式字符、反斜杠及损坏百分号转义，再由 `urlsplit` 做结构拆分。HTTPS 必须有通过 IP/DNS/IDNA 标签校验的 hostname、无 username/password、端口可解析且不为 0；空 authority、缺失 hostname、损坏或越界端口均拒绝。geo 必须使用无 authority/fragment 的坐标 payload，纬度和经度恰好两项、均可解析且有限，并分别位于 `[-90, 90]` 与 `[-180, 180]`；可选参数必须是非空 `name=value`。`geo:`、`geo:?q=`、`https://`、`https:///missing-host`、NaN/Inf、越界坐标和损坏结构均不再通过
+- 安全边界：URI 失败统一产生固定 `navigation URI is invalid` 的 Pydantic 校验错误，`uri` 不进入对象 repr；模型继续启用 `hide_input_in_errors`，公开错误字典按既有 `errors(include_input=False, include_context=False, include_url=False)` 生成。参数化安全测试确认伪 Authorization/secret、完整非法 URI和伪原始响应不进入异常字符串、repr、日志或公开字典。Provider 与 Stub 未新增 URI 校验，`NavigationUri` 仍是唯一校验路径
+- city_code 去重：在同一个 `backend/app/domain/places/contracts.py` 内增加非导出的 `_CityCode = Annotated[str, Field(...)]`，由 `CityScope`、`Poi`、`PoiSearchResult`、`RouteResult`、`WeatherResult` 五类契约复用唯一 `_CITY_CODE_PATTERN`。没有新增公共模块、CityScope 或响应 DTO；当前合法代码继续原样通过，前后空白、大小写、过短及其他非法格式继续拒绝，JSON Schema 测试确认五类字段来自同一 pattern
+- 测试覆盖：聚焦测试由 35 增至 73，新增参数化拒绝空 geo/HTTPS、空 hostname、凭证、无效 DNS、损坏/0/越界端口、非法百分号、换行/NUL/C1 控制字符、反斜杠、非法/缺失/多余/越界/NaN/Inf geo 坐标及 fragment；接受深圳/广州现有 URI、Stub fallback 实际生成的两城 URI、合法 HTTPS、IPv4/IPv6、`(-90,-180)` 与 `(90,180)` 边界、合法 geo 参数。另验证输入不变、重复构造稳定且对象独立，两城 Fixture、交错/并发隔离和既有 MapProvider 契约全部保持
+- 验证环境与结果：macOS、仓库受忽略 `.venv`、Python 3.13.5；`python -m pip check`、Ruff、strict mypy（66 个源文件）全部退出 0；指定聚焦 73 passed；非真实全集 550 passed/1 deselected；core 118 passed；migrations 15 passed；默认全集 550 passed/1 skipped，全部退出 0。macOS `sandbox-exec` 系统级拒绝全部网络后，非真实全集再次 550 passed/1 deselected
+- 范围、网络与真实调用：相对 `576eea53...` 只修改 POI/导航契约、两份对应测试及本 DEV_STATUS 记录；`app/providers`、`nanobot_core`、配置、依赖、数据库、迁移、CollectionItem 和收藏状态均未修改。未读取或修改 `.env`，未启用真实测试，网络请求、高德、百炼、外部消息及任何真实/付费 API 调用均为 0；没有 M0-3B 真实适配、M0-3C 评分/候选选择或 M0-3D exact/any_branch/分店业务
+- 已知风险与结论：当前 URI 契约有意只接受标准坐标型 geo URI，不接受仅用自由文本 `q` 且没有坐标 payload 的非标准形式；现有 Stub 和 Fixture 不受影响。真实高德 URI 格式仍必须在 M0-3B 获得单独授权后映射和验证。本轮未在 Python 3.11/3.12 或 Windows 复测；P1 已由自动化覆盖关闭，当前没有已知未关闭 P0/P1
+- 下一步：主控直接复核新修复提交与 `576eea53...` 的差异，重点重跑 73 项聚焦、550 项非真实、网络封锁和 URI 安全探针；复验通过前不合并、不推送、不开始 M0-3B/C/D

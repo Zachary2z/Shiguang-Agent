@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from enum import StrEnum
-from typing import Self
+from ipaddress import ip_address
+from math import isfinite
+from typing import Annotated, Self
+from unicodedata import category
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+_CITY_CODE_PATTERN = r"^[a-z][a-z0-9_]{1,31}$"
+_INVALID_PERCENT_ENCODING = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_HOST_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+_INVALID_NAVIGATION_URI = "navigation URI is invalid"
+
+_CityCode = Annotated[str, Field(pattern=_CITY_CODE_PATTERN)]
 
 
 class PlaceContract(BaseModel):
@@ -67,12 +78,7 @@ class TransportMode(StrEnum):
 class CityScope(PlaceContract):
     """An explicit stable city boundary carried by every map operation."""
 
-    city_code: str = Field(pattern=r"^[a-z][a-z0-9_]{1,31}$")
-
-    @field_validator("city_code")
-    @classmethod
-    def normalize_city_code(cls, value: str) -> str:
-        return _required_text(value, field_name="city_code")
+    city_code: _CityCode
 
 
 class Coordinate(PlaceContract):
@@ -89,7 +95,7 @@ class Poi(PlaceContract):
     poi_id: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=200)
     branch_name: str | None = Field(default=None, max_length=160)
-    city_code: str = Field(pattern=r"^[a-z][a-z0-9_]{1,31}$")
+    city_code: _CityCode
     district: str | None = Field(default=None, max_length=100)
     business_area: str | None = Field(default=None, max_length=100)
     address: str = Field(min_length=1, max_length=500)
@@ -98,7 +104,7 @@ class Poi(PlaceContract):
     phone: str | None = Field(default=None, max_length=64, repr=False)
     opening_hours_summary: str | None = Field(default=None, max_length=240)
 
-    @field_validator("poi_id", "name", "city_code", "address")
+    @field_validator("poi_id", "name", "address")
     @classmethod
     def normalize_required_text(cls, value: str) -> str:
         return _required_text(value, field_name="POI text")
@@ -137,7 +143,7 @@ class SearchPoiRequest(PlaceContract):
 class PoiSearchResult(PlaceContract):
     """An ordered search result; an empty tuple is the explicit no-result case."""
 
-    city_code: str = Field(pattern=r"^[a-z][a-z0-9_]{1,31}$")
+    city_code: _CityCode
     pois: tuple[Poi, ...] = Field(default_factory=tuple, repr=False)
 
     @model_validator(mode="after")
@@ -185,7 +191,7 @@ class RouteRequest(PlaceContract):
 class RouteResult(PlaceContract):
     """Normalized route totals; zero is valid for identical endpoints."""
 
-    city_code: str = Field(pattern=r"^[a-z][a-z0-9_]{1,31}$")
+    city_code: _CityCode
     origin: Coordinate = Field(repr=False)
     destination: Coordinate = Field(repr=False)
     mode: TransportMode
@@ -209,7 +215,7 @@ class WeatherRequest(PlaceContract):
 class WeatherResult(PlaceContract):
     """A dated, bounded temperature summary without a raw forecast payload."""
 
-    city_code: str = Field(pattern=r"^[a-z][a-z0-9_]{1,31}$")
+    city_code: _CityCode
     on_date: date
     condition: str = Field(min_length=1, max_length=80)
     temperature_celsius: float = Field(ge=-100, le=100)
@@ -254,15 +260,83 @@ class NavigationRequest(PlaceContract):
 class NavigationUri(PlaceContract):
     """A safe public navigation URI using an explicit supported scheme."""
 
-    uri: str = Field(min_length=1, max_length=2048)
+    uri: str = Field(min_length=1, max_length=2048, repr=False)
 
     @field_validator("uri")
     @classmethod
     def validate_uri(cls, value: str) -> str:
-        normalized = _required_text(value, field_name="uri")
-        parsed = urlsplit(normalized)
-        if parsed.scheme not in {"geo", "https"}:
-            raise ValueError("navigation URI must use the geo or https scheme")
-        if parsed.username is not None or parsed.password is not None:
-            raise ValueError("navigation URI must not contain credentials")
-        return normalized
+        if _has_forbidden_uri_character(value) or _INVALID_PERCENT_ENCODING.search(value):
+            raise ValueError(_INVALID_NAVIGATION_URI)
+        try:
+            parsed = urlsplit(value)
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError:
+            raise ValueError(_INVALID_NAVIGATION_URI) from None
+
+        if parsed.scheme == "https":
+            if (
+                hostname is None
+                or not _is_valid_hostname(hostname)
+                or port == 0
+                or parsed.username is not None
+                or parsed.password is not None
+            ):
+                raise ValueError(_INVALID_NAVIGATION_URI)
+            return value
+
+        if parsed.scheme == "geo" and _is_valid_geo_location(
+            payload=parsed.path,
+            netloc=parsed.netloc,
+            fragment=parsed.fragment,
+        ):
+            return value
+        raise ValueError(_INVALID_NAVIGATION_URI)
+
+
+def _has_forbidden_uri_character(value: str) -> bool:
+    return not value or any(
+        character.isspace()
+        or category(character).startswith("C")
+        or character == "\\"
+        for character in value
+    )
+
+
+def _is_valid_hostname(hostname: str) -> bool:
+    try:
+        ip_address(hostname)
+    except ValueError:
+        try:
+            ascii_hostname = hostname.encode("idna").decode("ascii").rstrip(".")
+        except UnicodeError:
+            return False
+        if not ascii_hostname or len(ascii_hostname) > 253:
+            return False
+        return all(_HOST_LABEL.fullmatch(label) for label in ascii_hostname.split("."))
+    return True
+
+
+def _is_valid_geo_location(*, payload: str, netloc: str, fragment: str) -> bool:
+    if not payload or netloc or fragment:
+        return False
+    coordinate_text, *parameters = payload.split(";")
+    if parameters and any(
+        not name or not separator or not parameter_value
+        for parameter in parameters
+        for name, separator, parameter_value in (parameter.partition("="),)
+    ):
+        return False
+    components = coordinate_text.split(",")
+    if len(components) != 2:
+        return False
+    try:
+        latitude, longitude = (float(component) for component in components)
+    except ValueError:
+        return False
+    return (
+        isfinite(latitude)
+        and isfinite(longitude)
+        and -90 <= latitude <= 90
+        and -180 <= longitude <= 180
+    )

@@ -7,10 +7,12 @@ import logging
 
 import pytest
 
-from app.domain.places import CityScope, PoiSearchResult, SearchPoiRequest
+from app.domain.places import CityScope, NavigationRequest, PoiSearchResult, SearchPoiRequest
 from app.providers import MapProviderError, MapProviderErrorCode, StubMapProvider
 from tests.fixtures.maps import (
+    GZ_NAVIGATION,
     GZ_UNIQUE_SEARCH,
+    SZ_NAVIGATION,
     SZ_UNIQUE_SEARCH,
     TIMEOUT_SEARCH,
     make_stub_map_provider,
@@ -30,6 +32,23 @@ async def test_same_input_is_stable_and_returns_independent_snapshots() -> None:
     assert first == second
     assert first is not second
     assert first.pois[0] is not second.pois[0]
+
+
+@pytest.mark.parametrize("navigation_request", [SZ_NAVIGATION, GZ_NAVIGATION])
+@pytest.mark.asyncio
+async def test_stub_generated_navigation_uri_is_valid_stable_and_input_safe(
+    navigation_request: NavigationRequest,
+) -> None:
+    request_before = navigation_request.model_dump()
+    provider = StubMapProvider()
+
+    first = await provider.build_navigation_uri(navigation_request)
+    second = await provider.build_navigation_uri(navigation_request)
+
+    assert navigation_request.model_dump() == request_before
+    assert first == second
+    assert first is not second
+    assert first.uri.startswith("geo:")
 
 
 @pytest.mark.asyncio

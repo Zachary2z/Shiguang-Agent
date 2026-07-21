@@ -23,6 +23,8 @@ from app.domain.places import (
 )
 from tests.fixtures.maps import SHENZHEN_MUSEUM, SHENZHEN_MUSEUM_COORDINATE
 
+FAKE_URI_SECRET = "fake-navigation-secret-must-not-leak"
+
 
 def test_poi_contract_is_strict_immutable_and_rejects_unknown_fields() -> None:
     poi = SHENZHEN_MUSEUM
@@ -39,6 +41,20 @@ def test_poi_contract_is_strict_immutable_and_rejects_unknown_fields() -> None:
 def test_city_scope_rejects_blank_or_unstable_codes(city_code: str) -> None:
     with pytest.raises(ValidationError):
         CityScope(city_code=city_code)
+
+
+def test_all_city_code_fields_share_one_rule_without_whitespace_normalization() -> None:
+    city_models = (CityScope, Poi, PoiSearchResult, RouteResult, WeatherResult)
+
+    patterns = {
+        model.model_json_schema()["properties"]["city_code"]["pattern"]
+        for model in city_models
+    }
+
+    assert patterns == {r"^[a-z][a-z0-9_]{1,31}$"}
+    assert CityScope(city_code="shenzhen").city_code == "shenzhen"
+    with pytest.raises(ValidationError):
+        CityScope(city_code=" shenzhen ")
 
 
 @pytest.mark.parametrize(
@@ -135,14 +151,88 @@ def test_weather_date_and_temperature_contracts_are_strict() -> None:
 @pytest.mark.parametrize(
     "uri",
     [
+        "",
+        "   ",
+        "geo:",
+        "geo:?q=",
+        "geo:91,0",
+        "geo:-91,0",
+        "geo:0,181",
+        "geo:0,-181",
+        "geo:nan,0",
+        "geo:0,NaN",
+        "geo:inf,0",
+        "geo:0,-inf",
+        "geo:not-a-latitude,114",
+        "geo:22.5",
+        "geo:22.5,114,10",
+        "geo:22.5,114#fragment",
         "http://maps.example.invalid/navigation",
+        "https://",
+        "https:///missing-host",
         "https://user:password@maps.example.invalid/navigation",
+        "https://maps.example.invalid:not-a-port/navigation",
+        "https://maps.example.invalid:70000/navigation",
+        "https://-invalid-host.example/navigation",
+        "https://maps.example.invalid/navigation%ZZ",
+        "https://maps.example.invalid/nav\nigation",
+        "https://maps.example.invalid/navigation\x00",
+        "https://maps.example.invalid/navigation\u0091",
+        "https://maps.example.invalid\\navigation",
         "not-a-uri",
     ],
 )
-def test_navigation_uri_rejects_unsafe_or_invalid_schemes(uri: str) -> None:
+def test_navigation_uri_rejects_unsafe_or_incomplete_values(uri: str) -> None:
     with pytest.raises(ValidationError):
         NavigationUri(uri=uri)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "geo:22.541174,114.057701?q=22.541174,114.057701%28poi_sz_moca_up%29",
+        "geo:23.117242,113.321242?q=23.117242,113.321242%28poi_gz_museum%29",
+        "geo:-90,-180",
+        "geo:90,180",
+        "geo:0,0;u=25",
+        "https://maps.example.invalid/navigation?poi_id=poi_sz_moca_up",
+        "https://127.0.0.1:443/navigation",
+        "https://[::1]/navigation",
+    ],
+)
+def test_navigation_uri_accepts_complete_geo_and_https_values(uri: str) -> None:
+    original = uri
+
+    first = NavigationUri(uri=uri)
+    second = NavigationUri(uri=uri)
+
+    assert uri == original
+    assert first == second
+    assert first is not second
+    assert first.uri == original
+
+
+def test_navigation_uri_validation_error_and_public_details_hide_sensitive_input(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    unsafe_uri = (
+        "https://maps.example.invalid/navigation?authorization="
+        f"{FAKE_URI_SECRET}%ZZ"
+    )
+
+    with caplog.at_level("INFO"), pytest.raises(ValidationError) as captured:
+        NavigationUri(uri=unsafe_uri)
+
+    error = captured.value
+    public_details = error.errors(
+        include_input=False,
+        include_context=False,
+        include_url=False,
+    )
+    exposed = str(error) + repr(error) + repr(public_details) + caplog.text
+    assert FAKE_URI_SECRET not in exposed
+    assert "authorization=" not in exposed.casefold()
+    assert "raw-provider-response" not in exposed
 
 
 def test_search_results_reject_mixed_cities_and_duplicate_identifiers() -> None:
