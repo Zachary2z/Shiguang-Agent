@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-2A 领域模型 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-2-text-collection |
+| 当前子阶段 | M0-2B 结构化抽取 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-21 |
-| 阻塞项 | 无；等待主控独立离线验收，M0-2B 暂不允许开始 |
+| 阻塞项 | 无；M0-2A 已完成主控验收，M0-2B 允许开始 |
 
 ## 当前任务
 
-M0-2A 已在 `codex/m0-2-text-collection` 完成开发与 QA 缺陷修复并保持待验收：recognizing/failed 只属于识别流程，不是可持久化 CollectionItem 状态；识别最终失败只保留 Source/AgentRun 失败信息，collection_items 不产生或残留对象。AgentRun trace 查询继续强制用户隔离，Message 仅持久化 USER/ASSISTANT，SessionChannel 仅保留 web/demo；上述规则均由领域、Repository、ORM、迁移约束和离线测试覆盖。未读取 `.env`，未调用真实模型、高德或其他外部 API；M0-2B 结构化抽取仍未开始。
+M0-2A 已通过主控验收并纯快进集成到 `main`：User、Session、Message、Source、CollectionItem、CollectionSource、用户隔离和单一 `20260721_0003` 迁移均已确认；recognizing/failed 只属于识别流程，失败不会创建或残留 CollectionItem。M0-2B 结构化抽取现在允许开始，但尚未开发；真实或付费 API 未获本阶段授权。
 
 ## M0 状态
 
@@ -21,7 +21,7 @@ M0-2A 已在 `codex/m0-2-text-collection` 完成开发与 QA 缺陷修复并保�
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
-| M0-2 文字收藏 | 进行中 | M0-2A 已完成开发并待主控验收；M0-2B 尚未开始且暂不允许开始 |
+| M0-2 文字收藏 | 进行中 | M0-2A 已完成主控验收；M0-2B 尚未开始且允许开始 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
@@ -41,10 +41,11 @@ M0-2A 已在 `codex/m0-2-text-collection` 完成开发与 QA 缺陷修复并保�
 - M0-1A 已完成：供应商无关的模型响应元数据、Token/完成原因契约、五类 Provider 错误和完全离线 Fake 覆盖已通过主控验收。
 - M0-1B 已完成：唯一应用层 OpenAI-compatible 百炼 Provider、固定非思考模式、离线错误与安全覆盖及一次真实 Tool Calling 链路已通过主控验收。
 - M0-1C 已完成：唯一 Runner 的运行硬上限、AgentRun/ToolRun 持久化、trace 查询、运行终结、Token/费用汇总、安全摘要和迁移往返已通过主控验收。
+- M0-2A 已完成：收藏领域模型、识别/收藏状态边界、强制用户隔离、六表迁移和安全持久化约束已通过主控验收。
 
 ## 下一步
 
-主控窗口应在最新修复提交上独立复核 M0-2A 范围、recognizing/failed 均不落 CollectionItem、失败 Source 留痕、AgentRun trace 用户隔离、Message 角色与内容安全、web/demo 渠道边界、单一 `20260721_0003` 迁移与升降升、数据库约束和全部离线测试。验收通过后再纯快进集成到 `main` 并更新状态；在此之前不得开始 M0-2B，不得调用真实或付费 API。
+从本交接文档提交后的最新 `main` 继续使用 `codex/m0-2-text-collection` 开发 M0-2B，只实现 Place/Event 候选 Schema、纯文字结构化抽取、深圳范围校验、不支持原因和最多一次结构修复；不得提前实现 M0-2C 自动保存/Undo 或 M0-2D API。默认使用 Fake/Stub，未经当前任务明确授权不得调用真实模型或付费 API。
 
 ## 阶段交接记录
 
@@ -338,3 +339,16 @@ M0-2A 已在 `codex/m0-2-text-collection` 完成开发与 QA 缺陷修复并保�
 - 约束测试：自动化测试显式先升级到 `20260721_0002` 再升级 head，验证 active、pending_selection、pending_details、visited、archived、deleted 均可写入，recognizing 与 failed 的直接 SQL 写入均失败；既有领域、Repository、用户隔离、回滚、Message 和渠道安全测试保持不变
 - 阶段状态：M0-2A 继续待验收，M0-2B 继续未开始；没有新增抽取、自动保存、Undo、API、POI、URL 抓取、前端或渠道 Adapter
 - 主控复测：核对 revisions 目录只有 `0001`、`0002`、`0003`，Alembic head 为 `20260721_0003`；在全新临时库完成 `head → 20260721_0002 → head` 和 `alembic check`，确认降级保留 AgentRun/ToolRun、升级只新增 M0-2A 六表，再运行完整离线测试与范围/唯一性扫描
+
+#### 2026-07-21｜M0-2A｜已完成（主控验收）
+
+- 集成：`codex/m0-2-text-collection` 已以 `--ff-only` 纯快进合并到 `main`；最终开发提交 `1a2518b524bfc9cf7eceb2120cc0a7a835785710`，包含原开发提交 `5f7823896d77cf5fe738b1c2a37b647fcc50939b` 及三轮 QA 修复；合并无冲突、无额外代码变化
+- 验收环境：对最终提交使用独立 `git archive` 与全新 Python 3.13.5 虚拟环境；editable 安装、`pip check`、Ruff 和 strict mypy（46 个源文件）全部通过
+- 自动化结果：非真实测试 348 passed、1 deselected；核心测试 118 passed；迁移测试 5 passed；默认全集 348 passed、1 skipped；封锁 socket 连接和 DNS 后非真实测试再次 348 passed、1 deselected；6 项主控绕过探针全部通过
+- 领域与安全：RecognitionStatus 的 recognizing/failed 不属于可持久化 CollectionItem；失败 Source 可留痕但收藏表保持空；实体、Repository 绕过和直接 SQL 三层均拒绝瞬态识别状态；Message 只持久化 USER/ASSISTANT 且正文不进入 repr；SessionChannel 只允许 web/demo；AgentRun trace 查询同时要求 user_id
+- 用户隔离与异常：Message 经 Session 校验所有权，Source、CollectionItem 和 CollectionSource 始终按 user_id 隔离；跨用户与不存在资源使用相同安全结果；跨用户关联、重复关联、非法状态、事务部分失败和回滚均通过
+- 迁移：M0-2A 仅有 `20260721_0003` 且 `down_revision=20260721_0002`，只新增约定六表；`upgrade head → downgrade 20260721_0002 → upgrade head` 与 `alembic check` 均通过，降级保留 AgentRun/ToolRun，最终状态约束只允许六种真实收藏状态
+- 范围与冗余：未实现 M0-2B 抽取、M0-2C 自动保存/Undo/幂等、M0-2D API、POI、高德、URL/截图、SSE、前端或微信；AgentRunner、ToolRegistry、ModelProvider、OpenAI-compatible Provider、AgentRun Repository、Collection Repository 和 ORM Base 均保持唯一，核心无应用层反向依赖
+- 真实 API：未读取或打印 `.env`，未运行 `real_provider`，真实模型、高德、外部消息及付费 API 调用均为 0；此前阶段的真实调用授权不延续
+- 验收结论：所有已发现 P1/P2 均已关闭，没有未关闭的 P0/P1；M0-2A 完成标准满足，M0-2B 允许开始
+- 下一步：在本交接文档提交后的最新 `main` 上继续使用 `codex/m0-2-text-collection` 开发 M0-2B；只实现结构化抽取，不提前进入自动保存、Undo 或 API
