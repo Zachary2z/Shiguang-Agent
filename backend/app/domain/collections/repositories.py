@@ -168,10 +168,10 @@ class CollectionRepository(Protocol):
         operation_id: str,
     ) -> list[CollectionItem]: ...
 
-    async def mark_write_operation_undone(
+    async def claim_write_operation_undo(
         self,
         *,
         user_id: str,
-        operation_id: str,
-        undone_at: datetime,
-    ) -> CollectionWriteOperation: ...
+        undo_token_hash: str,
+        claimed_at: datetime,
+    ) -> bool: ...

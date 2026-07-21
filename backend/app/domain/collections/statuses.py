@@ -41,6 +41,14 @@ DEFAULT_COLLECTION_STATUSES = frozenset(
 
 PLAN_ELIGIBLE_COLLECTION_STATUSES = frozenset({CollectionStatus.ACTIVE})
 
+DELETABLE_COLLECTION_STATUSES = frozenset(
+    {
+        CollectionStatus.ACTIVE,
+        CollectionStatus.PENDING_SELECTION,
+        CollectionStatus.PENDING_DETAILS,
+    }
+)
+
 _ALLOWED_TRANSITIONS: dict[
     CollectionWorkflowStatus,
     frozenset[CollectionWorkflowStatus],

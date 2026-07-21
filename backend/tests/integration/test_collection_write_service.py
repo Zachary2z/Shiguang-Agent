@@ -504,6 +504,86 @@ async def test_undo_group_is_atomic_idempotent_and_never_deletes_shared_source(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_undo_claims_once_and_both_requests_are_idempotent(
+    write_database: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url, database_path = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    source = _source(user.id)
+    async with database.session() as session:
+        saved = await _service(session).auto_save(
+            user_id=user.id,
+            idempotency_key="concurrent-undo",
+            source=source,
+            extraction_result=ExtractionResult.with_candidates((_place(), _event())),
+        )
+    assert saved.undo_token is not None
+    token = saved.undo_token.get_secret_value()
+
+    claim_barrier = asyncio.Barrier(2)
+    delete_calls = 0
+    async with database.session() as left_session, database.session() as right_session:
+        left = _service(left_session)
+        right = _service(right_session)
+
+        def install_claim_gate(service: CollectionWriteService) -> None:
+            original_claim = service._repository.claim_write_operation_undo
+            original_delete = service._repository.delete_collection_item
+
+            async def gated_claim(**kwargs: Any) -> bool:
+                await claim_barrier.wait()
+                return await original_claim(**kwargs)
+
+            async def counted_delete(**kwargs: Any) -> Any:
+                nonlocal delete_calls
+                delete_calls += 1
+                return await original_delete(**kwargs)
+
+            monkeypatch.setattr(
+                service._repository,
+                "claim_write_operation_undo",
+                gated_claim,
+            )
+            monkeypatch.setattr(
+                service._repository,
+                "delete_collection_item",
+                counted_delete,
+            )
+
+        install_claim_gate(left)
+        install_claim_gate(right)
+        results = await asyncio.gather(
+            left.undo(user_id=user.id, undo_token=token),
+            right.undo(user_id=user.id, undo_token=token),
+        )
+
+    assert {result.outcome for result in results} == {
+        UndoOutcome.UNDONE,
+        UndoOutcome.ALREADY_UNDONE,
+    }
+    assert all(
+        set(result.collection_item_ids) == {item.id for item in saved.items}
+        for result in results
+    )
+    assert delete_calls == len(saved.items)
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM sources").fetchone() == (1,)
+        assert connection.execute("SELECT COUNT(*) FROM collection_sources").fetchone() == (
+            len(saved.items),
+        )
+        assert connection.execute(
+            "SELECT undone_at IS NOT NULL FROM collection_write_operations"
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT status, version FROM collection_items ORDER BY id"
+        ).fetchall() == [("deleted", 2), ("deleted", 2)]
+    await database.close()
+
+
+@pytest.mark.asyncio
 async def test_undo_expiry_boundary_wrong_user_random_token_and_already_deleted_item(
     write_database: tuple[str, Path],
 ) -> None:
@@ -606,6 +686,96 @@ async def test_undo_partial_failure_rolls_back_all_items_and_can_retry(
             undo_token=saved.undo_token.get_secret_value(),
         )
     assert retried.outcome is UndoOutcome.UNDONE
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_undo_failure_rolls_back_claim_and_items_before_retry(
+    write_database: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url, database_path = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    async with database.session() as session:
+        saved = await _service(session).auto_save(
+            user_id=user.id,
+            idempotency_key="concurrent-undo-rollback",
+            source=_source(user.id),
+            extraction_result=ExtractionResult.with_candidates((_place(), _event())),
+        )
+    assert saved.undo_token is not None
+    token = saved.undo_token.get_secret_value()
+
+    second_waiting = asyncio.Event()
+    release_second = asyncio.Event()
+    async with database.session() as failing_session, database.session() as retry_session:
+        failing = _service(failing_session)
+        retrying = _service(retry_session)
+        failing_claim = failing._repository.claim_write_operation_undo
+        retry_claim = retrying._repository.claim_write_operation_undo
+        failing_delete = failing._repository.delete_collection_item
+        delete_calls = 0
+
+        async def claim_then_wait_for_contender(**kwargs: Any) -> bool:
+            claimed = await failing_claim(**kwargs)
+            await second_waiting.wait()
+            return claimed
+
+        async def wait_before_retry_claim(**kwargs: Any) -> bool:
+            second_waiting.set()
+            await release_second.wait()
+            return await retry_claim(**kwargs)
+
+        async def fail_second_delete(**kwargs: Any) -> Any:
+            nonlocal delete_calls
+            delete_calls += 1
+            if delete_calls == 2:
+                raise RuntimeError("concurrent undo failure")
+            return await failing_delete(**kwargs)
+
+        monkeypatch.setattr(
+            failing._repository,
+            "claim_write_operation_undo",
+            claim_then_wait_for_contender,
+        )
+        monkeypatch.setattr(
+            retrying._repository,
+            "claim_write_operation_undo",
+            wait_before_retry_claim,
+        )
+        monkeypatch.setattr(
+            failing._repository,
+            "delete_collection_item",
+            fail_second_delete,
+        )
+
+        failed_task = asyncio.create_task(failing.undo(user_id=user.id, undo_token=token))
+        retry_task = asyncio.create_task(retrying.undo(user_id=user.id, undo_token=token))
+        with pytest.raises(RuntimeError, match="concurrent undo failure"):
+            await failed_task
+
+        with sqlite3.connect(database_path) as connection:
+            assert connection.execute(
+                "SELECT undone_at FROM collection_write_operations"
+            ).fetchone() == (None,)
+            assert set(
+                connection.execute("SELECT status, version FROM collection_items").fetchall()
+            ) == {("active", 1), ("pending_details", 1)}
+
+        release_second.set()
+        retried = await retry_task
+
+    assert retried.outcome is UndoOutcome.UNDONE
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT undone_at IS NOT NULL FROM collection_write_operations"
+        ).fetchone() == (1,)
+        assert connection.execute("SELECT COUNT(*) FROM sources").fetchone() == (1,)
+        assert connection.execute("SELECT COUNT(*) FROM collection_sources").fetchone() == (
+            2,
+        )
     await database.close()
 
 
@@ -749,4 +919,135 @@ async def test_patch_and_delete_hide_cross_user_existence_and_delete_is_idempote
             user_id=user.id,
             include_inactive=True,
         ) == [deleted]
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_delete_is_idempotent_and_increments_version_once(
+    write_database: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    async with database.session() as session:
+        saved = await _service(session).auto_save(
+            user_id=user.id,
+            idempotency_key="concurrent-delete",
+            source=_source(user.id),
+            extraction_result=ExtractionResult.with_candidates((_place(),)),
+        )
+    item = saved.items[0]
+
+    delete_barrier = asyncio.Barrier(2)
+    async with database.session() as left_session, database.session() as right_session:
+        left = _service(left_session)
+        right = _service(right_session)
+
+        def install_delete_gate(service: CollectionWriteService) -> None:
+            original = service._repository.delete_collection_item
+
+            async def gated_delete(**kwargs: Any) -> Any:
+                await delete_barrier.wait()
+                return await original(**kwargs)
+
+            monkeypatch.setattr(service._repository, "delete_collection_item", gated_delete)
+
+        install_delete_gate(left)
+        install_delete_gate(right)
+        deleted = await asyncio.gather(
+            left.delete(
+                user_id=user.id,
+                collection_item_id=item.id,
+                expected_version=1,
+            ),
+            right.delete(
+                user_id=user.id,
+                collection_item_id=item.id,
+                expected_version=1,
+            ),
+        )
+
+    assert all(result.status is CollectionStatus.DELETED for result in deleted)
+    assert [result.version for result in deleted] == [2, 2]
+    async with database.session() as session:
+        stored = await SqlAlchemyCollectionRepository(session).get_collection_item(
+            user_id=user.id,
+            collection_item_id=item.id,
+        )
+    assert stored is not None
+    assert stored.status is CollectionStatus.DELETED
+    assert stored.version == 2
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_cas_miss_after_other_edit_remains_a_version_conflict(
+    write_database: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    async with database.session() as session:
+        saved = await _service(session).auto_save(
+            user_id=user.id,
+            idempotency_key="delete-versus-patch",
+            source=_source(user.id),
+            extraction_result=ExtractionResult.with_candidates((_place(),)),
+        )
+    item = saved.items[0]
+
+    delete_waiting = asyncio.Event()
+    patch_committed = asyncio.Event()
+    async with database.session() as patch_session, database.session() as delete_session:
+        patch_service = _service(patch_session)
+        delete_service = _service(delete_session)
+        original_delete = delete_service._repository.delete_collection_item
+
+        async def delete_after_patch(**kwargs: Any) -> Any:
+            delete_waiting.set()
+            await patch_committed.wait()
+            return await original_delete(**kwargs)
+
+        async def commit_patch() -> Any:
+            await delete_waiting.wait()
+            updated = await patch_service.patch(
+                user_id=user.id,
+                collection_item_id=item.id,
+                expected_version=1,
+                patch=CollectionItemPatch(title="并发修改后的标题"),
+            )
+            patch_committed.set()
+            return updated
+
+        monkeypatch.setattr(
+            delete_service._repository,
+            "delete_collection_item",
+            delete_after_patch,
+        )
+        delete_task = asyncio.create_task(
+            delete_service.delete(
+                user_id=user.id,
+                collection_item_id=item.id,
+                expected_version=1,
+            )
+        )
+        updated = await commit_patch()
+        with pytest.raises(VersionConflictError):
+            await delete_task
+
+    assert updated.version == 2
+    assert updated.status is CollectionStatus.PENDING_DETAILS
+    async with database.session() as session:
+        stored = await SqlAlchemyCollectionRepository(session).get_collection_item(
+            user_id=user.id,
+            collection_item_id=item.id,
+        )
+    assert stored is not None
+    assert stored.title == "并发修改后的标题"
+    assert stored.status is CollectionStatus.PENDING_DETAILS
+    assert stored.version == 2
     await database.close()

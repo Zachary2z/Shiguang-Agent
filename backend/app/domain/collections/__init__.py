@@ -33,6 +33,7 @@ from app.domain.collections.extraction import (
 from app.domain.collections.repositories import CollectionRepository, ResourceNotFoundError
 from app.domain.collections.statuses import (
     DEFAULT_COLLECTION_STATUSES,
+    DELETABLE_COLLECTION_STATUSES,
     PERSISTABLE_COLLECTION_STATUSES,
     PLAN_ELIGIBLE_COLLECTION_STATUSES,
     TERMINAL_COLLECTION_STATUSES,
@@ -58,6 +59,7 @@ from app.domain.collections.writes import (
 
 __all__ = [
     "DEFAULT_COLLECTION_STATUSES",
+    "DELETABLE_COLLECTION_STATUSES",
     "PERSISTABLE_COLLECTION_STATUSES",
     "PLAN_ELIGIBLE_COLLECTION_STATUSES",
     "TERMINAL_COLLECTION_STATUSES",

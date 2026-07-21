@@ -7,11 +7,11 @@
 | 状态 | 待验收 |
 | 当前分支 | codex/m0-2-text-collection |
 | 最近更新 | 2026-07-21 |
-| 阻塞项 | 无；M0-2C 已实现并等待主控独立验收 |
+| 阻塞项 | 无；M0-2C 两项并发幂等 P1 已修复，等待主控复验 |
 
 ## 当前任务
 
-M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市契约联合修复均已通过主控验收。M0-2C 已在现有唯一 CollectionItem、CollectionRepository 和抽取契约上完成事务化自动保存、幂等、短期 Undo、允许字段修改、版本保护和逻辑删除；`0005` 增加必要候选线索及两张操作关联表。当前等待主控独立验收，M0-2D 保持未开始且不允许开始。
+M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市契约联合修复均已通过主控验收。M0-2C 已在现有唯一 CollectionItem、CollectionRepository 和抽取契约上完成事务化自动保存、幂等、短期 Undo、允许字段修改、版本保护和逻辑删除；`0005` 增加必要候选线索及两张操作关联表。主控 QA 发现的并发 Undo 与并发逻辑 DELETE 幂等 P1 已通过数据库 CAS、失败后强制刷新及确定性双 Session 测试修复；M0-2C 继续待主控复验，M0-2D 保持未开始且不允许开始。
 
 ## M0 状态
 
@@ -21,7 +21,7 @@ M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市�
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
-| M0-2 文字收藏 | 进行中 | M0-2A、M0-2B 已完成；M0-2C 待验收，M0-2D 未开始 |
+| M0-2 文字收藏 | 进行中 | M0-2A、M0-2B 已完成；M0-2C 待验收（待主控复验），M0-2D 未开始 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
@@ -46,7 +46,7 @@ M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市�
 
 ## 下一步
 
-主控/QA 从本阶段提交进行独立离线复测，重点检查并发幂等、Undo 原子性、版本冲突、用户隔离、`0004 ↔ 0005` 安全往返与范围边界；验收通过后才决定是否纯快进集成。M0-2D API、M0-3 POI、高德、前端和真实付费调用仍不得开始。
+主控/QA 从本次 P1 修复提交进行独立离线复测，重点检查并发 Undo、并发 DELETE、Undo 认领与条目修改整体回滚、真实版本冲突、用户隔离、`0004 ↔ 0005` 安全往返与范围边界；验收通过后才决定是否纯快进集成。M0-2D API、M0-3 POI、高德、前端和真实付费调用仍不得开始。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -456,3 +456,15 @@ M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市�
 - 安全、范围与冗余：未读取或打印 `.env`，未设置真实测试开关，未运行 `real_provider`，百炼、高德、网络、外部消息和真实/付费 API 调用均为 0。未修改 AgentRunner、ToolRegistry、ModelProvider 或 `nanobot_core`；未实现 M0-2D 路由/Demo/HTTP Schema、M0-3 POI/正式城市/高德、URL/截图/OCR、计划、前端、SSE 或渠道 Adapter。CollectionWriteService、CollectionRepository、SqlAlchemyCollectionRepository、CollectionItem、TextExtractionService、AgentRunner、ToolRegistry 与 ModelProvider 均各只有一套正式实现；Git 未包含 `.env`、数据库、缓存、虚拟环境、Token 或响应快照
 - 已知风险：当前 ORM、并发与迁移只在 SQLite、macOS、Python 3.14.0（另由现有 `.venv` 回归）验证，尚未在 PostgreSQL、Windows 或 Python 3.11/3.12 复测；并发 SQLite 测试证明数据库唯一约束收敛到单一结果，但更高负载锁竞争留待 M1 PostgreSQL 阶段验证。M0-3 前 Place 按要求保持 `pending_details`，正式地点确认和计划资格必须由后续唯一 PoiReference/匹配流程建立
 - 下一步：主控使用阶段提交独立复查设计、范围与全部命令；通过前 M0-2C 保持待验收，M0-2D 保持未开始。本分支不合并 `main`、不推送、不开始下一阶段、不执行真实或付费调用
+
+#### 2026-07-21｜M0-2C 主控 QA 并发幂等 P1 修复｜待主控复验
+
+- 分支与提交关系：`codex/m0-2-text-collection`；修复直接建立在验收失败提交 `d11afb7fe932590d78d7dc5f1f8c128ebee56b3c` 上，该提交的直接父提交、`main` 与 `origin/main` 均为指定阶段基线 `8d47d762020b4371c8bfbd62f9ff763921c0a150`；本记录与代码形成一个独立修复提交，不 amend、不合并、不推送
+- 并发 Undo：唯一 `CollectionWriteService` 不再先查询后认领；唯一 `SqlAlchemyCollectionRepository` 使用按 `user_id + undo_token_hash + undone_at IS NULL + undo_expires_at` 的条件 UPDATE 原子设置 `undone_at`。CAS 胜者在同一事务内删除整组 CollectionItem，任意条目失败时认领与此前条目修改一并回滚；CAS 败者使用 `populate_existing` 强制重读操作，只在数据库已提交 `undone_at` 时返回 `ALREADY_UNDONE`，有效期、用户和随机 Token 边界保持 `NOT_AVAILABLE`，真实条目版本冲突继续传播而不被吞掉
+- 并发逻辑 DELETE：Repository 改为针对可删除状态和可选 `expected_version` 的单条条件 UPDATE，并由数据库表达式只递增一次 version；更新未命中后强制重新读取真实行，最终为 `deleted` 时即使携带删除前版本也按幂等成功返回，最终仍为其他状态且版本已变化时继续抛出 `VersionConflictError`。PATCH 的条件 UPDATE、允许字段和乐观锁逻辑未放宽
+- 原子性与数据保留：`operation.undone_at` 与全组逻辑删除仍在同一事务；Source、CollectionSource 和操作关联不删除；未新增或修改数据库迁移，既有 `0005` 结构不变
+- 新增确定性测试：使用两个独立 AsyncSession、`asyncio.Barrier`、`asyncio.Event` 和受控 Repository 钩子覆盖同 Token 并发 Undo 的 `UNDONE + ALREADY_UNDONE`、仅一次实际删除、Source/CollectionSource 保留；并发 Undo 第二条目失败后认领和所有条目回滚、已启动的另一请求随后成功；同条目同版本并发 DELETE 两次均返回 deleted 且最终 version 仅增加一次；DELETE CAS 未命中而另一 PATCH 已提交时保持 `VersionConflictError` 和未删除状态。既有顺序重复 Undo/DELETE、过期、跨用户、随机 Token、批量原子性测试全部保留
+- 验证环境与结果：macOS、项目受忽略 `.venv`、Python 3.13.5；`python -m pip check`、Ruff、strict mypy（53 个源文件）全部通过；任务指定四文件聚焦测试 50 passed（原 46 + 新增 4）；M0-2 全聚焦 219 passed（原 215 + 新增 4）；非真实全集 461 passed、1 deselected；core 118 passed；migrations 15 passed；默认全集 461 passed、1 skipped；4 项新增并发测试连续重复 10 轮共 40 passed，全部退出码 0
+- 离线、安全与范围：测试未启用 `real_provider`，未读取或打印 `.env`，未调用百炼、高德、网络、外部消息或任何真实/付费 API；未修改 `nanobot_core`、AgentRunner、ToolRegistry、ModelProvider、迁移、M0-2D API、POI/高德、URL/OCR、计划、前端、微信或渠道 Adapter；未新增第二套 Service、Repository、CollectionItem、Undo DTO 或状态机
+- 已知风险：并发语义当前仅在 SQLite、macOS、Python 3.13.5 验证，尚未在 PostgreSQL、Windows 或 Python 3.11/3.12 复测；M1 切换 PostgreSQL 时仍需重跑相同 CAS、事务回滚和锁竞争测试。当前无已知未关闭 P0；本次两个 P1 等待主控独立复验后才能关闭
+- 下一步：主控核对修复提交直接包含 `d11afb7...`，重跑 219 项 M0-2 聚焦、461 项非真实全集、118 项 core、15 项 migrations 和默认全集，重点复核并发 Undo/DELETE、Undo 回滚及真实版本冲突；全部通过且无未关闭 P0/P1 后才允许纯快进合并。M0-2C 当前保持待主控复验，M0-2D 保持未开始

@@ -27,6 +27,7 @@ from app.domain.collections import (
     Source,
     UndoOutcome,
     UndoResult,
+    VersionConflictError,
     status_for_extraction_candidate,
 )
 from app.domain.collections.writes import IDEMPOTENCY_KEY_PATTERN
@@ -146,6 +147,11 @@ class CollectionWriteService:
         token_hash = self._token_hash(undo_token)
         now = self._now()
         async with self._session.begin():
+            claimed = await self._repository.claim_write_operation_undo(
+                user_id=owner,
+                undo_token_hash=token_hash,
+                claimed_at=now,
+            )
             operation = await self._repository.get_write_operation_by_undo_hash(
                 user_id=owner,
                 undo_token_hash=token_hash,
@@ -157,7 +163,9 @@ class CollectionWriteService:
                 operation_id=operation.id,
             )
             item_ids = tuple(item.id for item in items)
-            if operation.undone_at is not None:
+            if not claimed:
+                if operation.undone_at is None:
+                    raise VersionConflictError
                 return UndoResult(
                     outcome=UndoOutcome.ALREADY_UNDONE,
                     collection_item_ids=item_ids,
@@ -169,11 +177,6 @@ class CollectionWriteService:
                     updated_at=now,
                     expected_version=item.version,
                 )
-            await self._repository.mark_write_operation_undone(
-                user_id=owner,
-                operation_id=operation.id,
-                undone_at=now,
-            )
             return UndoResult(
                 outcome=UndoOutcome.UNDONE,
                 collection_item_ids=item_ids,

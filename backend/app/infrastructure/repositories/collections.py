@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.collections import (
     DEFAULT_COLLECTION_STATUSES,
+    DELETABLE_COLLECTION_STATUSES,
     CandidateField,
     CollectionItem,
     CollectionKind,
@@ -406,34 +407,38 @@ class SqlAlchemyCollectionRepository:
             expected_version < 1 or isinstance(expected_version, bool)
         ):
             raise ValueError("expected_version must be a positive integer")
-        row = await self._require_collection_item(owner, identifier)
-        current = CollectionStatus(row.status)
-        if current is CollectionStatus.DELETED:
-            return self._collection_item(row)
-        if expected_version is not None and row.version != expected_version:
-            raise VersionConflictError
-        ensure_collection_transition(current, CollectionStatus.DELETED)
-        version = row.version
+        conditions = [
+            CollectionItemModel.id == identifier,
+            CollectionItemModel.user_id == owner,
+            CollectionItemModel.status.in_(
+                sorted(status.value for status in DELETABLE_COLLECTION_STATUSES)
+            ),
+        ]
+        if expected_version is not None:
+            conditions.append(CollectionItemModel.version == expected_version)
         result = cast(
             CursorResult[Any],
             await self._session.execute(
                 update(CollectionItemModel)
-                .where(
-                    CollectionItemModel.id == identifier,
-                    CollectionItemModel.user_id == owner,
-                    CollectionItemModel.version == version,
-                )
+                .where(*conditions)
                 .values(
                     status=CollectionStatus.DELETED.value,
-                    version=version + 1,
+                    version=CollectionItemModel.version + 1,
                     updated_at=timestamp,
                 )
+                .execution_options(synchronize_session=False)
             ),
         )
-        if result.rowcount != 1:
+        updated = await self._refresh_collection_item(owner, identifier)
+        if result.rowcount == 1:
+            return self._collection_item(updated)
+        current = CollectionStatus(updated.status)
+        if current is CollectionStatus.DELETED:
+            return self._collection_item(updated)
+        if expected_version is not None and updated.version != expected_version:
             raise VersionConflictError
-        updated = await self._require_collection_item(owner, identifier)
-        return self._collection_item(updated)
+        ensure_collection_transition(current, CollectionStatus.DELETED)
+        raise VersionConflictError
 
     async def add_collection_source(
         self,
@@ -548,10 +553,12 @@ class SqlAlchemyCollectionRepository:
     ) -> CollectionWriteOperation | None:
         owner = validate_user_id(user_id)
         row = await self._session.scalar(
-            select(CollectionWriteOperationModel).where(
+            select(CollectionWriteOperationModel)
+            .where(
                 CollectionWriteOperationModel.user_id == owner,
                 CollectionWriteOperationModel.undo_token_hash == undo_token_hash,
             )
+            .execution_options(populate_existing=True)
         )
         return None if row is None else self._write_operation(row)
 
@@ -611,21 +618,34 @@ class SqlAlchemyCollectionRepository:
         ).all()
         return [self._collection_item(row) for row in rows]
 
-    async def mark_write_operation_undone(
+    async def claim_write_operation_undo(
         self,
         *,
         user_id: str,
-        operation_id: str,
-        undone_at: datetime,
-    ) -> CollectionWriteOperation:
+        undo_token_hash: str,
+        claimed_at: datetime,
+    ) -> bool:
         owner = validate_user_id(user_id)
-        identifier = validate_collection_write_operation_id(operation_id)
-        timestamp = require_aware_utc(undone_at)
-        row = await self._require_write_operation(owner, identifier)
-        if row.undone_at is None:
-            row.undone_at = timestamp
-            await self._session.flush()
-        return self._write_operation(row)
+        if len(undo_token_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in undo_token_hash
+        ):
+            raise ValueError("undo_token_hash must be a lowercase SHA-256 digest")
+        timestamp = require_aware_utc(claimed_at)
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(CollectionWriteOperationModel)
+                .where(
+                    CollectionWriteOperationModel.user_id == owner,
+                    CollectionWriteOperationModel.undo_token_hash == undo_token_hash,
+                    CollectionWriteOperationModel.undone_at.is_(None),
+                    CollectionWriteOperationModel.undo_expires_at > timestamp,
+                )
+                .values(undone_at=timestamp)
+                .execution_options(synchronize_session=False)
+            ),
+        )
+        return result.rowcount == 1
 
     async def _require_user(self, user_id: str) -> UserModel:
         row = await self._session.scalar(select(UserModel).where(UserModel.id == user_id))
@@ -665,6 +685,23 @@ class SqlAlchemyCollectionRepository:
                 CollectionItemModel.id == collection_item_id,
                 CollectionItemModel.user_id == user_id,
             )
+        )
+        if row is None:
+            raise ResourceNotFoundError
+        return row
+
+    async def _refresh_collection_item(
+        self,
+        user_id: str,
+        collection_item_id: str,
+    ) -> CollectionItemModel:
+        row = await self._session.scalar(
+            select(CollectionItemModel)
+            .where(
+                CollectionItemModel.id == collection_item_id,
+                CollectionItemModel.user_id == user_id,
+            )
+            .execution_options(populate_existing=True)
         )
         if row is None:
             raise ResourceNotFoundError
