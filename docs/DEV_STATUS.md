@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-1B 真实百炼接入 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-1-agent-runtime |
 | 最近更新 | 2026-07-21 |
-| 阻塞项 | 无 |
+| 阻塞项 | 真实百炼 Tool Calling 尚未获得本窗口调用授权，未执行真实验证 |
 
 ## 当前任务
 
-M0-1A 已通过主控集成与 QA 验收，阶段提交 `4036c10` 已快进集成到 `main`；M0-1B 前置条件已满足，可以在同步到最新 `main` 的规定阶段分支上开始真实百炼适配开发。真实或付费测试仍需用户另行明确授权。
+M0-1B 离线开发已完成并等待主控验收：应用层 OpenAI-compatible Provider 已接入 M0-1A 唯一契约，离线覆盖文本、Tool Calling、元数据、错误、无重试、请求隔离和敏感信息边界；真实测试入口已建立但本窗口没有真实或付费调用授权，因此未运行、不得标记完成，也不得允许开始 M0-1C。
 
 ## M0 状态
 
@@ -20,7 +20,7 @@ M0-1A 已通过主控集成与 QA 验收，阶段提交 `4036c10` 已快进集�
 | M0-0A 项目基线与资料迁移 | 已完成 | 主控验收通过，阶段提交 `79848c7` 已集成到 `main` |
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
-| M0-1 模型与运行记录 | 进行中 | M0-1A 已完成；M0-1B 当前允许开始；M0-1C 未开始 |
+| M0-1 模型与运行记录 | 进行中 | M0-1A 已完成；M0-1B 待验收（真实验证未执行）；M0-1C 未开始且不允许开始 |
 | M0-2 文字收藏 | 未开始 | 依赖 M0-1 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
@@ -42,14 +42,12 @@ M0-1A 已通过主控集成与 QA 验收，阶段提交 `4036c10` 已快进集�
 
 ## 下一步
 
-M0-1B 开发窗口应执行：
+主控/QA 下一步应执行：
 
-1. 继续使用 `codex/m0-1-agent-runtime`，先将该分支安全快进到最新 `main`，只处理 M0-1B 真实百炼/OpenAI-compatible Provider。
-2. 在拾光应用 Provider 层实现唯一 `ModelProvider` 契约的适配器；模型名、API Base、密钥和超时全部配置注入，不把供应商 SDK 或原始字段泄漏到 Nanobot Core。
-3. 使用 Fake/Stub 覆盖文本、Tool Calling、Token/完成原因映射及五类错误映射；普通测试不联网、不读取真实密钥。
-4. 真实测试必须通过独立 marker 和显式环境开关启用；未经用户明确授权不得执行，也不得把真实响应全文、密钥、Authorization 或思维链写入日志或测试输出。
-5. 不实现 M0-1C AgentRun、ToolRun、trace_id、数据库迁移、绝对工具调用总数、60 秒 Run 总时长或费用持久化。
-6. 离线开发完成后更新状态和交接；若尚未获得真实调用授权，必须明确记录真实文本/Tool Calling 未验证，不得假装通过。
+1. 复核 M0-1B 阶段提交只包含应用层 Provider、延迟模型配置、依赖、离线/真实入口测试和最小说明，没有 M0-1C 或业务阶段越界。
+2. 在全新 Python 3.11+ 环境复现安装、Ruff、strict mypy、离线 pytest、核心回归和 `pip check`。
+3. 只有用户明确授权一个真实测试用例、最多两次非流式 Chat Completions 请求后，配置 `MODEL_API_BASE`、`MODEL_API_KEY`、`MODEL_NAME`、`MODEL_TIMEOUT_SECONDS` 并执行 `RUN_REAL_MODEL_TESTS=1 python -m pytest -q -m real_provider -rs`。
+4. 真实 Tool Calling 验证成功且安全输出复核通过后，主控才能把 M0-1B 标记为已完成并决定是否允许 M0-1C；本开发窗口不进入 M0-1C。
 
 ## 阶段交接记录
 
@@ -191,3 +189,21 @@ M0-1B 开发窗口应执行：
 - 未完成：未实现或验证 M0-1B 真实百炼/OpenAI-compatible Provider、真实文本/Tool Calling、SDK 错误映射或网络行为；未实现 M0-1C AgentRun、ToolRun、trace_id、费用/Token 持久化、总时长、绝对工具调用数或数据库迁移
 - 已知风险：供应商原始完成原因、Token 和错误到统一契约的真实映射仍需 M0-1B 验证；固定安全摘要当前为英文；QA 使用 macOS/Python 3.13.5，未在 Python 3.11/3.12 或 Windows 复测，这不阻塞 Python 3.11+ 阶段要求
 - 下一步：M0-1B 前置条件已满足；将现有 `codex/m0-1-agent-runtime` 安全快进到最新 `main` 后，只实现真实百炼/OpenAI-compatible Provider；真实调用仍需用户明确授权
+
+#### 2026-07-21｜M0-1B｜待验收（真实验证未执行）
+
+- 分支：`codex/m0-1-agent-runtime`
+- 基线：`26d2b53315ca260772537cf0d3ed74765e4a0c23`（包含已验收 M0-1A `4036c10205038b27f530873d32a2c5fcca0ade4f`）
+- 提交：本交接记录随 M0-1B 阶段提交一并创建，实际完整哈希见开发窗口最终交接报告
+- 完成内容：在 `backend/app/providers/openai_compatible.py` 实现唯一应用层真实模型适配器，使用受约束的官方 OpenAI SDK `AsyncOpenAI` 非流式 Chat Completions、显式配置与 `max_retries=0`；映射响应模型、Token、单调时钟耗时、完成原因、官方请求 ID、文本和有序 function tool calls；工具参数原始 JSON 字符串只交给现有 `ToolRegistry` 解析；建立独立 `real_provider` marker 和无副作用确定性加法 Tool Calling 入口
+- 配置与安全：新增 `MODEL_API_BASE`、`MODEL_API_KEY`、`MODEL_NAME`、`MODEL_TIMEOUT_SECONDS` 和测试门禁 `RUN_REAL_MODEL_TESTS`；模型配置缺失不影响应用与健康检查，只有构造真实 Provider 时要求完整配置；密钥使用 `SecretStr`，Base URL 禁止内嵌凭证/query/fragment，超时要求有限正数；错误只暴露 M0-1A 固定摘要，异常链、响应正文、请求消息、API Key 和 Authorization 不进入公开错误或日志
+- 错误映射：`APITimeoutError` → `PROVIDER_TIMEOUT`；429/`RateLimitError` → `PROVIDER_RATE_LIMITED` 且只接受有限非负数字 Retry-After；401/`AuthenticationError` → `PROVIDER_AUTHENTICATION_FAILED`；SDK 校验失败、空 choices、空模型名、损坏工具结构和无法构造公共响应 → `PROVIDER_INVALID_RESPONSE`；其他 API/连接/4xx/5xx → `PROVIDER_ERROR`；`asyncio.CancelledError` 原样传播
+- 主要文件：`backend/app/config.py`、`backend/app/providers/*`、`backend/pyproject.toml`、`backend/tests/unit/test_openai_compatible_provider.py`、`backend/tests/integration/test_openai_compatible_real.py`、`backend/tests/test_config.py`、`.env.example`、`README.md`、`backend/README.md`、`docs/DEV_STATUS.md`
+- 当前离线验证：Ruff 通过；strict mypy 对 22 个源文件无问题；`python -m pytest -q -m "not real_provider"` 为 148 通过、0 失败、1 deselected；核心回归 86 通过、0 失败、0 跳过；M0-1A 之前的完整离线基线 99 项全部保持通过；未读取真实 `.env`，未调用真实、付费或外部 API
+- 全新环境验证：在临时 Python 3.13.5 虚拟环境执行 `python -m pip install -e './backend[dev]'`，解析到 OpenAI SDK 2.46.0；`python -m pip check` 无破损依赖；再次执行 Ruff、strict mypy、148 项离线 pytest 和 86 项核心回归，结果全部通过；临时环境随后移入系统废纸篓
+- 真实验证：未运行，原因是本窗口没有真实或付费调用授权；准确命令为 `RUN_REAL_MODEL_TESTS=1 python -m pytest -q -m real_provider -rs`，只在四项模型配置完整时运行一个测试用例，SDK 无自动重试且 Runner 最多发出两次非流式 Chat Completions 请求
+- 依赖与迁移：新增正式依赖 `openai>=2.46,<3`；没有数据库、Alembic、AgentRun、ToolRun、trace_id、费用持久化、总 Run 时长、绝对工具调用数或业务模型变化
+- 范围与冗余：未修改 `nanobot_core`；`ModelProvider`、`ModelResponse`、`TokenUsage`、`FinishReason`、`ProviderError`、`AgentRunner`、`ToolRegistry` 和 `ToolResult` 仍各只有一个正式定义；没有第二套工具参数解析、SDK 客户端、百炼封装、错误码或响应 DTO；无 DashScope SDK、自动重试、兼容层或学习项目整套复制
+- 未完成：等待主控独立复测和用户授权后的真实百炼 Tool Calling；真实响应字段、百炼兼容性和实际延迟/Token 尚未验证，因此 M0-1B 不得标记完成，M0-1C 不得开始
+- 已知风险：离线测试验证 OpenAI-compatible 协议和 SDK 行为，但真实百炼部署的模型能力、Tool Calling 稳定性、响应字段及网络环境仍需最多两次真实请求确认；当前开发复测环境为 macOS/Python 3.13.5，尚未在 Python 3.11/3.12 或 Windows 验证；当前无已知 P0/P1
+- 下一步：主控/QA 在全新 Python 3.11+ 环境复核阶段范围与全部离线命令；获得用户明确授权后仅运行上述真实 marker，并在验证成功后更新 M0-1B 状态。本开发窗口停止，不合并 `main`、不推送、不进入 M0-1C

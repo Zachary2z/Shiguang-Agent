@@ -13,6 +13,7 @@ dependencies = [
     "alembic>=1.14,<2",
     "fastapi>=0.115,<1",
     "httpx>=0.28,<1",
+    "openai>=2.46,<3",
     "pydantic>=2.10,<3",
     "pydantic-settings>=2.7,<3",
     "sqlalchemy[asyncio]>=2.0,<3",
@@ -37,6 +38,9 @@ nanobot_core = ["THIRD_PARTY_LICENSES/*.txt"]
 [tool.pytest.ini_options]
 addopts = "--strict-markers --strict-config"
 asyncio_mode = "strict"
+markers = [
+    "real_provider: requires explicit authorization and complete real model configuration",
+]
 testpaths = ["tests"]
 
 [tool.ruff]

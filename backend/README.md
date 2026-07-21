@@ -35,3 +35,50 @@ Provider SDK exceptions and raw response bodies may remain in the internal excep
 are never included in this public representation. The core does not retry automatically and does
 not catch `asyncio` cancellation. M0-1A contains no real provider adapter, SDK, model configuration,
 network call, persistence, or database migration.
+
+## M0-1B OpenAI-compatible provider
+
+`app.providers.OpenAICompatibleProvider` is the only real model adapter. It implements the
+existing `nanobot_core.providers.ModelProvider` contract and uses the official `AsyncOpenAI`
+Chat Completions client. The adapter is deliberately outside `nanobot_core`: the core still has
+no SDK or network dependency and the existing `AgentRunner` and `ToolRegistry` remain the only
+tool execution path.
+
+The adapter sends non-streaming requests with SDK retries disabled, maps response model, Token
+usage, monotonic latency, finish reason, official request ID, text, and ordered function tool
+calls into the M0-1A contract. Function arguments remain the exact JSON string supplied by the
+SDK; only the existing `ToolRegistry` parses and validates them. Provider exceptions are reduced
+to the five stable, safe `ProviderErrorCode` values without logging raw requests, responses,
+credentials, or Authorization headers.
+
+The application can start and serve `/healthz` without model configuration. Only
+`OpenAICompatibleProvider.from_settings()` requires all of:
+
+- `MODEL_API_BASE`
+- `MODEL_API_KEY`
+- `MODEL_NAME`
+- `MODEL_TIMEOUT_SECONDS`
+
+`MODEL_API_KEY` is stored as `SecretStr`; timeout must be finite and positive. Copy the variable
+names from `.env.example` into the ignored repository-root `.env` only when real verification is
+authorized.
+
+Default verification is fully offline:
+
+```bash
+python -m ruff check .
+python -m mypy app migrations nanobot_core
+python -m pytest -q -m "not real_provider"
+python -m pytest -q tests/core
+```
+
+The real test is a separately marked, deterministic Tool Calling cycle with no file writes,
+messages, or external tools. It remains skipped unless the environment switch is exact and all
+four model settings are complete:
+
+```bash
+RUN_REAL_MODEL_TESTS=1 python -m pytest -q -m real_provider -rs
+```
+
+This authorizes one test case and at most two non-streaming Chat Completions requests. It must not
+be run without explicit user approval. M0-1B remains pending acceptance until that test succeeds.

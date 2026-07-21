@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。当前开发子阶段是 **M0-1A Provider 契约**：在唯一的 Nanobot Core 中扩展供应商无关的模型响应元数据、Token 用量、完成原因和结构化 Provider 错误，并使用完全离线的 Fake 固定契约。
+项目处于 **M0 技术验证**。当前开发子阶段是 **M0-1B 真实百炼接入**，状态为**待验收（真实验证未执行）**：应用层已实现 OpenAI-compatible Chat Completions Provider，并复用唯一的 Nanobot Core Provider、Runner 与 Tool Registry 契约。
 
-当前不包含真实模型或高德 Provider、Provider 自动重试、AgentRun/ToolRun、trace_id、收藏/地点/计划/记忆等业务功能，也没有前端。M0-1A 不新增模型密钥或 Base URL 配置，不读取真实 `.env`，不进行网络或付费调用；通过主控验收前不会进入 M0-1B。
+普通测试全部离线，不读取真实模型密钥或访问网络。真实 Tool Calling 入口必须同时具备完整模型配置并显式设置 `RUN_REAL_MODEL_TESTS=1`；未经用户授权不得运行。当前不包含 Provider 自动重试、AgentRun/ToolRun、trace_id、收藏/地点/计划/记忆等业务功能，也没有前端；M0-1B 真实验证通过前不会进入 M0-1C。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -49,7 +49,8 @@ Windows PowerShell 激活命令为 `.venv\Scripts\Activate.ps1`，之后同样�
 ```bash
 python -m ruff check .
 python -m mypy app migrations nanobot_core
-python -m pytest -q
+python -m pytest -q -m "not real_provider"
+python -m pytest -q tests/core
 ```
 
 测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
@@ -95,8 +96,21 @@ curl -i -H 'X-Request-ID: local-check-001' http://127.0.0.1:8000/healthz
 | `APP_TIMEZONE` | `Asia/Shanghai` | 有效 IANA 时区 |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./data/shiguang.db` | M0 异步 SQLite URL |
 | `LOG_LEVEL` | `INFO` | 标准 Python 日志级别 |
+| `MODEL_API_BASE` | 无 | OpenAI-compatible API Base，仅启用真实 Provider 时必填 |
+| `MODEL_API_KEY` | 无 | 服务端密钥，以 `SecretStr` 脱敏，仅启用真实 Provider 时必填 |
+| `MODEL_NAME` | 无 | 供应商侧模型名称，仅启用真实 Provider 时必填 |
+| `MODEL_TIMEOUT_SECONDS` | `30`（示例） | 有限正数的单次模型请求超时，仅启用真实 Provider 时必填 |
+| `RUN_REAL_MODEL_TESTS` | `0` | 只有精确设为 `1` 才授权真实 Provider 测试 |
 
 `.env` 会被 Git 忽略，不要把真实密钥、Token、Cookie 或账号写入代码、示例、测试输出或提交。
+
+真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
+
+```bash
+RUN_REAL_MODEL_TESTS=1 python -m pytest -q -m real_provider -rs
+```
+
+该用例最多发出两次非流式 Chat Completions 请求（工具调用与最终回答各一次），SDK 自动重试已关闭。不要使用普通 `pytest` 命令隐式触发真实调用。
 
 ## 开发规则与 UX 原型
 

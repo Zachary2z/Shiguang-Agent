@@ -3,17 +3,34 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import field_validator
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = REPOSITORY_ROOT / ".env"
+
+
+class ModelConfigurationError(ValueError):
+    """A fixed, secret-safe model configuration failure."""
+
+
+@dataclass(frozen=True, slots=True)
+class ModelProviderSettings:
+    """Complete settings required to construct the real model provider."""
+
+    api_base: str
+    api_key: SecretStr
+    model_name: str
+    timeout_seconds: float
 
 
 class Settings(BaseSettings):
@@ -37,6 +54,10 @@ class Settings(BaseSettings):
     app_timezone: str = "Asia/Shanghai"
     database_url: str = "sqlite+aiosqlite:///./data/shiguang.db"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
+    model_api_base: str | None = None
+    model_api_key: SecretStr | None = None
+    model_name: str | None = None
+    model_timeout_seconds: float | None = None
 
     @field_validator("app_timezone")
     @classmethod
@@ -59,6 +80,70 @@ class Settings(BaseSettings):
         if url.drivername != "sqlite+aiosqlite":
             raise ValueError("DATABASE_URL must use sqlite+aiosqlite during M0")
         return value
+
+    @field_validator("model_timeout_seconds", mode="before")
+    @classmethod
+    def reject_boolean_model_timeout(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("MODEL_TIMEOUT_SECONDS must be a finite positive number")
+        return value
+
+    @field_validator("model_timeout_seconds")
+    @classmethod
+    def validate_model_timeout(cls, value: float | None) -> float | None:
+        if value is not None and (not isfinite(value) or value <= 0):
+            raise ValueError("MODEL_TIMEOUT_SECONDS must be a finite positive number")
+        return value
+
+    def require_model_provider(self) -> ModelProviderSettings:
+        """Return complete real-provider settings only when explicitly requested."""
+
+        missing: list[str] = []
+        api_base = self.model_api_base.strip() if self.model_api_base else ""
+        api_key = self.model_api_key
+        model_name = self.model_name.strip() if self.model_name else ""
+        timeout_seconds = self.model_timeout_seconds
+
+        if not api_base:
+            missing.append("MODEL_API_BASE")
+        if api_key is None or not api_key.get_secret_value().strip():
+            missing.append("MODEL_API_KEY")
+        if not model_name:
+            missing.append("MODEL_NAME")
+        if timeout_seconds is None:
+            missing.append("MODEL_TIMEOUT_SECONDS")
+        if missing:
+            names = ", ".join(missing)
+            raise ModelConfigurationError(f"Missing model provider configuration: {names}")
+
+        try:
+            parsed_base = urlsplit(api_base)
+            parsed_port = parsed_base.port
+            valid_base = (
+                parsed_base.scheme in {"http", "https"}
+                and parsed_base.hostname is not None
+                and (parsed_port is None or parsed_port > 0)
+                and parsed_base.username is None
+                and parsed_base.password is None
+                and not parsed_base.query
+                and not parsed_base.fragment
+            )
+        except ValueError:
+            valid_base = False
+        if not valid_base:
+            raise ModelConfigurationError(
+                "MODEL_API_BASE must be an HTTP(S) URL without credentials, query, or fragment"
+            )
+
+        # The missing-value branch above proves these values are complete.
+        assert api_key is not None
+        assert timeout_seconds is not None
+        return ModelProviderSettings(
+            api_base=api_base,
+            api_key=api_key,
+            model_name=model_name,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 def load_settings() -> Settings:
