@@ -11,7 +11,10 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.domain.collections.statuses import CollectionStatus
+from app.domain.collections.statuses import (
+    CollectionStatus,
+    ensure_persistable_collection_status,
+)
 from app.domain.identifiers import (
     generate_collection_item_id,
     generate_message_id,
@@ -48,7 +51,6 @@ class SupportedTimezone(StrEnum):
 
 class SessionChannel(StrEnum):
     WEB = "web"
-    WECHAT = "wechat"
     DEMO = "demo"
 
 
@@ -60,8 +62,6 @@ class SessionStatus(StrEnum):
 class MessageRole(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
-    SYSTEM = "system"
-    TOOL = "tool"
 
 
 class MessageContentType(StrEnum):
@@ -174,7 +174,7 @@ class Message(DomainModel):
     session_id: str
     role: MessageRole
     content_type: MessageContentType
-    content: str = Field(min_length=1, max_length=20_000)
+    content: str = Field(min_length=1, max_length=20_000, repr=False)
     trace_id: str | None = None
     created_at: datetime
 
@@ -352,6 +352,7 @@ class CollectionItem(DomainModel):
 
     @model_validator(mode="after")
     def validate_semantics(self) -> Self:
+        ensure_persistable_collection_status(self.status)
         if self.updated_at < self.created_at:
             raise ValueError("updated_at cannot be before created_at")
         if self.event_start_at is not None and self.event_end_at is not None:

@@ -11,7 +11,7 @@
 
 ## 当前任务
 
-M0-2A 已在 `codex/m0-2-text-collection` 完成开发并保持待验收：新增 User、Session、Message、Source、CollectionItem、CollectionSource、收藏状态机、强制 `user_id` 的 Repository 契约与 SQLAlchemy 适配，以及紧接 M0-1C 的 `20260721_0003` 迁移。实现和测试完全离线，未读取 `.env`，未调用真实模型、高德或其他外部 API；M0-2B 结构化抽取仍未开始。
+M0-2A 已在 `codex/m0-2-text-collection` 完成开发与 QA 缺陷修复并保持待验收：failed/未收藏结果不能持久化为 CollectionItem，AgentRun trace 查询强制用户隔离，Message 仅持久化 USER/ASSISTANT，SessionChannel 仅保留 web/demo；上述规则均由领域、Repository、ORM、迁移约束和离线测试覆盖。未读取 `.env`，未调用真实模型、高德或其他外部 API；M0-2B 结构化抽取仍未开始。
 
 ## M0 状态
 
@@ -44,7 +44,7 @@ M0-2A 已在 `codex/m0-2-text-collection` 完成开发并保持待验收：新�
 
 ## 下一步
 
-主控窗口应在本阶段提交上独立复核 M0-2A 范围、领域语义、Repository 用户隔离、`20260721_0003` 迁移往返、数据库约束、索引、安全扫描和全部离线测试。验收通过后再纯快进集成到 `main` 并更新状态；在此之前不得开始 M0-2B，不得调用真实或付费 API。
+主控窗口应在最新修复提交上独立复核 M0-2A 范围、failed 不落 CollectionItem、AgentRun trace 用户隔离、Message 角色与内容安全、web/demo 渠道边界、`20260721_0003` 迁移往返、数据库约束和全部离线测试。验收通过后再纯快进集成到 `main` 并更新状态；在此之前不得开始 M0-2B，不得调用真实或付费 API。
 
 ## 阶段交接记录
 
@@ -301,3 +301,17 @@ M0-2A 已在 `codex/m0-2-text-collection` 完成开发并保持待验收：新�
 - 未验证与风险：仅在 macOS、Python 3.13.5、SQLite 复测，未在 Python 3.11/3.12、Windows 或 PostgreSQL 验证；M0-2A 只证明领域和持久化边界，尚未验证真实抽取结果、自动保存、API 或真实用户流程，这些均属于后续阶段且不应在本次验收中误判为已实现
 - 主控复测范围：确认提交直接基于指定基线且只含 M0-2A；在全新 Python 3.11+ 环境重跑安装、Ruff、mypy、全部非真实/核心/迁移/默认测试；重点复核 ID/UTC/版本、全部合法与非法状态转换、failed/deleted 默认过滤、相同查询条件下用户隔离、跨用户 Message/Source/Collection/关联安全行为、复合外键与索引、异常回滚、安全 dump、迁移升降升及降级后 AgentRun/ToolRun 可用性、socket/DNS 封锁和唯一公共实现扫描
 - 下一步：主控验收通过后才可纯快进集成并决定是否另开 M0-2B；本分支保持待验收，不合并 `main`、不推送、不开始 M0-2B、不执行真实或付费调用
+
+#### 2026-07-21｜M0-2A QA 缺陷修复｜待验收
+
+- 分支与提交关系：`codex/m0-2-text-collection`；问题提交 `5f7823896d77cf5fe738b1c2a37b647fcc50939b`，其直接父提交和指定基线均为 `7e4a016dc2a26abc4b74399a236d4df488166479`；修复提交为本记录所在提交，直接建立在问题提交之上，不 amend、不合并、不推送
+- failed/未收藏边界：`CollectionStatus.FAILED` 仅保留为识别流程转换状态；普通领域构造会拒绝 failed CollectionItem，Repository 新增和状态转换再次拒绝，ORM 与 `20260721_0003` 的 `ck_collection_items_status` 也不包含 failed。失败 Source 可正常保存 `parse_status=failed`；测试同时验证 Repository 绕过构造、直接 SQL 插入及 recognizing→failed 持久化转换均不能留下 failed CollectionItem
+- AgentRun 隔离：唯一 `AgentRunRepository.get_by_trace_id` 与公共 `AgentRunService.get_by_trace_id` 改为必填、仅关键字 `user_id` 和 `trace_id`；SQL 同时过滤两列，ToolRun 仅在父 Run 命中后加载。同用户返回摘要，跨用户与不存在 trace 均返回相同 `None`；当前执行流程不需要无用户查询，因此未保留或新增无范围内部入口，也未创建第二套 Repository
+- Message 安全：M0-2A `MessageRole`、ORM 和迁移约束只允许 USER/ASSISTANT；SYSTEM 与 TOOL 在领域枚举、Repository 防绕过校验和数据库检查约束中均被拒绝，原始 system prompt/tool payload 的直接 SQL 尝试不会留下行；Message.content 设置 `repr=False`，测试验证敏感内容不进入 `repr` 或 `str`
+- 渠道边界：`SessionChannel`、ORM 和迁移约束只保留 `web`、`demo`；领域与数据库测试确认二者合法，`wechat`、`clawbot` 均非法；未实现微信/ClawBot Adapter 或任何 M2 功能
+- 迁移变化：仍使用未验收分支上的单一 revision `20260721_0003`，`down_revision=20260721_0002`，未新增 revision 或业务表；原位收紧三个检查约束的允许值。仓库外临时 SQLite 的 `upgrade head → downgrade 20260721_0002 → upgrade head` 全部退出 0，降级只保留 AgentRun/ToolRun/Alembic 表，再升级恢复六张 M0-2A 表；`alembic check` 报告无待生成操作
+- 最终验证环境与数量：macOS、Python 3.13.5；`pip check`、Ruff、strict mypy（46 个源文件）均通过；非真实测试 343 passed、1 deselected，核心测试 118 passed，迁移测试 4 passed，默认全集 343 passed、1 skipped；同时封锁 socket connect/connect_ex/create_connection 和 DNS 后，343 个非真实测试再次通过、1 deselected
+- 安全、范围与冗余：未读取或打印 `.env`，未运行 `real_provider`，真实模型、高德、外部消息或付费调用为 0；`nanobot_core` 仍不导入 app、SQLAlchemy 或 FastAPI；AgentRunner、ToolRegistry、ModelProvider、OpenAI-compatible Provider、AgentRun Repository、Collection Repository 和 ORM Base 保持唯一；Git 未新增 `.env`、数据库、缓存、虚拟环境或测试生成物
+- 阶段范围：仅修复上述 QA 缺陷；未实现 M0-2B 抽取/候选 Schema、M0-2C 自动保存/Undo/幂等消息、M0-2D API/Demo 初始化/Session 路由，也未实现 POI、高德、URL 抓取、截图、前端、SSE、微信或 ClawBot；M0-2A 和 M0-2 整体状态不变，M0-2B 继续未开始
+- 已知验证边界：仅在 SQLite 与 Python 3.13.5 验证，未覆盖 PostgreSQL、Python 3.11/3.12、Windows；真实抽取、自动保存与 API 属于后续阶段，不作为本次 QA 修复完成项
+- 主控复测范围：核对新提交直接父提交为问题 commit；重点重跑 failed Source 与零 CollectionItem、SYSTEM/TOOL 领域/Repository/直接 SQL 拒绝、Message repr 脱敏、AgentRun 同用户/跨用户/不存在 trace、web/demo 与 wechat/clawbot、迁移升降升、封网非真实全集、反向依赖与唯一实现扫描；验收前不开始 M0-2B、不合并、不推送、不执行真实调用

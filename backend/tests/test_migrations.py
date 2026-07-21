@@ -587,6 +587,31 @@ def test_collection_migration_enforces_checks_foreign_keys_same_owner_and_unique
                 "2026-07-21T00:00:00+00:00",
             ),
         )
+        connection.execute(
+            """
+            INSERT INTO sessions (
+                id, user_id, channel, status, created_at, updated_at
+            ) VALUES (?, ?, 'demo', 'active', ?, ?)
+            """,
+            (
+                "ses_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                user_b,
+                "2026-07-21T00:00:00+00:00",
+                "2026-07-21T00:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO messages (
+                id, session_id, role, content_type, content, created_at
+            ) VALUES (?, ?, 'assistant', 'text', 'safe summary', ?)
+            """,
+            (
+                "msg_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "ses_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "2026-07-21T00:00:00+00:00",
+            ),
+        )
         connection.commit()
 
         invalid_statements = (
@@ -595,7 +620,11 @@ def test_collection_migration_enforces_checks_foreign_keys_same_owner_and_unique
                 (user_a,),
             ),
             (
-                "UPDATE sessions SET channel = 'email' WHERE user_id = ?",
+                "UPDATE sessions SET channel = 'wechat' WHERE user_id = ?",
+                (user_a,),
+            ),
+            (
+                "UPDATE sessions SET channel = 'clawbot' WHERE user_id = ?",
                 (user_a,),
             ),
             (
@@ -611,11 +640,39 @@ def test_collection_migration_enforces_checks_foreign_keys_same_owner_and_unique
                 ),
             ),
             (
+                """
+                INSERT INTO messages (
+                    id, session_id, role, content_type, content, created_at
+                ) VALUES (?, ?, 'system', 'text', 'private-system-prompt', ?)
+                """,
+                (
+                    "msg_cccccccccccccccccccccccccccccccc",
+                    "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "2026-07-21T00:00:00+00:00",
+                ),
+            ),
+            (
+                """
+                INSERT INTO messages (
+                    id, session_id, role, content_type, content, created_at
+                ) VALUES (?, ?, 'tool', 'text', 'private-tool-payload', ?)
+                """,
+                (
+                    "msg_dddddddddddddddddddddddddddddddd",
+                    "ses_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "2026-07-21T00:00:00+00:00",
+                ),
+            ),
+            (
                 "UPDATE sources SET parse_status = 'unknown' WHERE id = ?",
                 (source_a,),
             ),
             (
                 "UPDATE collection_items SET status = 'unknown' WHERE id = ?",
+                (item_a,),
+            ),
+            (
+                "UPDATE collection_items SET status = 'failed' WHERE id = ?",
                 (item_a,),
             ),
             (
@@ -627,6 +684,16 @@ def test_collection_migration_enforces_checks_foreign_keys_same_owner_and_unique
             with pytest.raises(sqlite3.IntegrityError):
                 connection.execute(sql, parameters)
             connection.rollback()
+
+        assert connection.execute(
+            "SELECT channel FROM sessions ORDER BY channel"
+        ).fetchall() == [("demo",), ("web",)]
+        assert connection.execute(
+            "SELECT role, content FROM messages"
+        ).fetchall() == [("assistant", "safe summary")]
+        assert connection.execute(
+            "SELECT status FROM collection_items ORDER BY id"
+        ).fetchall() == [("active",), ("active",)]
 
         connection.execute(
             """

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -193,6 +194,7 @@ async def test_default_collection_query_excludes_non_effective_and_deleted_state
     items = [
         _item(user.id, status=status, title=status.value)
         for status in CollectionStatus
+        if status is not CollectionStatus.FAILED
     ]
     async with database.session() as session:
         repository = SqlAlchemyCollectionRepository(session)
@@ -222,8 +224,171 @@ async def test_default_collection_query_excludes_non_effective_and_deleted_state
         CollectionStatus.PENDING_DETAILS,
         CollectionStatus.VISITED,
     }
-    assert all_statuses == set(CollectionStatus)
+    assert all_statuses == set(CollectionStatus) - {CollectionStatus.FAILED}
     await database.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_source_persists_but_failed_collection_item_never_does(
+    collection_database: tuple[str, Path],
+) -> None:
+    database_url, database_path = collection_database
+    database = Database(database_url)
+    user = _user()
+    failed_source = _source(user.id).model_copy(
+        update={"parse_status": SourceParseStatus.FAILED}
+    )
+    unsafe_failed_item = CollectionItem.model_construct(
+        id=generate_collection_item_id(),
+        user_id=user.id,
+        kind=CollectionKind.PLACE,
+        title="uncollected raw result",
+        status=CollectionStatus.FAILED,
+        version=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        await repository.add_user(user_id=user.id, user=user)
+        await repository.add_source(user_id=user.id, source=failed_source)
+        await session.commit()
+
+        with pytest.raises(
+            ValueError,
+            match="failed recognition outcomes cannot be persisted as CollectionItem",
+        ):
+            await repository.add_collection_item(
+                user_id=user.id,
+                item=unsafe_failed_item,
+            )
+        assert await repository.list_collection_items(
+            user_id=user.id,
+            include_inactive=True,
+        ) == []
+        assert (await repository.list_sources(user_id=user.id))[0].parse_status is (
+            SourceParseStatus.FAILED
+        )
+    await database.close()
+
+    with sqlite3.connect(database_path) as connection:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO collection_items (
+                    id, user_id, kind, title, city, tags_json, status, version,
+                    created_at, updated_at
+                ) VALUES (?, ?, 'place', 'raw failure', 'shenzhen', '[]',
+                    'failed', 1, ?, ?)
+                """,
+                (
+                    generate_collection_item_id(),
+                    user.id,
+                    NOW.isoformat(),
+                    NOW.isoformat(),
+                ),
+            )
+        connection.rollback()
+        assert connection.execute("SELECT COUNT(*) FROM collection_items").fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+async def test_transition_to_failed_is_rejected_without_changing_persisted_item(
+    collection_database: tuple[str, Path],
+) -> None:
+    database_url, _database_path = collection_database
+    database = Database(database_url)
+    user = _user()
+    item = _item(user.id, status=CollectionStatus.RECOGNIZING)
+
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        await repository.add_user(user_id=user.id, user=user)
+        await repository.add_collection_item(user_id=user.id, item=item)
+        await session.commit()
+
+        with pytest.raises(
+            ValueError,
+            match="failed recognition outcomes cannot be persisted as CollectionItem",
+        ):
+            await repository.transition_collection_status(
+                user_id=user.id,
+                collection_item_id=item.id,
+                target=CollectionStatus.FAILED,
+                updated_at=NOW + timedelta(seconds=1),
+            )
+        unchanged = await repository.get_collection_item(
+            user_id=user.id,
+            collection_item_id=item.id,
+        )
+        assert unchanged is not None
+        assert unchanged.status is CollectionStatus.RECOGNIZING
+        assert unchanged.version == 1
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_system_and_tool_raw_message_content_cannot_be_persisted(
+    collection_database: tuple[str, Path],
+) -> None:
+    database_url, database_path = collection_database
+    database = Database(database_url)
+    user = _user()
+    session_entity = _session(user.id)
+    forbidden_messages = [
+        Message.model_construct(
+            id=generate_message_id(),
+            session_id=session_entity.id,
+            role=role,
+            content_type=MessageContentType.TEXT,
+            content=f"private-{role}-payload",
+            trace_id=None,
+            created_at=NOW,
+        )
+        for role in ("system", "tool")
+    ]
+
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        await repository.add_user(user_id=user.id, user=user)
+        await repository.add_session(user_id=user.id, session=session_entity)
+        await session.commit()
+
+        for message in forbidden_messages:
+            with pytest.raises(
+                ValueError,
+                match="persisted Message role must be user or assistant",
+            ):
+                await repository.add_message(user_id=user.id, message=message)
+        assert await repository.list_messages(
+            user_id=user.id,
+            session_id=session_entity.id,
+        ) == []
+    await database.close()
+
+    with sqlite3.connect(database_path) as connection:
+        for index, role in enumerate(("system", "tool"), start=1):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO messages (
+                        id, session_id, role, content_type, content, created_at
+                    ) VALUES (?, ?, ?, 'text', ?, ?)
+                    """,
+                    (
+                        f"msg_{index:032x}",
+                        session_entity.id,
+                        role,
+                        f"private-{role}-raw-payload",
+                        NOW.isoformat(),
+                    ),
+                )
+            connection.rollback()
+        assert connection.execute("SELECT COUNT(*) FROM messages").fetchone() == (0,)
+        dump = "\n".join(connection.iterdump())
+        assert "private-system" not in dump
+        assert "private-tool" not in dump
 
 
 @pytest.mark.asyncio

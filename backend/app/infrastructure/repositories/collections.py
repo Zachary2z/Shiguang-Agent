@@ -29,6 +29,7 @@ from app.domain.collections import (
     User,
     UserMode,
     ensure_collection_transition,
+    ensure_persistable_collection_status,
 )
 from app.domain.identifiers import (
     validate_collection_item_id,
@@ -116,6 +117,8 @@ class SqlAlchemyCollectionRepository:
 
     async def add_message(self, *, user_id: str, message: Message) -> Message:
         owner = validate_user_id(user_id)
+        if not isinstance(message.role, MessageRole):
+            raise ValueError("persisted Message role must be user or assistant")
         await self._require_session(owner, message.session_id)
         row = MessageModel(
             id=message.id,
@@ -233,6 +236,7 @@ class SqlAlchemyCollectionRepository:
         owner = validate_user_id(user_id)
         if owner != item.user_id:
             raise ValueError("user_id must match CollectionItem.user_id")
+        ensure_persistable_collection_status(item.status)
         await self._require_user(owner)
         row = CollectionItemModel(
             id=item.id,
@@ -304,6 +308,7 @@ class SqlAlchemyCollectionRepository:
         owner = validate_user_id(user_id)
         identifier = validate_collection_item_id(collection_item_id)
         timestamp = require_aware_utc(updated_at)
+        ensure_persistable_collection_status(target)
         row = await self._session.scalar(
             select(CollectionItemModel).where(
                 CollectionItemModel.id == identifier,

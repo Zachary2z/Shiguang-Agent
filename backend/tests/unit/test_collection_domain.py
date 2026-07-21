@@ -147,6 +147,10 @@ def test_session_channel_status_owner_summary_and_time_boundaries() -> None:
         updated_at=NOW,
     )
     assert session.user_id == USER_ID
+    assert set(SessionChannel) == {SessionChannel.WEB, SessionChannel.DEMO}
+    for unavailable_channel in ("wechat", "clawbot"):
+        with pytest.raises(ValueError):
+            SessionChannel(unavailable_channel)
 
     with pytest.raises(ValidationError):
         Session(
@@ -184,16 +188,20 @@ def test_session_channel_status_owner_summary_and_time_boundaries() -> None:
 
 
 def test_message_role_content_type_content_and_optional_trace_boundaries() -> None:
+    sensitive_content = "private-user-message"
     message = Message(
         id=MESSAGE_ID,
         session_id=SESSION_ID,
         role=MessageRole.USER,
         content_type=MessageContentType.TEXT,
-        content="想去深圳当代艺术馆",
+        content=sensitive_content,
         trace_id="trc_1234567890abcdef1234567890abcdef",
         created_at=NOW,
     )
     assert message.trace_id is not None
+    assert set(MessageRole) == {MessageRole.USER, MessageRole.ASSISTANT}
+    assert sensitive_content not in repr(message)
+    assert sensitive_content not in str(message)
     assert Message(
         id=generate_message_id(),
         session_id=SESSION_ID,
@@ -213,6 +221,12 @@ def test_message_role_content_type_content_and_optional_trace_boundaries() -> No
         payload[field] = invalid
         with pytest.raises(ValidationError):
             Message.model_validate(payload)
+
+    for forbidden_role in ("system", "tool"):
+        payload = message.model_dump()
+        payload["role"] = forbidden_role
+        with pytest.raises(ValidationError):
+            Message.model_validate(payload, strict=False)
 
 
 def test_source_type_parse_status_and_allowlisted_security_metadata() -> None:
@@ -327,6 +341,14 @@ def test_provider_independent_place_event_fields_version_price_and_tags() -> Non
     invalid_event["event_end_at"] = NOW
     with pytest.raises(ValidationError):
         CollectionItem.model_validate(invalid_event)
+
+    failed_item = place.model_dump()
+    failed_item["status"] = CollectionStatus.FAILED
+    with pytest.raises(
+        ValidationError,
+        match="failed recognition outcomes cannot be persisted as CollectionItem",
+    ):
+        CollectionItem.model_validate(failed_item)
 
 
 def test_collection_source_validates_owner_and_both_foreign_identifiers() -> None:

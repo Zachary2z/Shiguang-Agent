@@ -14,6 +14,7 @@ from app.domain.identifiers import (
     generate_tool_run_id,
     generate_trace_id,
     validate_trace_id,
+    validate_user_id,
 )
 from app.domain.runs.inputs import AgentRunCreate
 from app.domain.runs.statuses import (
@@ -217,10 +218,19 @@ class AgentRunRepository:
         await self._session.flush()
         return True
 
-    async def get_by_trace_id(self, trace_id: str) -> StoredAgentRun | None:
+    async def get_by_trace_id(
+        self,
+        *,
+        user_id: str,
+        trace_id: str,
+    ) -> StoredAgentRun | None:
+        owner = validate_user_id(user_id)
         validated_trace_id = validate_trace_id(trace_id)
         row = await self._session.scalar(
-            select(AgentRunModel).where(AgentRunModel.trace_id == validated_trace_id)
+            select(AgentRunModel).where(
+                AgentRunModel.trace_id == validated_trace_id,
+                AgentRunModel.user_id == owner,
+            )
         )
         if row is None:
             return None

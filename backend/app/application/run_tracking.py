@@ -402,8 +402,16 @@ class AgentRunService:
         )
         return TrackedRunExecution(trace_id=row.trace_id, result=result)
 
-    async def get_by_trace_id(self, trace_id: str) -> AgentRunSummary | None:
-        stored = await self._repository.get_by_trace_id(trace_id)
+    async def get_by_trace_id(
+        self,
+        *,
+        user_id: str,
+        trace_id: str,
+    ) -> AgentRunSummary | None:
+        stored = await self._repository.get_by_trace_id(
+            user_id=user_id,
+            trace_id=trace_id,
+        )
         return None if stored is None else self._summary(stored)
 
     async def _persist_final(

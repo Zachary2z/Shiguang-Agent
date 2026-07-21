@@ -18,9 +18,9 @@ depends_on: str | Sequence[str] | None = None
 _USER_MODES = ("real", "demo")
 _CITIES = ("shenzhen",)
 _TIMEZONES = ("Asia/Shanghai",)
-_SESSION_CHANNELS = ("web", "wechat", "demo")
+_SESSION_CHANNELS = ("web", "demo")
 _SESSION_STATUSES = ("active", "closed")
-_MESSAGE_ROLES = ("user", "assistant", "system", "tool")
+_MESSAGE_ROLES = ("user", "assistant")
 _MESSAGE_CONTENT_TYPES = ("text", "url", "image")
 _SOURCE_TYPES = ("text", "url", "image")
 _SOURCE_PARSE_STATUSES = ("pending", "parsed", "failed")
@@ -30,7 +30,6 @@ _COLLECTION_STATUSES = (
     "active",
     "pending_selection",
     "pending_details",
-    "failed",
     "visited",
     "archived",
     "deleted",

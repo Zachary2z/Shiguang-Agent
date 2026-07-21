@@ -14,6 +14,10 @@ class CollectionStatus(StrEnum):
     DELETED = "deleted"
 
 
+PERSISTABLE_COLLECTION_STATUSES = tuple(
+    status for status in CollectionStatus if status is not CollectionStatus.FAILED
+)
+
 TERMINAL_COLLECTION_STATUSES = frozenset(
     {
         CollectionStatus.FAILED,
@@ -75,6 +79,13 @@ def ensure_collection_transition(
         raise ValueError(
             f"illegal CollectionItem transition: {current.value} -> {target.value}"
         )
+
+
+def ensure_persistable_collection_status(status: CollectionStatus) -> None:
+    """Reject recognition failures at every CollectionItem write boundary."""
+
+    if status not in PERSISTABLE_COLLECTION_STATUSES:
+        raise ValueError("failed recognition outcomes cannot be persisted as CollectionItem")
 
 
 def is_collection_visible_by_default(status: CollectionStatus) -> bool:

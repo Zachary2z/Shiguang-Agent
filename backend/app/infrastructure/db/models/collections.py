@@ -22,8 +22,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.domain.collections import (
+    PERSISTABLE_COLLECTION_STATUSES,
     CollectionKind,
-    CollectionStatus,
     MessageContentType,
     MessageRole,
     SessionChannel,
@@ -38,7 +38,7 @@ from app.domain.time import utc_now
 from app.infrastructure.db.base import Base
 
 
-def _sql_values(values: type[Any]) -> str:
+def _sql_values(values: type[Any] | tuple[Any, ...]) -> str:
     return ", ".join(f"'{member.value}'" for member in values)
 
 
@@ -192,7 +192,7 @@ class CollectionItemModel(Base):
             name="ck_collection_items_kind",
         ),
         CheckConstraint(
-            f"status IN ({_sql_values(CollectionStatus)})",
+            f"status IN ({_sql_values(PERSISTABLE_COLLECTION_STATUSES)})",
             name="ck_collection_items_status",
         ),
         CheckConstraint(

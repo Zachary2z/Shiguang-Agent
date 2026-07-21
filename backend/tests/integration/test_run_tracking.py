@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sqlite3
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -35,6 +36,8 @@ from nanobot_core.tools import Tool, ToolErrorCode, ToolInput, ToolRegistry, Too
 from tests.core.fakes import EchoTool, ExplodingTool, FakeProvider, fake_response
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
+USER_ID = "usr_0123456789abcdef0123456789abcdef"
+OTHER_USER_ID = "usr_fedcba9876543210fedcba9876543210"
 
 
 @pytest.fixture
@@ -69,14 +72,26 @@ def _pricing(
     )
 
 
-def _request(index: int) -> AgentRunCreate:
+def _request(index: int, *, user_id: str = USER_ID) -> AgentRunCreate:
     return AgentRunCreate(
         trace_id=_trace(index),
-        user_id="usr_fixture",
+        user_id=user_id,
         session_id="ses_fixture",
         intent="test_intent",
         workflow="test_workflow",
     )
+
+
+@pytest.mark.parametrize(
+    "method",
+    [AgentRunService.get_by_trace_id, AgentRunRepository.get_by_trace_id],
+)
+def test_public_trace_query_requires_explicit_keyword_user_id(method: object) -> None:
+    signature = inspect.signature(method)
+    user_parameter = signature.parameters["user_id"]
+
+    assert user_parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert user_parameter.default is inspect.Parameter.empty
 
 
 @pytest.mark.asyncio
@@ -103,7 +118,10 @@ async def test_no_tool_success_persists_model_usage_cost_and_trace_query(
         execution = await service.execute(
             _request(1), [{"role": "user", "content": "safe input"}]
         )
-        summary = await service.get_by_trace_id(execution.trace_id)
+        summary = await service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=execution.trace_id,
+        )
 
         assert summary is not None
         assert summary.status is AgentRunStatus.SUCCEEDED
@@ -117,6 +135,42 @@ async def test_no_tool_success_persists_model_usage_cost_and_trace_query(
         assert summary.tool_runs == []
         assert summary.started_at is not None and summary.started_at.tzinfo is UTC
         assert summary.finished_at is not None and summary.finished_at.tzinfo is UTC
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_trace_query_requires_owner_and_hides_cross_user_like_missing(
+    migrated_database_url: str,
+) -> None:
+    database = Database(migrated_database_url)
+    async with database.session() as session:
+        service = AgentRunService(
+            session=session,
+            runner=AgentRunner(
+                FakeProvider([fake_response(content="done")]),
+                ToolRegistry(),
+            ),
+            pricing=_pricing(),
+        )
+        execution = await service.execute(_request(3), [])
+
+        same_user = await service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=execution.trace_id,
+        )
+        cross_user = await service.get_by_trace_id(
+            user_id=OTHER_USER_ID,
+            trace_id=execution.trace_id,
+        )
+        missing = await service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=_trace(999),
+        )
+
+        assert same_user is not None and same_user.user_id == USER_ID
+        assert cross_user is None
+        assert missing is None
+        assert cross_user is missing
     await database.close()
 
 
@@ -150,7 +204,10 @@ async def test_tool_success_is_ordered_safe_and_model_calls_are_aggregated(
         )
 
         execution = await service.execute(_request(2), [])
-        summary = await service.get_by_trace_id(execution.trace_id)
+        summary = await service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=execution.trace_id,
+        )
 
         assert summary is not None
         assert calls == ["sensitive-value"]
@@ -187,9 +244,17 @@ async def test_service_generated_trace_is_opaque_and_immediately_queryable(
         )
 
         execution = await service.execute(
-            AgentRunCreate(intent="test_intent", workflow="test_workflow"), []
+            AgentRunCreate(
+                user_id=USER_ID,
+                intent="test_intent",
+                workflow="test_workflow",
+            ),
+            [],
         )
-        summary = await service.get_by_trace_id(execution.trace_id)
+        summary = await service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=execution.trace_id,
+        )
 
         assert execution.trace_id.startswith("trc_")
         assert len(execution.trace_id) == 36
@@ -224,7 +289,10 @@ async def test_all_provider_errors_are_persisted_then_propagated(
 
         with pytest.raises(ProviderError) as caught:
             await service.execute(_request(index), [])
-        summary = await service.get_by_trace_id(_trace(index))
+        summary = await service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=_trace(index),
+        )
 
         assert caught.value is error
         assert summary is not None
@@ -252,7 +320,10 @@ async def test_none_or_empty_response_is_a_queryable_failure(
         )
 
         execution = await service.execute(_request(20), [])
-        summary = await service.get_by_trace_id(execution.trace_id)
+        summary = await service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=execution.trace_id,
+        )
 
         assert execution.result.termination is RunTermination.EMPTY_RESPONSE
         assert summary is not None
@@ -303,7 +374,10 @@ async def test_tool_failures_are_safe_queryable_partial_successes(
         )
 
         execution = await service.execute(_request(30), [])
-        summary = await service.get_by_trace_id(execution.trace_id)
+        summary = await service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=execution.trace_id,
+        )
 
         assert summary is not None
         assert summary.status is AgentRunStatus.PARTIALLY_SUCCEEDED
@@ -377,13 +451,22 @@ async def test_loop_limit_tool_limit_and_repeat_each_persist_stable_end_reason(
         for index, runner, expected_error in scenarios:
             service = AgentRunService(session=session, runner=runner, pricing=_pricing())
             execution = await service.execute(_request(index), [])
-            summary = await service.get_by_trace_id(execution.trace_id)
+            summary = await service.get_by_trace_id(
+                user_id=USER_ID,
+                trace_id=execution.trace_id,
+            )
             assert summary is not None
             assert summary.status is AgentRunStatus.FAILED
             assert summary.error_code == expected_error.value
 
-        tool_limit = await AgentRunRepository(session).get_by_trace_id(_trace(41))
-        repeated = await AgentRunRepository(session).get_by_trace_id(_trace(42))
+        tool_limit = await AgentRunRepository(session).get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=_trace(41),
+        )
+        repeated = await AgentRunRepository(session).get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=_trace(42),
+        )
         assert tool_limit is not None
         assert tool_limit.error_code == RunErrorCode.TOOL_CALL_LIMIT.value
         assert [tool.status for tool in tool_limit.tool_runs] == [
@@ -444,7 +527,10 @@ async def test_total_timeout_and_external_cancel_are_distinct_and_queryable(
             pricing=_pricing(),
         )
         timeout_execution = await timeout_service.execute(_request(50), [])
-        timeout_summary = await timeout_service.get_by_trace_id(timeout_execution.trace_id)
+        timeout_summary = await timeout_service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=timeout_execution.trace_id,
+        )
 
         cancel_service = AgentRunService(
             session=session,
@@ -455,7 +541,10 @@ async def test_total_timeout_and_external_cancel_are_distinct_and_queryable(
         )
         with pytest.raises(asyncio.CancelledError):
             await cancel_service.execute(_request(51), [])
-        cancel_summary = await cancel_service.get_by_trace_id(_trace(51))
+        cancel_summary = await cancel_service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=_trace(51),
+        )
 
         assert timeout_summary is not None
         assert timeout_summary.status is AgentRunStatus.FAILED
@@ -490,7 +579,10 @@ async def test_timeout_during_tool_persists_cancelled_toolrun_with_timeout_code(
         )
 
         execution = await service.execute(_request(52), [])
-        summary = await service.get_by_trace_id(execution.trace_id)
+        summary = await service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=execution.trace_id,
+        )
 
         assert blocking_tool.cancelled is True
         assert summary is not None and summary.ended_due_to_timeout is True
@@ -537,8 +629,14 @@ async def test_partial_unknown_and_zero_tokens_are_not_conflated(
         )
         await partial_service.execute(_request(60), [])
         await zero_service.execute(_request(61), [])
-        partial = await partial_service.get_by_trace_id(_trace(60))
-        zero = await zero_service.get_by_trace_id(_trace(61))
+        partial = await partial_service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=_trace(60),
+        )
+        zero = await zero_service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=_trace(61),
+        )
 
         assert partial is not None and zero is not None
         assert partial.usage.input_tokens is None
@@ -576,14 +674,20 @@ async def test_trace_conflict_rolls_back_and_terminal_finalization_is_idempotent
             pricing=_pricing(),
         )
         execution = await service.execute(_request(70), [])
-        summary = await service.get_by_trace_id(execution.trace_id)
+        summary = await service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=execution.trace_id,
+        )
         assert summary is not None
 
         repository = AgentRunRepository(session)
         with pytest.raises(IntegrityError):
             await repository.create_queued(_request(70), now=datetime.now(UTC))
         await session.rollback()
-        still_present = await repository.get_by_trace_id(_trace(70))
+        still_present = await repository.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=_trace(70),
+        )
         assert still_present is not None
 
         changed = await repository.finalize(
@@ -611,7 +715,10 @@ async def test_trace_conflict_rolls_back_and_terminal_finalization_is_idempotent
                 ToolRunModel.agent_run_id == summary.id
             )
         )
-        unchanged = await repository.get_by_trace_id(_trace(70))
+        unchanged = await repository.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=_trace(70),
+        )
 
         assert changed is False
         assert tool_count == 1
@@ -646,7 +753,10 @@ async def test_unexpected_error_after_tool_is_persisted_without_exception_detail
 
         with pytest.raises(RuntimeError, match=secret_exception):
             await service.execute(_request(71), [])
-        summary = await service.get_by_trace_id(_trace(71))
+        summary = await service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=_trace(71),
+        )
 
         assert summary is not None
         assert summary.status is AgentRunStatus.FAILED
@@ -686,7 +796,10 @@ async def test_final_database_failure_propagates_and_never_persists_success(
         await session.rollback()
 
     async with database.session() as verification_session:
-        summary = await AgentRunRepository(verification_session).get_by_trace_id(_trace(72))
+        summary = await AgentRunRepository(verification_session).get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=_trace(72),
+        )
         assert summary is not None
         assert summary.status is AgentRunStatus.RUNNING
     await database.close()
@@ -717,7 +830,10 @@ async def test_sensitive_values_never_enter_database_or_public_summary(
             pricing=_pricing(),
         )
         await service.execute(_request(80), [{"role": "user", "content": secret}])
-        summary = await service.get_by_trace_id(_trace(80))
+        summary = await service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=_trace(80),
+        )
         assert summary is not None
         assert secret not in repr(summary)
     await database.close()

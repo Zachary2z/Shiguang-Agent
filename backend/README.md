@@ -112,9 +112,11 @@ two new tables. Stable query fields remain dedicated columns. Token values reuse
 output prices use `Decimal`; missing tokens, missing rates, or a changed model produce an unknown
 cost with a reason rather than zero.
 
-`AgentRunService.get_by_trace_id()` returns the complete safe summary with ToolRuns ordered by
-sequence and explicit timeout, tool-limit, repetition, and external-cancellation flags. No HTTP
-route, SSE stream, approval flow, User/Session/Message table, or M0-2 feature is included.
+`AgentRunService.get_by_trace_id()` requires both `user_id` and `trace_id`; its SQL filters both
+fields and returns the same `None` result for a missing trace and another user's trace. Successful
+lookups return the complete safe summary with ToolRuns ordered by sequence and explicit timeout,
+tool-limit, repetition, and external-cancellation flags. No HTTP route, SSE stream, approval flow,
+User/Session/Message table, or M0-2 feature is included.
 
 ## M0-2A collection domain
 
@@ -128,6 +130,13 @@ ownership is resolved through Session. CollectionSource ownership is checked bef
 is also enforced by composite SQLite foreign keys, so a Source and CollectionItem from different
 users cannot be linked even through direct SQL. Missing and cross-user resources share the same
 safe not-found behavior.
+
+M0 sessions persist only `web` and `demo` channels. Persisted messages accept only `user` and
+`assistant`; system prompts and raw tool payloads are rejected by both domain/repository and
+database constraints, and message content is excluded from object representations. `failed`
+remains a recognition transition and Source/AgentRun outcome, but cannot be constructed or stored
+as a CollectionItem; the same invariant is enforced by the domain model, repository writes and
+the migration check constraint.
 
 Revision `20260721_0003` creates only `users`, `sessions`, `messages`, `sources`,
 `collection_items`, and `collection_sources` on top of `20260721_0002`. Downgrading to

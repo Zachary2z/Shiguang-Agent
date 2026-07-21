@@ -22,16 +22,19 @@ from app.domain.collections.entities import (
 from app.domain.collections.repositories import CollectionRepository, ResourceNotFoundError
 from app.domain.collections.statuses import (
     DEFAULT_COLLECTION_STATUSES,
+    PERSISTABLE_COLLECTION_STATUSES,
     PLAN_ELIGIBLE_COLLECTION_STATUSES,
     TERMINAL_COLLECTION_STATUSES,
     CollectionStatus,
     can_collection_enter_plan,
     ensure_collection_transition,
+    ensure_persistable_collection_status,
     is_collection_visible_by_default,
 )
 
 __all__ = [
     "DEFAULT_COLLECTION_STATUSES",
+    "PERSISTABLE_COLLECTION_STATUSES",
     "PLAN_ELIGIBLE_COLLECTION_STATUSES",
     "TERMINAL_COLLECTION_STATUSES",
     "CollectionItem",
@@ -56,5 +59,6 @@ __all__ = [
     "UserMode",
     "can_collection_enter_plan",
     "ensure_collection_transition",
+    "ensure_persistable_collection_status",
     "is_collection_visible_by_default",
 ]
