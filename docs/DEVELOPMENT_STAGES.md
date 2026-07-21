@@ -687,7 +687,17 @@ failed 不创建有效收藏。active、pending_selection 和 pending_details �
 - 原文上下文；
 - 最多返回三个候选；
 - 记录匹配证据和置信度；
-- 用户选择或选择“以上都不是”。
+- 用户选择具体分店、明确选择“任意分店都可以”，或选择“以上都不是”。
+
+##### M0-3D：连锁品牌与任意分店目标
+
+- 在唯一收藏模型中增加 `exact / any_branch` 地点范围，不建立品牌版 CollectionItem；
+- 用户未作决定时保持 `pending_selection`，明确接受任意分店后才进入 `active`；
+- 候选分店复用 M0-3C 的 POI DTO、证据、评分和引用，不另建 BranchCandidate 或第二套匹配服务；
+- 最多展示或缓存 3 个高相关分店，并记录查询时间；不把供应商全部分店批量写成收藏；
+- 用户明确多选时按具体 POI 分别创建收藏，并共享 Source；
+- 相同品牌身份的重复“任意分店”请求必须幂等，不生成第二条品牌级收藏；
+- 为规划阶段提供统一地点目标解析契约，但不在本阶段实现计划生成。
 
 #### 状态
 
@@ -707,6 +717,9 @@ failed 不创建有效收藏。active、pending_selection 和 pending_details �
 - 原文区域与候选冲突；
 - 用户选择第二个候选；
 - 用户选择“以上都不是”。
+- 用户选择“任意分店都可以”；
+- 用户明确多选两个具体分店。
+- 重复提交同一品牌的“任意分店”收藏。
 
 #### 验收
 
@@ -715,6 +728,9 @@ failed 不创建有效收藏。active、pending_selection 和 pending_details �
 - 用户选择后保存确认来源；
 - 相同用户的相同 POI 可以复用地点；
 - 不同分店保持独立。
+- “任意分店”只创建一条有效收藏，候选不会膨胀为多条收藏；
+- 未明确选择任意分店时，待选择条目仍不得进入正式计划。
+- 重复“任意分店”请求不产生重复品牌级收藏。
 
 #### 用户参与
 
@@ -818,6 +834,9 @@ failed 不创建有效收藏。active、pending_selection 和 pending_details �
 - 用户排除；
 - 路线可达；
 - 天气适配。
+- 任意分店收藏按本次城市、活动范围和路线解析为具体 Place；
+- 分店解析失败、证据不足或没有满足硬约束的候选时返回明确排除原因。
+- 品牌级收藏与精确分店收藏最终解析到同一 POI 时只保留一个计划候选。
 
 硬约束不满足时直接过滤，不能只降低分数。
 
@@ -831,6 +850,9 @@ failed 不创建有效收藏。active、pending_selection 和 pending_details �
 - 时间、路线、费用、来源和风险；
 - 选择理由和排除原因；
 - 生成后再次执行确定性校验。
+- PlanItem 保存本次解析出的具体分店、查询时间和选择理由，但不改绑品牌级收藏；
+- 任意分店解析结果标记为收藏派生，不误标为外部未收藏地点。
+- 同一具体 POI 不因品牌级和精确分店两条来源生成重复 PlanItem。
 
 ##### M0-5D：收藏不足与高德补充
 
@@ -1413,6 +1435,7 @@ P0、P1 未关闭时不能通过阶段 Gate。
 | MapProvider、StorageProvider、JobQueue | backend/app/providers |
 | 收藏状态机 | backend/app/domain/collections |
 | POI 匹配 | backend/app/domain/places |
+| PlaceTarget、连锁品牌归组、POI 候选和分店解析规则 | backend/app/domain/places |
 | 计划状态和规则 | backend/app/domain/plans |
 | API Schema | backend/app/schemas |
 | 前端 API Client | frontend/lib |
@@ -1424,6 +1447,7 @@ P0、P1 未关闭时不能通过阶段 Gate。
 - 为微信复制 Web 业务服务；
 - 为测试复制生产算法；
 - 在多个目录定义同名状态枚举；
+- 为具体分店和任意分店复制 CollectionItem、Repository、POI 候选、MapProvider 或规划流程；
 - 通过复制整个模块绕开循环依赖；
 - 因为“以后可能用”提前实现第二套 Provider；
 - 将第三方原始响应直接作为领域模型。

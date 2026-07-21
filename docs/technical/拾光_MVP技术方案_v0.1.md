@@ -360,7 +360,7 @@ pending_details → recognizing / deleted
 
 规则：
 
-- `active` 且 Place 已确认，或 Event 信息满足条件，才可以进入正式计划；
+- `active` 且精确 Place 已确认，或“任意分店”地点目标能在本次计划中解析为具体 Place，或 Event 信息满足条件，才可以进入正式计划；
 - 删除先逻辑删除，立即从检索中排除；
 - 撤销自动收藏使用短期 Undo Token，不影响同一地点的其他来源；
 - 相同高德 POI 可以合并地点，但保留多个 Source。
@@ -411,9 +411,9 @@ pending → approved / rejected / expired / revoked
 | `sessions` | id、user_id、channel、status、summary、updated_at |
 | `messages` | id、session_id、role、content_type、content、trace_id、created_at |
 | `sources` | id、user_id、type、url、file_key、platform、parse_status、metadata_json |
-| `collection_items` | id、user_id、kind、title、district、address、price、tags、status、version |
+| `collection_items` | id、user_id、kind、title、place_scope（exact / any_branch）、district、address、price、tags、status、version |
 | `collection_sources` | collection_item_id、source_id、created_at |
-| `poi_references` | id、collection_item_id、provider、poi_id、coordinates、match_status、confidence、confirmed_by |
+| `poi_references` | id、collection_item_id、provider、poi_id、coordinates、match_status、confidence、confirmed_by、queried_at |
 | `agent_runs` | id、trace_id、user_id、session_id、intent、workflow、status、usage_json、error_code |
 | `tool_runs` | id、agent_run_id、tool_name、input_summary、status、output_summary、latency_ms、error_code |
 
@@ -466,13 +466,40 @@ pending → approved / rejected / expired / revoked
 
 阈值不在 Prompt 中硬编码，放在服务端配置。低于唯一匹配阈值时最多返回 3 个候选供用户选择。
 
-### 11.3 去重与幂等
+### 11.3 连锁品牌与地点目标
+
+Place 收藏使用一套统一地点目标契约，不另建“品牌收藏”和“分店收藏”两套业务模型：
+
+```text
+PlaceTarget
+  ├─ exact       → 绑定一个已确认的具体 POI
+  └─ any_branch  → 用户确认接受同一品牌中满足本次范围的任意分店
+```
+
+- `pending_selection` 表示用户尚未决定具体分店，也没有授权任意分店；`active + any_branch` 表示用户已经确认灵活分店策略；
+- `any_branch` 只保存一条 CollectionItem；候选分店继续复用统一 POI 候选/引用契约，不建立 `BranchCandidate`、`BranchRepository` 或第二套收藏状态机；
+- 候选列表是带 `queried_at` 的可刷新快照，默认最多展示 3 个，不把所有供应商结果永久复制进收藏；
+- 用户明确多选具体分店时，为每个具体 POI 建立独立 CollectionItem，并复用同一 Source；
+- 品牌归一、候选评分和具体分店匹配统一归属 `app/domain/places`，应用层只编排，不在抽取、API 或计划模块复制算法；
+- 名称相似不足以证明同一品牌；无法稳定归组时保持待选择或待补充。
+
+### 11.4 去重与幂等
 
 - 接收消息以 `channel + message_id` 去重；
 - 写收藏使用 `user_id + idempotency_key` 防止重复；
 - 已确认的相同 `provider + poi_id` 优先关联现有 Place；
+- 同一用户对已确认同一品牌身份重复选择 `any_branch` 时复用已有品牌级收藏；只有名称相似但品牌身份未确认时不得自动合并；
 - URL 相同不是地点相同的充分条件；
 - 连锁品牌不同 `poi_id` 视为不同地点。
+
+### 11.5 规划时分店解析
+
+- 规划检索遇到 `any_branch` 收藏时，复用同一 MapProvider 和地点匹配服务，按计划城市、活动范围、路线和时间解析具体分店；
+- 解析结果只写入当前 PlanItem 的具体 POI 与查询快照，不把品牌级收藏永久改绑，也不自动新增分店收藏；
+- 该分店属于收藏派生结果，来源指向品牌级 CollectionItem，不计入“外部补充 Place”；
+- 若解析出的具体 POI 已有精确分店收藏，计划只生成一个 PlanItem，并合并品牌级与精确收藏来源说明；
+- 多个候选接近或证据不足时进入用户选择，不以供应商第一名替代确认；
+- 分店到访记录绑定具体 POI，是否继续保留品牌级收藏由用户决定。
 
 ## 12. 计划生成引擎
 
