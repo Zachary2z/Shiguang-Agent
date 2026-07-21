@@ -218,6 +218,11 @@ class CollectionItemModel(Base):
             name="ck_collection_items_place_without_event_time",
         ),
         CheckConstraint(
+            "kind <> 'place' OR "
+            "(event_start_clue IS NULL AND event_end_clue IS NULL)",
+            name="ck_collection_items_place_without_event_clues",
+        ),
+        CheckConstraint(
             "(price_amount IS NULL AND price_currency IS NULL) OR "
             "(price_amount IS NOT NULL AND price_amount >= 0 AND price_currency IS NOT NULL)",
             name="ck_collection_items_price_pair",
@@ -242,13 +247,24 @@ class CollectionItemModel(Base):
     city_hint: Mapped[str | None] = mapped_column(String(100), nullable=True)
     district: Mapped[str | None] = mapped_column(String(100), nullable=True)
     address: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    business_district: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    landmark: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    metro_station: Mapped[str | None] = mapped_column(String(100), nullable=True)
     event_start_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     event_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    event_start_clue: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    event_end_clue: Mapped[str | None] = mapped_column(String(120), nullable=True)
     price_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     price_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     tags_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    missing_fields_json: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    uncertainties_json: Mapped[list[dict[str, str]]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=list,
+    )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(
@@ -283,3 +299,105 @@ class CollectionSourceModel(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
+
+
+class CollectionWriteOperationModel(Base):
+    __tablename__ = "collection_write_operations"
+    __table_args__ = (
+        UniqueConstraint("id", "user_id", name="uq_collection_write_operations_id_user"),
+        UniqueConstraint(
+            "user_id",
+            "idempotency_key",
+            name="uq_collection_write_operations_user_idempotency",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "source_id",
+            name="uq_collection_write_operations_user_source",
+        ),
+        UniqueConstraint(
+            "undo_token_hash",
+            name="uq_collection_write_operations_undo_hash",
+        ),
+        ForeignKeyConstraint(
+            ["source_id", "user_id"],
+            ["sources.id", "sources.user_id"],
+            name="fk_collection_write_operations_source_owner_sources",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "length(id) = 36 AND substr(id, 1, 4) = 'cwo_'",
+            name="ck_collection_write_operations_id_format",
+        ),
+        CheckConstraint(
+            "length(idempotency_key) BETWEEN 1 AND 128",
+            name="ck_collection_write_operations_idempotency_length",
+        ),
+        CheckConstraint(
+            "length(request_fingerprint) = 64",
+            name="ck_collection_write_operations_fingerprint_length",
+        ),
+        CheckConstraint(
+            "length(undo_token_hash) = 64",
+            name="ck_collection_write_operations_undo_hash_length",
+        ),
+        CheckConstraint(
+            "undo_expires_at > created_at",
+            name="ck_collection_write_operations_expiry_order",
+        ),
+        CheckConstraint(
+            "undone_at IS NULL OR undone_at >= created_at",
+            name="ck_collection_write_operations_undone_order",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(
+            "users.id",
+            name="fk_collection_write_operations_user_id_users",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    source_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    undo_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    undo_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CollectionWriteOperationItemModel(Base):
+    __tablename__ = "collection_write_operation_items"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["operation_id", "user_id"],
+            ["collection_write_operations.id", "collection_write_operations.user_id"],
+            name="fk_collection_write_operation_items_operation_owner",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["collection_item_id", "user_id"],
+            ["collection_items.id", "collection_items.user_id"],
+            name="fk_collection_write_operation_items_item_owner",
+            ondelete="RESTRICT",
+        ),
+        UniqueConstraint(
+            "operation_id",
+            "sequence",
+            name="uq_collection_write_operation_items_operation_sequence",
+        ),
+        CheckConstraint(
+            "sequence > 0",
+            name="ck_collection_write_operation_items_sequence_positive",
+        ),
+    )
+
+    operation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    collection_item_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

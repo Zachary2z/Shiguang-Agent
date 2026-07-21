@@ -3,6 +3,8 @@
 from app.infrastructure.db.models.collections import (
     CollectionItemModel,
     CollectionSourceModel,
+    CollectionWriteOperationItemModel,
+    CollectionWriteOperationModel,
     MessageModel,
     SessionModel,
     SourceModel,
@@ -14,6 +16,8 @@ __all__ = [
     "AgentRunModel",
     "CollectionItemModel",
     "CollectionSourceModel",
+    "CollectionWriteOperationItemModel",
+    "CollectionWriteOperationModel",
     "MessageModel",
     "SessionModel",
     "SourceModel",

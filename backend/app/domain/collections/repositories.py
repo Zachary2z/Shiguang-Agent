@@ -15,6 +15,7 @@ from app.domain.collections.entities import (
     User,
 )
 from app.domain.collections.statuses import CollectionStatus
+from app.domain.collections.writes import CollectionWriteOperation
 
 
 class ResourceNotFoundError(LookupError):
@@ -88,6 +89,23 @@ class CollectionRepository(Protocol):
         updated_at: datetime,
     ) -> CollectionItem: ...
 
+    async def update_collection_item(
+        self,
+        *,
+        user_id: str,
+        item: CollectionItem,
+        expected_version: int,
+    ) -> CollectionItem: ...
+
+    async def delete_collection_item(
+        self,
+        *,
+        user_id: str,
+        collection_item_id: str,
+        updated_at: datetime,
+        expected_version: int | None = None,
+    ) -> CollectionItem: ...
+
     async def add_collection_source(
         self,
         *,
@@ -103,3 +121,57 @@ class CollectionRepository(Protocol):
         user_id: str,
         collection_item_id: str,
     ) -> list[CollectionSource]: ...
+
+    async def add_write_operation(
+        self,
+        *,
+        user_id: str,
+        operation: CollectionWriteOperation,
+        undo_token_hash: str,
+    ) -> CollectionWriteOperation: ...
+
+    async def get_write_operation_by_idempotency_key(
+        self,
+        *,
+        user_id: str,
+        idempotency_key: str,
+    ) -> CollectionWriteOperation | None: ...
+
+    async def get_write_operation_by_source(
+        self,
+        *,
+        user_id: str,
+        source_id: str,
+    ) -> CollectionWriteOperation | None: ...
+
+    async def get_write_operation_by_undo_hash(
+        self,
+        *,
+        user_id: str,
+        undo_token_hash: str,
+    ) -> CollectionWriteOperation | None: ...
+
+    async def add_write_operation_item(
+        self,
+        *,
+        user_id: str,
+        operation_id: str,
+        collection_item_id: str,
+        sequence: int,
+        created_at: datetime,
+    ) -> None: ...
+
+    async def list_write_operation_items(
+        self,
+        *,
+        user_id: str,
+        operation_id: str,
+    ) -> list[CollectionItem]: ...
+
+    async def mark_write_operation_undone(
+        self,
+        *,
+        user_id: str,
+        operation_id: str,
+        undone_at: datetime,
+    ) -> CollectionWriteOperation: ...

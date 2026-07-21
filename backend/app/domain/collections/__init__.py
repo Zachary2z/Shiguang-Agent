@@ -1,5 +1,6 @@
 """Public M0-2A collection domain contract."""
 
+from app.domain.collections.candidate_metadata import CandidateField, Uncertainty
 from app.domain.collections.entities import (
     CollectionItem,
     CollectionKind,
@@ -21,14 +22,12 @@ from app.domain.collections.entities import (
 )
 from app.domain.collections.extraction import (
     MAX_EXTRACTION_CANDIDATES,
-    CandidateField,
     EventCandidate,
     ExtractionCandidate,
     ExtractionOutcome,
     ExtractionReasonCode,
     ExtractionResult,
     PlaceCandidate,
-    Uncertainty,
     UnsupportedReason,
 )
 from app.domain.collections.repositories import CollectionRepository, ResourceNotFoundError
@@ -46,6 +45,16 @@ from app.domain.collections.statuses import (
     ensure_persistable_collection_status,
     is_collection_visible_by_default,
 )
+from app.domain.collections.writes import (
+    AutoSaveResult,
+    CollectionItemPatch,
+    CollectionWriteOperation,
+    IdempotencyConflictError,
+    UndoOutcome,
+    UndoResult,
+    VersionConflictError,
+    status_for_extraction_candidate,
+)
 
 __all__ = [
     "DEFAULT_COLLECTION_STATUSES",
@@ -55,17 +64,21 @@ __all__ = [
     "TERMINAL_RECOGNITION_STATUSES",
     "MAX_EXTRACTION_CANDIDATES",
     "CandidateField",
+    "AutoSaveResult",
     "CollectionItem",
+    "CollectionItemPatch",
     "CollectionKind",
     "CollectionRepository",
     "CollectionSource",
     "CollectionStatus",
     "CollectionWorkflowStatus",
+    "CollectionWriteOperation",
     "EventCandidate",
     "ExtractionCandidate",
     "ExtractionOutcome",
     "ExtractionReasonCode",
     "ExtractionResult",
+    "IdempotencyConflictError",
     "Message",
     "MessageContentType",
     "MessageRole",
@@ -85,8 +98,12 @@ __all__ = [
     "UserMode",
     "Uncertainty",
     "UnsupportedReason",
+    "UndoOutcome",
+    "UndoResult",
+    "VersionConflictError",
     "can_collection_enter_plan",
     "ensure_collection_transition",
     "ensure_persistable_collection_status",
     "is_collection_visible_by_default",
+    "status_for_extraction_candidate",
 ]

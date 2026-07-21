@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。M0-2A 领域模型与 M0-2B 结构化抽取已经主控验收；当前允许开始的子阶段是 **M0-2C 自动保存与可逆操作**，状态为**未开始**。
+项目处于 **M0 技术验证**。M0-2A 领域模型与 M0-2B 结构化抽取已经主控验收；**M0-2C 自动保存与可逆操作**已实现并处于**待验收**状态。
 
-普通测试全部离线，不读取真实模型密钥或访问网络。当前没有任何真实调用授权；不得设置 `RUN_REAL_MODEL_TESTS=1`。M0-2C 将在现有唯一 Collection Repository 与抽取契约上实现自动保存、幂等和 Undo，不包含 M0-2D API、Demo 初始化、高德、URL/截图流水线、计划、SSE 或前端。
+普通测试全部离线，不读取真实模型密钥或访问网络。当前没有任何真实调用授权；不得设置 `RUN_REAL_MODEL_TESTS=1`。M0-2C 只增加应用层自动保存、幂等、Undo、允许字段修改和逻辑删除，不包含 M0-2D API、Demo 初始化、高德、URL/截图流水线、计划、SSE 或前端。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -66,7 +66,7 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前 HEAD revision 是 `20260721_0004`：在 `0003` 的六张收藏领域表之上，将用户字段明确为 `default_plan_city`，并把收藏城市调整为可空 `city_hint`。只有空表或全部 `city_hint='shenzhen'` 时才能安全降级到 `0003`；存在空值或其他城市时会在 DDL 前明确拒绝，避免数据丢失。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+当前 HEAD revision 是 `20260721_0005`。`0004` 将用户字段明确为 `default_plan_city`，并把收藏城市调整为可空 `city_hint`；`0005` 原位扩展 `collection_items` 的候选线索，并新增幂等写操作及其条目关联表。`0005` 只有在没有可逆写操作、且新增候选字段均为空时才允许降级到 `0004`，否则在任何 DDL 前拒绝，避免静默丢失 Undo、幂等或候选数据。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
 
 ### 启动 API
 
@@ -121,7 +121,7 @@ Runner 在同一执行循环中保证：最多执行 8 次绝对 Tool Call；第
 
 `AgentRunService.get_by_trace_id()` 返回模型调用元数据、Token/费用汇总、有序 ToolRun、安全错误码和结束原因。数据库只保存结构化输入/输出摘要与指纹，不保存消息、完整模型响应、Prompt、思维链、完整工具参数、异常对象、Authorization、Cookie 或密钥。本阶段故意不提供 `GET /agent-runs` 路由。
 
-### M0-2A/B 文字收藏领域与结构化抽取
+### M0-2A/B/C 文字收藏、结构化抽取与可逆写入
 
 `app.domain.collections` 是 User、Session、Message、Source、CollectionItem、CollectionSource、Place/Event 类型和收藏状态的唯一应用层契约。实体 ID 使用命名空间加 128 位随机值，服务端时间统一为 UTC；稳定的所有权、状态、版本、Source 抓取时间和 Event 时间使用独立数据库列。Source 元数据使用字段白名单，不接受 Header、Cookie、原始正文或凭证。
 
@@ -129,7 +129,9 @@ Runner 在同一执行循环中保证：最多执行 8 次绝对 Tool Call；第
 
 `User.default_plan_city` 当前保持深圳计划语义；`CollectionItem.city_hint` 只保存可空的来源城市线索，允许广州、上海等其他城市收藏，不代表正式城市或计划资格。唯一 `TextExtractionService` 使用现有 `ModelProvider` 抽取严格的 Place/Event 候选，普通结果调用一次，结构错误最多修复一次，并明确保留缺失与不确定字段。
 
-M0-2C 开始前尚未提供自动保存、幂等、修改、逻辑删除、Undo 或 API 路由。CollectionItem 的正整数 `version` 继续作为并发边界；正式城市确认和 POI 匹配属于 M0-3。
+唯一 `CollectionWriteService` 将候选、共享 Source、CollectionSource、幂等记录和 Undo 关联放在同一事务中。`user_id + idempotency_key` 与 `user_id + source_id` 的数据库唯一约束覆盖重复消息、并发提交和同来源重试；请求只持久化规范化 SHA-256 指纹。首次成功返回 10 分钟 Undo Token，数据库只保存 Token 哈希，重试不再次返回明文。Undo 只把本次操作创建的条目逻辑删除，不删除 Source 或其他收藏。
+
+`CollectionItemPatch` 只开放标题、城市线索、位置/时间线索、Event 时间、价格、标签、缺失字段和不确定项。成功变更使用 `expected_version` 并递增版本；无实际变化不生成新版本，旧版本不会覆盖新数据。默认查询立即隐藏 `deleted`，内部 `include_inactive` 仍可复核。M0-3 前 Place 自动保存为 `pending_details`，不会伪造 POI 候选、正式城市或计划资格；精确起止时间完整的 Event 才映射为 `active`。本阶段仍没有 HTTP 路由，正式城市确认和 POI 匹配属于 M0-3。
 
 真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
 

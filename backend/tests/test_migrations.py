@@ -11,13 +11,28 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-HEAD_REVISION = "20260721_0004"
-PREVIOUS_REVISION = "20260721_0003"
+HEAD_REVISION = "20260721_0005"
+PREVIOUS_REVISION = "20260721_0004"
+CITY_REVISION = "20260721_0004"
+CITY_PREVIOUS_REVISION = "20260721_0003"
+PREVIOUS_TABLES = {
+    "agent_runs",
+    "alembic_version",
+    "collection_items",
+    "collection_sources",
+    "messages",
+    "sessions",
+    "sources",
+    "tool_runs",
+    "users",
+}
 HEAD_TABLES = {
     "agent_runs",
     "alembic_version",
     "collection_items",
     "collection_sources",
+    "collection_write_operation_items",
+    "collection_write_operations",
     "messages",
     "sessions",
     "sources",
@@ -173,6 +188,35 @@ def _insert_0003_collection_item(
     )
 
 
+def _insert_write_operation(
+    connection: sqlite3.Connection,
+    *,
+    operation_id: str,
+    user_id: str,
+    source_id: str,
+    idempotency_key: str,
+    undo_token_hash: str,
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO collection_write_operations (
+            id, user_id, source_id, idempotency_key, request_fingerprint,
+            undo_token_hash, undo_expires_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            operation_id,
+            user_id,
+            source_id,
+            idempotency_key,
+            "f" * 64,
+            undo_token_hash,
+            "2026-07-21T00:10:00+00:00",
+            "2026-07-21T00:00:00+00:00",
+        ),
+    )
+
+
 def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -275,7 +319,7 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
 
     command.downgrade(alembic_config, PREVIOUS_REVISION)
     assert current_revision(database_path) == PREVIOUS_REVISION
-    assert table_names(database_path) == HEAD_TABLES
+    assert table_names(database_path) == PREVIOUS_TABLES
     with sqlite3.connect(database_path) as connection:
         preserved_run = connection.execute(
             "SELECT id, status FROM agent_runs WHERE id LIKE 'arn_preserved%'"
@@ -329,7 +373,7 @@ def test_collection_migration_from_previous_revision_accepts_only_final_statuses
 
     command.upgrade(alembic_config, PREVIOUS_REVISION)
     assert current_revision(database_path) == PREVIOUS_REVISION
-    assert table_names(database_path) == HEAD_TABLES
+    assert table_names(database_path) == PREVIOUS_TABLES
 
     command.upgrade(alembic_config, "head")
     assert current_revision(database_path) == HEAD_REVISION
@@ -369,7 +413,7 @@ def test_0003_to_0004_preserves_shenzhen_as_hint_and_supports_any_city_or_null(
     user_id = "usr_11111111111111111111111111111111"
     old_item_id = "col_11111111111111111111111111111111"
 
-    command.upgrade(alembic_config, PREVIOUS_REVISION)
+    command.upgrade(alembic_config, CITY_PREVIOUS_REVISION)
     with sqlite3.connect(database_path) as connection:
         _insert_0003_user(connection, user_id)
         _insert_0003_collection_item(
@@ -379,7 +423,7 @@ def test_0003_to_0004_preserves_shenzhen_as_hint_and_supports_any_city_or_null(
         )
         connection.commit()
 
-    command.upgrade(alembic_config, HEAD_REVISION)
+    command.upgrade(alembic_config, CITY_REVISION)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT default_plan_city FROM users WHERE id = ?",
@@ -434,7 +478,7 @@ def test_0004_compatible_shenzhen_data_downgrades_and_reupgrades_without_loss(
     user_id = "usr_22222222222222222222222222222222"
     item_id = "col_22222222222222222222222222222222"
 
-    command.upgrade(alembic_config, HEAD_REVISION)
+    command.upgrade(alembic_config, CITY_REVISION)
     with sqlite3.connect(database_path) as connection:
         _insert_user(connection, user_id)
         _insert_collection_item(
@@ -445,8 +489,8 @@ def test_0004_compatible_shenzhen_data_downgrades_and_reupgrades_without_loss(
         )
         connection.commit()
 
-    command.downgrade(alembic_config, PREVIOUS_REVISION)
-    assert current_revision(database_path) == PREVIOUS_REVISION
+    command.downgrade(alembic_config, CITY_PREVIOUS_REVISION)
+    assert current_revision(database_path) == CITY_PREVIOUS_REVISION
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT city FROM users WHERE id = ?",
@@ -457,8 +501,8 @@ def test_0004_compatible_shenzhen_data_downgrades_and_reupgrades_without_loss(
             (item_id,),
         ).fetchone() == ("shenzhen",)
 
-    command.upgrade(alembic_config, HEAD_REVISION)
-    assert current_revision(database_path) == HEAD_REVISION
+    command.upgrade(alembic_config, CITY_REVISION)
+    assert current_revision(database_path) == CITY_REVISION
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT default_plan_city FROM users WHERE id = ?",
@@ -481,7 +525,7 @@ def test_0004_incompatible_downgrade_fails_before_schema_or_data_changes(
     user_id = "usr_33333333333333333333333333333333"
     item_id = "col_33333333333333333333333333333333"
 
-    command.upgrade(alembic_config, HEAD_REVISION)
+    command.upgrade(alembic_config, CITY_REVISION)
     with sqlite3.connect(database_path) as connection:
         _insert_user(connection, user_id)
         _insert_collection_item(
@@ -500,9 +544,9 @@ def test_0004_incompatible_downgrade_fails_before_schema_or_data_changes(
         ).fetchall()
 
     with pytest.raises(RuntimeError, match="cannot downgrade"):
-        command.downgrade(alembic_config, PREVIOUS_REVISION)
+        command.downgrade(alembic_config, CITY_PREVIOUS_REVISION)
 
-    assert current_revision(database_path) == HEAD_REVISION
+    assert current_revision(database_path) == CITY_REVISION
     with sqlite3.connect(database_path) as connection:
         after_schema = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' "
@@ -513,6 +557,242 @@ def test_0004_incompatible_downgrade_fails_before_schema_or_data_changes(
         ).fetchall()
     assert after_schema == before_schema
     assert after_rows == before_rows
+
+
+def test_0005_schema_enforces_idempotency_undo_order_and_user_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "reversible-write-constraints.db"
+    command.upgrade(_alembic_config(monkeypatch, database_path), "head")
+    first_user = "usr_11111111111111111111111111111111"
+    second_user = "usr_22222222222222222222222222222222"
+    first_source = "src_11111111111111111111111111111111"
+    second_source = "src_22222222222222222222222222222222"
+    first_item = "col_11111111111111111111111111111111"
+    second_item = "col_22222222222222222222222222222222"
+    first_operation = "cwo_11111111111111111111111111111111"
+    second_operation = "cwo_22222222222222222222222222222222"
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        item_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(collection_items)")
+        }
+        operation_indexes = index_definitions(connection, "collection_write_operations")
+        association_indexes = index_definitions(
+            connection,
+            "collection_write_operation_items",
+        )
+        table_sql = " ".join(
+            str(row[0])
+            for row in connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name IN "
+                "('collection_write_operations', 'collection_write_operation_items')"
+            )
+        )
+        assert {
+            "business_district",
+            "landmark",
+            "metro_station",
+            "event_start_clue",
+            "event_end_clue",
+            "missing_fields_json",
+            "uncertainties_json",
+        }.issubset(item_columns)
+        assert any(
+            unique and columns == ("user_id", "idempotency_key")
+            for unique, columns in operation_indexes.values()
+        )
+        assert any(
+            unique and columns == ("user_id", "source_id")
+            for unique, columns in operation_indexes.values()
+        )
+        assert any(
+            unique and columns == ("undo_token_hash",)
+            for unique, columns in operation_indexes.values()
+        )
+        assert any(
+            unique and columns == ("operation_id", "sequence")
+            for unique, columns in association_indexes.values()
+        )
+        for constraint in (
+            "uq_collection_write_operations_user_idempotency",
+            "uq_collection_write_operations_user_source",
+            "uq_collection_write_operations_undo_hash",
+            "fk_collection_write_operations_source_owner_sources",
+            "fk_collection_write_operation_items_operation_owner",
+            "fk_collection_write_operation_items_item_owner",
+            "uq_collection_write_operation_items_operation_sequence",
+        ):
+            assert constraint in table_sql
+
+        _insert_user(connection, first_user)
+        _insert_user(connection, second_user)
+        _insert_source(connection, source_id=first_source, user_id=first_user)
+        _insert_source(connection, source_id=second_source, user_id=second_user)
+        _insert_collection_item(connection, item_id=first_item, user_id=first_user)
+        _insert_collection_item(connection, item_id=second_item, user_id=second_user)
+        _insert_write_operation(
+            connection,
+            operation_id=first_operation,
+            user_id=first_user,
+            source_id=first_source,
+            idempotency_key="same-key",
+            undo_token_hash="a" * 64,
+        )
+        _insert_write_operation(
+            connection,
+            operation_id=second_operation,
+            user_id=second_user,
+            source_id=second_source,
+            idempotency_key="same-key",
+            undo_token_hash="b" * 64,
+        )
+        connection.execute(
+            """
+            INSERT INTO collection_write_operation_items (
+                operation_id, collection_item_id, user_id, sequence, created_at
+            ) VALUES (?, ?, ?, 1, ?)
+            """,
+            (
+                first_operation,
+                first_item,
+                first_user,
+                "2026-07-21T00:00:00+00:00",
+            ),
+        )
+        connection.commit()
+
+        for statement, parameters in (
+            (
+                """
+                INSERT INTO collection_write_operations (
+                    id, user_id, source_id, idempotency_key, request_fingerprint,
+                    undo_token_hash, undo_expires_at, created_at
+                ) VALUES (?, ?, ?, 'same-key', ?, ?, ?, ?)
+                """,
+                (
+                    "cwo_33333333333333333333333333333333",
+                    first_user,
+                    first_source,
+                    "f" * 64,
+                    "c" * 64,
+                    "2026-07-21T00:10:00+00:00",
+                    "2026-07-21T00:00:00+00:00",
+                ),
+            ),
+            (
+                """
+                INSERT INTO collection_write_operation_items (
+                    operation_id, collection_item_id, user_id, sequence, created_at
+                ) VALUES (?, ?, ?, 2, ?)
+                """,
+                (
+                    first_operation,
+                    second_item,
+                    first_user,
+                    "2026-07-21T00:00:00+00:00",
+                ),
+            ),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(statement, parameters)
+            connection.rollback()
+
+
+def test_0005_compatible_data_downgrades_to_0004_and_reupgrades_without_loss(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "m02c-compatible-roundtrip.db"
+    alembic_config = _alembic_config(monkeypatch, database_path)
+    user_id = "usr_55555555555555555555555555555555"
+    item_id = "col_55555555555555555555555555555555"
+    command.upgrade(alembic_config, "head")
+    with sqlite3.connect(database_path) as connection:
+        _insert_user(connection, user_id)
+        _insert_collection_item(
+            connection,
+            item_id=item_id,
+            user_id=user_id,
+            city_hint="广州",
+        )
+        connection.commit()
+
+    command.downgrade(alembic_config, PREVIOUS_REVISION)
+    assert current_revision(database_path) == PREVIOUS_REVISION
+    assert table_names(database_path) == PREVIOUS_TABLES
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT id, city_hint, title FROM collection_items WHERE id = ?",
+            (item_id,),
+        ).fetchone() == (item_id, "广州", "fixture")
+
+    command.upgrade(alembic_config, "head")
+    assert current_revision(database_path) == HEAD_REVISION
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT id, city_hint, business_district, missing_fields_json "
+            "FROM collection_items WHERE id = ?",
+            (item_id,),
+        ).fetchone() == (item_id, "广州", None, "[]")
+
+
+@pytest.mark.parametrize("incompatible_kind", ["operation", "candidate_metadata"])
+def test_0005_incompatible_downgrade_fails_before_any_schema_or_data_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    incompatible_kind: str,
+) -> None:
+    database_path = tmp_path / f"m02c-downgrade-{incompatible_kind}.db"
+    alembic_config = _alembic_config(monkeypatch, database_path)
+    user_id = "usr_44444444444444444444444444444444"
+    source_id = "src_44444444444444444444444444444444"
+    item_id = "col_44444444444444444444444444444444"
+    command.upgrade(alembic_config, "head")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        _insert_user(connection, user_id)
+        _insert_source(connection, source_id=source_id, user_id=user_id)
+        _insert_collection_item(connection, item_id=item_id, user_id=user_id)
+        if incompatible_kind == "operation":
+            _insert_write_operation(
+                connection,
+                operation_id="cwo_44444444444444444444444444444444",
+                user_id=user_id,
+                source_id=source_id,
+                idempotency_key="downgrade",
+                undo_token_hash="d" * 64,
+            )
+        else:
+            connection.execute(
+                "UPDATE collection_items SET business_district = '中心区', "
+                "missing_fields_json = '[\"address\"]' WHERE id = ?",
+                (item_id,),
+            )
+        connection.commit()
+        before_schema = connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()
+        before_data = connection.execute(
+            "SELECT id, business_district, missing_fields_json FROM collection_items"
+        ).fetchall()
+
+    with pytest.raises(RuntimeError, match="cannot downgrade"):
+        command.downgrade(alembic_config, PREVIOUS_REVISION)
+
+    assert current_revision(database_path) == HEAD_REVISION
+    with sqlite3.connect(database_path) as connection:
+        after_schema = connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()
+        after_data = connection.execute(
+            "SELECT id, business_district, missing_fields_json FROM collection_items"
+        ).fetchall()
+    assert after_schema == before_schema
+    assert after_data == before_data
 
 
 def test_alembic_has_one_head_and_metadata_matches_head_schema(
@@ -709,11 +989,18 @@ def test_collection_migration_has_exact_fields_named_constraints_and_useful_inde
             "city_hint",
             "district",
             "address",
+            "business_district",
+            "landmark",
+            "metro_station",
             "event_start_at",
             "event_end_at",
+            "event_start_clue",
+            "event_end_clue",
             "price_amount",
             "price_currency",
             "tags_json",
+            "missing_fields_json",
+            "uncertainties_json",
             "status",
             "version",
             "created_at",

@@ -15,6 +15,7 @@ _OPAQUE_ID_PATTERNS = {
     "msg": re.compile(r"^msg_[a-f0-9]{32}$"),
     "src": re.compile(r"^src_[a-f0-9]{32}$"),
     "col": re.compile(r"^col_[a-f0-9]{32}$"),
+    "cwo": re.compile(r"^cwo_[a-f0-9]{32}$"),
 }
 
 
@@ -58,6 +59,10 @@ def generate_collection_item_id() -> str:
     return _generate_opaque_id("col")
 
 
+def generate_collection_write_operation_id() -> str:
+    return _generate_opaque_id("cwo")
+
+
 def validate_agent_run_id(value: str) -> str:
     return _validate_opaque_id(value, "arn", "agent_run_id")
 
@@ -84,6 +89,10 @@ def validate_source_id(value: str) -> str:
 
 def validate_collection_item_id(value: str) -> str:
     return _validate_opaque_id(value, "col", "collection_item_id")
+
+
+def validate_collection_write_operation_id(value: str) -> str:
+    return _validate_opaque_id(value, "cwo", "collection_write_operation_id")
 
 
 def _generate_opaque_id(prefix: str) -> str:

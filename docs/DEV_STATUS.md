@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-2C 自动保存与可逆操作 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-2-text-collection |
 | 最近更新 | 2026-07-21 |
-| 阻塞项 | 无；M0-2A/M0-2B 已通过主控验收，M0-2C 前置条件已满足 |
+| 阻塞项 | 无；M0-2C 已实现并等待主控独立验收 |
 
 ## 当前任务
 
-M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市契约联合修复均已通过主控验收。唯一城市枚举已收敛为规划语义 `PlanCity`，`0004` 已把 `CollectionItem.city` 安全迁移为可空 `city_hint`；其他城市 Place/Event 可以形成候选，不再存在城市准入拒绝、`search_scope_city` 或 `OUT_OF_SCOPE_CITY`。当前允许开始 M0-2C 自动保存与可逆操作，但尚未实施。
+M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市契约联合修复均已通过主控验收。M0-2C 已在现有唯一 CollectionItem、CollectionRepository 和抽取契约上完成事务化自动保存、幂等、短期 Undo、允许字段修改、版本保护和逻辑删除；`0005` 增加必要候选线索及两张操作关联表。当前等待主控独立验收，M0-2D 保持未开始且不允许开始。
 
 ## M0 状态
 
@@ -21,7 +21,7 @@ M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市�
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
-| M0-2 文字收藏 | 进行中 | M0-2A、M0-2B 已完成；M0-2C 前置条件满足且未开始 |
+| M0-2 文字收藏 | 进行中 | M0-2A、M0-2B 已完成；M0-2C 待验收，M0-2D 未开始 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
@@ -46,7 +46,7 @@ M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市�
 
 ## 下一步
 
-从本交接文档提交后的最新 `main` 继续使用 `codex/m0-2-text-collection`，只实施 M0-2C 自动保存与可逆操作：复用现有抽取契约和唯一 Collection Repository，完成事务化自动保存、幂等、允许字段修改、逻辑删除和 Undo。不得提前实现 M0-2D API、M0-3 POI、高德、前端或真实付费调用。
+主控/QA 从本阶段提交进行独立离线复测，重点检查并发幂等、Undo 原子性、版本冲突、用户隔离、`0004 ↔ 0005` 安全往返与范围边界；验收通过后才决定是否纯快进集成。M0-2D API、M0-3 POI、高德、前端和真实付费调用仍不得开始。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -439,3 +439,20 @@ M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市�
 - 安全与真实调用：没有未关闭的 P0/P1；未读取或打印 `.env`，未运行 `real_provider`，真实模型、百炼、高德、外部消息及其他真实或付费 API 调用均为 0
 - 已知风险：新版 Prompt 尚未通过真实模型验证；迁移与 ORM 仅在 SQLite/macOS/Python 3.13.5 验证，未在 PostgreSQL、Windows 或 Python 3.11/3.12 复测；这些不阻塞当前离线 M0-2B 完成
 - 下一步：M0-2C 前置条件已满足；从本交接文档提交后的最新 `main` 继续使用 `codex/m0-2-text-collection`，只实现自动保存、幂等、允许字段修改、逻辑删除和 Undo，完成后交回主控验收
+
+#### 2026-07-21｜M0-2C｜待验收
+
+- 分支与基线：`codex/m0-2-text-collection`；开始门禁确认 `main`、`origin/main` 和 HEAD 均严格等于指定基线 `8d47d762020b4371c8bfbd62f9ff763921c0a150`，既有阶段分支从 `05779ead...` 以 `--ff-only` 纯快进到该基线，未删除或重建；工作区修改前干净。阶段提交在本记录完成后创建，完整 SHA 见最终交接报告
+- 自动保存：新增唯一应用层 `CollectionWriteService`，只消费 `ExtractionOutcome.CANDIDATES`；Source、幂等操作、全部 CollectionItem、CollectionSource 与 Undo 操作条目在单个事务中提交，任一步失败整体回滚。多候选共享一个 Source，输入对象保持不变；非候选三类结果不创建收藏或写操作
+- 候选与状态：原位扩展唯一 CollectionItem，持久化商圈、地标、地铁站、Event 起止时间线索、missing_fields 和 uncertainties；`city_hint` 继续可空且可保存深圳、广州、上海或其他合法文本，不生成正式 city_code。唯一确定性映射把 M0-3 前所有 Place 保存为 `pending_details`，不伪造 POI 或 `pending_selection`；Event 仅在精确起止时间齐全时映射为 `active`，否则为 `pending_details`
+- 幂等与并发：请求只保存 Source 与 ExtractionResult 规范化内容的 SHA-256 指纹，不保存原文、Prompt、模型响应、Header 或密钥；数据库以 `(user_id, idempotency_key)` 和 `(user_id, source_id)` 两个唯一约束阻止重复消息、并发同 key 与同来源重试。相同有效请求返回原有有序条目，不新增 Source/收藏/关联/Undo 操作，也不再次返回明文 Token；不同载荷稳定返回幂等冲突；不同用户可复用相同 key
+- Undo：使用 `secrets.token_urlsafe(32)` 生成不可预测 Token，默认有效期 10 分钟且最大允许 24 小时；首次成功结果使用 `SecretStr` 只返回一次，数据库只保存 SHA-256 哈希并对哈希唯一。Token 绑定 user 与操作组；有效 Undo 只通过既有状态机把本次新建条目逻辑删除，不删除 Source/CollectionSource；多条一次撤销、重复撤销、已删除条目、错误用户、随机 Token、到期临界和过期、单条失败全组回滚均有覆盖
+- 修改与删除：新增 extra-forbid 的显式 `CollectionItemPatch`，只开放 title、city_hint、位置/时间线索、Event 起止时间、价格、标签、缺失字段与不确定项；禁止 id/user/kind/status/version/Source/幂等/Undo/正式城市/POI 等字段。Repository 使用条件 UPDATE 和 `expected_version` 防旧写覆盖，真实变化递增 version，无变化保持原版本与更新时间；非法价格配对、Event 时间、Place Event 字段、空标题与空白/超长 city_hint 继续由现有领域校验拒绝。删除只使用既有状态机进入 deleted，重复删除幂等，默认查询隐藏、include_inactive 可复核；跨用户和不存在资源保持同一安全结果
+- 数据结构与迁移：只新增 `20260721_0005_collection_reversible_writes.py`，`down_revision=20260721_0004`，未修改 `0001`–`0004`。`collection_items` 增加七个候选元数据列；新增 `collection_write_operations` 和 `collection_write_operation_items`，使用命名主键、唯一、检查与复合所有权外键，操作内 sequence 保留原结果顺序。唯一索引覆盖 key、Source、Undo 哈希和操作顺序查询；不创建 M0-2D、POI、Job、Approval 或其他后续表
+- 降级安全：`0005 → 0004` 在任何 DDL 前检查两张操作表与新增候选字段；存在任何可逆操作或不可表示候选数据时明确拒绝，revision、结构和数据保持不变；空操作且新字段为空的兼容数据可无损降级并再次升级。全新数据库 upgrade head、`0004 → 0005`、兼容数据往返、两类不兼容原子失败、约束/索引/外键、单一 head 与 `alembic check` 均有自动化覆盖
+- 当前环境验证：项目 `.venv` 下 `pip check`、Ruff、strict mypy（53 个源文件）全部通过；规定阶段聚焦 215 passed；非真实全集 457 passed/1 deselected；core 118 passed；迁移 15 passed；默认全集 457 passed/1 skipped。M0-2C 单元/集成/迁移聚焦 34 passed
+- 全新环境验证：仓库外 `/tmp/shiguang-m02c-qa.3kGwRt` 全新 Python 3.14.0 虚拟环境完成 `pip install -e ".[dev]"` 与 `pip check`；Ruff、strict mypy、215 项阶段聚焦、457 项非真实、118 项 core、15 项迁移和默认 457 项全部得到同样结果。临时 `/tmp` pytest 插件同时封锁 `socket.connect`、`connect_ex`、`create_connection` 与 DNS `getaddrinfo` 后，457 个非真实测试再次通过、1 deselected
+- Alembic CLI：仓库外临时 SQLite 依次执行 `heads`、全新 `upgrade head`、`downgrade 20260721_0004`、再次 `upgrade head` 和 `check` 全部退出 0；唯一 head 为 `20260721_0005`，无待生成迁移
+- 安全、范围与冗余：未读取或打印 `.env`，未设置真实测试开关，未运行 `real_provider`，百炼、高德、网络、外部消息和真实/付费 API 调用均为 0。未修改 AgentRunner、ToolRegistry、ModelProvider 或 `nanobot_core`；未实现 M0-2D 路由/Demo/HTTP Schema、M0-3 POI/正式城市/高德、URL/截图/OCR、计划、前端、SSE 或渠道 Adapter。CollectionWriteService、CollectionRepository、SqlAlchemyCollectionRepository、CollectionItem、TextExtractionService、AgentRunner、ToolRegistry 与 ModelProvider 均各只有一套正式实现；Git 未包含 `.env`、数据库、缓存、虚拟环境、Token 或响应快照
+- 已知风险：当前 ORM、并发与迁移只在 SQLite、macOS、Python 3.14.0（另由现有 `.venv` 回归）验证，尚未在 PostgreSQL、Windows 或 Python 3.11/3.12 复测；并发 SQLite 测试证明数据库唯一约束收敛到单一结果，但更高负载锁竞争留待 M1 PostgreSQL 阶段验证。M0-3 前 Place 按要求保持 `pending_details`，正式地点确认和计划资格必须由后续唯一 PoiReference/匹配流程建立
+- 下一步：主控使用阶段提交独立复查设计、范围与全部命令；通过前 M0-2C 保持待验收，M0-2D 保持未开始。本分支不合并 `main`、不推送、不开始下一阶段、不执行真实或付费调用

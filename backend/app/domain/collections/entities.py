@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.domain.collections.candidate_metadata import CandidateField, Uncertainty
 from app.domain.collections.statuses import (
     CollectionStatus,
     ensure_persistable_collection_status,
@@ -289,11 +290,24 @@ class CollectionItem(DomainModel):
     city_hint: str | None = Field(default=None, max_length=100)
     district: str | None = Field(default=None, max_length=100)
     address: str | None = Field(default=None, max_length=500)
+    business_district: str | None = Field(default=None, max_length=100)
+    landmark: str | None = Field(default=None, max_length=160)
+    metro_station: str | None = Field(default=None, max_length=100)
     event_start_at: datetime | None = None
     event_end_at: datetime | None = None
+    event_start_clue: str | None = Field(default=None, max_length=120)
+    event_end_clue: str | None = Field(default=None, max_length=120)
     price_amount: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
     price_currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     tags: tuple[str, ...] = Field(default_factory=tuple, max_length=20)
+    missing_fields: tuple[CandidateField, ...] = Field(
+        default_factory=tuple,
+        max_length=len(CandidateField),
+    )
+    uncertainties: tuple[Uncertainty, ...] = Field(
+        default_factory=tuple,
+        max_length=len(CandidateField),
+    )
     status: CollectionStatus
     version: int = Field(default=1, ge=1)
     created_at: datetime
@@ -317,7 +331,15 @@ class CollectionItem(DomainModel):
             raise ValueError("title cannot be blank")
         return normalized
 
-    @field_validator("district", "address")
+    @field_validator(
+        "district",
+        "address",
+        "business_district",
+        "landmark",
+        "metro_station",
+        "event_start_clue",
+        "event_end_clue",
+    )
     @classmethod
     def reject_blank_optional_text(cls, value: str | None) -> str | None:
         if value is not None and not value.strip():
@@ -360,6 +382,27 @@ class CollectionItem(DomainModel):
             normalized.append(clean)
         return tuple(normalized)
 
+    @field_validator("missing_fields")
+    @classmethod
+    def validate_missing_fields(
+        cls,
+        value: tuple[CandidateField, ...],
+    ) -> tuple[CandidateField, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("missing_fields must be unique")
+        return value
+
+    @field_validator("uncertainties")
+    @classmethod
+    def validate_uncertainties(
+        cls,
+        value: tuple[Uncertainty, ...],
+    ) -> tuple[Uncertainty, ...]:
+        fields = [item.field for item in value]
+        if len(set(fields)) != len(fields):
+            raise ValueError("uncertainties must contain at most one reason per field")
+        return value
+
     @model_validator(mode="after")
     def validate_semantics(self) -> Self:
         ensure_persistable_collection_status(self.status)
@@ -369,11 +412,34 @@ class CollectionItem(DomainModel):
             if self.event_end_at <= self.event_start_at:
                 raise ValueError("event_end_at must be after event_start_at")
         if self.kind is CollectionKind.PLACE and (
-            self.event_start_at is not None or self.event_end_at is not None
+            self.event_start_at is not None
+            or self.event_end_at is not None
+            or self.event_start_clue is not None
+            or self.event_end_clue is not None
         ):
-            raise ValueError("Place items cannot carry Event schedule fields")
+            raise ValueError("Place items cannot carry Event schedule fields or clues")
         if (self.price_amount is None) is not (self.price_currency is None):
             raise ValueError("price amount and currency must be provided together")
+
+        missing = set(self.missing_fields)
+        uncertain = {item.field for item in self.uncertainties}
+        if missing.intersection(uncertain):
+            raise ValueError("a field cannot be both missing and uncertain")
+        present_fields = {
+            CandidateField.CITY_HINT: self.city_hint is not None,
+            CandidateField.DISTRICT: self.district is not None,
+            CandidateField.ADDRESS: self.address is not None,
+            CandidateField.BUSINESS_DISTRICT: self.business_district is not None,
+            CandidateField.LANDMARK: self.landmark is not None,
+            CandidateField.METRO_STATION: self.metro_station is not None,
+            CandidateField.EVENT_START_AT: self.event_start_at is not None,
+            CandidateField.EVENT_END_AT: self.event_end_at is not None,
+            CandidateField.PRICE: self.price_amount is not None,
+            CandidateField.TAGS: bool(self.tags),
+        }
+        for field, is_present in present_fields.items():
+            if is_present and field in missing:
+                raise ValueError(f"{field.value} cannot be both present and missing")
         return self
 
 

@@ -145,3 +145,26 @@ CollectionItem status constraint applied directly in that single unpublished rev
 Downgrading to `20260721_0002` removes only those six tables and preserves AgentRun/ToolRun.
 M0-2A includes no extractor, model invocation, auto-save, Undo token, HTTP collection route, POI
 matching, or Demo initialization.
+
+## M0-2B/C extraction and reversible writes
+
+The single `TextExtractionService` returns strict provider-neutral Place/Event candidates and
+performs at most one structural repair. `CollectionWriteService` consumes only candidate
+outcomes and uses the existing `SqlAlchemyCollectionRepository` in one transaction to create or
+reuse a Source, create all CollectionItems and CollectionSource links, persist one idempotency
+operation, and associate every newly created item with one Undo group.
+
+Revision `20260721_0005` extends the existing CollectionItem with business district, landmark,
+metro, Event time clues, missing fields, and uncertainties. It adds
+`collection_write_operations` and `collection_write_operation_items`; unique database constraints
+cover `(user_id, idempotency_key)`, `(user_id, source_id)`, the Undo token hash, and operation
+sequence. Composite foreign keys preserve user ownership. A downgrade to `0004` is allowed only
+when those operation tables are empty and no new candidate metadata would be lost.
+
+Undo tokens use cryptographically secure randomness, are returned only on the creating call,
+expire after ten minutes by default, and are stored only as SHA-256 hashes. Replays return the
+original ordered items without a second plaintext token. Patch and delete calls require an
+explicit `user_id`; patches also require `expected_version`, increment only on a real change,
+and expose only allowlisted fields. Logical deletion immediately removes items from default
+queries while leaving Source and historical links intact. This phase adds no HTTP routes, real
+provider calls, POI matching, formal city code, or planning behavior.

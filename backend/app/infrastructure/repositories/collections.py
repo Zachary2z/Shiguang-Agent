@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.collections import (
     DEFAULT_COLLECTION_STATUSES,
+    CandidateField,
     CollectionItem,
     CollectionKind,
     CollectionSource,
     CollectionStatus,
+    CollectionWriteOperation,
     Message,
     MessageContentType,
     MessageRole,
@@ -26,13 +30,16 @@ from app.domain.collections import (
     SourceParseStatus,
     SourceType,
     SupportedTimezone,
+    Uncertainty,
     User,
     UserMode,
+    VersionConflictError,
     ensure_collection_transition,
     ensure_persistable_collection_status,
 )
 from app.domain.identifiers import (
     validate_collection_item_id,
+    validate_collection_write_operation_id,
     validate_message_id,
     validate_session_id,
     validate_source_id,
@@ -42,6 +49,8 @@ from app.domain.time import as_utc, require_aware_utc, required_utc
 from app.infrastructure.db.models import (
     CollectionItemModel,
     CollectionSourceModel,
+    CollectionWriteOperationItemModel,
+    CollectionWriteOperationModel,
     MessageModel,
     SessionModel,
     SourceModel,
@@ -246,11 +255,20 @@ class SqlAlchemyCollectionRepository:
             city_hint=item.city_hint,
             district=item.district,
             address=item.address,
+            business_district=item.business_district,
+            landmark=item.landmark,
+            metro_station=item.metro_station,
             event_start_at=item.event_start_at,
             event_end_at=item.event_end_at,
+            event_start_clue=item.event_start_clue,
+            event_end_clue=item.event_end_clue,
             price_amount=item.price_amount,
             price_currency=item.price_currency,
             tags_json=list(item.tags),
+            missing_fields_json=[field.value for field in item.missing_fields],
+            uncertainties_json=[
+                uncertainty.model_dump(mode="json") for uncertainty in item.uncertainties
+            ],
             status=item.status.value,
             version=item.version,
             created_at=item.created_at,
@@ -326,6 +344,97 @@ class SqlAlchemyCollectionRepository:
             await self._session.flush()
         return self._collection_item(row)
 
+    async def update_collection_item(
+        self,
+        *,
+        user_id: str,
+        item: CollectionItem,
+        expected_version: int,
+    ) -> CollectionItem:
+        owner = validate_user_id(user_id)
+        identifier = validate_collection_item_id(item.id)
+        if expected_version < 1 or isinstance(expected_version, bool):
+            raise ValueError("expected_version must be a positive integer")
+        row = await self._require_collection_item(owner, identifier)
+        current = self._collection_item(row)
+        if row.version != expected_version:
+            raise VersionConflictError
+        if (
+            item.user_id != owner
+            or item.kind is not current.kind
+            or item.status is not current.status
+            or item.version != current.version
+            or item.created_at != current.created_at
+        ):
+            raise ValueError("immutable CollectionItem fields cannot be changed")
+        if self._editable_values(item) == self._editable_values(current):
+            return current
+
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(CollectionItemModel)
+                .where(
+                    CollectionItemModel.id == identifier,
+                    CollectionItemModel.user_id == owner,
+                    CollectionItemModel.version == expected_version,
+                )
+                .values(
+                    **self._editable_storage_values(item),
+                    version=expected_version + 1,
+                    updated_at=item.updated_at,
+                )
+            ),
+        )
+        if result.rowcount != 1:
+            raise VersionConflictError
+        updated = await self._require_collection_item(owner, identifier)
+        return self._collection_item(updated)
+
+    async def delete_collection_item(
+        self,
+        *,
+        user_id: str,
+        collection_item_id: str,
+        updated_at: datetime,
+        expected_version: int | None = None,
+    ) -> CollectionItem:
+        owner = validate_user_id(user_id)
+        identifier = validate_collection_item_id(collection_item_id)
+        timestamp = require_aware_utc(updated_at)
+        if expected_version is not None and (
+            expected_version < 1 or isinstance(expected_version, bool)
+        ):
+            raise ValueError("expected_version must be a positive integer")
+        row = await self._require_collection_item(owner, identifier)
+        current = CollectionStatus(row.status)
+        if current is CollectionStatus.DELETED:
+            return self._collection_item(row)
+        if expected_version is not None and row.version != expected_version:
+            raise VersionConflictError
+        ensure_collection_transition(current, CollectionStatus.DELETED)
+        version = row.version
+        result = cast(
+            CursorResult[Any],
+            await self._session.execute(
+                update(CollectionItemModel)
+                .where(
+                    CollectionItemModel.id == identifier,
+                    CollectionItemModel.user_id == owner,
+                    CollectionItemModel.version == version,
+                )
+                .values(
+                    status=CollectionStatus.DELETED.value,
+                    version=version + 1,
+                    updated_at=timestamp,
+                )
+            ),
+        )
+        if result.rowcount != 1:
+            raise VersionConflictError
+        updated = await self._require_collection_item(owner, identifier)
+        return self._collection_item(updated)
+
     async def add_collection_source(
         self,
         *,
@@ -370,6 +479,154 @@ class SqlAlchemyCollectionRepository:
         ).all()
         return [self._collection_source(row) for row in rows]
 
+    async def add_write_operation(
+        self,
+        *,
+        user_id: str,
+        operation: CollectionWriteOperation,
+        undo_token_hash: str,
+    ) -> CollectionWriteOperation:
+        owner = validate_user_id(user_id)
+        if owner != operation.user_id:
+            raise ValueError("user_id must match CollectionWriteOperation.user_id")
+        if len(undo_token_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in undo_token_hash
+        ):
+            raise ValueError("undo_token_hash must be a lowercase SHA-256 digest")
+        await self._require_source(owner, operation.source_id)
+        row = CollectionWriteOperationModel(
+            id=operation.id,
+            user_id=owner,
+            source_id=operation.source_id,
+            idempotency_key=operation.idempotency_key,
+            request_fingerprint=operation.request_fingerprint,
+            undo_token_hash=undo_token_hash,
+            undo_expires_at=operation.undo_expires_at,
+            undone_at=operation.undone_at,
+            created_at=operation.created_at,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return self._write_operation(row)
+
+    async def get_write_operation_by_idempotency_key(
+        self,
+        *,
+        user_id: str,
+        idempotency_key: str,
+    ) -> CollectionWriteOperation | None:
+        owner = validate_user_id(user_id)
+        row = await self._session.scalar(
+            select(CollectionWriteOperationModel).where(
+                CollectionWriteOperationModel.user_id == owner,
+                CollectionWriteOperationModel.idempotency_key == idempotency_key,
+            )
+        )
+        return None if row is None else self._write_operation(row)
+
+    async def get_write_operation_by_source(
+        self,
+        *,
+        user_id: str,
+        source_id: str,
+    ) -> CollectionWriteOperation | None:
+        owner = validate_user_id(user_id)
+        identifier = validate_source_id(source_id)
+        row = await self._session.scalar(
+            select(CollectionWriteOperationModel).where(
+                CollectionWriteOperationModel.user_id == owner,
+                CollectionWriteOperationModel.source_id == identifier,
+            )
+        )
+        return None if row is None else self._write_operation(row)
+
+    async def get_write_operation_by_undo_hash(
+        self,
+        *,
+        user_id: str,
+        undo_token_hash: str,
+    ) -> CollectionWriteOperation | None:
+        owner = validate_user_id(user_id)
+        row = await self._session.scalar(
+            select(CollectionWriteOperationModel).where(
+                CollectionWriteOperationModel.user_id == owner,
+                CollectionWriteOperationModel.undo_token_hash == undo_token_hash,
+            )
+        )
+        return None if row is None else self._write_operation(row)
+
+    async def add_write_operation_item(
+        self,
+        *,
+        user_id: str,
+        operation_id: str,
+        collection_item_id: str,
+        sequence: int,
+        created_at: datetime,
+    ) -> None:
+        owner = validate_user_id(user_id)
+        operation_identifier = validate_collection_write_operation_id(operation_id)
+        item_identifier = validate_collection_item_id(collection_item_id)
+        timestamp = require_aware_utc(created_at)
+        if sequence < 1 or isinstance(sequence, bool):
+            raise ValueError("operation item sequence must be a positive integer")
+        await self._require_write_operation(owner, operation_identifier)
+        await self._require_collection_item(owner, item_identifier)
+        self._session.add(
+            CollectionWriteOperationItemModel(
+                operation_id=operation_identifier,
+                collection_item_id=item_identifier,
+                user_id=owner,
+                sequence=sequence,
+                created_at=timestamp,
+            )
+        )
+        await self._session.flush()
+
+    async def list_write_operation_items(
+        self,
+        *,
+        user_id: str,
+        operation_id: str,
+    ) -> list[CollectionItem]:
+        owner = validate_user_id(user_id)
+        identifier = validate_collection_write_operation_id(operation_id)
+        rows = (
+            await self._session.scalars(
+                select(CollectionItemModel)
+                .join(
+                    CollectionWriteOperationItemModel,
+                    CollectionWriteOperationItemModel.collection_item_id
+                    == CollectionItemModel.id,
+                )
+                .where(
+                    CollectionWriteOperationItemModel.operation_id == identifier,
+                    CollectionWriteOperationItemModel.user_id == owner,
+                    CollectionItemModel.user_id == owner,
+                )
+                .order_by(
+                    CollectionWriteOperationItemModel.sequence,
+                )
+            )
+        ).all()
+        return [self._collection_item(row) for row in rows]
+
+    async def mark_write_operation_undone(
+        self,
+        *,
+        user_id: str,
+        operation_id: str,
+        undone_at: datetime,
+    ) -> CollectionWriteOperation:
+        owner = validate_user_id(user_id)
+        identifier = validate_collection_write_operation_id(operation_id)
+        timestamp = require_aware_utc(undone_at)
+        row = await self._require_write_operation(owner, identifier)
+        if row.undone_at is None:
+            row.undone_at = timestamp
+            await self._session.flush()
+        return self._write_operation(row)
+
     async def _require_user(self, user_id: str) -> UserModel:
         row = await self._session.scalar(select(UserModel).where(UserModel.id == user_id))
         if row is None:
@@ -407,6 +664,21 @@ class SqlAlchemyCollectionRepository:
             select(CollectionItemModel).where(
                 CollectionItemModel.id == collection_item_id,
                 CollectionItemModel.user_id == user_id,
+            )
+        )
+        if row is None:
+            raise ResourceNotFoundError
+        return row
+
+    async def _require_write_operation(
+        self,
+        user_id: str,
+        operation_id: str,
+    ) -> CollectionWriteOperationModel:
+        row = await self._session.scalar(
+            select(CollectionWriteOperationModel).where(
+                CollectionWriteOperationModel.id == operation_id,
+                CollectionWriteOperationModel.user_id == user_id,
             )
         )
         if row is None:
@@ -473,11 +745,26 @@ class SqlAlchemyCollectionRepository:
             city_hint=row.city_hint,
             district=row.district,
             address=row.address,
+            business_district=row.business_district,
+            landmark=row.landmark,
+            metro_station=row.metro_station,
             event_start_at=as_utc(row.event_start_at),
             event_end_at=as_utc(row.event_end_at),
+            event_start_clue=row.event_start_clue,
+            event_end_clue=row.event_end_clue,
             price_amount=row.price_amount,
             price_currency=row.price_currency,
             tags=tuple(row.tags_json),
+            missing_fields=tuple(
+                CandidateField(value) for value in row.missing_fields_json
+            ),
+            uncertainties=tuple(
+                Uncertainty(
+                    field=CandidateField(value["field"]),
+                    reason=value["reason"],
+                )
+                for value in row.uncertainties_json
+            ),
             status=CollectionStatus(row.status),
             version=row.version,
             created_at=required_utc(row.created_at),
@@ -492,3 +779,62 @@ class SqlAlchemyCollectionRepository:
             source_id=row.source_id,
             created_at=required_utc(row.created_at),
         )
+
+    @staticmethod
+    def _write_operation(
+        row: CollectionWriteOperationModel,
+    ) -> CollectionWriteOperation:
+        return CollectionWriteOperation(
+            id=row.id,
+            user_id=row.user_id,
+            source_id=row.source_id,
+            idempotency_key=row.idempotency_key,
+            request_fingerprint=row.request_fingerprint,
+            undo_expires_at=required_utc(row.undo_expires_at),
+            undone_at=as_utc(row.undone_at),
+            created_at=required_utc(row.created_at),
+        )
+
+    @staticmethod
+    def _editable_values(item: CollectionItem) -> tuple[object, ...]:
+        return (
+            item.title,
+            item.city_hint,
+            item.district,
+            item.address,
+            item.business_district,
+            item.landmark,
+            item.metro_station,
+            item.event_start_at,
+            item.event_end_at,
+            item.event_start_clue,
+            item.event_end_clue,
+            item.price_amount,
+            item.price_currency,
+            item.tags,
+            item.missing_fields,
+            item.uncertainties,
+        )
+
+    @staticmethod
+    def _editable_storage_values(item: CollectionItem) -> dict[str, object]:
+        return {
+            "title": item.title,
+            "city_hint": item.city_hint,
+            "district": item.district,
+            "address": item.address,
+            "business_district": item.business_district,
+            "landmark": item.landmark,
+            "metro_station": item.metro_station,
+            "event_start_at": item.event_start_at,
+            "event_end_at": item.event_end_at,
+            "event_start_clue": item.event_start_clue,
+            "event_end_clue": item.event_end_clue,
+            "price_amount": item.price_amount,
+            "price_currency": item.price_currency,
+            "tags_json": list(item.tags),
+            "missing_fields_json": [field.value for field in item.missing_fields],
+            "uncertainties_json": [
+                uncertainty.model_dump(mode="json") for uncertainty in item.uncertainties
+            ],
+        }

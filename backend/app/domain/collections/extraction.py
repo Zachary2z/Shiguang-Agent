@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -10,17 +9,16 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.domain.collections.candidate_metadata import (
+    CandidateField,
+    Uncertainty,
+    normalize_optional_candidate_text,
+    normalize_required_candidate_text,
+)
 from app.domain.collections.entities import CollectionKind
 from app.domain.time import require_aware_utc
 
 MAX_EXTRACTION_CANDIDATES = 10
-
-_SENSITIVE_TEXT = re.compile(
-    r"(?:authorization\s*[:=]|set-cookie\s*:|cookie\s*[:=]|bearer\s+\S+|"
-    r"api[-_ ]?key\s*[:=]|\bsk-[a-z0-9]{8,})",
-    re.IGNORECASE,
-)
-
 
 class ExtractionOutcome(StrEnum):
     """Mutually exclusive outcomes of one text extraction attempt."""
@@ -51,51 +49,16 @@ class UnsupportedReason(StrEnum):
     OTHER = "other"
 
 
-class CandidateField(StrEnum):
-    """Provider-neutral fields that can be missing or uncertain."""
-
-    TITLE = "title"
-    CITY_HINT = "city_hint"
-    DISTRICT = "district"
-    ADDRESS = "address"
-    BUSINESS_DISTRICT = "business_district"
-    LANDMARK = "landmark"
-    METRO_STATION = "metro_station"
-    EVENT_START_AT = "event_start_at"
-    EVENT_END_AT = "event_end_at"
-    PRICE = "price"
-    TAGS = "tags"
-
-
 class ExtractionDomainModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
 
 def _normalize_required_text(value: str, *, field_name: str) -> str:
-    normalized = value.strip()
-    if not normalized:
-        raise ValueError(f"{field_name} cannot be blank")
-    if _SENSITIVE_TEXT.search(normalized) is not None:
-        raise ValueError(f"{field_name} contains disallowed sensitive text")
-    return normalized
+    return normalize_required_candidate_text(value, field_name=field_name)
 
 
 def _normalize_optional_text(value: str | None, *, field_name: str) -> str | None:
-    if value is None:
-        return None
-    return _normalize_required_text(value, field_name=field_name)
-
-
-class Uncertainty(ExtractionDomainModel):
-    """A field whose value or interpretation still needs confirmation."""
-
-    field: CandidateField
-    reason: str = Field(min_length=1, max_length=240, repr=False)
-
-    @field_validator("reason")
-    @classmethod
-    def validate_reason(cls, value: str) -> str:
-        return _normalize_required_text(value, field_name="uncertainty reason")
+    return normalize_optional_candidate_text(value, field_name=field_name)
 
 
 class _CandidateBase(ExtractionDomainModel):

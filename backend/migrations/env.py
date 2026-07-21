@@ -16,6 +16,8 @@ from app.infrastructure.db.models import (
     AgentRunModel,
     CollectionItemModel,
     CollectionSourceModel,
+    CollectionWriteOperationItemModel,
+    CollectionWriteOperationModel,
     MessageModel,
     SessionModel,
     SourceModel,
@@ -39,6 +41,8 @@ assert MessageModel.metadata is target_metadata
 assert SourceModel.metadata is target_metadata
 assert CollectionItemModel.metadata is target_metadata
 assert CollectionSourceModel.metadata is target_metadata
+assert CollectionWriteOperationModel.metadata is target_metadata
+assert CollectionWriteOperationItemModel.metadata is target_metadata
 
 
 def ensure_sqlite_directory(database_url: str) -> None:
