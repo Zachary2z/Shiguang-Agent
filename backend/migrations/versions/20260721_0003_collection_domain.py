@@ -26,7 +26,6 @@ _SOURCE_TYPES = ("text", "url", "image")
 _SOURCE_PARSE_STATUSES = ("pending", "parsed", "failed")
 _COLLECTION_KINDS = ("place", "event")
 _COLLECTION_STATUSES = (
-    "recognizing",
     "active",
     "pending_selection",
     "pending_details",

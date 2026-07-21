@@ -10,7 +10,7 @@ from alembic import command
 from alembic.config import Config
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-HEAD_REVISION = "20260721_0004"
+HEAD_REVISION = "20260721_0003"
 PREVIOUS_REVISION = "20260721_0002"
 HEAD_TABLES = {
     "agent_runs",
@@ -276,66 +276,49 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
     assert table_names(database_path) == HEAD_TABLES
 
 
-def test_transient_collection_cleanup_migration_preserves_failure_source_and_real_items(
+def test_collection_migration_from_previous_revision_accepts_only_final_statuses(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    database_path = tmp_path / "transient-cleanup.db"
+    database_path = tmp_path / "collection-statuses.db"
     alembic_config = _alembic_config(monkeypatch, database_path)
     user_id = "usr_11111111111111111111111111111111"
-    source_id = "src_11111111111111111111111111111111"
-    recognizing_id = "col_11111111111111111111111111111111"
-    active_id = "col_22222222222222222222222222222222"
+    persisted_statuses = (
+        "active",
+        "pending_selection",
+        "pending_details",
+        "visited",
+        "archived",
+        "deleted",
+    )
 
-    command.upgrade(alembic_config, "20260721_0003")
-    with sqlite3.connect(database_path) as connection:
-        connection.execute("PRAGMA foreign_keys=ON")
-        _insert_user(connection, user_id)
-        _insert_source(connection, source_id=source_id, user_id=user_id)
-        connection.execute(
-            "UPDATE sources SET parse_status = 'failed' WHERE id = ?",
-            (source_id,),
-        )
-        _insert_collection_item(
-            connection,
-            item_id=recognizing_id,
-            user_id=user_id,
-            status="recognizing",
-        )
-        _insert_collection_item(
-            connection,
-            item_id=active_id,
-            user_id=user_id,
-        )
-        for item_id in (recognizing_id, active_id):
-            connection.execute(
-                """
-                INSERT INTO collection_sources (
-                    collection_item_id, source_id, user_id, created_at
-                ) VALUES (?, ?, ?, ?)
-                """,
-                (item_id, source_id, user_id, "2026-07-21T00:00:00+00:00"),
-            )
-        connection.commit()
+    command.upgrade(alembic_config, PREVIOUS_REVISION)
+    assert current_revision(database_path) == PREVIOUS_REVISION
+    assert table_names(database_path) == {"agent_runs", "alembic_version", "tool_runs"}
 
     command.upgrade(alembic_config, "head")
     assert current_revision(database_path) == HEAD_REVISION
+    assert table_names(database_path) == HEAD_TABLES
     with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        _insert_user(connection, user_id)
+        for index, status in enumerate(persisted_statuses, start=1):
+            _insert_collection_item(
+                connection,
+                item_id=f"col_{index:032x}",
+                user_id=user_id,
+                status=status,
+            )
+        connection.commit()
+
         assert connection.execute(
-            "SELECT parse_status FROM sources WHERE id = ?",
-            (source_id,),
-        ).fetchone() == ("failed",)
-        assert connection.execute(
-            "SELECT id, status FROM collection_items ORDER BY id"
-        ).fetchall() == [(active_id, "active")]
-        assert connection.execute(
-            "SELECT collection_item_id FROM collection_sources"
-        ).fetchall() == [(active_id,)]
-        for transient_status in ("recognizing", "failed"):
+            "SELECT status FROM collection_items ORDER BY id"
+        ).fetchall() == [(status,) for status in persisted_statuses]
+        for index, transient_status in enumerate(("recognizing", "failed"), start=7):
             with pytest.raises(sqlite3.IntegrityError):
                 _insert_collection_item(
                     connection,
-                    item_id="col_33333333333333333333333333333333",
+                    item_id=f"col_{index:032x}",
                     user_id=user_id,
                     status=transient_status,
                 )

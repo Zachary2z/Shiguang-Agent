@@ -140,8 +140,8 @@ CollectionItem statuses. A CollectionItem is created only for a real collection 
 migration check constraint enforce that invariant.
 
 Revision `20260721_0003` creates only `users`, `sessions`, `messages`, `sources`,
-`collection_items`, and `collection_sources` on top of `20260721_0002`. Revision
-`20260721_0004` removes legacy transient collection rows and tightens the status constraint.
+`collection_items`, and `collection_sources` on top of `20260721_0002`, with the final
+CollectionItem status constraint applied directly in that single unpublished revision.
 Downgrading to `20260721_0002` removes only those six tables and preserves AgentRun/ToolRun.
 M0-2A includes no extractor, model invocation, auto-save, Undo token, HTTP collection route, POI
 matching, or Demo initialization.
