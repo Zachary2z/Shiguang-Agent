@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-1C AgentRun 与 ToolRun |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-1c-run-tracking |
+| 当前子阶段 | M0-2A 领域模型 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-21 |
-| 阻塞项 | 无；等待主控离线 QA 与集成决定 |
+| 阻塞项 | 无；M0-2A 前置条件已满足 |
 
 ## 当前任务
 
-M0-1C 已在指定基线 `80554c2e278048e8bc0a9b038ca36ce90d699838` 上完成开发并进入待验收：唯一 Runner 已在核心内部强制 8 次绝对工具调用和 60 秒总时限硬上限，并保留安全观察事件与重复调用识别；应用层已增加 AgentRun/ToolRun 契约、两张 SQLite 表、Repository/服务、trace 查询和 Decimal 费用估算。主控验收缺陷已修复，仍需复验；未经通过不得开始 M0-2。
+M0-1C 已通过主控独立 QA 并纯快进集成到 `main`：唯一 Runner 在核心内部强制 8 次绝对工具调用和 60 秒总时限硬上限，AgentRun/ToolRun 契约、两张 SQLite 表、Repository/服务、trace 查询、Token/Decimal 费用估算及安全运行摘要均已验收。M0-2A 领域模型前置条件已满足，但尚未开始开发。
 
 ## M0 状态
 
@@ -20,8 +20,8 @@ M0-1C 已在指定基线 `80554c2e278048e8bc0a9b038ca36ce90d699838` 上完成开
 | M0-0A 项目基线与资料迁移 | 已完成 | 主控验收通过，阶段提交 `79848c7` 已集成到 `main` |
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
-| M0-1 模型与运行记录 | 进行中 | M0-1A、M0-1B 已完成；M0-1C 待验收 |
-| M0-2 文字收藏 | 未开始 | 依赖 M0-1C 主控验收；当前不允许开始 |
+| M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
+| M0-2 文字收藏 | 未开始 | M0-2A 领域模型前置条件已满足，允许开始 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
@@ -40,10 +40,11 @@ M0-1C 已在指定基线 `80554c2e278048e8bc0a9b038ca36ce90d699838` 上完成开
 - M0-0C 已完成：唯一且业务无关的 Nanobot Core、结构化 ToolResult、Provider 抽象、离线 Fake 测试和 Nanobot MIT 许可证归属已通过主控验收。
 - M0-1A 已完成：供应商无关的模型响应元数据、Token/完成原因契约、五类 Provider 错误和完全离线 Fake 覆盖已通过主控验收。
 - M0-1B 已完成：唯一应用层 OpenAI-compatible 百炼 Provider、固定非思考模式、离线错误与安全覆盖及一次真实 Tool Calling 链路已通过主控验收。
+- M0-1C 已完成：唯一 Runner 的运行硬上限、AgentRun/ToolRun 持久化、trace 查询、运行终结、Token/费用汇总、安全摘要和迁移往返已通过主控验收。
 
 ## 下一步
 
-主控/QA 应从指定基线复核 `codex/m0-1c-run-tracking` 的阶段提交，重点验证迁移往返、状态终结、绝对工具计数、活跃调用取消、重复参数指纹、未知 Token/费用、安全摘要和唯一公共实现。验收通过前不得合并后继续 M0-2；本开发分支不推送、不合并 `main`、不调用真实 API。
+从本状态文档提交后的最新 `main` 创建 `codex/m0-2-text-collection`，只实施 M0-2A：User、Session、Message、Source、CollectionItem、CollectionSource、收藏状态机、Repository 接口和用户隔离。不得提前实现结构化抽取、自动保存/Undo、收藏 API、高德、URL/截图或其他 M0-2B 及后续能力；未经新授权不得调用真实或付费 API。
 
 ## 阶段交接记录
 
@@ -263,3 +264,19 @@ M0-1C 已在指定基线 `80554c2e278048e8bc0a9b038ca36ce90d699838` 上完成开
 - 未完成：M0-1C 继续保持待验收；M0-2 继续保持未开始且不允许开始；本分支不合并、不推送，不执行任何真实或付费调用
 - 主控复测范围：构造器非法值与 1/8、60 边界；默认和直接构造下第 9 次工具调用不可执行；60 秒边界与活跃 Provider/Tool 取消；Settings 与核心常量一致性；两个唯一约束、额外普通索引缺失、trace/ToolRun 查询；Alembic 升降升；socket 封锁、范围、密钥/生成物和唯一公共实现扫描
 - 下一步：等待主控在本修复提交上独立复验；通过前停止开发，不进入 M0-2
+
+#### 2026-07-21｜M0-1C｜已完成（主控验收）
+
+- 分支：`main`（由 `codex/m0-1c-run-tracking` 纯快进集成）
+- 开发提交：`e8f18becffe1af23b9baff3c4e03db43c2a7496a`；硬上限与索引修复及集成 HEAD：`731e563a45353fc1ba7ecfc130be7a3477e6e6e1`
+- 集成结果：主控确认修复提交直接基于原开发提交，阶段分支包含指定 `main` 基线 `80554c2e278048e8bc0a9b038ca36ce90d699838`；纯快进合并无冲突、无额外代码变化，合并前后代码树哈希一致
+- 验收环境：指定 commit 的独立 `git archive`、全新 Python 3.13.5 虚拟环境；editable 安装与 `pip check` 通过，Ruff 通过，strict mypy 对 38 个源文件无问题
+- 自动化结果：非真实测试 241 通过、0 失败、1 deselected；核心测试 118 通过；迁移测试 2 通过；默认全集 241 通过、1 个真实测试 skipped；封锁 socket 连接和 DNS 后非真实测试再次 241 通过、1 deselected；合并后 Ruff、mypy 和 241 项非真实测试再次通过
+- 硬上限复验：直接构造只接受整数 `1..8` 和有限 `(0, 60]`；bool、0、负数、9、60.001、NaN 与正负 Infinity 被拒绝；默认第 9 次工具调用记录 blocked 且不执行；59.999 秒可完成、60 秒边界终止，活动 Provider/Tool 调用可取消
+- 数据与迁移：`20260721_0002` 升级、回滚至 `20260721_0001`、再次升级均成功；最终只新增 `agent_runs` 与 `tool_runs`，外键、检查和唯一约束生效；trace 与 `(agent_run_id, sequence)` 查询使用唯一索引，没有重复普通索引
+- 异常、边界、幂等与安全：Provider 五类错误、空响应、工具失败、循环/工具/重复限制、总超时、外部取消、数据库终结失败、未知/零 Token、多模型费用、trace 冲突和终态幂等均通过；Prompt、消息正文、原始工具参数/结果、异常细节、密钥、Authorization、Cookie 和完整供应商响应未进入数据库、公开摘要或 repr
+- 范围与冗余：未实现 M0-2、GET AgentRun API、SSE、Approval、自动重试/退避/熔断、PostgreSQL、前端或业务模型；AgentRunner、ToolRegistry、ModelProvider、OpenAI-compatible Provider、TokenUsage、ToolResult、AgentRun Repository 和 SDK 客户端构造均保持唯一，核心无应用/数据库反向依赖
+- 真实 API：本阶段没有真实集成要求，主控未读取本机 `.env`，未运行 `real_provider`，真实或付费调用为 0；此前 M0-1B 的单次授权不延续到本阶段或后续阶段
+- 验收结论：没有未关闭的 P0/P1；原 P1 硬上限和 P2 冗余索引均已关闭，M0-1C 完成标准满足
+- 已知风险：本轮仅在 macOS/Python 3.13.5 与 SQLite 验证，未在 Python 3.11/3.12、Windows 或 PostgreSQL 复测；这些不阻塞当前 M0 SQLite 阶段
+- 下一步：从本交接文档提交后的最新 `main` 创建 `codex/m0-2-text-collection`，只实施 M0-2A 领域模型；M0-2B 及后续仍不得提前开始
