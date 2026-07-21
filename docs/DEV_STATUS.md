@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-0C Nanobot 核心迁移 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-0c-nanobot-core |
+| 当前子阶段 | M0-1A Provider 契约 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-21 |
 | 阻塞项 | 无 |
 
 ## 当前任务
 
-M0-0C 已在规定分支完成最小 Nanobot Core、离线 Fake/Stub 测试、来源与许可证记录及工程配置，自测通过后停在待验收状态。当前未实现真实 Provider、运行记录、数据库业务模型或拾光业务，未开始 M0-1。
+M0-0C 已通过主控集成与 QA 验收，阶段提交 `5c4a8fb` 已快进集成到 `main`；M0-1A 前置条件已满足，可以从最新 `main` 创建规定分支开始 Provider 契约开发。
 
 ## M0 状态
 
@@ -19,8 +19,8 @@ M0-0C 已在规定分支完成最小 Nanobot Core、离线 Fake/Stub 测试、�
 |---|---|---|
 | M0-0A 项目基线与资料迁移 | 已完成 | 主控验收通过，阶段提交 `79848c7` 已集成到 `main` |
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
-| M0-0C Nanobot 核心迁移 | 待验收 | 最小核心和离线测试已完成，等待主控独立验收 |
-| M0-1 模型与运行记录 | 未开始 | 依赖 M0-0C |
+| M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
+| M0-1 模型与运行记录 | 未开始 | M0-1A 前置条件已满足，当前允许开始 |
 | M0-2 文字收藏 | 未开始 | 依赖 M0-1 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
@@ -37,16 +37,18 @@ M0-0C 已在规定分支完成最小 Nanobot Core、离线 Fake/Stub 测试、�
 - 已建立完整开发阶段文档和仓库级开发规则。
 - M0-0A 已完成：正式产品文档、技术方案与 UX 原型已迁入本仓库，README、Git 忽略规则和 Nanobot 许可证归属说明已建立。
 - M0-0B 已完成：FastAPI 后端骨架、测试隔离配置、异步 SQLite、Alembic 空基线迁移、安全请求日志和自动化测试基线已通过主控验收。
+- M0-0C 已完成：唯一且业务无关的 Nanobot Core、结构化 ToolResult、Provider 抽象、离线 Fake 测试和 Nanobot MIT 许可证归属已通过主控验收。
 
 ## 下一步
 
-主控/QA 窗口应执行：
+M0-1A 开发窗口应执行：
 
-1. 在 `codex/m0-0c-nanobot-core` 上复核阶段提交、文件范围和 Nanobot 来源/许可证。
-2. 在全新 Python 3.11+ 环境安装 `backend[dev]`，复现 Ruff、mypy、完整 pytest 和核心 pytest。
-3. 独立复核工具参数错误、工具异常、空 Provider 响应、多工具调用和循环边界。
-4. 扫描 `nanobot_core` 对 FastAPI、数据库、文件系统、真实 Provider、网络和拾光业务的反向依赖。
-5. 验收通过后再由主控集成并将 M0-0C 标记为已完成；本开发窗口不进入 M0-1。
+1. 从最新 `main` 创建 `codex/m0-1-agent-runtime`，只处理 M0-1A Provider 契约。
+2. 扩展 Provider 无关响应元数据，包括模型名、Token、耗时、完成原因和供应商请求 ID；定义超时、限流、鉴权、格式及供应商错误分类。
+3. 使用完全离线 Fake、Stub 和固定 Fixture 覆盖全部成功与错误结果，普通测试不读取真实密钥或调用网络。
+4. Provider 配置不得写死模型名称或 Base URL；保持 Nanobot Core 与 FastAPI、数据库和拾光业务解耦。
+5. 不实现 M0-1B 真实百炼/OpenAI-compatible Provider，不实现 M0-1C AgentRun、ToolRun、trace_id、数据库迁移或成本持久化。
+6. 完成自测和阶段交接后把 M0-1A 标记为待验收并停止，不自行合并或进入 M0-1B。
 
 ## 阶段交接记录
 
@@ -135,3 +137,18 @@ M0-0C 已在规定分支完成最小 Nanobot Core、离线 Fake/Stub 测试、�
 - 未完成：等待主控独立验收；未实现真实模型 Provider、Provider 供应商错误映射、AgentRun/ToolRun、trace_id、Token/费用/超时、数据库持久化、业务工具或任何 M0-1 内容
 - 已知风险：`max_iterations` 当前定义为 Provider/工具循环轮数；单次模型响应可以按要求包含多个工具调用，绝对工具调用总数与总时长限制属于后续 M0-1C；本窗口在 Python 3.13.5 上验证，尚未在 Python 3.11/3.12 和 Windows 上复测
 - 下一步：主控窗口在全新 Python 3.11+ 环境独立复测、审阅来源和边界并决定是否集成；本窗口停止开发，不合并 `main`，不开始 M0-1
+
+#### 2026-07-21｜M0-0C｜已完成（主控验收）
+
+- 分支：`main`（由 `codex/m0-0c-nanobot-core` 快进集成）
+- 提交：`5c4a8fbf68deaf6dbc5336cef7a2a0abbac9b8a5`
+- 完成内容：主控任务确认阶段分支、指定提交和 `07cd4578e390ceb026b16e7f44827f7be68db9e6` 基线一致；复核唯一 `AgentRunner`、`AgentLoop`、`AgentContext`、`Tool`/`ToolRegistry`/`ToolResult` 和 `ModelProvider` 契约，确认没有真实 Provider、数据库运行记录、拾光业务或 M0-1 提前实现；阶段提交已快进集成到 `main`
+- 主要文件：`backend/nanobot_core/*`、`backend/tests/core/*`、`backend/pyproject.toml`、`NOTICE.md`、`README.md`、`backend/README.md`、`docs/DEV_STATUS.md`
+- 来源与许可证：只读学习仓库 HEAD 为 `06f47fa54032d539b215c4b58d82564a6fa4aa48`；NOTICE 列明实际参考和改写文件，正式包内包含 Nanobot MIT License 全文；许可证副本与只读来源正文一致，仅补充末尾换行；QA 未修改只读学习目录
+- 验证环境：指定提交的独立 `git archive` 快照、全新 Python 3.13.5 虚拟环境和重新安装的 `backend[dev]`；`pip check` 无破损依赖；未读取真实密钥，未调用真实或付费 API
+- 验证命令：`python -m pip install -e '<快照>/backend[dev]'`、`python -m pip check`、`python -m ruff check .`、`python -m mypy app migrations nanobot_core`、`python -m pytest -q`、使用两个不同 `PYTHONHASHSEED` 分别重复 `python -m pytest tests/core -q`、`python -m pip wheel --no-deps` 和 wheel 内容检查；另执行提交/范围/重复核心/反向依赖/真实 Provider/网络/文件系统/密钥/生成产物扫描及独立离线异常脚本；合并后重复 Ruff、mypy 和完整 pytest
+- 验证结果：全新环境安装、依赖检查和 wheel 构建通过，wheel 包含全部核心模块及 Nanobot MIT License；Ruff 通过；mypy 对 20 个源文件无问题；完整 pytest 58 项全部通过、0 失败、0 跳过；核心 pytest 45 项在两个哈希种子下均通过；合并未产生冲突或额外代码变化，合并后 58 项再次全部通过；没有未关闭的 P0/P1
+- 异常、边界、幂等与安全：覆盖直接文本、单次/多轮/单响应多工具、未知工具、非法 JSON、缺失/额外/错误类型参数、工具异常及无效返回脱敏、Provider `None`/空白响应、消息深拷贝、零值/负值/最小值/精确循环边界、重复注册、确定性工具定义与 ToolResult 序列化；在禁用网络连接并设置假密钥标记的环境中补充验证，无网络调用和敏感输入/异常泄漏；本阶段没有数据库或业务写操作，业务幂等不适用，重复注册和重复离线执行结果保持确定
+- 未完成：未实现真实模型 Provider、真实 Tool Calling、Provider 供应商适配、AgentRun/ToolRun、trace_id、总时长、绝对工具调用数、Token/费用持久化或数据库迁移；这些分别属于 M0-1B/M0-1C
+- 已知风险：`max_iterations` 目前限制 Provider/工具循环轮数，单次响应允许多个工具调用；绝对工具调用数和 60 秒总时长将在 M0-1C 实施；QA 使用 macOS/Python 3.13.5，未在 Python 3.11/3.12 或 Windows 复测，这不阻塞 Python 3.11+ 阶段要求
+- 下一步：M0-1A 前置条件已满足；从最新 `main` 创建 `codex/m0-1-agent-runtime`，只扩展 Provider 契约和离线错误分类，完成后交回主控验收
