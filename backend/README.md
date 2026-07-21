@@ -134,12 +134,14 @@ safe not-found behavior.
 M0 sessions persist only `web` and `demo` channels. Persisted messages accept only `user` and
 `assistant`; system prompts and raw tool payloads are rejected by both domain/repository and
 database constraints, and message content is excluded from object representations. `failed`
-remains a recognition transition and Source/AgentRun outcome, but cannot be constructed or stored
-as a CollectionItem; the same invariant is enforced by the domain model, repository writes and
-the migration check constraint.
+and `recognizing` are separate recognition-workflow states represented by Source/AgentRun, never
+CollectionItem statuses. A CollectionItem is created only for a real collection outcome such as
+`active`, `pending_selection`, or `pending_details`; the domain model, repository writes and
+migration check constraint enforce that invariant.
 
 Revision `20260721_0003` creates only `users`, `sessions`, `messages`, `sources`,
-`collection_items`, and `collection_sources` on top of `20260721_0002`. Downgrading to
-`20260721_0002` removes only those six tables and preserves AgentRun/ToolRun. M0-2A includes no
-extractor, model invocation, auto-save, Undo token, HTTP collection route, POI matching, or Demo
-initialization.
+`collection_items`, and `collection_sources` on top of `20260721_0002`. Revision
+`20260721_0004` removes legacy transient collection rows and tightens the status constraint.
+Downgrading to `20260721_0002` removes only those six tables and preserves AgentRun/ToolRun.
+M0-2A includes no extractor, model invocation, auto-save, Undo token, HTTP collection route, POI
+matching, or Demo initialization.

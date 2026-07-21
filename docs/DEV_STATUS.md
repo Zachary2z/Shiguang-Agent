@@ -11,7 +11,7 @@
 
 ## 当前任务
 
-M0-2A 已在 `codex/m0-2-text-collection` 完成开发与 QA 缺陷修复并保持待验收：failed/未收藏结果不能持久化为 CollectionItem，AgentRun trace 查询强制用户隔离，Message 仅持久化 USER/ASSISTANT，SessionChannel 仅保留 web/demo；上述规则均由领域、Repository、ORM、迁移约束和离线测试覆盖。未读取 `.env`，未调用真实模型、高德或其他外部 API；M0-2B 结构化抽取仍未开始。
+M0-2A 已在 `codex/m0-2-text-collection` 完成开发与 QA 缺陷修复并保持待验收：recognizing/failed 只属于识别流程，不是可持久化 CollectionItem 状态；识别最终失败只保留 Source/AgentRun 失败信息，collection_items 不产生或残留对象。AgentRun trace 查询继续强制用户隔离，Message 仅持久化 USER/ASSISTANT，SessionChannel 仅保留 web/demo；上述规则均由领域、Repository、ORM、迁移约束和离线测试覆盖。未读取 `.env`，未调用真实模型、高德或其他外部 API；M0-2B 结构化抽取仍未开始。
 
 ## M0 状态
 
@@ -44,7 +44,7 @@ M0-2A 已在 `codex/m0-2-text-collection` 完成开发与 QA 缺陷修复并保�
 
 ## 下一步
 
-主控窗口应在最新修复提交上独立复核 M0-2A 范围、failed 不落 CollectionItem、AgentRun trace 用户隔离、Message 角色与内容安全、web/demo 渠道边界、`20260721_0003` 迁移往返、数据库约束和全部离线测试。验收通过后再纯快进集成到 `main` 并更新状态；在此之前不得开始 M0-2B，不得调用真实或付费 API。
+主控窗口应在最新修复提交上独立复核 M0-2A 范围、recognizing/failed 均不落 CollectionItem、失败 Source 留痕、AgentRun trace 用户隔离、Message 角色与内容安全、web/demo 渠道边界、`20260721_0003 → 20260721_0004` 清理迁移与升降升、数据库约束和全部离线测试。验收通过后再纯快进集成到 `main` 并更新状态；在此之前不得开始 M0-2B，不得调用真实或付费 API。
 
 ## 阶段交接记录
 
@@ -315,3 +315,18 @@ M0-2A 已在 `codex/m0-2-text-collection` 完成开发与 QA 缺陷修复并保�
 - 阶段范围：仅修复上述 QA 缺陷；未实现 M0-2B 抽取/候选 Schema、M0-2C 自动保存/Undo/幂等消息、M0-2D API/Demo 初始化/Session 路由，也未实现 POI、高德、URL 抓取、截图、前端、SSE、微信或 ClawBot；M0-2A 和 M0-2 整体状态不变，M0-2B 继续未开始
 - 已知验证边界：仅在 SQLite 与 Python 3.13.5 验证，未覆盖 PostgreSQL、Python 3.11/3.12、Windows；真实抽取、自动保存与 API 属于后续阶段，不作为本次 QA 修复完成项
 - 主控复测范围：核对新提交直接父提交为问题 commit；重点重跑 failed Source 与零 CollectionItem、SYSTEM/TOOL 领域/Repository/直接 SQL 拒绝、Message repr 脱敏、AgentRun 同用户/跨用户/不存在 trace、web/demo 与 wechat/clawbot、迁移升降升、封网非真实全集、反向依赖与唯一实现扫描；验收前不开始 M0-2B、不合并、不推送、不执行真实调用
+
+#### 2026-07-21｜M0-2A recognizing 幽灵行 P1 修复｜待验收
+
+- 分支与提交关系：`codex/m0-2-text-collection`；本修复直接建立在问题提交 `d0975236c1e3062f0af4ac4f3ec7acf75ff66958` 之上，直接父提交保持该 SHA；修复提交为本记录所在提交，不 amend、不合并 `main`、不推送
+- 修复语义：`CollectionStatus` 只包含 `active`、`pending_selection`、`pending_details`、`visited`、`archived`、`deleted` 六种真实收藏状态；`RecognitionStatus` 单独表达 `recognizing`、`failed` 识别流程。识别成功后才创建真实 CollectionItem，识别最终失败只把 Source 更新为 `parse_status=failed`（AgentRun 仍可承载运行失败与恢复信息），`collection_items` 数量保持 0；此前“拒绝 recognizing→failed 但保留 recognizing 行”的测试语义已删除，任何残留 recognizing CollectionItem 均不再视为正确结果
+- 三层持久化边界：直接 `CollectionItem` 实体只接受 `CollectionStatus`；Repository 对 `model_construct` 绕过再次拒绝 recognizing/failed，状态转换入口也不能把真实收藏转为识别流程状态；ORM 检查约束和数据库迁移只允许六种真实收藏状态，直接 SQL 写 recognizing/failed 均失败。active、pending_selection、pending_details 等既有合法状态及全部合法工作流转换继续通过
+- 用户隔离与事务：失败 Source 更新始终以 `source_id + user_id` 查询；跨用户和不存在 ID 返回相同 `resource not found`，跨用户既不能触发失败更新也不能观察对方 Source，所有用户的收藏列表都没有待清理幽灵对象；同一事务先写 failed Source、再尝试绕过写 recognizing CollectionItem 时整体回滚，Source 和 CollectionItem 均不留下部分数据
+- 迁移变化：保留既有 `20260721_0003` 历史语义，新增 `20260721_0004`（`down_revision=20260721_0003`）；升级时先删除遗留 recognizing CollectionItem 及其 CollectionSource 关联，再把 `ck_collection_items_status` 收紧为六种真实状态，failed Source 与真实收藏/关联保持不变；降级只恢复旧约束，不恢复已删除的幽灵数据。自动化测试从问题 revision 构造 recognizing 行和关联后升级，确认幽灵行与关联清除、failed Source 和 active 收藏保留
+- 完整验证：macOS、Python 3.13.5；`pip check`、Ruff、strict mypy（47 个源文件）均通过；非真实测试 348 passed、1 deselected，核心测试 118 passed，迁移测试 5 passed，默认全集 348 passed、1 skipped；封锁 socket connect/connect_ex/create_connection 和 DNS 后，348 个非真实测试再次通过、1 deselected
+- 迁移实测：仓库外临时 SQLite 执行 `upgrade head → downgrade 20260721_0002 → upgrade head` 全部成功，最终 revision 为 `20260721_0004`，只包含既有 M0-1C 三表与 M0-2A 六表；最终 `collection_items` 状态约束不含 recognizing/failed，`alembic check` 报告无待生成操作
+- 保持项与安全：AgentRun `user_id + trace_id` 隔离、USER/ASSISTANT Message 限制、Message repr 脱敏和 web/demo 渠道限制均保持并由全集回归覆盖；未读取或打印 `.env`，未运行 `real_provider`，未调用真实模型、高德、外部消息或付费 API
+- 阶段范围与冗余：只修改识别/收藏状态边界、清理迁移、对应测试和交接文档；未实现 M0-2B 抽取/候选 Schema、M0-2C 自动保存/Undo/幂等消息、M0-2D API，也未实现 POI、高德、URL 抓取、前端、微信或 ClawBot；AgentRunner、ToolRegistry、ModelProvider、AgentRun Repository、Collection Repository 和 ORM Base 均保持唯一，`nanobot_core` 仍无 app/SQLAlchemy/FastAPI 反向依赖
+- 已知验证边界：仅在 SQLite 与 Python 3.13.5 验证，未覆盖 PostgreSQL、Python 3.11/3.12、Windows；`20260721_0004` 删除 legacy recognizing 行是有意且不可逆的数据清理，Source/AgentRun 留痕用于后续诊断和恢复
+- 主控复测范围：确认新提交直接父提交为 `d0975236c1e3062f0af4ac4f3ec7acf75ff66958`；重点从 `20260721_0003` 插入 recognizing 行/关联再升级 head，检查 Source.failed 保留且 CollectionItem/关联归零；重跑直接实体、Repository 绕过、SQL 约束、跨用户/不存在同结果、事务回滚、其他合法转换、完整命令、封网全集、迁移升降升与 `alembic check`，并复核 M0-2B 未开始、反向依赖和唯一公共实现
+- 下一步：等待主控在最新修复提交上独立验收；通过前保持 M0-2A 待验收和 M0-2B 未开始，不合并、不推送、不执行真实调用

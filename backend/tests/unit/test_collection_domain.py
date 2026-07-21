@@ -10,13 +10,16 @@ import pytest
 from pydantic import ValidationError
 
 from app.domain.collections import (
+    PERSISTABLE_COLLECTION_STATUSES,
     CollectionItem,
     CollectionKind,
     CollectionSource,
     CollectionStatus,
+    CollectionWorkflowStatus,
     Message,
     MessageContentType,
     MessageRole,
+    RecognitionStatus,
     Session,
     SessionChannel,
     SessionStatus,
@@ -30,6 +33,7 @@ from app.domain.collections import (
     UserMode,
     can_collection_enter_plan,
     ensure_collection_transition,
+    ensure_persistable_collection_status,
     is_collection_visible_by_default,
 )
 from app.domain.identifiers import (
@@ -342,13 +346,11 @@ def test_provider_independent_place_event_fields_version_price_and_tags() -> Non
     with pytest.raises(ValidationError):
         CollectionItem.model_validate(invalid_event)
 
-    failed_item = place.model_dump()
-    failed_item["status"] = CollectionStatus.FAILED
-    with pytest.raises(
-        ValidationError,
-        match="failed recognition outcomes cannot be persisted as CollectionItem",
-    ):
-        CollectionItem.model_validate(failed_item)
+    for recognition_status in RecognitionStatus:
+        uncollected_item = place.model_dump()
+        uncollected_item["status"] = recognition_status
+        with pytest.raises(ValidationError):
+            CollectionItem.model_validate(uncollected_item)
 
 
 def test_collection_source_validates_owner_and_both_foreign_identifiers() -> None:
@@ -369,58 +371,74 @@ def test_collection_source_validates_owner_and_both_foreign_identifiers() -> Non
 
 
 LEGAL_TRANSITIONS = {
-    (CollectionStatus.RECOGNIZING, CollectionStatus.ACTIVE),
-    (CollectionStatus.RECOGNIZING, CollectionStatus.PENDING_SELECTION),
-    (CollectionStatus.RECOGNIZING, CollectionStatus.PENDING_DETAILS),
-    (CollectionStatus.RECOGNIZING, CollectionStatus.FAILED),
+    (RecognitionStatus.RECOGNIZING, CollectionStatus.ACTIVE),
+    (RecognitionStatus.RECOGNIZING, CollectionStatus.PENDING_SELECTION),
+    (RecognitionStatus.RECOGNIZING, CollectionStatus.PENDING_DETAILS),
+    (RecognitionStatus.RECOGNIZING, RecognitionStatus.FAILED),
     (CollectionStatus.ACTIVE, CollectionStatus.VISITED),
     (CollectionStatus.ACTIVE, CollectionStatus.ARCHIVED),
     (CollectionStatus.ACTIVE, CollectionStatus.DELETED),
     (CollectionStatus.PENDING_SELECTION, CollectionStatus.ACTIVE),
     (CollectionStatus.PENDING_SELECTION, CollectionStatus.PENDING_DETAILS),
     (CollectionStatus.PENDING_SELECTION, CollectionStatus.DELETED),
-    (CollectionStatus.PENDING_DETAILS, CollectionStatus.RECOGNIZING),
+    (CollectionStatus.PENDING_DETAILS, RecognitionStatus.RECOGNIZING),
     (CollectionStatus.PENDING_DETAILS, CollectionStatus.DELETED),
 }
 
 
 @pytest.mark.parametrize(("current", "target"), sorted(LEGAL_TRANSITIONS))
 def test_every_legal_collection_transition_succeeds(
-    current: CollectionStatus,
-    target: CollectionStatus,
+    current: CollectionWorkflowStatus,
+    target: CollectionWorkflowStatus,
 ) -> None:
     ensure_collection_transition(current, target)
 
 
-@pytest.mark.parametrize("status", list(CollectionStatus))
-def test_idempotent_collection_transition_succeeds(status: CollectionStatus) -> None:
+WORKFLOW_STATUSES: tuple[CollectionWorkflowStatus, ...] = (
+    *RecognitionStatus,
+    *CollectionStatus,
+)
+
+
+@pytest.mark.parametrize("status", WORKFLOW_STATUSES)
+def test_idempotent_collection_transition_succeeds(
+    status: CollectionWorkflowStatus,
+) -> None:
     ensure_collection_transition(status, status)
 
 
 ILLEGAL_TRANSITIONS = sorted(
     (current, target)
-    for current in CollectionStatus
-    for target in CollectionStatus
+    for current in WORKFLOW_STATUSES
+    for target in WORKFLOW_STATUSES
     if current is not target and (current, target) not in LEGAL_TRANSITIONS
 )
 
 
 @pytest.mark.parametrize(("current", "target"), ILLEGAL_TRANSITIONS)
 def test_regressions_skips_and_terminal_collection_transitions_are_rejected(
-    current: CollectionStatus,
-    target: CollectionStatus,
+    current: CollectionWorkflowStatus,
+    target: CollectionWorkflowStatus,
 ) -> None:
-    with pytest.raises(ValueError, match="illegal CollectionItem transition"):
+    with pytest.raises(ValueError, match="illegal collection workflow transition"):
         ensure_collection_transition(current, target)
 
 
-def test_failed_deleted_recognizing_and_archived_are_not_default_or_plan_eligible() -> None:
-    for status in (
-        CollectionStatus.RECOGNIZING,
-        CollectionStatus.FAILED,
-        CollectionStatus.ARCHIVED,
-        CollectionStatus.DELETED,
-    ):
+def test_recognition_states_are_not_collection_statuses_or_persistable() -> None:
+    assert set(PERSISTABLE_COLLECTION_STATUSES) == set(CollectionStatus)
+    assert {status.value for status in CollectionStatus}.isdisjoint(
+        {status.value for status in RecognitionStatus}
+    )
+    for status in RecognitionStatus:
+        with pytest.raises(
+            ValueError,
+            match="recognizing and failed outcomes cannot be persisted as CollectionItem",
+        ):
+            ensure_persistable_collection_status(status)
+
+
+def test_deleted_and_archived_are_not_default_or_plan_eligible() -> None:
+    for status in (CollectionStatus.ARCHIVED, CollectionStatus.DELETED):
         assert not is_collection_visible_by_default(status)
         assert not can_collection_enter_plan(status)
     for status in (CollectionStatus.PENDING_SELECTION, CollectionStatus.PENDING_DETAILS):

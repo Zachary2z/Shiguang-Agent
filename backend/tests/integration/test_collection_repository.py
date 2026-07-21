@@ -18,6 +18,7 @@ from app.domain.collections import (
     Message,
     MessageContentType,
     MessageRole,
+    RecognitionStatus,
     ResourceNotFoundError,
     Session,
     SessionChannel,
@@ -27,6 +28,7 @@ from app.domain.collections import (
     SourceType,
     User,
     UserMode,
+    ensure_collection_transition,
 )
 from app.domain.identifiers import (
     generate_collection_item_id,
@@ -119,7 +121,7 @@ async def test_all_entities_create_read_list_update_and_link_round_trip(
     session_entity = _session(user.id)
     message = _message(session_entity.id)
     source = _source(user.id)
-    item = _item(user.id, status=CollectionStatus.RECOGNIZING)
+    item = _item(user.id, status=CollectionStatus.PENDING_SELECTION)
 
     async with database.session() as session:
         repository = SqlAlchemyCollectionRepository(session)
@@ -194,7 +196,6 @@ async def test_default_collection_query_excludes_non_effective_and_deleted_state
     items = [
         _item(user.id, status=status, title=status.value)
         for status in CollectionStatus
-        if status is not CollectionStatus.FAILED
     ]
     async with database.session() as session:
         repository = SqlAlchemyCollectionRepository(session)
@@ -214,9 +215,7 @@ async def test_default_collection_query_excludes_non_effective_and_deleted_state
             )
         }
 
-    assert CollectionStatus.FAILED not in default_statuses
     assert CollectionStatus.DELETED not in default_statuses
-    assert CollectionStatus.RECOGNIZING not in default_statuses
     assert CollectionStatus.ARCHIVED not in default_statuses
     assert default_statuses == {
         CollectionStatus.ACTIVE,
@@ -224,26 +223,174 @@ async def test_default_collection_query_excludes_non_effective_and_deleted_state
         CollectionStatus.PENDING_DETAILS,
         CollectionStatus.VISITED,
     }
-    assert all_statuses == set(CollectionStatus) - {CollectionStatus.FAILED}
+    assert all_statuses == set(CollectionStatus)
     await database.close()
 
 
 @pytest.mark.asyncio
-async def test_failed_source_persists_but_failed_collection_item_never_does(
+async def test_recognizing_workflow_final_failure_keeps_source_and_zero_collections(
+    collection_database: tuple[str, Path],
+) -> None:
+    database_url, _database_path = collection_database
+    database = Database(database_url)
+    user = _user()
+    source = _source(user.id)
+    ensure_collection_transition(RecognitionStatus.RECOGNIZING, RecognitionStatus.FAILED)
+
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        await repository.add_user(user_id=user.id, user=user)
+        await repository.add_source(user_id=user.id, source=source)
+        await session.commit()
+
+        failed_source = await repository.update_source_parse_status(
+            user_id=user.id,
+            source_id=source.id,
+            parse_status=SourceParseStatus.FAILED,
+            updated_at=NOW + timedelta(seconds=1),
+        )
+        await session.commit()
+
+        assert failed_source.parse_status is SourceParseStatus.FAILED
+        assert await repository.get_source(user_id=user.id, source_id=source.id) == (
+            failed_source
+        )
+        assert await repository.list_collection_items(
+            user_id=user.id,
+            include_inactive=True,
+        ) == []
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_recognition_statuses_cannot_bypass_repository_or_database(
     collection_database: tuple[str, Path],
 ) -> None:
     database_url, database_path = collection_database
     database = Database(database_url)
     user = _user()
+
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        await repository.add_user(user_id=user.id, user=user)
+        await session.commit()
+
+        for recognition_status in RecognitionStatus:
+            unsafe_item = CollectionItem.model_construct(
+                id=generate_collection_item_id(),
+                user_id=user.id,
+                kind=CollectionKind.PLACE,
+                title="uncollected raw result",
+                status=recognition_status,
+                version=1,
+                created_at=NOW,
+                updated_at=NOW,
+            )
+            with pytest.raises(
+                ValueError,
+                match="recognizing and failed outcomes cannot be persisted as CollectionItem",
+            ):
+                await repository.add_collection_item(user_id=user.id, item=unsafe_item)
+        assert await repository.list_collection_items(
+            user_id=user.id,
+            include_inactive=True,
+        ) == []
+    await database.close()
+
+    with sqlite3.connect(database_path) as connection:
+        for recognition_status in RecognitionStatus:
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    """
+                    INSERT INTO collection_items (
+                        id, user_id, kind, title, city, tags_json, status, version,
+                        created_at, updated_at
+                    ) VALUES (?, ?, 'place', 'raw failure', 'shenzhen', '[]',
+                        ?, 1, ?, ?)
+                    """,
+                    (
+                        generate_collection_item_id(),
+                        user.id,
+                        recognition_status.value,
+                        NOW.isoformat(),
+                        NOW.isoformat(),
+                    ),
+                )
+            connection.rollback()
+        assert connection.execute("SELECT COUNT(*) FROM collection_items").fetchone() == (0,)
+
+
+@pytest.mark.asyncio
+async def test_failed_recognition_is_user_isolated_and_missing_is_indistinguishable(
+    collection_database: tuple[str, Path],
+) -> None:
+    database_url, _database_path = collection_database
+    database = Database(database_url)
+    user_a = _user()
+    user_b = _user()
+    source_b = _source(user_b.id)
+
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        await repository.add_user(user_id=user_a.id, user=user_a)
+        await repository.add_user(user_id=user_b.id, user=user_b)
+        await repository.add_source(user_id=user_b.id, source=source_b)
+        await session.commit()
+
+        errors: list[str] = []
+        for source_id in (source_b.id, generate_source_id()):
+            with pytest.raises(ResourceNotFoundError) as caught:
+                await repository.update_source_parse_status(
+                    user_id=user_a.id,
+                    source_id=source_id,
+                    parse_status=SourceParseStatus.FAILED,
+                    updated_at=NOW + timedelta(seconds=1),
+                )
+            errors.append(str(caught.value))
+        assert errors == ["resource not found", "resource not found"]
+        assert await repository.get_source(user_id=user_a.id, source_id=source_b.id) is None
+        assert (
+            await repository.get_source(user_id=user_b.id, source_id=source_b.id)
+        ).parse_status is SourceParseStatus.PENDING
+
+        await repository.update_source_parse_status(
+            user_id=user_b.id,
+            source_id=source_b.id,
+            parse_status=SourceParseStatus.FAILED,
+            updated_at=NOW + timedelta(seconds=1),
+        )
+        await session.commit()
+        assert await repository.get_source(user_id=user_a.id, source_id=source_b.id) is None
+        assert (
+            await repository.get_source(user_id=user_b.id, source_id=source_b.id)
+        ).parse_status is SourceParseStatus.FAILED
+        assert await repository.list_collection_items(
+            user_id=user_a.id,
+            include_inactive=True,
+        ) == []
+        assert await repository.list_collection_items(
+            user_id=user_b.id,
+            include_inactive=True,
+        ) == []
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_recognition_transaction_rollback_leaves_no_partial_data(
+    collection_database: tuple[str, Path],
+) -> None:
+    database_url, _database_path = collection_database
+    database = Database(database_url)
+    user = _user()
     failed_source = _source(user.id).model_copy(
         update={"parse_status": SourceParseStatus.FAILED}
     )
-    unsafe_failed_item = CollectionItem.model_construct(
+    unsafe_recognizing_item = CollectionItem.model_construct(
         id=generate_collection_item_id(),
         user_id=user.id,
         kind=CollectionKind.PLACE,
         title="uncollected raw result",
-        status=CollectionStatus.FAILED,
+        status=RecognitionStatus.RECOGNIZING,
         version=1,
         created_at=NOW,
         updated_at=NOW,
@@ -252,55 +399,45 @@ async def test_failed_source_persists_but_failed_collection_item_never_does(
     async with database.session() as session:
         repository = SqlAlchemyCollectionRepository(session)
         await repository.add_user(user_id=user.id, user=user)
-        await repository.add_source(user_id=user.id, source=failed_source)
         await session.commit()
 
-        with pytest.raises(
-            ValueError,
-            match="failed recognition outcomes cannot be persisted as CollectionItem",
-        ):
+    with pytest.raises(
+        ValueError,
+        match="recognizing and failed outcomes cannot be persisted as CollectionItem",
+    ):
+        async with database.session() as session:
+            repository = SqlAlchemyCollectionRepository(session)
+            await repository.add_source(user_id=user.id, source=failed_source)
             await repository.add_collection_item(
                 user_id=user.id,
-                item=unsafe_failed_item,
+                item=unsafe_recognizing_item,
             )
+
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        assert await repository.get_source(
+            user_id=user.id,
+            source_id=failed_source.id,
+        ) is None
+        assert await repository.get_collection_item(
+            user_id=user.id,
+            collection_item_id=unsafe_recognizing_item.id,
+        ) is None
         assert await repository.list_collection_items(
             user_id=user.id,
             include_inactive=True,
         ) == []
-        assert (await repository.list_sources(user_id=user.id))[0].parse_status is (
-            SourceParseStatus.FAILED
-        )
     await database.close()
-
-    with sqlite3.connect(database_path) as connection:
-        with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(
-                """
-                INSERT INTO collection_items (
-                    id, user_id, kind, title, city, tags_json, status, version,
-                    created_at, updated_at
-                ) VALUES (?, ?, 'place', 'raw failure', 'shenzhen', '[]',
-                    'failed', 1, ?, ?)
-                """,
-                (
-                    generate_collection_item_id(),
-                    user.id,
-                    NOW.isoformat(),
-                    NOW.isoformat(),
-                ),
-            )
-        connection.rollback()
-        assert connection.execute("SELECT COUNT(*) FROM collection_items").fetchone() == (0,)
 
 
 @pytest.mark.asyncio
-async def test_transition_to_failed_is_rejected_without_changing_persisted_item(
+async def test_recognition_targets_cannot_mutate_a_persisted_collection(
     collection_database: tuple[str, Path],
 ) -> None:
     database_url, _database_path = collection_database
     database = Database(database_url)
     user = _user()
-    item = _item(user.id, status=CollectionStatus.RECOGNIZING)
+    item = _item(user.id, status=CollectionStatus.PENDING_DETAILS)
 
     async with database.session() as session:
         repository = SqlAlchemyCollectionRepository(session)
@@ -308,22 +445,23 @@ async def test_transition_to_failed_is_rejected_without_changing_persisted_item(
         await repository.add_collection_item(user_id=user.id, item=item)
         await session.commit()
 
-        with pytest.raises(
-            ValueError,
-            match="failed recognition outcomes cannot be persisted as CollectionItem",
-        ):
-            await repository.transition_collection_status(
-                user_id=user.id,
-                collection_item_id=item.id,
-                target=CollectionStatus.FAILED,
-                updated_at=NOW + timedelta(seconds=1),
-            )
+        for target in RecognitionStatus:
+            with pytest.raises(
+                ValueError,
+                match="recognizing and failed outcomes cannot be persisted as CollectionItem",
+            ):
+                await repository.transition_collection_status(
+                    user_id=user.id,
+                    collection_item_id=item.id,
+                    target=target,  # type: ignore[arg-type]
+                    updated_at=NOW + timedelta(seconds=1),
+                )
         unchanged = await repository.get_collection_item(
             user_id=user.id,
             collection_item_id=item.id,
         )
         assert unchanged is not None
-        assert unchanged.status is CollectionStatus.RECOGNIZING
+        assert unchanged.status is CollectionStatus.PENDING_DETAILS
         assert unchanged.version == 1
     await database.close()
 

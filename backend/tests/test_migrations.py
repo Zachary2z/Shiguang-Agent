@@ -10,7 +10,7 @@ from alembic import command
 from alembic.config import Config
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-HEAD_REVISION = "20260721_0003"
+HEAD_REVISION = "20260721_0004"
 PREVIOUS_REVISION = "20260721_0002"
 HEAD_TABLES = {
     "agent_runs",
@@ -274,6 +274,72 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
     command.upgrade(alembic_config, "head")
     assert current_revision(database_path) == HEAD_REVISION
     assert table_names(database_path) == HEAD_TABLES
+
+
+def test_transient_collection_cleanup_migration_preserves_failure_source_and_real_items(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "transient-cleanup.db"
+    alembic_config = _alembic_config(monkeypatch, database_path)
+    user_id = "usr_11111111111111111111111111111111"
+    source_id = "src_11111111111111111111111111111111"
+    recognizing_id = "col_11111111111111111111111111111111"
+    active_id = "col_22222222222222222222222222222222"
+
+    command.upgrade(alembic_config, "20260721_0003")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        _insert_user(connection, user_id)
+        _insert_source(connection, source_id=source_id, user_id=user_id)
+        connection.execute(
+            "UPDATE sources SET parse_status = 'failed' WHERE id = ?",
+            (source_id,),
+        )
+        _insert_collection_item(
+            connection,
+            item_id=recognizing_id,
+            user_id=user_id,
+            status="recognizing",
+        )
+        _insert_collection_item(
+            connection,
+            item_id=active_id,
+            user_id=user_id,
+        )
+        for item_id in (recognizing_id, active_id):
+            connection.execute(
+                """
+                INSERT INTO collection_sources (
+                    collection_item_id, source_id, user_id, created_at
+                ) VALUES (?, ?, ?, ?)
+                """,
+                (item_id, source_id, user_id, "2026-07-21T00:00:00+00:00"),
+            )
+        connection.commit()
+
+    command.upgrade(alembic_config, "head")
+    assert current_revision(database_path) == HEAD_REVISION
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT parse_status FROM sources WHERE id = ?",
+            (source_id,),
+        ).fetchone() == ("failed",)
+        assert connection.execute(
+            "SELECT id, status FROM collection_items ORDER BY id"
+        ).fetchall() == [(active_id, "active")]
+        assert connection.execute(
+            "SELECT collection_item_id FROM collection_sources"
+        ).fetchall() == [(active_id,)]
+        for transient_status in ("recognizing", "failed"):
+            with pytest.raises(sqlite3.IntegrityError):
+                _insert_collection_item(
+                    connection,
+                    item_id="col_33333333333333333333333333333333",
+                    user_id=user_id,
+                    status=transient_status,
+                )
+            connection.rollback()
 
 
 def test_migration_enforces_unique_foreign_key_and_check_constraints(
@@ -669,6 +735,10 @@ def test_collection_migration_enforces_checks_foreign_keys_same_owner_and_unique
             ),
             (
                 "UPDATE collection_items SET status = 'unknown' WHERE id = ?",
+                (item_a,),
+            ),
+            (
+                "UPDATE collection_items SET status = 'recognizing' WHERE id = ?",
                 (item_a,),
             ),
             (
