@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
@@ -20,12 +20,8 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.domain.runs.statuses import AgentRunStatus, ToolRunStatus
+from app.domain.time import utc_now
 from app.infrastructure.db.base import Base
-
-
-def utc_now() -> datetime:
-    return datetime.now(UTC)
-
 
 _AGENT_STATUS_SQL = ", ".join(f"'{status.value}'" for status in AgentRunStatus)
 _TOOL_STATUS_SQL = ", ".join(f"'{status.value}'" for status in ToolRunStatus)

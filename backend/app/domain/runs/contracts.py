@@ -9,7 +9,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.domain.runs.identifiers import validate_trace_id
+from app.domain.identifiers import validate_trace_id
 from app.domain.runs.statuses import AgentRunStatus, ToolRunStatus
 from nanobot_core.providers import FinishReason, TokenUsage
 

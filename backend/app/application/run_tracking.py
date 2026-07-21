@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from time import monotonic
 
@@ -20,6 +20,7 @@ from app.domain.runs.contracts import (
 )
 from app.domain.runs.inputs import AgentRunCreate
 from app.domain.runs.statuses import AgentRunStatus, RunErrorCode, ToolRunStatus
+from app.domain.time import utc_now
 from app.infrastructure.repositories import (
     AgentRunRepository,
     RunFinalization,
@@ -336,7 +337,7 @@ class AgentRunService:
         session: AsyncSession,
         runner: AgentRunner,
         pricing: PricingPolicy,
-        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        now: Callable[[], datetime] = utc_now,
         clock: Callable[[], float] = monotonic,
     ) -> None:
         self._session = session

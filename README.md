@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。当前开发子阶段是 **M0-1C AgentRun 与 ToolRun**，状态为**待验收**：现有 Nanobot Core Runner 已具备供应商无关的安全观察事件、绝对工具调用上限、总时限和重复调用保护；应用层已实现 AgentRun/ToolRun 契约、SQLite 持久化、Decimal 费用估算和 trace 查询服务。
+项目处于 **M0 技术验证**。当前开发子阶段是 **M0-2A 文字收藏领域模型**，状态为**待验收**：应用层已建立 User、Session、Message、Source、CollectionItem、CollectionSource、收藏状态机、强制用户隔离的 Repository 契约与 SQLite/Alembic 持久化。
 
-普通测试全部离线，不读取真实模型密钥或访问网络。M0-1B 的真实百炼 Tool Calling 已由主控验收，但 M0-1C 未获得任何新真实调用授权；不得设置 `RUN_REAL_MODEL_TESTS=1`。当前不包含 AgentRun HTTP API、SSE、审批、收藏/地点/计划/记忆等 M0-2 业务功能，也没有前端；M0-1C 经主控验收前不允许开始 M0-2。
+普通测试全部离线，不读取真实模型密钥或访问网络。M0-1C 已由主控验收，但本阶段没有任何真实调用授权；不得设置 `RUN_REAL_MODEL_TESTS=1`。当前只建立 M0-2A 数据与状态边界，不包含结构化抽取、自动保存/Undo、收藏 API、Demo 初始化、高德、URL/截图流水线、计划、SSE 或前端；M0-2A 经主控验收前不允许开始 M0-2B。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -17,7 +17,7 @@ Shiguang_Nanobot/
 ├── backend/
 │   ├── app/                    # FastAPI、配置、日志和数据库基础设施
 │   ├── nanobot_core/           # 与 Web、数据库和业务解耦的最小 Agent 核心
-│   ├── migrations/             # Alembic 基线和 AgentRun/ToolRun 迁移
+│   ├── migrations/             # Alembic 基线、运行记录与收藏领域迁移
 │   ├── tests/                  # 后端与 Nanobot Core 离线自动化测试
 │   ├── alembic.ini
 │   └── pyproject.toml
@@ -66,7 +66,7 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前 HEAD revision 是 `20260721_0002`，直接基于空基线 `20260721_0001`，只创建 `agent_runs` 和 `tool_runs`。迁移支持升级到 HEAD、回滚到上一 revision、再次升级；应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+当前 HEAD revision 是 `20260721_0003`，直接基于 `20260721_0002`，只新增 `users`、`sessions`、`messages`、`sources`、`collection_items` 和 `collection_sources`。执行 `python -m alembic downgrade 20260721_0002` 只移除这六张表并保留 `agent_runs`、`tool_runs`；再次升级会重建收藏领域表。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
 
 ### 启动 API
 
@@ -120,6 +120,14 @@ curl -i -H 'X-Request-ID: local-check-001' http://127.0.0.1:8000/healthz
 Runner 在同一执行循环中保证：最多执行 8 次绝对 Tool Call；第 9 次记录为 blocked 且不执行；使用工具名与规范化 JSON 参数的 SHA-256 指纹阻止异常重复；通过可取消等待和单调时钟把总时限限制在 60 秒。Provider 或 Tool 正在等待时也会被总时限取消，外部 `CancelledError` 落库后继续向调用方传播。
 
 `AgentRunService.get_by_trace_id()` 返回模型调用元数据、Token/费用汇总、有序 ToolRun、安全错误码和结束原因。数据库只保存结构化输入/输出摘要与指纹，不保存消息、完整模型响应、Prompt、思维链、完整工具参数、异常对象、Authorization、Cookie 或密钥。本阶段故意不提供 `GET /agent-runs` 路由。
+
+### M0-2A 文字收藏领域模型
+
+`app.domain.collections` 是 User、Session、Message、Source、CollectionItem、CollectionSource、Place/Event 类型和收藏状态的唯一应用层契约。实体 ID 使用命名空间加 128 位随机值，服务端时间统一为 UTC；稳定的所有权、状态、版本、Source 抓取时间和 Event 时间使用独立数据库列。Source 元数据使用字段白名单，不接受 Header、Cookie、原始正文或凭证。
+
+`SqlAlchemyCollectionRepository` 的所有公开读写方法都显式要求 `user_id`。Message 通过用户拥有的 Session 查询；CollectionSource 在 Repository 与复合外键两层保证 Source 和 CollectionItem 属于同一用户；跨用户资源与不存在资源采用同一安全结果。默认收藏查询排除 `recognizing`、`failed`、`archived` 和 `deleted`，只有 `active` 具备后续进入计划的状态资格。
+
+本阶段只验证领域与持久化契约，不执行抽取、自动保存、修改/撤销工作流或 API 路由。CollectionItem 的正整数 `version` 只保留并发边界；合法状态变化会递增版本，但 M0-2C 之前不提供通用编辑能力。
 
 真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
 

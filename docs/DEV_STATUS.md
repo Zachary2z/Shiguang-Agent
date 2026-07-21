@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-2A 领域模型 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-2-text-collection |
 | 最近更新 | 2026-07-21 |
-| 阻塞项 | 无；M0-2A 前置条件已满足 |
+| 阻塞项 | 无；等待主控独立离线验收，M0-2B 暂不允许开始 |
 
 ## 当前任务
 
-M0-1C 已通过主控独立 QA 并纯快进集成到 `main`：唯一 Runner 在核心内部强制 8 次绝对工具调用和 60 秒总时限硬上限，AgentRun/ToolRun 契约、两张 SQLite 表、Repository/服务、trace 查询、Token/Decimal 费用估算及安全运行摘要均已验收。M0-2A 领域模型前置条件已满足，但尚未开始开发。
+M0-2A 已在 `codex/m0-2-text-collection` 完成开发并保持待验收：新增 User、Session、Message、Source、CollectionItem、CollectionSource、收藏状态机、强制 `user_id` 的 Repository 契约与 SQLAlchemy 适配，以及紧接 M0-1C 的 `20260721_0003` 迁移。实现和测试完全离线，未读取 `.env`，未调用真实模型、高德或其他外部 API；M0-2B 结构化抽取仍未开始。
 
 ## M0 状态
 
@@ -21,7 +21,7 @@ M0-1C 已通过主控独立 QA 并纯快进集成到 `main`：唯一 Runner 在�
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
-| M0-2 文字收藏 | 未开始 | M0-2A 领域模型前置条件已满足，允许开始 |
+| M0-2 文字收藏 | 进行中 | M0-2A 已完成开发并待主控验收；M0-2B 尚未开始且暂不允许开始 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
@@ -44,7 +44,7 @@ M0-1C 已通过主控独立 QA 并纯快进集成到 `main`：唯一 Runner 在�
 
 ## 下一步
 
-从本状态文档提交后的最新 `main` 创建 `codex/m0-2-text-collection`，只实施 M0-2A：User、Session、Message、Source、CollectionItem、CollectionSource、收藏状态机、Repository 接口和用户隔离。不得提前实现结构化抽取、自动保存/Undo、收藏 API、高德、URL/截图或其他 M0-2B 及后续能力；未经新授权不得调用真实或付费 API。
+主控窗口应在本阶段提交上独立复核 M0-2A 范围、领域语义、Repository 用户隔离、`20260721_0003` 迁移往返、数据库约束、索引、安全扫描和全部离线测试。验收通过后再纯快进集成到 `main` 并更新状态；在此之前不得开始 M0-2B，不得调用真实或付费 API。
 
 ## 阶段交接记录
 
@@ -280,3 +280,24 @@ M0-1C 已通过主控独立 QA 并纯快进集成到 `main`：唯一 Runner 在�
 - 验收结论：没有未关闭的 P0/P1；原 P1 硬上限和 P2 冗余索引均已关闭，M0-1C 完成标准满足
 - 已知风险：本轮仅在 macOS/Python 3.13.5 与 SQLite 验证，未在 Python 3.11/3.12、Windows 或 PostgreSQL 复测；这些不阻塞当前 M0 SQLite 阶段
 - 下一步：从本交接文档提交后的最新 `main` 创建 `codex/m0-2-text-collection`，只实施 M0-2A 领域模型；M0-2B 及后续仍不得提前开始
+
+#### 2026-07-21｜M0-2A｜待验收
+
+- 分支：`codex/m0-2-text-collection`
+- 指定基线：`7e4a016dc2a26abc4b74399a236d4df488166479`（`main`、`origin/main` 与任务开始时 HEAD 一致，包含已验收 M0-1C）；阶段提交随本记录创建，完整 SHA 见开发窗口最终交接报告
+- 完成内容：建立唯一的 M0-2A 收藏领域契约，包含 User、Session、Message、Source、CollectionItem、CollectionSource、供应商无关 Place/Event 类型、严格收藏状态机、默认有效收藏过滤和计划资格边界；所有实体 ID 使用命名空间加服务端随机值并校验格式，所有领域时间归一到 UTC，CollectionItem 版本必须为正数
+- 状态语义：完整覆盖 `recognizing → active / pending_selection / pending_details / failed`、`active → visited / archived / deleted`、`pending_selection → active / pending_details / deleted`、`pending_details → recognizing / deleted`；非法回退、越级和 failed/visited/archived/deleted 终态退出被拒绝；默认查询排除 recognizing、failed、archived、deleted，只有 active 具备后续计划资格，待选择与待补充保持可见但不可计划
+- Repository 与用户隔离：定义单一 `CollectionRepository` Protocol 与 `SqlAlchemyCollectionRepository` 适配，全部公开查询和写入显式要求 `user_id`；Message 通过 Session 所有权查询；Source、CollectionItem 读写始终同时过滤实体 ID 与用户；CollectionSource 写入前分别验证所有权，并使用 `(collection_item_id, user_id)` 与 `(source_id, user_id)` 复合外键在数据库层阻止跨用户关联；不存在与跨用户资源统一返回空结果或安全的 `resource not found`，不存在仅凭业务实体 ID 的公共 Repository 方法
+- 领域与安全字段：User 只允许 real/demo、深圳和 Asia/Shanghai；Session、Message、Source 使用稳定枚举；Source 抓取时间使用独立 UTC 列，元数据只允许媒体类型、大小、SHA-256 和 HTTP 状态，不提供 Authorization、Cookie、Header、原始正文或凭证字段；URL 禁止内嵌账号密码；Place/Event 使用内部稳定类型，Event 时间为独立列，不包含供应商原始 DTO
+- 数据迁移：新增唯一 revision `20260721_0003`，`down_revision=20260721_0002`；只创建 `users`、`sessions`、`messages`、`sources`、`collection_items`、`collection_sources`，包含稳定命名的主键、外键、唯一/检查约束与必要复合索引；关联表复合主键防止重复，复合外键强制同一用户；未创建 PoiReference、Undo、Approval、Plan、Memory、Job、ProductEvent 或其他业务表，未修改 AgentRun/ToolRun 语义，未使用 `create_all()`
+- 共享实现与主要文件：将既有运行 ID 和 UTC 逻辑原位收敛到 `backend/app/domain/identifiers.py` 与 `backend/app/domain/time.py`，运行记录继续复用且行为不变；主要新增 `backend/app/domain/collections/*`、`backend/app/infrastructure/db/models/collections.py`、`backend/app/infrastructure/repositories/collections.py`、`backend/migrations/versions/20260721_0003_collection_domain.py`、领域/Repository/迁移测试，并更新两份 README、迁移环境和本状态文档
+- 修改前门禁：使用仓库根目录受忽略 `.venv` 的 Python 3.13.5；`pip check`、Ruff、strict mypy 全部退出 0；非真实测试 241 通过、1 deselected，核心测试 118 通过，默认全集 241 通过、1 skipped；默认系统 Python 缺少 Ruff，因此按历史状态记录切换到项目 `.venv` 后从第一条命令重新执行，代码修改前基线完整通过
+- 最终安装与静态验证：规定的 `python -m pip install -e '.[dev]'` 最终退出 0并成功重装；`pip check`、Ruff、strict mypy 均退出 0，mypy 检查 46 个源文件。两个 `PIP_NO_INDEX=1` 诊断性安装尝试分别因隔离环境没有 setuptools 缓存、当前环境无法导入 build backend 退出 1/2；未改代码或依赖，随后规定原始安装命令成功
+- 最终测试：`python -m pytest -q -m "not real_provider"` 为 337 通过、1 deselected；`python -m pytest -q tests/core` 为 118 通过；`python -m pytest -q tests/test_migrations.py` 为 4 通过；`python -m pytest -q` 为 337 通过、1 skipped；全部规定测试退出 0。领域聚焦测试 88 通过，Repository 集成测试 6 通过；封锁 socket connect/connect_ex/create_connection 及 DNS 后非真实测试再次 337 通过、1 deselected
+- 迁移实测：仓库外临时 SQLite 上 `upgrade head → downgrade 20260721_0002 → upgrade head` 全部退出 0；HEAD 为 `20260721_0003` 且只比 M0-1C 多六张约定表，降级后只保留 `agent_runs`、`tool_runs`、`alembic_version`，再次升级恢复六表；关联表报告 4 行复合外键，应用 Database 连接 `PRAGMA foreign_keys=1`，`alembic check` 无待生成操作；自动化测试另验证降级后 AgentRun 可查询并可继续写入 ToolRun
+- 数据库与回滚覆盖：六表字段、状态/版本/类型/时间顺序/价格成对约束、所有者外键、重复关联、跨用户关联、必要查询索引和无重复普通索引均通过；Repository 创建、读取、列表、状态更新、默认过滤往返通过；异常事务会回滚先前未提交的收藏写入，重复关联失败后只保留一条；测试数据库 dump 不包含 Authorization、Cookie、测试 secret 或 Source 原始内容字段
+- 离线、安全与冗余结论：未读取或打印 `.env`，未运行 `real_provider`，真实模型、高德、消息发送或其他付费 API 调用为 0；`nanobot_core` 未导入 app、SQLAlchemy 或 FastAPI；AgentRunner、ToolRegistry、ModelProvider、OpenAI-compatible Provider、AgentRun Repository、Collection Repository 和 ORM Base 均保持唯一；Git 未包含 `.env`、数据库、缓存、虚拟环境或测试生成物
+- 范围结论：没有实现 M0-2B 候选 Schema/抽取/模型调用/输出修复，M0-2C 自动保存/Undo/幂等消息/通用修改撤销，M0-2D API/Demo 初始化/Session 路由，或高德、POI、URL 抓取、截图、计划、SSE、前端、PostgreSQL、Redis、Celery、自动重试及新 Agent 运行机制；当前无已知 P0/P1
+- 未验证与风险：仅在 macOS、Python 3.13.5、SQLite 复测，未在 Python 3.11/3.12、Windows 或 PostgreSQL 验证；M0-2A 只证明领域和持久化边界，尚未验证真实抽取结果、自动保存、API 或真实用户流程，这些均属于后续阶段且不应在本次验收中误判为已实现
+- 主控复测范围：确认提交直接基于指定基线且只含 M0-2A；在全新 Python 3.11+ 环境重跑安装、Ruff、mypy、全部非真实/核心/迁移/默认测试；重点复核 ID/UTC/版本、全部合法与非法状态转换、failed/deleted 默认过滤、相同查询条件下用户隔离、跨用户 Message/Source/Collection/关联安全行为、复合外键与索引、异常回滚、安全 dump、迁移升降升及降级后 AgentRun/ToolRun 可用性、socket/DNS 封锁和唯一公共实现扫描
+- 下一步：主控验收通过后才可纯快进集成并决定是否另开 M0-2B；本分支保持待验收，不合并 `main`、不推送、不开始 M0-2B、不执行真实或付费调用

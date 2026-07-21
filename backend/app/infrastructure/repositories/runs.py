@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.runs.identifiers import (
+from app.domain.identifiers import (
     generate_agent_run_id,
     generate_tool_run_id,
     generate_trace_id,
@@ -22,6 +22,7 @@ from app.domain.runs.statuses import (
     ToolRunStatus,
     ensure_run_transition,
 )
+from app.domain.time import as_utc, required_utc
 from app.infrastructure.db.models import AgentRunModel, ToolRunModel
 
 
@@ -249,10 +250,10 @@ class AgentRunRepository:
             cost_unknown_reason=row.cost_unknown_reason,
             duration_ms=row.duration_ms,
             error_code=row.error_code,
-            started_at=_as_utc(row.started_at),
-            finished_at=_as_utc(row.finished_at),
-            created_at=_required_utc(row.created_at),
-            updated_at=_required_utc(row.updated_at),
+            started_at=as_utc(row.started_at),
+            finished_at=as_utc(row.finished_at),
+            created_at=required_utc(row.created_at),
+            updated_at=required_utc(row.updated_at),
             tool_runs=[self._stored_tool(tool_row) for tool_row in tool_rows],
         )
 
@@ -275,21 +276,7 @@ class AgentRunRepository:
             output_summary=row.output_summary,
             latency_ms=row.latency_ms,
             error_code=row.error_code,
-            started_at=_required_utc(row.started_at),
-            finished_at=_as_utc(row.finished_at),
-            created_at=_required_utc(row.created_at),
+            started_at=required_utc(row.started_at),
+            finished_at=as_utc(row.finished_at),
+            created_at=required_utc(row.created_at),
         )
-
-
-def _as_utc(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
-def _required_utc(value: datetime) -> datetime:
-    normalized = _as_utc(value)
-    assert normalized is not None
-    return normalized

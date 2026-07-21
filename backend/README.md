@@ -115,3 +115,22 @@ cost with a reason rather than zero.
 `AgentRunService.get_by_trace_id()` returns the complete safe summary with ToolRuns ordered by
 sequence and explicit timeout, tool-limit, repetition, and external-cancellation flags. No HTTP
 route, SSE stream, approval flow, User/Session/Message table, or M0-2 feature is included.
+
+## M0-2A collection domain
+
+`app.domain.collections` owns the validated User, Session, Message, Source, CollectionItem,
+CollectionSource, provider-neutral Place/Event kind, and collection status contracts. The shared
+`app.domain.identifiers` and `app.domain.time` modules are the only application implementations
+for opaque IDs and UTC normalization; the existing run-tracking code uses the same helpers.
+
+`SqlAlchemyCollectionRepository` requires `user_id` on every public query and write. Message
+ownership is resolved through Session. CollectionSource ownership is checked before a write and
+is also enforced by composite SQLite foreign keys, so a Source and CollectionItem from different
+users cannot be linked even through direct SQL. Missing and cross-user resources share the same
+safe not-found behavior.
+
+Revision `20260721_0003` creates only `users`, `sessions`, `messages`, `sources`,
+`collection_items`, and `collection_sources` on top of `20260721_0002`. Downgrading to
+`20260721_0002` removes only those six tables and preserves AgentRun/ToolRun. M0-2A includes no
+extractor, model invocation, auto-save, Undo token, HTTP collection route, POI matching, or Demo
+initialization.

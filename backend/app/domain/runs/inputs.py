@@ -4,7 +4,7 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.domain.runs.identifiers import validate_trace_id
+from app.domain.identifiers import validate_trace_id
 
 SAFE_LABEL_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 
