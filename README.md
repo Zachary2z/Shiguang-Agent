@@ -49,11 +49,12 @@ Windows PowerShell 激活命令为 `.venv\Scripts\Activate.ps1`，之后同样�
 ```bash
 python -m ruff check .
 python -m mypy app migrations nanobot_core
-python -m pytest -q -m "not real_provider"
+python -m pytest -q -m "not real_provider and not real_map_provider"
 python -m pytest -q tests/core
 python -m pytest -q tests/test_migrations.py
 python -m pytest -q tests/contract/test_m0_2d_api.py
 python -m pytest -q tests/unit/test_place_contracts.py tests/contract/test_map_provider_contract.py tests/integration/test_map_provider_stub.py
+python -m pytest -q tests/unit/test_amap_provider.py tests/test_config.py
 ```
 
 测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
@@ -110,6 +111,12 @@ curl -i -H 'X-Request-ID: local-check-001' http://127.0.0.1:8000/healthz
 | `AGENT_MAX_TOOL_CALLS` | `8` | 单次 Run 绝对工具调用上限，只允许 `1..8` |
 | `AGENT_TIMEOUT_SECONDS` | `60` | 单次 Run 总时限，只允许有限值 `(0, 60]` |
 | `RUN_REAL_MODEL_TESTS` | `0` | 只有精确设为 `1` 才授权真实 Provider 测试 |
+| `AMAP_API_KEY` | 无 | 高德 Web 服务 Key，以 `SecretStr` 脱敏；只在显式构造真实地图 Provider 时必填 |
+| `AMAP_BASE_URL` | `https://restapi.amap.com` | 高德 HTTPS Web 服务入口；禁止凭证、查询串和 fragment |
+| `AMAP_TIMEOUT_SECONDS` | `5` | 单次 HTTP 尝试超时，只允许有限值 `(0, 30]` |
+| `AMAP_MAX_RETRIES` | `1` | 每个逻辑请求额外尝试次数，只允许 `0..1` |
+| `AMAP_RETRY_AFTER_MAX_SECONDS` | `1` | `Retry-After` 等待上限，只允许有限值 `[0, 5]` |
+| `RUN_REAL_MAP_TESTS` | `0` | 只有精确设为 `1` 且另获授权才允许真实高德测试 |
 
 `.env` 会被 Git 忽略，不要把真实密钥、Token、Cookie 或账号写入代码、示例、测试输出或提交。
 
@@ -160,6 +167,23 @@ M0-2D 没有新增迁移或配置变量。应用、`/healthz`、OpenAPI 和 Demo
 `StubMapProvider` 通过构造参数注入不可变 Fixture 映射，不访问网络或环境变量，不使用供应商 SDK，也不按调用顺序消费共享队列。相同输入返回内容相等但对象独立的快照；深圳、广州连续、交错和并发调用互不污染。未配置的搜索返回显式空结果，详情不存在使用固定安全错误，超时由请求 Fixture 确定；取消会原样传播，不自动重试、退避、熔断或缓存。
 
 共享测试数据位于 `tests.fixtures.maps`，包含深圳和广州唯一结果、深圳连锁品牌多结果、无结果、超时、详情、路线、天气与导航 URI。它只配置正式 Stub，不复制搜索、验证或匹配算法。本阶段没有数据库模型、迁移、配置变量或真实地图测试开关。
+
+### M0-3B 高德 Web 服务适配
+
+`AmapMapProvider` 是复用现有 `MapProvider` 和地点 DTO 的唯一正式高德适配器。深圳和广州共享同一实现与同一内部城市目录：`shenzhen → adcode 440300 / citycode 0755`，`guangzhou → adcode 440100 / citycode 020`。每次调用从请求内 `CityScope` 取值；没有 `AMAP_CITY`、`CURRENT_CITY` 或默认深圳状态。供应商 `adcode`、`pname`、`cityname`、`typecode` 和 `infocode` 只在适配层校验/映射，不进入领域 DTO。
+
+POI 搜索使用显式城市与 `citylimit=true`，无结果保留空列表；详情同时核验 POI ID 与城市归属。步行、骑行、公交和驾车使用高德 v5 路线接口，只返回 GCJ-02 端点、总米数和总秒数。天气使用城市正式 adcode 和预报日期。导航链接在本地生成 `https://uri.amap.com/marker`，不发 HTTP，也不包含 Key。
+
+`create_amap_http_client()` 是唯一 HTTP Client 构造入口；生产连接池由 Provider 关闭，测试通过该入口注入 `MockTransport`。单个逻辑请求最多 2 次 HTTP 尝试：只重试超时、连接错误、HTTP 429、500/502/503/504，以及明确可恢复的高德限流/引擎错误。鉴权、参数、响应损坏、无结果和其他 4xx 不重试；`Retry-After` 只接受有限非负秒数并受配置上限约束。取消原样传播。错误只公开固定摘要，不记录 Key、完整查询 URL 或响应正文。
+
+默认测试完全离线；真实入口只执行只读搜索、详情、路线和天气，并本地构造导航 URI：
+
+```bash
+python -m pytest -q tests/unit/test_amap_provider.py tests/test_config.py
+RUN_REAL_MAP_TESTS=1 python -m pytest -q -m real_map_provider -rs
+```
+
+真实入口包含 5 个逻辑 HTTP 请求（深圳搜索、广州搜索、一个详情、一条路线、一个城市天气），在 `AMAP_MAX_RETRIES=1` 时最多 10 次 HTTP 尝试；导航 URI 不增加请求。只有用户配置 Key 并对本次真实调用单独授权后才能运行。普通 `pytest` 会默认 skip；本阶段未执行该入口。
 
 真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
 

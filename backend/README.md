@@ -226,3 +226,36 @@ python -m pytest -q tests/unit/test_place_contracts.py tests/contract/test_map_p
 M0-3A adds no configuration, dependency, database model, or Alembic revision. The real Amap
 adapter, provider-field mapping, matching scores, candidate limits, formal POI persistence, and
 branch-selection behavior remain explicitly outside this phase.
+
+## M0-3B Amap Web Service adapter
+
+`app.providers.AmapMapProvider` is the only production Amap adapter and directly implements the
+existing `MapProvider`. One internal city mapping supplies both Amap adcodes and citycodes for
+Shenzhen and Guangzhou; every method reads the explicit request `CityScope`, with no process-wide
+city setting. Search uses `citylimit=true`, detail validates POI ID and city ownership, all four
+route modes return only GCJ-02 endpoints plus total meters/seconds, forecast weather maps dates
+and bounded Celsius values, and the Amap marker URI is built locally without a key.
+
+`create_amap_http_client()` is the only HTTP client constructor and accepts an injected
+`MockTransport`. The provider owns and closes the client. One logical call makes at most two HTTP
+attempts. Timeout, connection, HTTP 429, selected 5xx, and explicit Amap throttling/engine errors
+may retry; authentication, invalid input/response, empty results, and other 4xx do not. Numeric
+`Retry-After` is capped, the wait function is injectable, cancellation propagates, and public
+errors contain only stable codes and summaries.
+
+Offline focus suite:
+
+```bash
+python -m pytest -q tests/unit/test_amap_provider.py tests/test_config.py
+```
+
+The separately authorized real marker performs five read-only logical HTTP calls, with at most
+ten attempts at the default retry ceiling, plus a network-free marker URI build:
+
+```bash
+RUN_REAL_MAP_TESTS=1 python -m pytest -q -m real_map_provider -rs
+```
+
+It remains skipped unless both the exact switch and complete Amap settings are present. Do not
+run it without a new user authorization. M0-3B does not implement matching scores, candidate
+limits/selection, POI persistence, or exact/any-branch behavior.

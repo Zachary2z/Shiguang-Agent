@@ -40,6 +40,7 @@ addopts = "--strict-markers --strict-config"
 asyncio_mode = "strict"
 markers = [
     "real_provider: requires explicit authorization and complete real model configuration",
+    "real_map_provider: requires explicit authorization and complete real Amap configuration",
 ]
 testpaths = ["tests"]
 

@@ -20,10 +20,18 @@ from nanobot_core.agent.limits import MAX_RUN_TIMEOUT_SECONDS, MAX_TOOL_CALLS_PE
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = REPOSITORY_ROOT / ".env"
+DEFAULT_AMAP_BASE_URL = "https://restapi.amap.com"
+MAX_AMAP_TIMEOUT_SECONDS = 30.0
+MAX_AMAP_RETRIES = 1
+MAX_AMAP_RETRY_AFTER_SECONDS = 5.0
 
 
 class ModelConfigurationError(ValueError):
     """A fixed, secret-safe model configuration failure."""
+
+
+class AmapConfigurationError(ValueError):
+    """A fixed, secret-safe Amap configuration failure."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +42,17 @@ class ModelProviderSettings:
     api_key: SecretStr
     model_name: str
     timeout_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class AmapProviderSettings:
+    """Complete settings required to construct the real Amap provider."""
+
+    api_key: SecretStr
+    base_url: str
+    timeout_seconds: float
+    max_retries: int
+    retry_after_max_seconds: float
 
 
 class Settings(BaseSettings):
@@ -67,6 +86,11 @@ class Settings(BaseSettings):
     model_pricing_source: str = "configured_model_rates"
     agent_max_tool_calls: int = MAX_TOOL_CALLS_PER_RUN
     agent_timeout_seconds: float = MAX_RUN_TIMEOUT_SECONDS
+    amap_api_key: SecretStr | None = None
+    amap_base_url: str = DEFAULT_AMAP_BASE_URL
+    amap_timeout_seconds: float = 5.0
+    amap_max_retries: int = MAX_AMAP_RETRIES
+    amap_retry_after_max_seconds: float = 1.0
 
     @field_validator("app_timezone")
     @classmethod
@@ -181,6 +205,60 @@ class Settings(BaseSettings):
             )
         return value
 
+    @field_validator("amap_timeout_seconds", mode="before")
+    @classmethod
+    def reject_boolean_amap_timeout(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("AMAP_TIMEOUT_SECONDS must be a finite positive number")
+        return value
+
+    @field_validator("amap_timeout_seconds")
+    @classmethod
+    def validate_amap_timeout(cls, value: float) -> float:
+        if not isfinite(value) or value <= 0 or value > MAX_AMAP_TIMEOUT_SECONDS:
+            raise ValueError(
+                "AMAP_TIMEOUT_SECONDS must be a finite number in "
+                f"(0, {MAX_AMAP_TIMEOUT_SECONDS:g}]"
+            )
+        return value
+
+    @field_validator("amap_max_retries", mode="before")
+    @classmethod
+    def reject_boolean_amap_retries(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError(f"AMAP_MAX_RETRIES must be an integer from 0 to {MAX_AMAP_RETRIES}")
+        return value
+
+    @field_validator("amap_max_retries")
+    @classmethod
+    def validate_amap_retries(cls, value: int) -> int:
+        if value < 0 or value > MAX_AMAP_RETRIES:
+            raise ValueError(f"AMAP_MAX_RETRIES must be an integer from 0 to {MAX_AMAP_RETRIES}")
+        return value
+
+    @field_validator("amap_retry_after_max_seconds")
+    @classmethod
+    def validate_amap_retry_after_max(cls, value: float) -> float:
+        if (
+            not isfinite(value)
+            or value < 0
+            or value > MAX_AMAP_RETRY_AFTER_SECONDS
+        ):
+            raise ValueError(
+                "AMAP_RETRY_AFTER_MAX_SECONDS must be a finite number in "
+                f"[0, {MAX_AMAP_RETRY_AFTER_SECONDS:g}]"
+            )
+        return value
+
+    @field_validator("amap_retry_after_max_seconds", mode="before")
+    @classmethod
+    def reject_boolean_amap_retry_after_max(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError(
+                "AMAP_RETRY_AFTER_MAX_SECONDS must be a finite non-negative number"
+            )
+        return value
+
     def require_model_provider(self) -> ModelProviderSettings:
         """Return complete real-provider settings only when explicitly requested."""
 
@@ -229,6 +307,41 @@ class Settings(BaseSettings):
             api_key=api_key,
             model_name=model_name,
             timeout_seconds=timeout_seconds,
+        )
+
+    def require_amap_provider(self) -> AmapProviderSettings:
+        """Return real Amap settings only when the adapter is explicitly constructed."""
+
+        api_key = self.amap_api_key
+        if api_key is None or not api_key.get_secret_value().strip():
+            raise AmapConfigurationError("Missing Amap provider configuration: AMAP_API_KEY")
+
+        base_url = self.amap_base_url.strip().rstrip("/")
+        try:
+            parsed = urlsplit(base_url)
+            port = parsed.port
+            valid_base = (
+                parsed.scheme == "https"
+                and parsed.hostname is not None
+                and (port is None or port > 0)
+                and parsed.username is None
+                and parsed.password is None
+                and not parsed.query
+                and not parsed.fragment
+            )
+        except ValueError:
+            valid_base = False
+        if not valid_base:
+            raise AmapConfigurationError(
+                "AMAP_BASE_URL must be an HTTPS URL without credentials, query, or fragment"
+            )
+
+        return AmapProviderSettings(
+            api_key=api_key,
+            base_url=base_url,
+            timeout_seconds=self.amap_timeout_seconds,
+            max_retries=self.amap_max_retries,
+            retry_after_max_seconds=self.amap_retry_after_max_seconds,
         )
 
 

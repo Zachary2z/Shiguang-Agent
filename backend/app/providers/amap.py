@@ -1,0 +1,582 @@
+"""Server-side Amap Web Service adapter with strict provider-neutral mapping."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
+from datetime import date
+from math import isfinite
+from types import MappingProxyType
+from urllib.parse import urlencode
+
+import httpx
+from pydantic import ValidationError
+
+from app.config import AmapProviderSettings, Settings
+from app.domain.places import (
+    Coordinate,
+    CoordinateSystem,
+    GetPoiRequest,
+    GetPoiResult,
+    NavigationRequest,
+    NavigationUri,
+    Poi,
+    PoiSearchResult,
+    PoiType,
+    RouteRequest,
+    RouteResult,
+    SearchPoiRequest,
+    TransportMode,
+    WeatherRequest,
+    WeatherResult,
+)
+from app.providers.map import MapProvider, MapProviderError, MapProviderErrorCode
+
+WaitFunction = Callable[[float], Awaitable[None]]
+
+_RECOVERABLE_HTTP_STATUSES = frozenset({500, 502, 503, 504})
+_AUTHENTICATION_INFOCODES = frozenset(
+    {
+        "10001",
+        "10002",
+        "10005",
+        "10006",
+        "10007",
+        "10008",
+        "10009",
+        "10026",
+        "10041",
+    }
+)
+_RATE_LIMIT_INFOCODES = frozenset(
+    {"10003", "10004", "10010", "10020", "10021", "10029", "10044", "10045"}
+)
+_REQUEST_INFOCODE_PREFIXES = ("2",)
+_HTTPX_LOGGER = logging.getLogger("httpx")
+_HTTPCORE_LOGGER = logging.getLogger("httpcore")
+
+
+@dataclass(frozen=True, slots=True)
+class _AmapCity:
+    city_code: str
+    adcode: str
+    citycode: str
+    province_names: tuple[str, ...]
+    city_names: tuple[str, ...]
+
+    def owns_adcode(self, value: str) -> bool:
+        return len(value) == 6 and value.isdigit() and value[:4] == self.adcode[:4]
+
+
+_AMAP_CITIES: Mapping[str, _AmapCity] = MappingProxyType(
+    {
+        "shenzhen": _AmapCity(
+            city_code="shenzhen",
+            adcode="440300",
+            citycode="0755",
+            province_names=("广东省", "广东"),
+            city_names=("深圳市", "深圳"),
+        ),
+        "guangzhou": _AmapCity(
+            city_code="guangzhou",
+            adcode="440100",
+            citycode="020",
+            province_names=("广东省", "广东"),
+            city_names=("广州市", "广州"),
+        ),
+    }
+)
+
+# Amap typecode prefixes are ordered from specific to broad and map exactly once here.
+_POI_TYPE_PREFIXES: tuple[tuple[str, PoiType], ...] = (
+    ("1401", PoiType.MUSEUM),
+    ("0505", PoiType.CAFE),
+    ("05", PoiType.RESTAURANT),
+    ("06", PoiType.SHOPPING),
+    ("1101", PoiType.PARK),
+    ("11", PoiType.ATTRACTION),
+    ("15", PoiType.TRANSIT),
+)
+
+_ROUTE_PATHS: Mapping[TransportMode, str] = MappingProxyType(
+    {
+        TransportMode.WALKING: "/v5/direction/walking",
+        TransportMode.CYCLING: "/v5/direction/bicycling",
+        TransportMode.TRANSIT: "/v5/direction/transit/integrated",
+        TransportMode.DRIVING: "/v5/direction/driving",
+    }
+)
+
+
+class _InvalidAmapResponse(ValueError):
+    """Internal sentinel carrying no response data."""
+
+
+def create_amap_http_client(
+    *,
+    config: AmapProviderSettings,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> httpx.AsyncClient:
+    """Construct the adapter's only HTTP client, with injectable offline transport."""
+
+    return httpx.AsyncClient(
+        base_url=config.base_url,
+        timeout=httpx.Timeout(config.timeout_seconds),
+        follow_redirects=False,
+        transport=transport,
+    )
+
+
+class AmapMapProvider(MapProvider):
+    """Implement the single MapProvider contract using Amap Web Service APIs."""
+
+    def __init__(
+        self,
+        *,
+        config: AmapProviderSettings,
+        transport: httpx.AsyncBaseTransport | None = None,
+        wait: WaitFunction = asyncio.sleep,
+    ) -> None:
+        # HTTPX's INFO log includes the complete query string, including the API key.
+        _HTTPX_LOGGER.setLevel(max(_HTTPX_LOGGER.level, logging.WARNING))
+        _HTTPCORE_LOGGER.setLevel(max(_HTTPCORE_LOGGER.level, logging.WARNING))
+        self._client = create_amap_http_client(config=config, transport=transport)
+        self._api_key = config.api_key.get_secret_value()
+        self._max_retries = config.max_retries
+        self._retry_after_max_seconds = config.retry_after_max_seconds
+        self._wait = wait
+
+    @classmethod
+    def from_settings(
+        cls,
+        settings: Settings,
+        *,
+        transport: httpx.AsyncBaseTransport | None = None,
+        wait: WaitFunction = asyncio.sleep,
+    ) -> AmapMapProvider:
+        """Construct the real adapter only after deferred configuration validation."""
+
+        return cls(
+            config=settings.require_amap_provider(),
+            transport=transport,
+            wait=wait,
+        )
+
+    async def __aenter__(self) -> AmapMapProvider:
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        """Close the owned connection pool; repeated closes are safe."""
+
+        await self._client.aclose()
+
+    async def search_poi(self, request: SearchPoiRequest) -> PoiSearchResult:
+        city = _require_city(request.city.city_code)
+        params: dict[str, str] = {
+            "keywords": _search_keywords(request),
+            "city": city.adcode,
+            "citylimit": "true",
+            "extensions": "all",
+            "offset": "20",
+            "page": "1",
+            "output": "JSON",
+        }
+        if request.location is not None:
+            _require_gcj_02(request.location)
+            params["location"] = _coordinate_text(request.location)
+
+        payload = await self._request_json("/v3/place/text", params=params)
+        try:
+            raw_pois = _required_list(payload, "pois")
+            pois = tuple(_map_poi(item, city=city) for item in raw_pois)
+            if len({poi.poi_id for poi in pois}) != len(pois):
+                raise _InvalidAmapResponse
+            return PoiSearchResult(city_code=city.city_code, pois=pois)
+        except (_InvalidAmapResponse, ValidationError, TypeError, ValueError):
+            raise MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE) from None
+
+    async def get_poi(self, request: GetPoiRequest) -> GetPoiResult:
+        city = _require_city(request.city.city_code)
+        payload = await self._request_json(
+            "/v3/place/detail",
+            params={"id": request.poi_id, "extensions": "all", "output": "JSON"},
+        )
+        try:
+            raw_pois = _required_list(payload, "pois")
+            if not raw_pois:
+                raise MapProviderError(code=MapProviderErrorCode.POI_NOT_FOUND)
+            if len(raw_pois) != 1:
+                raise _InvalidAmapResponse
+            poi = _map_poi(raw_pois[0], city=city)
+            if poi.poi_id != request.poi_id:
+                raise _InvalidAmapResponse
+            return GetPoiResult(poi=poi)
+        except MapProviderError:
+            raise
+        except (_InvalidAmapResponse, ValidationError, TypeError, ValueError):
+            raise MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE) from None
+
+    async def route(self, request: RouteRequest) -> RouteResult:
+        city = _require_city(request.city.city_code)
+        _require_gcj_02(request.origin)
+        _require_gcj_02(request.destination)
+        params = {
+            "origin": _coordinate_text(request.origin),
+            "destination": _coordinate_text(request.destination),
+            "show_fields": "cost",
+            "output": "JSON",
+        }
+        if request.mode is TransportMode.TRANSIT:
+            params.update(
+                {
+                    "city1": city.citycode,
+                    "city2": city.citycode,
+                    "strategy": "0",
+                    "AlternativeRoute": "1",
+                }
+            )
+        elif request.mode is TransportMode.DRIVING:
+            params.update({"strategy": "32", "alternative_route": "1"})
+        else:
+            params["alternative_route"] = "1"
+
+        payload = await self._request_json(_ROUTE_PATHS[request.mode], params=params)
+        try:
+            route = _required_mapping(payload, "route")
+            choices_key = "transits" if request.mode is TransportMode.TRANSIT else "paths"
+            choices = _required_list(route, choices_key)
+            if not choices:
+                raise _InvalidAmapResponse
+            choice = _mapping_value(choices[0])
+            distance = _non_negative_integer(choice, "distance")
+            cost = _required_mapping(choice, "cost")
+            duration = _non_negative_integer(cost, "duration")
+            return RouteResult(
+                city_code=city.city_code,
+                origin=request.origin,
+                destination=request.destination,
+                mode=request.mode,
+                distance_meters=distance,
+                duration_seconds=duration,
+            )
+        except (_InvalidAmapResponse, ValidationError, TypeError, ValueError):
+            raise MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE) from None
+
+    async def weather(self, request: WeatherRequest) -> WeatherResult:
+        city = _require_city(request.city.city_code)
+        payload = await self._request_json(
+            "/v3/weather/weatherInfo",
+            params={"city": city.adcode, "extensions": "all", "output": "JSON"},
+        )
+        try:
+            forecasts = _required_list(payload, "forecasts")
+            if len(forecasts) != 1:
+                raise _InvalidAmapResponse
+            forecast = _mapping_value(forecasts[0])
+            _validate_city(forecast, city=city, require_citycode=False)
+            casts = _required_list(forecast, "casts")
+            parsed_casts = tuple((_cast_date(item), _mapping_value(item)) for item in casts)
+            if len({cast_date for cast_date, _ in parsed_casts}) != len(parsed_casts):
+                raise _InvalidAmapResponse
+            target_date = request.on_date or (parsed_casts[0][0] if parsed_casts else None)
+            if target_date is None:
+                raise _InvalidAmapResponse
+            matching = [item for cast_date, item in parsed_casts if cast_date == target_date]
+            if not matching:
+                raise MapProviderError(code=MapProviderErrorCode.INVALID_REQUEST)
+            cast = matching[0]
+            day_condition = _required_text(cast, "dayweather")
+            night_condition = _required_text(cast, "nightweather")
+            day_temperature = _temperature(cast, "daytemp")
+            night_temperature = _temperature(cast, "nighttemp")
+            low = min(day_temperature, night_temperature)
+            high = max(day_temperature, night_temperature)
+            condition = (
+                day_condition
+                if day_condition == night_condition
+                else f"{day_condition}转{night_condition}"
+            )
+            summary = f"白天{day_condition}，夜间{night_condition}"
+            return WeatherResult(
+                city_code=city.city_code,
+                on_date=target_date,
+                condition=condition,
+                temperature_celsius=day_temperature,
+                low_temperature_celsius=low,
+                high_temperature_celsius=high,
+                summary=summary,
+            )
+        except MapProviderError:
+            raise
+        except (_InvalidAmapResponse, ValidationError, TypeError, ValueError):
+            raise MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE) from None
+
+    async def build_navigation_uri(self, request: NavigationRequest) -> NavigationUri:
+        _require_city(request.city.city_code)
+        _require_gcj_02(request.coordinate)
+        query = urlencode(
+            {
+                "position": _coordinate_text(request.coordinate),
+                "name": request.poi_id,
+                "src": "shiguang",
+                "coordinate": "gaode",
+                "callnative": "0",
+            }
+        )
+        return NavigationUri(uri=f"https://uri.amap.com/marker?{query}")
+
+    async def _request_json(self, path: str, *, params: Mapping[str, str]) -> Mapping[str, object]:
+        safe_params = dict(params)
+        safe_params["key"] = self._api_key
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = await self._client.get(path, params=safe_params)
+            except asyncio.CancelledError:
+                raise
+            except httpx.TimeoutException:
+                if attempt < self._max_retries:
+                    continue
+                raise MapProviderError(code=MapProviderErrorCode.TIMEOUT) from None
+            except httpx.TransportError:
+                if attempt < self._max_retries:
+                    continue
+                raise MapProviderError(code=MapProviderErrorCode.UNAVAILABLE) from None
+
+            http_error = _http_error(response, retry_after_cap=self._retry_after_max_seconds)
+            if http_error is not None:
+                if attempt < self._max_retries and (
+                    response.status_code in _RECOVERABLE_HTTP_STATUSES
+                    or response.status_code == 429
+                ):
+                    await self._wait(http_error.retry_after_seconds or 0.0)
+                    continue
+                raise http_error
+
+            try:
+                decoded = response.json()
+            except ValueError:
+                raise MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE) from None
+            if not isinstance(decoded, dict) or not decoded:
+                raise MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE)
+            payload: Mapping[str, object] = decoded
+            vendor_error = _validate_envelope(payload)
+            if vendor_error is None:
+                return payload
+            if attempt < self._max_retries and vendor_error.code in {
+                MapProviderErrorCode.RATE_LIMITED,
+                MapProviderErrorCode.UNAVAILABLE,
+            }:
+                await self._wait(vendor_error.retry_after_seconds or 0.0)
+                continue
+            raise vendor_error
+        raise AssertionError("bounded Amap request loop exhausted")
+
+
+def _require_city(city_code: str) -> _AmapCity:
+    try:
+        return _AMAP_CITIES[city_code]
+    except KeyError:
+        raise MapProviderError(code=MapProviderErrorCode.INVALID_REQUEST) from None
+
+
+def _require_gcj_02(coordinate: Coordinate) -> None:
+    if coordinate.coordinate_system is not CoordinateSystem.GCJ_02:
+        raise MapProviderError(code=MapProviderErrorCode.INVALID_REQUEST)
+
+
+def _coordinate_text(coordinate: Coordinate) -> str:
+    return f"{coordinate.longitude:.6f},{coordinate.latitude:.6f}"
+
+
+def _search_keywords(request: SearchPoiRequest) -> str:
+    keywords = request.query if request.district is None else f"{request.query} {request.district}"
+    if len(keywords) > 80:
+        raise MapProviderError(code=MapProviderErrorCode.INVALID_REQUEST)
+    return keywords
+
+
+def _http_error(
+    response: httpx.Response,
+    *,
+    retry_after_cap: float,
+) -> MapProviderError | None:
+    status = response.status_code
+    if 200 <= status < 300:
+        return None
+    if status in {401, 403}:
+        return MapProviderError(code=MapProviderErrorCode.AUTHENTICATION_FAILED)
+    if status == 429:
+        return MapProviderError(
+            code=MapProviderErrorCode.RATE_LIMITED,
+            retry_after_seconds=_retry_after(response, cap=retry_after_cap),
+        )
+    if 400 <= status < 500:
+        return MapProviderError(code=MapProviderErrorCode.INVALID_REQUEST)
+    return MapProviderError(code=MapProviderErrorCode.UNAVAILABLE)
+
+
+def _retry_after(response: httpx.Response, *, cap: float) -> float | None:
+    value = response.headers.get("retry-after")
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    if not isfinite(seconds) or seconds < 0:
+        return None
+    return min(seconds, cap)
+
+
+def _validate_envelope(payload: Mapping[str, object]) -> MapProviderError | None:
+    status = payload.get("status")
+    info = payload.get("info")
+    infocode = payload.get("infocode")
+    if not all(isinstance(value, str) for value in (status, info, infocode)):
+        return MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE)
+    assert isinstance(status, str)
+    assert isinstance(info, str)
+    assert isinstance(infocode, str)
+    if status == "1":
+        if info.casefold() == "ok" and infocode == "10000":
+            return None
+        return MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE)
+    if status != "0" or not infocode:
+        return MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE)
+    if infocode in _AUTHENTICATION_INFOCODES:
+        return MapProviderError(code=MapProviderErrorCode.AUTHENTICATION_FAILED)
+    if infocode in _RATE_LIMIT_INFOCODES:
+        return MapProviderError(code=MapProviderErrorCode.RATE_LIMITED)
+    if infocode.startswith(_REQUEST_INFOCODE_PREFIXES):
+        return MapProviderError(code=MapProviderErrorCode.INVALID_REQUEST)
+    if infocode.startswith("3"):
+        return MapProviderError(code=MapProviderErrorCode.UNAVAILABLE)
+    return MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE)
+
+
+def _required_list(container: Mapping[str, object], key: str) -> list[object]:
+    value = container.get(key)
+    if not isinstance(value, list):
+        raise _InvalidAmapResponse
+    return value
+
+
+def _required_mapping(container: Mapping[str, object], key: str) -> Mapping[str, object]:
+    return _mapping_value(container.get(key))
+
+
+def _mapping_value(value: object) -> Mapping[str, object]:
+    if not isinstance(value, dict):
+        raise _InvalidAmapResponse
+    return value
+
+
+def _required_text(container: Mapping[str, object], key: str) -> str:
+    value = container.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise _InvalidAmapResponse
+    return " ".join(value.split())
+
+
+def _optional_text(container: Mapping[str, object], key: str) -> str | None:
+    if key not in container:
+        return None
+    value = container[key]
+    if not isinstance(value, str):
+        raise _InvalidAmapResponse
+    normalized = " ".join(value.split())
+    return normalized or None
+
+
+def _validate_city(
+    item: Mapping[str, object],
+    *,
+    city: _AmapCity,
+    require_citycode: bool = True,
+) -> None:
+    adcode = _required_text(item, "adcode")
+    province = _required_text(item, "pname" if "pname" in item else "province")
+    city_name = _required_text(item, "cityname" if "cityname" in item else "city")
+    if (
+        not city.owns_adcode(adcode)
+        or province not in city.province_names
+        or city_name not in city.city_names
+    ):
+        raise _InvalidAmapResponse
+    if require_citycode and _required_text(item, "citycode") != city.citycode:
+        raise _InvalidAmapResponse
+
+
+def _map_poi(value: object, *, city: _AmapCity) -> Poi:
+    item = _mapping_value(value)
+    _validate_city(item, city=city)
+    location = _required_text(item, "location")
+    components = location.split(",")
+    if len(components) != 2:
+        raise _InvalidAmapResponse
+    try:
+        longitude, latitude = (float(component) for component in components)
+    except ValueError:
+        raise _InvalidAmapResponse from None
+    if not isfinite(longitude) or not isfinite(latitude):
+        raise _InvalidAmapResponse
+    typecode = _required_text(item, "typecode")
+    return Poi(
+        poi_id=_required_text(item, "id"),
+        name=_required_text(item, "name"),
+        branch_name=None,
+        city_code=city.city_code,
+        district=_required_text(item, "adname"),
+        business_area=_optional_text(item, "business_area"),
+        address=_required_text(item, "address"),
+        coordinate=Coordinate(
+            latitude=latitude,
+            longitude=longitude,
+            coordinate_system=CoordinateSystem.GCJ_02,
+        ),
+        poi_type=_map_poi_type(typecode),
+        phone=_optional_text(item, "tel"),
+        opening_hours_summary=None,
+    )
+
+
+def _map_poi_type(typecode: str) -> PoiType:
+    if len(typecode) != 6 or not typecode.isascii() or not typecode.isdigit():
+        raise _InvalidAmapResponse
+    for prefix, poi_type in _POI_TYPE_PREFIXES:
+        if typecode.startswith(prefix):
+            return poi_type
+    return PoiType.OTHER
+
+
+def _non_negative_integer(container: Mapping[str, object], key: str) -> int:
+    value = _required_text(container, key)
+    if not value.isascii() or not value.isdigit():
+        raise _InvalidAmapResponse
+    parsed = int(value)
+    if parsed < 0:
+        raise _InvalidAmapResponse
+    return parsed
+
+
+def _cast_date(value: object) -> date:
+    item = _mapping_value(value)
+    try:
+        return date.fromisoformat(_required_text(item, "date"))
+    except ValueError:
+        raise _InvalidAmapResponse from None
+
+
+def _temperature(container: Mapping[str, object], key: str) -> float:
+    try:
+        value = float(_required_text(container, key))
+    except ValueError:
+        raise _InvalidAmapResponse from None
+    if not isfinite(value) or value < -100 or value > 100:
+        raise _InvalidAmapResponse
+    return value

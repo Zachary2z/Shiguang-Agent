@@ -8,7 +8,12 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 import app.config as config_module
-from app.config import ModelConfigurationError, Settings, load_settings
+from app.config import (
+    AmapConfigurationError,
+    ModelConfigurationError,
+    Settings,
+    load_settings,
+)
 from app.main import create_app
 
 
@@ -77,7 +82,7 @@ def test_non_async_sqlite_url_is_rejected() -> None:
         )
 
 
-def test_application_and_health_configuration_do_not_require_model_settings() -> None:
+def test_application_and_health_configuration_do_not_require_real_provider_settings() -> None:
     settings = Settings(
         _env_file=None,
         app_env="test",
@@ -86,11 +91,104 @@ def test_application_and_health_configuration_do_not_require_model_settings() ->
         model_api_key=None,
         model_name=None,
         model_timeout_seconds=None,
+        amap_api_key=None,
     )
 
     app = create_app(settings)
 
     assert app.state.settings is settings
+
+
+def test_complete_amap_configuration_is_deferred_and_secret_wrapped() -> None:
+    settings = Settings(
+        _env_file=None,
+        app_env="test",
+        database_url="sqlite+aiosqlite:///:memory:",
+        amap_api_key="fake-amap-key",
+        amap_timeout_seconds=8.5,
+        amap_max_retries=1,
+        amap_retry_after_max_seconds=2,
+    )
+
+    amap = settings.require_amap_provider()
+
+    assert amap.base_url == "https://restapi.amap.com"
+    assert isinstance(amap.api_key, SecretStr)
+    assert amap.api_key.get_secret_value() == "fake-amap-key"
+    assert amap.timeout_seconds == 8.5
+    assert amap.max_retries == 1
+    assert amap.retry_after_max_seconds == 2
+
+
+def test_missing_amap_key_is_required_only_when_real_adapter_is_requested() -> None:
+    settings = Settings(
+        _env_file=None,
+        app_env="test",
+        database_url="sqlite+aiosqlite:///:memory:",
+        amap_api_key=None,
+    )
+
+    with pytest.raises(AmapConfigurationError, match="AMAP_API_KEY"):
+        settings.require_amap_provider()
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://restapi.amap.com",
+        "https://user:password@restapi.amap.com",
+        "https://restapi.amap.com:0",
+        "https://restapi.amap.com?key=unsafe",
+        "https://restapi.amap.com#unsafe",
+        "not-a-url",
+    ],
+)
+def test_invalid_amap_base_url_is_rejected_without_echoing_value(base_url: str) -> None:
+    settings = Settings(
+        _env_file=None,
+        app_env="test",
+        database_url="sqlite+aiosqlite:///:memory:",
+        amap_api_key="fake-amap-key",
+        amap_base_url=base_url,
+    )
+
+    with pytest.raises(AmapConfigurationError) as exc_info:
+        settings.require_amap_provider()
+
+    assert base_url not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("timeout", [0, 30.1, -1, float("nan"), float("inf"), True])
+def test_invalid_amap_timeout_is_rejected(timeout: float) -> None:
+    with pytest.raises(ValidationError, match="AMAP_TIMEOUT_SECONDS"):
+        Settings(
+            _env_file=None,
+            app_env="test",
+            database_url="sqlite+aiosqlite:///:memory:",
+            amap_timeout_seconds=timeout,
+        )
+
+
+@pytest.mark.parametrize("retries", [-1, 2, True])
+def test_amap_retries_have_one_extra_attempt_hard_limit(retries: int) -> None:
+    with pytest.raises(ValidationError, match="AMAP_MAX_RETRIES"):
+        Settings(
+            _env_file=None,
+            app_env="test",
+            database_url="sqlite+aiosqlite:///:memory:",
+            amap_max_retries=retries,
+        )
+
+
+@pytest.mark.parametrize("cap", [-1, 5.1, float("nan"), float("inf"), True])
+def test_amap_retry_after_cap_is_bounded(cap: float) -> None:
+    with pytest.raises(ValidationError, match="AMAP_RETRY_AFTER_MAX_SECONDS"):
+        Settings(
+            _env_file=None,
+            app_env="test",
+            database_url="sqlite+aiosqlite:///:memory:",
+            amap_retry_after_max_seconds=cap,
+        )
 
 
 def test_complete_model_configuration_is_returned_with_secret_type() -> None:
