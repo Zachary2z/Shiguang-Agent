@@ -166,5 +166,8 @@ expire after ten minutes by default, and are stored only as SHA-256 hashes. Repl
 original ordered items without a second plaintext token. Patch and delete calls require an
 explicit `user_id`; patches also require `expected_version`, increment only on a real change,
 and expose only allowlisted fields. Logical deletion immediately removes items from default
-queries while leaving Source and historical links intact. This phase adds no HTTP routes, real
-provider calls, POI matching, formal city code, or planning behavior.
+queries while leaving Source and historical links intact. Undo uses a database compare-and-set
+claim in the same transaction as group deletion; concurrent repeated Undo and DELETE requests
+remain idempotent, while a stale DELETE after a real edit still reports a version conflict. This
+phase adds no HTTP routes, real provider calls, POI matching, formal city code, or planning
+behavior.

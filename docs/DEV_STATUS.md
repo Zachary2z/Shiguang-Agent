@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-2C 自动保存与可逆操作 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-2-text-collection |
+| 当前子阶段 | M0-2D 最小接口 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-21 |
-| 阻塞项 | 无；M0-2C 两项并发幂等 P1 已修复，等待主控复验 |
+| 阻塞项 | 无；M0-2C 已通过主控验收，M0-2D 前置条件满足 |
 
 ## 当前任务
 
-M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市契约联合修复均已通过主控验收。M0-2C 已在现有唯一 CollectionItem、CollectionRepository 和抽取契约上完成事务化自动保存、幂等、短期 Undo、允许字段修改、版本保护和逻辑删除；`0005` 增加必要候选线索及两张操作关联表。主控 QA 发现的并发 Undo 与并发逻辑 DELETE 幂等 P1 已通过数据库 CAS、失败后强制刷新及确定性双 Session 测试修复；M0-2C 继续待主控复验，M0-2D 保持未开始且不允许开始。
+M0-2A 领域、用户隔离和状态机，M0-2B 结构化抽取和城市契约，以及 M0-2C 自动保存与可逆操作均已通过主控验收。M0-2C 复用现有唯一 CollectionItem、CollectionRepository 和抽取契约，完成事务化自动保存、幂等、短期 Undo、允许字段修改、版本保护和逻辑删除；`0005` 增加必要候选线索及两张操作关联表。并发 Undo 与并发逻辑 DELETE 的两个 P1 已通过数据库 CAS、失败后强制刷新和独立双 Session 复验关闭。当前允许开始 M0-2D 最小接口，但尚未实施。
 
 ## M0 状态
 
@@ -21,7 +21,7 @@ M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市�
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
-| M0-2 文字收藏 | 进行中 | M0-2A、M0-2B 已完成；M0-2C 待验收（待主控复验），M0-2D 未开始 |
+| M0-2 文字收藏 | 进行中 | M0-2A、M0-2B、M0-2C 已完成；M0-2D 未开始、允许开始 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
@@ -46,7 +46,7 @@ M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市�
 
 ## 下一步
 
-主控/QA 从本次 P1 修复提交进行独立离线复测，重点检查并发 Undo、并发 DELETE、Undo 认领与条目修改整体回滚、真实版本冲突、用户隔离、`0004 ↔ 0005` 安全往返与范围边界；验收通过后才决定是否纯快进集成。M0-2D API、M0-3 POI、高德、前端和真实付费调用仍不得开始。
+从最新 `main` 继续使用 `codex/m0-2-text-collection` 开发 M0-2D，只增加 Demo 用户和 Session 初始化、Session Message、AgentRun 查询、Collection 查询/修改/删除及 Undo 的最小 API 契约。必须复用现有应用服务、Repository、状态机和用户隔离，不得复制业务规则；M0-3 POI、高德、URL/截图、SSE、前端和真实付费调用仍不得开始。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -468,3 +468,16 @@ M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市�
 - 离线、安全与范围：测试未启用 `real_provider`，未读取或打印 `.env`，未调用百炼、高德、网络、外部消息或任何真实/付费 API；未修改 `nanobot_core`、AgentRunner、ToolRegistry、ModelProvider、迁移、M0-2D API、POI/高德、URL/OCR、计划、前端、微信或渠道 Adapter；未新增第二套 Service、Repository、CollectionItem、Undo DTO 或状态机
 - 已知风险：并发语义当前仅在 SQLite、macOS、Python 3.13.5 验证，尚未在 PostgreSQL、Windows 或 Python 3.11/3.12 复测；M1 切换 PostgreSQL 时仍需重跑相同 CAS、事务回滚和锁竞争测试。当前无已知未关闭 P0；本次两个 P1 等待主控独立复验后才能关闭
 - 下一步：主控核对修复提交直接包含 `d11afb7...`，重跑 219 项 M0-2 聚焦、461 项非真实全集、118 项 core、15 项 migrations 和默认全集，重点复核并发 Undo/DELETE、Undo 回滚及真实版本冲突；全部通过且无未关闭 P0/P1 后才允许纯快进合并。M0-2C 当前保持待主控复验，M0-2D 保持未开始
+
+#### 2026-07-21｜M0-2C｜已完成（主控验收）
+
+- 集成：阶段提交 `d11afb7fe932590d78d7dc5f1f8c128ebee56b3c` 与并发幂等修复提交 `7ee418b0514d7d4b9d16b9b8d7e805eafec4617e` 均直接建立在约定提交链上；`codex/m0-2-text-collection` 已以 `--ff-only` 纯快进到 `main`，无冲突、无额外代码变化，合并前后代码树一致
+- 验收环境：指定修复 commit 的独立 `git archive`、全新 Python 3.13.5 虚拟环境；editable 安装与 `pip check` 通过，Ruff 通过，strict mypy 对 53 个源文件无问题
+- 自动化结果：修复四文件聚焦 50 passed；M0-2 聚焦 219 passed；非真实全集 461 passed、1 deselected；core 118 passed；migrations 15 passed；默认全集 461 passed、1 skipped；禁用真实测试开关并把全部代理指向不可达本机端口后，非真实全集再次 461 passed、1 deselected
+- 独立竞态复验：不使用开发测试钩子的真实双 Session 探针连续 10 轮验证同 Token 并发 Undo 均返回 `UNDONE + ALREADY_UNDONE`，连续 10 轮并发 DELETE 均只递增一次 version 且两次返回 deleted；真实 PATCH 后的旧版本 DELETE 继续抛出 `VersionConflictError`。新增并发认领、回滚、DELETE 幂等和真实冲突 4 项测试连续 10 轮共 40 passed
+- 原子性、边界与迁移：Undo 认领、整组逻辑删除和失败回滚保持同一事务；Source、CollectionSource 与操作关联保留；顺序重复、错误用户、随机/过期 Token、跨用户资源和真实版本冲突均通过。Alembic 仅有 `20260721_0005` 一个 head，空数据 `0005 → 0004 → 0005` 与 `alembic check` 通过，`0001`–`0005` 在修复提交中均未改写
+- 范围、安全与冗余：没有实现 M0-2D 路由/Demo/HTTP Schema、M0-3 POI/高德、URL/OCR、计划、SSE、前端或渠道 Adapter；CollectionWriteService、CollectionRepository、SqlAlchemyCollectionRepository、CollectionItem、TextExtractionService、AgentRunner、ToolRegistry 与 ModelProvider 均保持唯一。未跟踪 `.env`、数据库、缓存、虚拟环境、Token 或响应快照；未读取本机 `.env`，未运行 `real_provider`，真实或付费 API 调用为 0
+- 合并后检查：在 `main` 上再次执行 Ruff、strict mypy 和非真实全集，分别通过、53 个源文件无问题、461 passed/1 deselected
+- 验收结论：原两个并发幂等 P1 已关闭，没有未关闭的 P0/P1；M0-2C 完成标准满足
+- 已知风险：本轮并发与迁移只在 macOS、Python 3.13.5 和 SQLite 验证，未在 PostgreSQL、Windows 或 Python 3.11/3.12 复测；M1 切换 PostgreSQL 时必须重跑相同 CAS、回滚和锁竞争测试
+- 下一步：M0-2D 前置条件已满足；从本次文档提交后的最新 `main` 继续使用 `codex/m0-2-text-collection`，只实现最小 API 和 Demo 初始化，完成后交回主控验收
