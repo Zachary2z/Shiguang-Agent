@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-1A Provider 契约 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-1-agent-runtime |
+| 当前子阶段 | M0-1B 真实百炼接入 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-21 |
 | 阻塞项 | 无 |
 
 ## 当前任务
 
-M0-1A 已在 `codex/m0-1-agent-runtime` 完成供应商无关的 Provider 响应元数据、Token 契约、完成原因、五类结构化错误和离线 Fake 覆盖，当前等待主控独立验收。M0-1B 真实百炼接入和 M0-1C 运行记录均未开始。
+M0-1A 已通过主控集成与 QA 验收，阶段提交 `4036c10` 已快进集成到 `main`；M0-1B 前置条件已满足，可以在同步到最新 `main` 的规定阶段分支上开始真实百炼适配开发。真实或付费测试仍需用户另行明确授权。
 
 ## M0 状态
 
@@ -20,7 +20,7 @@ M0-1A 已在 `codex/m0-1-agent-runtime` 完成供应商无关的 Provider 响应
 | M0-0A 项目基线与资料迁移 | 已完成 | 主控验收通过，阶段提交 `79848c7` 已集成到 `main` |
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
-| M0-1 模型与运行记录 | 进行中 | M0-1A 待验收；M0-1B、M0-1C 未开始 |
+| M0-1 模型与运行记录 | 进行中 | M0-1A 已完成；M0-1B 当前允许开始；M0-1C 未开始 |
 | M0-2 文字收藏 | 未开始 | 依赖 M0-1 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
@@ -38,10 +38,18 @@ M0-1A 已在 `codex/m0-1-agent-runtime` 完成供应商无关的 Provider 响应
 - M0-0A 已完成：正式产品文档、技术方案与 UX 原型已迁入本仓库，README、Git 忽略规则和 Nanobot 许可证归属说明已建立。
 - M0-0B 已完成：FastAPI 后端骨架、测试隔离配置、异步 SQLite、Alembic 空基线迁移、安全请求日志和自动化测试基线已通过主控验收。
 - M0-0C 已完成：唯一且业务无关的 Nanobot Core、结构化 ToolResult、Provider 抽象、离线 Fake 测试和 Nanobot MIT 许可证归属已通过主控验收。
+- M0-1A 已完成：供应商无关的模型响应元数据、Token/完成原因契约、五类 Provider 错误和完全离线 Fake 覆盖已通过主控验收。
 
 ## 下一步
 
-主控/QA 窗口应独立复核 `codex/m0-1-agent-runtime` 的 M0-1A 范围、Provider DTO 不变量、错误公共表示、Fake 顺序与快照、Runner 错误及取消透传，并复现完整静态检查、全量测试和不同 `PYTHONHASHSEED` 核心测试。验收通过后再决定是否集成；本开发窗口不合并、不进入 M0-1B。
+M0-1B 开发窗口应执行：
+
+1. 继续使用 `codex/m0-1-agent-runtime`，先将该分支安全快进到最新 `main`，只处理 M0-1B 真实百炼/OpenAI-compatible Provider。
+2. 在拾光应用 Provider 层实现唯一 `ModelProvider` 契约的适配器；模型名、API Base、密钥和超时全部配置注入，不把供应商 SDK 或原始字段泄漏到 Nanobot Core。
+3. 使用 Fake/Stub 覆盖文本、Tool Calling、Token/完成原因映射及五类错误映射；普通测试不联网、不读取真实密钥。
+4. 真实测试必须通过独立 marker 和显式环境开关启用；未经用户明确授权不得执行，也不得把真实响应全文、密钥、Authorization 或思维链写入日志或测试输出。
+5. 不实现 M0-1C AgentRun、ToolRun、trace_id、数据库迁移、绝对工具调用总数、60 秒 Run 总时长或费用持久化。
+6. 离线开发完成后更新状态和交接；若尚未获得真实调用授权，必须明确记录真实文本/Tool Calling 未验证，不得假装通过。
 
 ## 阶段交接记录
 
@@ -167,3 +175,19 @@ M0-1A 已在 `codex/m0-1-agent-runtime` 完成供应商无关的 Provider 响应
 - 已知风险：尚未用真实百炼响应验证 M0-1B 的字段和错误映射；固定安全摘要当前为英文，后续应用层可按稳定错误码本地化；本窗口仅在 macOS/Python 3.13.5 复测，未在 Python 3.11/3.12 或 Windows 验证
 - 主控复测范围：从指定基线确认阶段分支只包含 M0-1A 授权改动；在干净 Python 3.11+ 环境复现安装与所有规定命令；重点复核 Token 一致性、完成原因归一化、固定摘要无敏感泄漏、Fake 顺序/快照、Runner 异常透传、唯一公共契约及无真实 SDK/网络/配置/迁移边界
 - 下一步：主控验收通过后再决定是否快进集成并另开 M0-1B；本开发窗口停止，不合并 `main`，不实现后续子阶段
+
+#### 2026-07-21｜M0-1A｜已完成（主控验收）
+
+- 分支：`main`（由 `codex/m0-1-agent-runtime` 快进集成）
+- 提交：`4036c10205038b27f530873d32a2c5fcca0ade4f`
+- 完成内容：主控任务确认阶段分支、指定提交和 `94618d1be0b2e4618fc3ec19d5e22c6b1539ba44` 基线一致；复核 `ModelResponse` 元数据、`TokenUsage`、`FinishReason`、五类 `ProviderError`、公开脱敏表示及唯一离线 `FakeProvider`，阶段提交已快进集成到 `main`
+- 主要文件：`backend/nanobot_core/providers/base.py`、`backend/nanobot_core/providers/__init__.py`、`backend/nanobot_core/__init__.py`、`backend/tests/core/fakes.py`、`backend/tests/core/test_provider_contract.py`、现有 Runner/Loop 测试、`README.md`、`backend/README.md`、`docs/DEV_STATUS.md`
+- 范围与冗余：只扩展既有唯一 `ModelProvider` 和 `ModelResponse`，没有新增第二套 Provider、Runner、ToolRegistry、DTO 或错误枚举；根包与 providers 包仅做公共 API 重导出，不复制实现；`fake_response` 集中消除了既有 Runner/Loop 测试的重复元数据构造；未发现无用兼容层、死代码、大规模复制或 M0-1B/M0-1C 提前实现
+- 验证环境：指定提交的独立 `git archive` 快照、全新 Python 3.13.5 虚拟环境和重新安装的 `backend[dev]`；`pip check` 无破损依赖；未读取真实密钥，未调用真实或付费 API
+- 验证命令：`python -m pip install -e '<快照>/backend[dev]'`、`python -m pip check`、`python -m ruff check .`、`python -m mypy app migrations nanobot_core`、`python -m pytest -q`、分别以 `PYTHONHASHSEED=11` 和 `PYTHONHASHSEED=29` 执行 `python -m pytest tests/core -q`、仓库外隔离导入；另执行提交/范围/重复契约/反向依赖/真实 SDK/网络/硬编码端点/凭证/配置/迁移/tracked 产物扫描及独立离线异常脚本；合并后重复 Ruff、mypy 和完整 pytest
+- 验证结果：全新环境安装和依赖检查通过；Ruff 通过；mypy 对 20 个源文件无问题；完整 pytest 99 项全部通过、0 失败、0 跳过；核心 pytest 86 项在两个哈希种子下均通过；公共契约可从仓库外导入；合并未产生冲突或额外代码变化，合并后 99 项再次全部通过；没有未关闭的 P0/P1
+- 异常、边界、幂等与安全：覆盖未知/零/正常/部分 Token、自动总量、负数/布尔值及不一致总量、负数/布尔耗时、空白模型名和请求 ID、五种完成原因及工具原因不变量、五类错误与 retry-after 的零值/负值/布尔/NaN/Infinity、错误公共 JSON 脱敏、Fake 混合顺序和深拷贝快照、Runner 错误与取消透传；在设置假密钥并禁用网络连接的环境中补充验证，无外部访问或敏感标记泄漏；本阶段没有数据库或业务写操作，业务幂等不适用，重复构造和不同哈希种子结果确定
+- 依赖、配置与迁移：均未修改；没有真实模型名、API Base、密钥、SDK、数据库或 Alembic 变化
+- 未完成：未实现或验证 M0-1B 真实百炼/OpenAI-compatible Provider、真实文本/Tool Calling、SDK 错误映射或网络行为；未实现 M0-1C AgentRun、ToolRun、trace_id、费用/Token 持久化、总时长、绝对工具调用数或数据库迁移
+- 已知风险：供应商原始完成原因、Token 和错误到统一契约的真实映射仍需 M0-1B 验证；固定安全摘要当前为英文；QA 使用 macOS/Python 3.13.5，未在 Python 3.11/3.12 或 Windows 复测，这不阻塞 Python 3.11+ 阶段要求
+- 下一步：M0-1B 前置条件已满足；将现有 `codex/m0-1-agent-runtime` 安全快进到最新 `main` 后，只实现真实百炼/OpenAI-compatible Provider；真实调用仍需用户明确授权
