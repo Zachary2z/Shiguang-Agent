@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-2D 最小接口 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-2-text-collection |
-| 最近更新 | 2026-07-21 |
-| 阻塞项 | 无；M0-2D 已完成开发，等待主控独立验收 |
+| 当前子阶段 | M0-3A MapProvider Stub |
+| 状态 | 未开始 |
+| 当前分支 | main |
+| 最近更新 | 2026-07-22 |
+| 阻塞项 | 无；M0-2D 已通过主控验收，M0-3A 前置条件满足 |
 
 ## 当前任务
 
-M0-2A 领域、M0-2B 结构化抽取和 M0-2C 自动保存与可逆操作均已通过主控验收。M0-2D 已在现有服务之上完成 `/api/v1` Demo Session、同步纯文字消息、AgentRun 安全查询、Collection 列表/详情/修改/逻辑删除与路径绑定 Undo；未新增迁移、真实 Provider、后台任务或后续阶段能力。当前状态为待主控验收，M0-3 仍未开始且不允许开始。
+M0-2A 至 M0-2D 均已通过主控验收，文字输入可以离线完成结构化抽取、自动保存、修改、逻辑删除、Undo、AgentRun 查询和最小 HTTP 调用。下一阶段为 M0-3A，只允许定义内部 POI DTO、显式城市范围的 MapProvider 契约和离线 Stub/Fixture；真实高德适配、正式 POI 写入、匹配评分与分店策略仍属于后续子阶段。
 
 ## M0 状态
 
@@ -21,8 +21,8 @@ M0-2A 领域、M0-2B 结构化抽取和 M0-2C 自动保存与可逆操作均已�
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
-| M0-2 文字收藏 | 进行中 | M0-2A、M0-2B、M0-2C 已完成；M0-2D 待主控验收 |
-| M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
+| M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
+| M0-3 地点匹配 | 未开始 | M0-3A 前置条件已满足，允许开始 MapProvider Stub |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
@@ -43,10 +43,12 @@ M0-2A 领域、M0-2B 结构化抽取和 M0-2C 自动保存与可逆操作均已�
 - M0-1C 已完成：唯一 Runner 的运行硬上限、AgentRun/ToolRun 持久化、trace 查询、运行终结、Token/费用汇总、安全摘要和迁移往返已通过主控验收。
 - M0-2A 已完成：收藏领域模型、识别/收藏状态边界、强制用户隔离、六表迁移和安全持久化约束已通过主控验收。
 - M0-2B 已完成：严格 Place/Event 候选、一次结构修复、任意城市收藏线索、`0004` 城市契约迁移、异常安全与离线回归已通过主控验收。
+- M0-2C 已完成：自动保存、消息/来源幂等、允许字段修改、并发安全的逻辑删除、一次性 Undo 和 `0005` 可逆写入迁移已通过主控验收。
+- M0-2D 已完成：Demo Session、同步纯文字消息、AgentRun 安全查询、Collection 查询/修改/删除和路径绑定 Undo 的 `/api/v1` 契约已通过主控验收。
 
 ## 下一步
 
-主控在指定基线与阶段提交的仓库外快照中独立复核 M0-2D 范围、接口契约、同步终态、消息/收藏幂等、跨用户安全、路径绑定 Undo、OpenAPI、无配置启动和全部离线验证。验收通过前不合并 `main`，不推送，不开始 M0-3；POI、高德、URL/截图、SSE、前端和真实付费调用继续禁止。
+从本次主控交接提交后的最新 `main` 创建 `codex/m0-3-poi-matching`，只实施 M0-3A MapProvider Stub：定义唯一内部 POI DTO、显式接收城市范围的 `search_poi`、`get_poi`、`route`、`weather` 和导航 URI 契约，并用深圳及至少一个其他城市的离线 Fixture 覆盖唯一、多结果、无结果和超时。不得调用真实高德或其他付费 API，不得提前实现 M0-3B/C/D、URL/截图、计划、SSE 或前端。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -497,3 +499,16 @@ M0-2A 领域、M0-2B 结构化抽取和 M0-2C 自动保存与可逆操作均已�
 - 验证环境与结果：macOS、仓库外最终快照、全新 Python 3.13.5 虚拟环境与重新安装的 `backend[dev]`；安装和 `pip check` 退出 0，Ruff 退出 0，strict mypy 对 62 个源文件无问题。API 聚焦 16 passed；M0-2A/B/C 聚焦 204 passed；非真实全集 477 passed/1 deselected；core 118 passed；migration 15 passed；默认全集 477 passed/1 skipped，全部退出 0。Alembic `heads` 仅 `20260721_0005`，全新 upgrade、`check`、空数据 downgrade `0004`、再次 upgrade 与 `check` 均通过且无待生成迁移；macOS `sandbox-exec` 系统级拒绝全部网络后非真实全集再次 477 passed/1 deselected
 - 真实能力与风险：未读取本机 `.env`，未设置或运行 `RUN_REAL_MODEL_TESTS=1`，百炼、高德、其他网络、外部消息及真实/付费 API 调用均为 0；真实模型对抽取结构的遵循率、真实供应商错误与延迟仍沿用既有未验证边界。M0 固定 Demo User 是明确临时身份方案，不等于 M1 Web Session；同进程锁只优化同步并发响应，数据库唯一约束仍是数据一致性边界，M1 PostgreSQL/多进程需复跑相同并发契约
 - 下一步：主控在完整开发 commit 上独立复测并审查范围；验收通过前本分支不合并、不推送，M0-3 保持未开始且不允许开始，不执行任何真实或付费调用
+
+#### 2026-07-22｜M0-2D｜已完成（主控验收）
+
+- 提交与集成：开发提交 `864cceedc80edbf8f45bbb757676794afc3794e8` 的直接父提交为指定基线 `5d52c820733f3072d732b65701f27f39aebcf792`，基线同时等于验收前 `main`、`origin/main` 和 merge-base；主控以 `--ff-only` 纯快进合并到 `main`，无冲突、无额外代码变化，合并前后代码树哈希均为 `a931524b9117476ae1054174b0d8a09ab98782f6`
+- 验收环境：指定开发 commit 的仓库外 `git archive`、全新 Python 3.13.5 虚拟环境；editable 安装和 `pip check` 通过，Ruff 通过，strict mypy 对 62 个源文件无问题
+- 自动化结果：M0-2D API 契约 16 passed；非真实全集 477 passed、1 deselected；core 118 passed；migrations 15 passed；默认全集 477 passed、1 skipped。macOS `sandbox-exec` 系统级拒绝全部网络后，非真实全集再次 477 passed、1 deselected；真实测试标记未运行
+- 迁移与合并后检查：本阶段没有迁移变化；Alembic 只有 `20260721_0005` 一个 head，全新 `upgrade head`、`alembic check`、空数据 `downgrade 20260721_0004`、再次升级和检查均通过。纯快进合并后重新安装当前树，Ruff、strict mypy 和 477 项非真实测试再次通过
+- 独立边界探针：并发创建 24 个 Demo Session 均返回唯一 Session，数据库只创建一个 M0 固定 Demo User；跨 Session 复用同一用户幂等键稳定返回 409 且不重复执行；开发测试及主控复核同时覆盖顺序/并发消息幂等、不同载荷冲突、跨用户 Session/Collection/AgentRun 404、路径错误/随机/过期/重复/并发 Undo、PATCH no-op 与版本冲突、并发 DELETE、ProviderError、`CancelledError`、同步超时、事务失败回滚、筛选分页、无配置启动、OpenAPI 和日志/响应脱敏
+- 范围与冗余：实现严格限于 M0-2D 最小 API 和串接既有应用服务；没有新增迁移、真实 Provider、POI/高德、正式城市、候选评分、URL/OCR、计划、SSE、前端、Worker 或正式身份。AgentRunner、ToolRegistry、ModelProvider、OpenAI-compatible Provider、AgentRun Repository、Collection Repository、TextExtractionService、CollectionWriteService 和 API 路由均保持唯一，`nanobot_core` 无应用层反向依赖
+- 安全与真实调用：Git 中没有 `.env`、数据库、缓存、虚拟环境、密钥或响应快照；主控未读取或打印本机 `.env`，未启用 `RUN_REAL_MODEL_TESTS`，未调用百炼、高德、网络、外部消息或任何真实/付费 API。请求正文、Undo Token、Authorization、Cookie、Prompt、完整模型响应、工具参数指纹和内部用户 ID 均未进入公开错误或请求日志
+- 验收结论：同步文字收藏闭环、范围、异常、边界、幂等、用户隔离、安全和冗余标准满足，没有未关闭的 P0/P1，M0-2D 与整个 M0-2 完成
+- 已知 P2 与风险：进程内 `IdempotencyLockRegistry` 当前会为已完成的唯一 key 保留锁对象，长时间高基数运行可能缓慢增长；它不影响数据库唯一约束和本阶段单进程正确性，不阻塞 M0 Gate，但 M1 正式身份/多进程设计或 M3 Demo 限流前必须改为引用计数清理或有界生命周期并补充并发回归。固定 Demo User、SQLite/macOS/Python 3.13.5 及单进程行为仍是 M0 临时边界，PostgreSQL、多进程和公开 Demo 的物理数据隔离需按既定后续阶段复验
+- 下一步：M0-3A 前置条件已满足；从本次交接文档提交后的最新 `main` 创建 `codex/m0-3-poi-matching`，只实现供应商无关 MapProvider 契约、内部 POI DTO 和覆盖深圳及至少一个其他城市的离线 Stub/Fixture。M0-3B 真实高德、M0-3C 匹配评分、M0-3D 分店策略及其他后续能力不得提前开始
