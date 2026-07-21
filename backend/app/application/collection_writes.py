@@ -141,17 +141,69 @@ class CollectionWriteService:
             )
 
     async def undo(self, *, user_id: str, undo_token: str) -> UndoResult:
+        return await self._undo(
+            user_id=user_id,
+            undo_token=undo_token,
+            required_collection_item_id=None,
+        )
+
+    async def undo_collection_item(
+        self,
+        *,
+        user_id: str,
+        collection_item_id: str,
+        undo_token: str,
+    ) -> UndoResult:
+        """Undo only when the token's operation group contains the path item."""
+
+        identifier = validate_collection_item_id(collection_item_id)
+        return await self._undo(
+            user_id=user_id,
+            undo_token=undo_token,
+            required_collection_item_id=identifier,
+        )
+
+    async def get_idempotent_result(
+        self,
+        *,
+        user_id: str,
+        idempotency_key: str,
+    ) -> AutoSaveResult | None:
+        """Return a prior safe result without reissuing its one-time Undo token."""
+
+        owner = validate_user_id(user_id)
+        if IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key) is None:
+            raise ValueError("idempotency_key must use safe visible characters")
+        operation = await self._repository.get_write_operation_by_idempotency_key(
+            user_id=owner,
+            idempotency_key=idempotency_key,
+        )
+        if operation is None:
+            return None
+        items = await self._repository.list_write_operation_items(
+            user_id=owner,
+            operation_id=operation.id,
+        )
+        return AutoSaveResult(
+            source_id=operation.source_id,
+            items=tuple(items),
+            undo_expires_at=operation.undo_expires_at,
+            replayed=True,
+        )
+
+    async def _undo(
+        self,
+        *,
+        user_id: str,
+        undo_token: str,
+        required_collection_item_id: str | None,
+    ) -> UndoResult:
         owner = validate_user_id(user_id)
         if not isinstance(undo_token, str) or not undo_token:
             return UndoResult(outcome=UndoOutcome.NOT_AVAILABLE)
         token_hash = self._token_hash(undo_token)
         now = self._now()
         async with self._session.begin():
-            claimed = await self._repository.claim_write_operation_undo(
-                user_id=owner,
-                undo_token_hash=token_hash,
-                claimed_at=now,
-            )
             operation = await self._repository.get_write_operation_by_undo_hash(
                 user_id=owner,
                 undo_token_hash=token_hash,
@@ -163,7 +215,23 @@ class CollectionWriteService:
                 operation_id=operation.id,
             )
             item_ids = tuple(item.id for item in items)
+            if (
+                required_collection_item_id is not None
+                and required_collection_item_id not in item_ids
+            ):
+                return UndoResult(outcome=UndoOutcome.NOT_AVAILABLE)
+            claimed = await self._repository.claim_write_operation_undo(
+                user_id=owner,
+                undo_token_hash=token_hash,
+                claimed_at=now,
+            )
             if not claimed:
+                operation = await self._repository.get_write_operation_by_undo_hash(
+                    user_id=owner,
+                    undo_token_hash=token_hash,
+                )
+                if operation is None:
+                    return UndoResult(outcome=UndoOutcome.NOT_AVAILABLE)
                 if operation.undone_at is None:
                     raise VersionConflictError
                 return UndoResult(

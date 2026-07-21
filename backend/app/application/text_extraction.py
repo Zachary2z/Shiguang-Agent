@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from copy import deepcopy
 from typing import Final
 
@@ -101,8 +102,14 @@ _REPAIR_PROMPT = (
 class TextExtractionService:
     """Extract candidates with one initial model call and at most one repair call."""
 
-    def __init__(self, provider: ModelProvider) -> None:
+    def __init__(
+        self,
+        provider: ModelProvider,
+        *,
+        response_observer: Callable[[ModelResponse], None] | None = None,
+    ) -> None:
         self._provider = provider
+        self._response_observer = response_observer
 
     async def extract(self, text: str) -> ExtractionResult:
         if not isinstance(text, str):
@@ -120,6 +127,7 @@ class TextExtractionService:
             messages=deepcopy(initial_messages),
             tools=None,
         )
+        self._observe(first_response)
         first_result, issues = _parse_and_canonicalize(first_response)
         if first_result is not None:
             return first_result
@@ -147,10 +155,15 @@ class TextExtractionService:
             messages=repair_messages,
             tools=None,
         )
+        self._observe(repaired_response)
         repaired_result, _repaired_issues = _parse_and_canonicalize(repaired_response)
         if repaired_result is not None:
             return repaired_result
         return ExtractionResult.model_invalid()
+
+    def _observe(self, response: ModelResponse | None) -> None:
+        if isinstance(response, ModelResponse) and self._response_observer is not None:
+            self._response_observer(response)
 
 
 def _preflight_result(text: str) -> ExtractionResult | None:

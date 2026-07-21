@@ -171,3 +171,32 @@ claim in the same transaction as group deletion; concurrent repeated Undo and DE
 remain idempotent, while a stale DELETE after a real edit still reports a version conflict. This
 phase adds no HTTP routes, real provider calls, POI matching, formal city code, or planning
 behavior.
+
+## M0-2D synchronous API
+
+`app.api` exposes the M0-only `/api/v1` surface for Demo Session creation, plain-text message
+submission, safe AgentRun lookup, collection list/detail, patch, logical delete, and path-bound
+Undo. Route code only resolves the fixed server Demo identity, validates strict Pydantic input,
+maps status codes, and serializes allowlisted responses. `CollectionQueryService` owns stable
+filtering/pagination, while `TextCollectionWorkflow` is the only new orchestration entry point
+and delegates extraction, writes, run tracking, and ownership checks to the existing services.
+
+Message submission is synchronous and never claims to be queued after the request completes.
+It requires a safe `idempotency_key`; deterministic Message/Source/trace identifiers plus the
+existing database constraints prevent duplicate messages, sources, collections, links, and Undo
+operations. A replay returns the same IDs and never returns the plaintext Undo Token again. The
+application does not construct a real Provider from environment settings: tests inject the
+offline Fake, while an app without an injected Provider still serves health, OpenAPI, and Demo
+Session creation and returns `503 PROVIDER_NOT_CONFIGURED` only for text submission.
+
+Public run responses omit user IDs, internal row IDs, tool-call IDs, argument fingerprints,
+prompts, message content, and model response content. Collection detail exposes only Source ID,
+type, parse status, and creation time. Request-validation handlers omit rejected values, so an
+invalid message, Authorization/Cookie header, or Undo Token is not reflected in the response or
+request log. No M0-2D migration or new environment variable is required.
+
+Run the focused contract suite with:
+
+```bash
+python -m pytest -q tests/contract/test_m0_2d_api.py
+```

@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-2D 最小接口 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-2-text-collection |
 | 最近更新 | 2026-07-21 |
-| 阻塞项 | 无；M0-2C 已通过主控验收，M0-2D 前置条件满足 |
+| 阻塞项 | 无；M0-2D 已完成开发，等待主控独立验收 |
 
 ## 当前任务
 
-M0-2A 领域、用户隔离和状态机，M0-2B 结构化抽取和城市契约，以及 M0-2C 自动保存与可逆操作均已通过主控验收。M0-2C 复用现有唯一 CollectionItem、CollectionRepository 和抽取契约，完成事务化自动保存、幂等、短期 Undo、允许字段修改、版本保护和逻辑删除；`0005` 增加必要候选线索及两张操作关联表。并发 Undo 与并发逻辑 DELETE 的两个 P1 已通过数据库 CAS、失败后强制刷新和独立双 Session 复验关闭。当前允许开始 M0-2D 最小接口，但尚未实施。
+M0-2A 领域、M0-2B 结构化抽取和 M0-2C 自动保存与可逆操作均已通过主控验收。M0-2D 已在现有服务之上完成 `/api/v1` Demo Session、同步纯文字消息、AgentRun 安全查询、Collection 列表/详情/修改/逻辑删除与路径绑定 Undo；未新增迁移、真实 Provider、后台任务或后续阶段能力。当前状态为待主控验收，M0-3 仍未开始且不允许开始。
 
 ## M0 状态
 
@@ -21,7 +21,7 @@ M0-2A 领域、用户隔离和状态机，M0-2B 结构化抽取和城市契约�
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
-| M0-2 文字收藏 | 进行中 | M0-2A、M0-2B、M0-2C 已完成；M0-2D 未开始、允许开始 |
+| M0-2 文字收藏 | 进行中 | M0-2A、M0-2B、M0-2C 已完成；M0-2D 待主控验收 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
@@ -46,7 +46,7 @@ M0-2A 领域、用户隔离和状态机，M0-2B 结构化抽取和城市契约�
 
 ## 下一步
 
-从最新 `main` 继续使用 `codex/m0-2-text-collection` 开发 M0-2D，只增加 Demo 用户和 Session 初始化、Session Message、AgentRun 查询、Collection 查询/修改/删除及 Undo 的最小 API 契约。必须复用现有应用服务、Repository、状态机和用户隔离，不得复制业务规则；M0-3 POI、高德、URL/截图、SSE、前端和真实付费调用仍不得开始。
+主控在指定基线与阶段提交的仓库外快照中独立复核 M0-2D 范围、接口契约、同步终态、消息/收藏幂等、跨用户安全、路径绑定 Undo、OpenAPI、无配置启动和全部离线验证。验收通过前不合并 `main`，不推送，不开始 M0-3；POI、高德、URL/截图、SSE、前端和真实付费调用继续禁止。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -481,3 +481,19 @@ M0-2A 领域、用户隔离和状态机，M0-2B 结构化抽取和城市契约�
 - 验收结论：原两个并发幂等 P1 已关闭，没有未关闭的 P0/P1；M0-2C 完成标准满足
 - 已知风险：本轮并发与迁移只在 macOS、Python 3.13.5 和 SQLite 验证，未在 PostgreSQL、Windows 或 Python 3.11/3.12 复测；M1 切换 PostgreSQL 时必须重跑相同 CAS、回滚和锁竞争测试
 - 下一步：M0-2D 前置条件已满足；从本次文档提交后的最新 `main` 继续使用 `codex/m0-2-text-collection`，只实现最小 API 和 Demo 初始化，完成后交回主控验收
+
+#### 2026-07-21｜M0-2D｜待主控验收
+
+- 分支与基线：`codex/m0-2-text-collection`；开始门禁确认修改前工作区干净，现有阶段分支以 `--ff-only` 从 `7ee418b...` 快进到指定基线 `5d52c820733f3072d732b65701f27f39aebcf792`，且 `main`、`origin/main` 与快进后的 HEAD 均严格等于该基线；`0005`、461 项非真实测试及 M0-2C 并发回归完整存在。阶段提交随本记录创建，完整 SHA 见开发窗口最终交接报告
+- 路由与 Schema：新增严格 extra-forbid 的 `/api/v1` 契约：`POST /demo/sessions`、`POST /sessions/{session_id}/messages`、`GET /agent-runs/{trace_id}`、Collection 列表/详情/PATCH/DELETE 和路径绑定 Undo。消息接口只接受纯文字与必填幂等键，同步执行并返回真实终态，不返回虚假 `queued`；PATCH 请求的 `changes` 直接复用唯一 `CollectionItemPatch`，领域价格、Event 时间、Place/Event 字段和允许字段校验未复制到路由
+- 身份与隔离：M0 使用服务端常量 `DEMO_USER_ID`，创建接口不接受客户端 `user_id`；每个 Repository、AgentRun 查询和应用服务调用仍显式携带该身份。Demo 初始化复用同一固定 Demo User、每次创建新的 Session；不存在与跨用户 Session、Collection、PATCH、DELETE 和 AgentRun 均返回相同 404。API 响应不公开内部 user/row ID、Undo 哈希、请求指纹、tool call ID 或参数指纹
+- 唯一工作流与运行记录：新增唯一 `TextCollectionWorkflow`，只负责串接现有 `TextExtractionService`、`CollectionWriteService` 与原位扩展的唯一 `AgentRunService.execute_application()`；未新增 Runner、Provider、Repository、抽取、写入、状态机或运行记录实现。TextExtractionService 的可选观察器只上报既有 `ModelResponse` 元数据，AgentRun 不保存 Prompt、消息正文或完整模型响应；ProviderError 使用稳定公开码，`CancelledError` 落为 cancelled 后继续传播
+- 消息幂等：Message ID、Source ID 和 trace ID 由服务端 `user_id + idempotency_key` 的 SHA-256 命名空间确定性派生，Message 主键与既有 `(user_id, idempotency_key)`、`(user_id, source_id)` 唯一约束共同防重复；同进程相同键请求串行进入数据库权威检查。顺序及并发重试只产生一个 Message、Source、CollectionItem 集合、CollectionSource 集合和 Undo operation，返回相同 message/trace/item ID，且明文 Undo Token 只在首次创建结果出现；同键不同正文或 Session 返回 409
+- 查询与城市语义：`CollectionQueryService` 在应用层提供带 ID 决胜的稳定 created/updated 正反序分页，支持 `city_hint`、`city_pending`、district、kind、status、tags 与 `include_inactive`；显式 status 可查询 deleted/archived，默认仍隐藏 inactive。响应中的 `city_pending` 只由 `city_hint is None` 展示推导，未生成正式 city_code，也未改变深圳计划资格；广州、上海和城市待确认收藏均可保存、组合筛选和查看
+- 修改、删除与 Undo：PATCH/DELETE 继续只调用唯一 `CollectionWriteService`，保留 no-op 版本、真实版本冲突和并发 DELETE 幂等。`undo_collection_item()` 在同一事务中先读取 Token 操作组并确认包含路径 item，再执行既有数据库 CAS 原子认领和全组逻辑删除；错误用户、随机、错误 item、过期 Token 统一为安全不可用，重复/并发有效 Undo 保持 `UNDONE + ALREADY_UNDONE`，Source 与 CollectionSource 不删除
+- 错误与安全：请求 Schema 非法 422，不存在/跨用户 404，真实版本与幂等冲突 409，未注入 Provider 503，ProviderError 502，同步总时限 504；同一失败幂等请求保持原终态与稳定错误码。请求校验响应只包含字段路径和错误类型，不回显非法正文、Undo Token 或伪造 user ID。请求日志仍只含 request ID、方法、路径、状态和耗时，不记录查询、正文、Authorization 或 Cookie；公开运行摘要不含 Prompt、消息、完整响应、原始工具参数、异常链或堆栈
+- 配置、迁移与范围：无新增配置变量或迁移，未修改 `0001`–`0005`；应用、`/healthz`、OpenAPI 与 Demo Session 在无模型配置时正常，文字接口只通过显式依赖注入使用离线 Fake，未自动构造真实 Provider。未实现 M0-3 POI/高德/正式城市/候选/分店、URL/HTML/OCR/文件、SSE/事件/取消、Job/Worker、正式身份、计划、前端、微信或渠道 Adapter
+- 自动化覆盖：新增 16 项 M0-2D API 聚焦测试，覆盖无配置 Demo、客户端身份伪造、Place/Event/广州/上海/一条多收藏/标题城市词但待确认、四类输入/结构错误、顺序与并发幂等、同键载荷冲突、AgentRun 脱敏、筛选分页、PATCH/no-op/领域非法/版本冲突、并发 DELETE、随机/错误 item/过期/重复/并发 Undo、跨用户、ProviderError、CancelledError、同步总时限、事务中途失败回滚、OpenAPI 范围和响应/日志脱敏；既有 M0-2A/B/C 单元、集成、迁移与并发测试全部保留
+- 验证环境与结果：macOS、仓库外最终快照、全新 Python 3.13.5 虚拟环境与重新安装的 `backend[dev]`；安装和 `pip check` 退出 0，Ruff 退出 0，strict mypy 对 62 个源文件无问题。API 聚焦 16 passed；M0-2A/B/C 聚焦 204 passed；非真实全集 477 passed/1 deselected；core 118 passed；migration 15 passed；默认全集 477 passed/1 skipped，全部退出 0。Alembic `heads` 仅 `20260721_0005`，全新 upgrade、`check`、空数据 downgrade `0004`、再次 upgrade 与 `check` 均通过且无待生成迁移；macOS `sandbox-exec` 系统级拒绝全部网络后非真实全集再次 477 passed/1 deselected
+- 真实能力与风险：未读取本机 `.env`，未设置或运行 `RUN_REAL_MODEL_TESTS=1`，百炼、高德、其他网络、外部消息及真实/付费 API 调用均为 0；真实模型对抽取结构的遵循率、真实供应商错误与延迟仍沿用既有未验证边界。M0 固定 Demo User 是明确临时身份方案，不等于 M1 Web Session；同进程锁只优化同步并发响应，数据库唯一约束仍是数据一致性边界，M1 PostgreSQL/多进程需复跑相同并发契约
+- 下一步：主控在完整开发 commit 上独立复测并审查范围；验收通过前本分支不合并、不推送，M0-3 保持未开始且不允许开始，不执行任何真实或付费调用

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from math import isfinite
 from time import monotonic
+from typing import Generic, TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +30,7 @@ from app.infrastructure.repositories import (
     ToolRunWrite,
 )
 from nanobot_core.agent import (
+    MAX_RUN_TIMEOUT_SECONDS,
     AgentRunner,
     ModelCallCancelled,
     ModelCallFailed,
@@ -40,7 +43,14 @@ from nanobot_core.agent import (
     ToolCallFinished,
     ToolCallStarted,
 )
-from nanobot_core.providers import Message, ProviderError, TokenUsage
+from nanobot_core.providers import Message, ModelResponse, ProviderError, TokenUsage
+
+T = TypeVar("T")
+ModelResponseObserver = Callable[[ModelResponse], None]
+
+
+class ApplicationRunTimeoutError(TimeoutError):
+    """A synchronous application workflow exhausted the shared run deadline."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +59,14 @@ class TrackedRunExecution:
 
     trace_id: str
     result: RunResult
+
+
+@dataclass(frozen=True, slots=True)
+class TrackedApplicationExecution(Generic[T]):
+    """A synchronous application-workflow result paired with its durable trace."""
+
+    trace_id: str
+    result: T
 
 
 @dataclass(slots=True, kw_only=True)
@@ -133,6 +151,7 @@ class _RunEventCollector:
                 finished_at=None,
                 created_at=event_time,
             )
+
         elif isinstance(event, ToolCallFinished):
             draft = self._require_tool(event.sequence)
             draft.status = (
@@ -169,6 +188,26 @@ class _RunEventCollector:
                 finished_at=event_time,
                 created_at=event_time,
             )
+
+    def record_model_response(self, response: ModelResponse) -> None:
+        """Record provider metadata while deliberately discarding response content."""
+
+        estimate = self._pricing.estimate(response.model_name, response.usage)
+        self.model_calls.append(
+            ModelCallSummary(
+                sequence=len(self.model_calls) + 1,
+                status=ModelCallStatus.SUCCEEDED,
+                model_name=response.model_name,
+                usage=response.usage,
+                latency_ms=response.latency_ms,
+                finish_reason=response.finish_reason,
+                error_code=None,
+                estimated_cost=estimate.amount,
+                cost_currency=estimate.currency,
+                cost_estimation_source=estimate.source,
+                cost_unknown_reason=estimate.unknown_reason,
+            )
+        )
 
     def finalization(
         self,
@@ -335,15 +374,27 @@ class AgentRunService:
         self,
         *,
         session: AsyncSession,
-        runner: AgentRunner,
+        runner: AgentRunner | None,
         pricing: PricingPolicy,
+        timeout_seconds: float = MAX_RUN_TIMEOUT_SECONDS,
         now: Callable[[], datetime] = utc_now,
         clock: Callable[[], float] = monotonic,
     ) -> None:
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, int | float)
+            or not isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+            or timeout_seconds > MAX_RUN_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                f"timeout_seconds must be in (0, {MAX_RUN_TIMEOUT_SECONDS:g}]"
+            )
         self._session = session
         self._repository = AgentRunRepository(session)
         self._runner = runner
         self._pricing = pricing
+        self._timeout_seconds = float(timeout_seconds)
         self._now = now
         self._clock = clock
 
@@ -352,6 +403,8 @@ class AgentRunService:
         request: AgentRunCreate,
         messages: list[Message],
     ) -> TrackedRunExecution:
+        if self._runner is None:
+            raise RuntimeError("AgentRunner is required for core Agent execution")
         queued_at = self._now()
         row = await self._repository.create_queued(request, now=queued_at)
         await self._session.commit()
@@ -359,6 +412,8 @@ class AgentRunService:
         started_at = self._now()
         await self._repository.mark_running(row.id, started_at=started_at)
         await self._session.commit()
+        run_id = row.id
+        trace_id = row.trace_id
 
         collector = _RunEventCollector(self._pricing, now=self._now)
         execution_started = self._clock()
@@ -366,7 +421,7 @@ class AgentRunService:
             result = await self._runner.run(messages, observer=collector)
         except asyncio.CancelledError:
             await self._persist_final(
-                row.id,
+                run_id,
                 collector,
                 status=AgentRunStatus.CANCELLED,
                 error_code=RunErrorCode.CANCELLED.value,
@@ -375,7 +430,7 @@ class AgentRunService:
             raise
         except ProviderError as exc:
             await self._persist_final(
-                row.id,
+                run_id,
                 collector,
                 status=AgentRunStatus.FAILED,
                 error_code=exc.code.value,
@@ -384,7 +439,7 @@ class AgentRunService:
             raise
         except Exception:
             await self._persist_final(
-                row.id,
+                run_id,
                 collector,
                 status=AgentRunStatus.FAILED,
                 error_code=RunErrorCode.INTERNAL_ERROR.value,
@@ -394,13 +449,83 @@ class AgentRunService:
 
         status, error_code = self._outcome(result, collector)
         await self._persist_final(
-            row.id,
+            run_id,
             collector,
             status=status,
             error_code=error_code,
             duration_ms=result.duration_ms,
         )
-        return TrackedRunExecution(trace_id=row.trace_id, result=result)
+        return TrackedRunExecution(trace_id=trace_id, result=result)
+
+    async def execute_application(
+        self,
+        request: AgentRunCreate,
+        operation: Callable[[ModelResponseObserver], Awaitable[T]],
+    ) -> TrackedApplicationExecution[T]:
+        """Track one synchronous application workflow without a second AgentRunner."""
+
+        queued_at = self._now()
+        row = await self._repository.create_queued(request, now=queued_at)
+        await self._session.commit()
+
+        started_at = self._now()
+        await self._repository.mark_running(row.id, started_at=started_at)
+        await self._session.commit()
+        run_id = row.id
+        trace_id = row.trace_id
+
+        collector = _RunEventCollector(self._pricing, now=self._now)
+        execution_started = self._clock()
+        try:
+            result = await asyncio.wait_for(
+                operation(collector.record_model_response),
+                timeout=self._timeout_seconds,
+            )
+        except TimeoutError:
+            await self._persist_final(
+                run_id,
+                collector,
+                status=AgentRunStatus.FAILED,
+                error_code=RunErrorCode.TIMEOUT.value,
+                duration_ms=self._elapsed_ms(execution_started),
+            )
+            raise ApplicationRunTimeoutError from None
+        except asyncio.CancelledError:
+            await self._persist_final(
+                run_id,
+                collector,
+                status=AgentRunStatus.CANCELLED,
+                error_code=RunErrorCode.CANCELLED.value,
+                duration_ms=self._elapsed_ms(execution_started),
+            )
+            raise
+        except ProviderError as exc:
+            await self._persist_final(
+                run_id,
+                collector,
+                status=AgentRunStatus.FAILED,
+                error_code=exc.code.value,
+                duration_ms=self._elapsed_ms(execution_started),
+            )
+            raise
+        except Exception:
+            await self._persist_final(
+                run_id,
+                collector,
+                status=AgentRunStatus.FAILED,
+                error_code=RunErrorCode.INTERNAL_ERROR.value,
+                duration_ms=self._elapsed_ms(execution_started),
+            )
+            raise
+
+        await self._persist_final(
+            run_id,
+            collector,
+            status=AgentRunStatus.SUCCEEDED,
+            error_code=None,
+            duration_ms=self._elapsed_ms(execution_started),
+        )
+        return TrackedApplicationExecution(trace_id=trace_id, result=result)
 
     async def get_by_trace_id(
         self,

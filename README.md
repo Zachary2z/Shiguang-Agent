@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。M0-2A 领域模型、M0-2B 结构化抽取和 M0-2C 自动保存与可逆操作均已通过主控验收；**M0-2D 最小接口**是当前允许开始、尚未实施的子阶段。
+项目处于 **M0 技术验证**。M0-2A 领域模型、M0-2B 结构化抽取和 M0-2C 自动保存与可逆操作均已通过主控验收；**M0-2D 最小接口**已完成开发并等待主控验收。
 
-普通测试全部离线，不读取真实模型密钥或访问网络。当前没有任何真实调用授权；不得设置 `RUN_REAL_MODEL_TESTS=1`。M0-2D 只允许为现有 Session、AgentRun 和 Collection 应用服务增加最小 HTTP 契约与 Demo 初始化，不包含高德、POI、URL/截图流水线、计划、SSE 或前端。
+普通测试全部离线，不读取真实模型密钥或访问网络。当前没有任何真实调用授权；不得设置 `RUN_REAL_MODEL_TESTS=1`。M0-2D 只为现有 Session、AgentRun 和 Collection 应用服务增加最小 HTTP 契约与 Demo 初始化，不包含高德、POI、URL/截图流水线、计划、SSE 或前端。M0-3 仍未开始且不允许开始。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -52,6 +52,7 @@ python -m mypy app migrations nanobot_core
 python -m pytest -q -m "not real_provider"
 python -m pytest -q tests/core
 python -m pytest -q tests/test_migrations.py
+python -m pytest -q tests/contract/test_m0_2d_api.py
 ```
 
 测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
@@ -131,7 +132,23 @@ Runner 在同一执行循环中保证：最多执行 8 次绝对 Tool Call；第
 
 唯一 `CollectionWriteService` 将候选、共享 Source、CollectionSource、幂等记录和 Undo 关联放在同一事务中。`user_id + idempotency_key` 与 `user_id + source_id` 的数据库唯一约束覆盖重复消息、并发提交和同来源重试；请求只持久化规范化 SHA-256 指纹。首次成功返回 10 分钟 Undo Token，数据库只保存 Token 哈希，重试不再次返回明文。Undo 只把本次操作创建的条目逻辑删除，不删除 Source 或其他收藏。
 
-`CollectionItemPatch` 只开放标题、城市线索、位置/时间线索、Event 时间、价格、标签、缺失字段和不确定项。成功变更使用 `expected_version` 并递增版本；无实际变化不生成新版本，旧版本不会覆盖新数据。默认查询立即隐藏 `deleted`，内部 `include_inactive` 仍可复核。M0-3 前 Place 自动保存为 `pending_details`，不会伪造 POI 候选、正式城市或计划资格；精确起止时间完整的 Event 才映射为 `active`。本阶段仍没有 HTTP 路由，正式城市确认和 POI 匹配属于 M0-3。
+`CollectionItemPatch` 只开放标题、城市线索、位置/时间线索、Event 时间、价格、标签、缺失字段和不确定项。成功变更使用 `expected_version` 并递增版本；无实际变化不生成新版本，旧版本不会覆盖新数据。默认查询立即隐藏 `deleted`，内部 `include_inactive` 仍可复核。M0-3 前 Place 自动保存为 `pending_details`，不会伪造 POI 候选、正式城市或计划资格；精确起止时间完整的 Event 才映射为 `active`。
+
+### M0-2D 最小 HTTP API
+
+接口前缀统一为 `/api/v1`，OpenAPI 由 FastAPI 在 `/openapi.json` 提供：
+
+- `POST /demo/sessions`：确保服务端固定 Demo User，并创建新的 Demo Session；请求体为空且不接受客户端 `user_id`。
+- `POST /sessions/{session_id}/messages`：同步提交纯文字与必填 `idempotency_key`，返回真实终态、`trace_id`、结构化收藏和首次创建时的一次性 Undo Token；无 Provider 注入时返回稳定的 `PROVIDER_NOT_CONFIGURED`，不会隐式构造真实 Provider。
+- `GET /agent-runs/{trace_id}`：按服务端身份读取安全运行摘要，不返回用户 ID、Prompt、消息正文、完整模型响应、原始工具参数或参数指纹。
+- `GET /collections` 与 `GET /collections/{item_id}`：支持城市线索/城市待确认、区域、类型、状态、标签、显式 inactive、稳定排序与分页；详情只返回必要来源摘要。
+- `PATCH /collections/{item_id}`：请求体为 `{"expected_version": 1, "changes": {...}}`，`changes` 直接复用唯一 `CollectionItemPatch`。
+- `DELETE /collections/{item_id}`：可选 `expected_version` 查询参数，只执行既有逻辑删除。
+- `POST /collections/{item_id}/undo`：请求体携带 `undo_token`；服务在原子认领前先确认 Token 操作组包含路径条目。
+
+M0 使用服务端固定 Demo User；所有 Repository 调用仍显式携带该 `user_id`。消息 ID、Source ID 和 trace ID 由 `user_id + idempotency_key` 确定性派生，数据库主键与既有收藏写唯一约束共同防止顺序或并发重试产生重复数据。同键不同 Session 或不同正文返回 `409 IDEMPOTENCY_CONFLICT`。请求校验错误为 422，不存在与跨用户资源统一为 404，真实版本冲突为 409；验证错误响应只返回字段路径和错误类型，不回显正文或 Undo Token。
+
+M0-2D 没有新增迁移或配置变量。应用、`/healthz`、OpenAPI 和 Demo Session 在没有模型配置时仍可启动；测试通过 `create_app(..., text_provider=FakeProvider(...))` 显式注入离线 Provider。
 
 真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
 

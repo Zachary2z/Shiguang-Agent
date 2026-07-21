@@ -7,12 +7,20 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api import api_router
+from app.api.errors import install_error_handlers
+from app.application.text_collection_workflow import IdempotencyLockRegistry
 from app.config import Settings, load_settings
 from app.infrastructure.db import Database
 from app.observability import RequestContextMiddleware, configure_logging
+from nanobot_core.providers import ModelProvider
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    *,
+    text_provider: ModelProvider | None = None,
+) -> FastAPI:
     """Create a configured FastAPI application without running migrations."""
 
     resolved_settings = settings or load_settings()
@@ -34,7 +42,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     api.state.settings = resolved_settings
+    api.state.text_provider = text_provider
+    api.state.idempotency_locks = IdempotencyLockRegistry()
     api.add_middleware(RequestContextMiddleware)
+    install_error_handlers(api)
+    api.include_router(api_router)
 
     @api.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:
