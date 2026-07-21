@@ -5,14 +5,14 @@ from collections.abc import Sequence
 import pytest
 
 from nanobot_core.agent import AgentContext, AgentLoop, AgentRunner
-from nanobot_core.providers import Message, ModelResponse
+from nanobot_core.providers import Message
 from nanobot_core.tools import ToolRegistry
-from tests.core.fakes import FakeProvider
+from tests.core.fakes import FakeProvider, fake_response
 
 
 @pytest.mark.asyncio
 async def test_loop_builds_one_turn_from_explicit_context_and_history() -> None:
-    provider = FakeProvider([ModelResponse(content="answer")])
+    provider = FakeProvider([fake_response(content="answer")])
     loop = AgentLoop(
         AgentRunner(provider, ToolRegistry()),
         context_builder=AgentContext(system_prompt="Explicit system."),
@@ -45,7 +45,7 @@ class CapturingContextBuilder:
 
 @pytest.mark.asyncio
 async def test_loop_accepts_an_injected_context_builder() -> None:
-    provider = FakeProvider([ModelResponse(content="answer")])
+    provider = FakeProvider([fake_response(content="answer")])
     builder = CapturingContextBuilder()
     loop = AgentLoop(
         AgentRunner(provider, ToolRegistry()),

@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。当前开发子阶段是 **M0-0C Nanobot 核心迁移**：在 M0-0B 的 FastAPI 后端骨架之外，新增与 FastAPI、数据库和拾光业务解耦的最小 Agent Runner、Loop、Context、Tool/ToolRegistry、`ToolResult` 与 `ModelProvider` 抽象。
+项目处于 **M0 技术验证**。当前开发子阶段是 **M0-1A Provider 契约**：在唯一的 Nanobot Core 中扩展供应商无关的模型响应元数据、Token 用量、完成原因和结构化 Provider 错误，并使用完全离线的 Fake 固定契约。
 
-当前不包含真实模型或高德 Provider、AgentRun/ToolRun、收藏/地点/计划/记忆等业务功能，也没有前端。M0-0C 只使用离线 Fake 测试；通过主控验收前不会进入 M0-1。
+当前不包含真实模型或高德 Provider、Provider 自动重试、AgentRun/ToolRun、trace_id、收藏/地点/计划/记忆等业务功能，也没有前端。M0-1A 不新增模型密钥或 Base URL 配置，不读取真实 `.env`，不进行网络或付费调用；通过主控验收前不会进入 M0-1B。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 

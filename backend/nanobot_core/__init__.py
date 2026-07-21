@@ -8,7 +8,16 @@ from nanobot_core.agent import (
     RunResult,
     RunTermination,
 )
-from nanobot_core.providers import Message, ModelProvider, ModelResponse, ToolCall
+from nanobot_core.providers import (
+    FinishReason,
+    Message,
+    ModelProvider,
+    ModelResponse,
+    ProviderError,
+    ProviderErrorCode,
+    TokenUsage,
+    ToolCall,
+)
 from nanobot_core.tools import Tool, ToolErrorCode, ToolInput, ToolRegistry, ToolResult
 
 __all__ = [
@@ -16,9 +25,12 @@ __all__ = [
     "AgentLoop",
     "AgentRunner",
     "ContextBuilder",
+    "FinishReason",
     "Message",
     "ModelProvider",
     "ModelResponse",
+    "ProviderError",
+    "ProviderErrorCode",
     "RunResult",
     "RunTermination",
     "Tool",
@@ -27,4 +39,5 @@ __all__ = [
     "ToolInput",
     "ToolRegistry",
     "ToolResult",
+    "TokenUsage",
 ]

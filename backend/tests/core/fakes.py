@@ -8,7 +8,15 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import cast
 
-from nanobot_core.providers import Message, ModelProvider, ModelResponse, ToolDefinition
+from nanobot_core.providers import (
+    FinishReason,
+    Message,
+    ModelProvider,
+    ModelResponse,
+    TokenUsage,
+    ToolCall,
+    ToolDefinition,
+)
 from nanobot_core.tools import Tool, ToolInput, ToolResult
 
 
@@ -21,7 +29,7 @@ class ProviderCall:
 class FakeProvider(ModelProvider):
     """Return fixed responses and retain isolated snapshots of every request."""
 
-    def __init__(self, responses: Sequence[ModelResponse | None]) -> None:
+    def __init__(self, responses: Sequence[ModelResponse | BaseException | None]) -> None:
         self.responses = deque(responses)
         self.calls: list[ProviderCall] = []
 
@@ -34,7 +42,29 @@ class FakeProvider(ModelProvider):
         self.calls.append(ProviderCall(deepcopy(messages), deepcopy(tools)))
         if not self.responses:
             raise AssertionError("FakeProvider has no response left")
-        return cast(ModelResponse, self.responses.popleft())
+        outcome = self.responses.popleft()
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return cast(ModelResponse, outcome)
+
+
+def fake_response(
+    *,
+    content: str | None = None,
+    tool_calls: Sequence[ToolCall] = (),
+) -> ModelResponse:
+    """Build a complete, deterministic response for runner-focused tests."""
+
+    calls = list(tool_calls)
+    return ModelResponse(
+        model_name="fixture-model",
+        usage=TokenUsage(input_tokens=2, output_tokens=3),
+        latency_ms=4,
+        finish_reason=FinishReason.TOOL_CALLS if calls else FinishReason.STOP,
+        provider_request_id="fixture-request-id",
+        content=content,
+        tool_calls=calls,
+    )
 
 
 class EchoInput(ToolInput):

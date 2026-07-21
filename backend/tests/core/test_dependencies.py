@@ -12,9 +12,14 @@ def test_core_has_no_forbidden_framework_storage_or_business_imports() -> None:
         "sqlalchemy",
         "alembic",
         "aiosqlite",
+        "aiohttp",
+        "dashscope",
         "httpx",
         "openai",
         "pathlib",
+        "requests",
+        "socket",
+        "urllib",
     }
     discovered: list[tuple[str, str]] = []
 
