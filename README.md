@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。当前开发子阶段是 **M0-2A 文字收藏领域模型**，状态为**待验收**：应用层已建立 User、Session、Message、Source、CollectionItem、CollectionSource、收藏状态机、强制用户隔离的 Repository 契约与 SQLite/Alembic 持久化。
+项目处于 **M0 技术验证**。M0-2A 领域模型与 M0-2B 结构化抽取已经主控验收；当前允许开始的子阶段是 **M0-2C 自动保存与可逆操作**，状态为**未开始**。
 
-普通测试全部离线，不读取真实模型密钥或访问网络。M0-1C 已由主控验收，但本阶段没有任何真实调用授权；不得设置 `RUN_REAL_MODEL_TESTS=1`。当前只建立 M0-2A 数据与状态边界，不包含结构化抽取、自动保存/Undo、收藏 API、Demo 初始化、高德、URL/截图流水线、计划、SSE 或前端；M0-2A 经主控验收前不允许开始 M0-2B。
+普通测试全部离线，不读取真实模型密钥或访问网络。当前没有任何真实调用授权；不得设置 `RUN_REAL_MODEL_TESTS=1`。M0-2C 将在现有唯一 Collection Repository 与抽取契约上实现自动保存、幂等和 Undo，不包含 M0-2D API、Demo 初始化、高德、URL/截图流水线、计划、SSE 或前端。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -66,7 +66,7 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前 HEAD revision 是 `20260721_0003`，直接基于 `20260721_0002`，只新增 `users`、`sessions`、`messages`、`sources`、`collection_items` 和 `collection_sources`。执行 `python -m alembic downgrade 20260721_0002` 只移除这六张表并保留 `agent_runs`、`tool_runs`；再次升级会重建收藏领域表。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+当前 HEAD revision 是 `20260721_0004`：在 `0003` 的六张收藏领域表之上，将用户字段明确为 `default_plan_city`，并把收藏城市调整为可空 `city_hint`。只有空表或全部 `city_hint='shenzhen'` 时才能安全降级到 `0003`；存在空值或其他城市时会在 DDL 前明确拒绝，避免数据丢失。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
 
 ### 启动 API
 
@@ -121,13 +121,15 @@ Runner 在同一执行循环中保证：最多执行 8 次绝对 Tool Call；第
 
 `AgentRunService.get_by_trace_id()` 返回模型调用元数据、Token/费用汇总、有序 ToolRun、安全错误码和结束原因。数据库只保存结构化输入/输出摘要与指纹，不保存消息、完整模型响应、Prompt、思维链、完整工具参数、异常对象、Authorization、Cookie 或密钥。本阶段故意不提供 `GET /agent-runs` 路由。
 
-### M0-2A 文字收藏领域模型
+### M0-2A/B 文字收藏领域与结构化抽取
 
 `app.domain.collections` 是 User、Session、Message、Source、CollectionItem、CollectionSource、Place/Event 类型和收藏状态的唯一应用层契约。实体 ID 使用命名空间加 128 位随机值，服务端时间统一为 UTC；稳定的所有权、状态、版本、Source 抓取时间和 Event 时间使用独立数据库列。Source 元数据使用字段白名单，不接受 Header、Cookie、原始正文或凭证。
 
 `SqlAlchemyCollectionRepository` 的所有公开读写方法都显式要求 `user_id`。Message 通过用户拥有的 Session 查询；CollectionSource 在 Repository 与复合外键两层保证 Source 和 CollectionItem 属于同一用户；跨用户资源与不存在资源采用同一安全结果。默认收藏查询排除 `recognizing`、`failed`、`archived` 和 `deleted`，只有 `active` 具备后续进入计划的状态资格。
 
-本阶段只验证领域与持久化契约，不执行抽取、自动保存、修改/撤销工作流或 API 路由。CollectionItem 的正整数 `version` 只保留并发边界；合法状态变化会递增版本，但 M0-2C 之前不提供通用编辑能力。
+`User.default_plan_city` 当前保持深圳计划语义；`CollectionItem.city_hint` 只保存可空的来源城市线索，允许广州、上海等其他城市收藏，不代表正式城市或计划资格。唯一 `TextExtractionService` 使用现有 `ModelProvider` 抽取严格的 Place/Event 候选，普通结果调用一次，结构错误最多修复一次，并明确保留缺失与不确定字段。
+
+M0-2C 开始前尚未提供自动保存、幂等、修改、逻辑删除、Undo 或 API 路由。CollectionItem 的正整数 `version` 继续作为并发边界；正式城市确认和 POI 匹配属于 M0-3。
 
 真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
 

@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-2B 结构化抽取 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-2-text-collection |
+| 当前子阶段 | M0-2C 自动保存与可逆操作 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-21 |
-| 阻塞项 | “收藏不限城市、计划当前限深圳”的 M0-2A/M0-2B 联合修复已完成并待主控验收；M0-2C 未开始且暂不允许开始 |
+| 阻塞项 | 无；M0-2A/M0-2B 已通过主控验收，M0-2C 前置条件已满足 |
 
 ## 当前任务
 
-M0-2A 已验收的领域、用户隔离和状态机成果保持完成；联合修复已将唯一城市枚举收敛为规划语义 `PlanCity`，并通过新增 `0004` 把 `CollectionItem.city` 安全迁移为可空 `city_hint`。M0-2B 已移除城市准入拒绝、`search_scope_city` 和 `OUT_OF_SCOPE_CITY`，其他城市 Place/Event 可正常形成候选，同时保留不支持内容、一次结构修复、异常与安全边界。当前整体仍为 M0-2B 待验收；M0-2C 自动保存与可逆操作未开始且暂不允许开始。
+M0-2A 领域、用户隔离和状态机，以及 M0-2B 结构化抽取和城市契约联合修复均已通过主控验收。唯一城市枚举已收敛为规划语义 `PlanCity`，`0004` 已把 `CollectionItem.city` 安全迁移为可空 `city_hint`；其他城市 Place/Event 可以形成候选，不再存在城市准入拒绝、`search_scope_city` 或 `OUT_OF_SCOPE_CITY`。当前允许开始 M0-2C 自动保存与可逆操作，但尚未实施。
 
 ## M0 状态
 
@@ -21,7 +21,7 @@ M0-2A 已验收的领域、用户隔离和状态机成果保持完成；联合�
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
-| M0-2 文字收藏 | 进行中 | M0-2A 已验收能力保持完成且城市契约联合修复待复核；M0-2B 待重新验收；M0-2C 未开始且暂不允许开始 |
+| M0-2 文字收藏 | 进行中 | M0-2A、M0-2B 已完成；M0-2C 前置条件满足且未开始 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
@@ -42,10 +42,11 @@ M0-2A 已验收的领域、用户隔离和状态机成果保持完成；联合�
 - M0-1B 已完成：唯一应用层 OpenAI-compatible 百炼 Provider、固定非思考模式、离线错误与安全覆盖及一次真实 Tool Calling 链路已通过主控验收。
 - M0-1C 已完成：唯一 Runner 的运行硬上限、AgentRun/ToolRun 持久化、trace 查询、运行终结、Token/费用汇总、安全摘要和迁移往返已通过主控验收。
 - M0-2A 已完成：收藏领域模型、识别/收藏状态边界、强制用户隔离、六表迁移和安全持久化约束已通过主控验收。
+- M0-2B 已完成：严格 Place/Event 候选、一次结构修复、任意城市收藏线索、`0004` 城市契约迁移、异常安全与离线回归已通过主控验收。
 
 ## 下一步
 
-主控在本联合修复提交上重新执行完整离线、迁移、封网、范围和唯一性验收，重点复核 `0004` 不兼容降级的先验拒绝、任意城市候选、标题城市词不等同正式城市、Provider 1/2 次边界及 M0-2A 用户隔离回归。通过前不开始 M0-2C/M0-2D，不合并、不推送、不执行真实或付费 API。
+从本交接文档提交后的最新 `main` 继续使用 `codex/m0-2-text-collection`，只实施 M0-2C 自动保存与可逆操作：复用现有抽取契约和唯一 Collection Repository，完成事务化自动保存、幂等、允许字段修改、逻辑删除和 Undo。不得提前实现 M0-2D API、M0-3 POI、高德、前端或真实付费调用。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -426,3 +427,15 @@ M0-2A 已验收的领域、用户隔离和状态机成果保持完成；联合�
 - 范围与冗余：`0001`、`0002`、`0003` SHA-256 与修改前完全一致，revisions 仅 `0001`–`0004`；`PlanCity`、CollectionKind、CollectionStatus、RecognitionStatus、CollectionItem、CollectionRepository、TextExtractionService、PlaceCandidate、EventCandidate 与 ExtractionResult 均保持唯一；未修改 `nanobot_core`，核心无 `app`/SQLAlchemy/FastAPI 反向依赖；Git 未跟踪 `.env`、数据库、缓存、虚拟环境或测试生成物
 - 已知风险：按禁令未验证真实模型对新版 Prompt 的遵循率、真实供应商结构输出稳定性、延迟或成本；迁移和 ORM 仅在 SQLite 验证，未在 PostgreSQL、Windows、Python 3.11/3.12 复测；`city_hint` 仍是来源线索，正式城市确认与深圳计划资格必须留给 M0-3/后续规划阶段，不能由本字段推断
 - 主控复测范围：确认修复提交直接父提交为 `e4724bb...` 且只含本记录列出的 M0-2 城市契约文件；复跑 192 项聚焦、434 项非真实、118 core、11 migrations、默认与封网全集；重点审查 `PlanCity/default_plan_city/city_hint` 唯一语义、0003→0004 数据保留、兼容与不兼容 downgrade、Alembic 单 head/check、广州/上海/标题城市词/多城市对象、四类零调用拒绝、Provider 1/2 次及禁止第 3 次、异常和敏感信息边界、M0-2A 用户隔离、范围与反向依赖。M0-2B 仍为待验收，M0-2C 仍未开始且暂不允许开始
+
+#### 2026-07-21｜M0-2B｜已完成（主控验收）
+
+- 集成：最终开发提交 `05779ead8a285a6ef558e64583e17526510f226b` 直接建立在产品文档基线 `e4724bb4356b3e89d59b644bec560d9e986edeab` 上；`codex/m0-2-text-collection` 已以 `--ff-only` 纯快进合并到 `main`，无冲突、无额外代码变化
+- 验收环境：对指定提交使用独立 `git archive` 和全新 Python 3.13.5 虚拟环境；editable 安装与 `pip check` 通过，Ruff 通过，strict mypy 对 49 个源文件无问题
+- 自动化结果：阶段聚焦测试 192 passed；非真实全集 434 passed、1 deselected；核心 118 passed；迁移 11 passed；默认全集 434 passed、1 skipped；封锁 socket 连接与 DNS 后非真实全集再次 434 passed、1 deselected；合并后 Ruff、mypy 和 434 项非真实测试再次通过
+- 独立边界探针：14 项通过，覆盖广州 Place/Event、标题城市词保持待确认、一条输入包含广州和上海两个候选、高置信不支持内容的零调用、连续无效输出最多两次调用，以及包含 User、Session、Message、Source、CollectionItem、CollectionSource 的完整关联数据在 `0003 → 0004 → 0003 → 0004` 往返中保持完整
+- 迁移：Alembic 只有 `20260721_0004` 一个 head，`alembic check` 无待生成操作；既有深圳值无损迁移为线索，空表或全深圳数据可降级，不兼容的 NULL/其他城市数据在任何 DDL 前拒绝且 revision、结构和数据不变；`0001`–`0003` 未改写
+- 范围与冗余：未实现 M0-2C 自动保存/Undo/幂等、M0-2D API、M0-3 POI/高德、URL/截图、SSE、前端或渠道 Adapter；AgentRunner、ToolRegistry、ModelProvider、OpenAI-compatible Provider、Collection Repository、TextExtractionService、Place/Event 候选及城市规划语义均保持唯一，`nanobot_core` 无应用层反向依赖
+- 安全与真实调用：没有未关闭的 P0/P1；未读取或打印 `.env`，未运行 `real_provider`，真实模型、百炼、高德、外部消息及其他真实或付费 API 调用均为 0
+- 已知风险：新版 Prompt 尚未通过真实模型验证；迁移与 ORM 仅在 SQLite/macOS/Python 3.13.5 验证，未在 PostgreSQL、Windows 或 Python 3.11/3.12 复测；这些不阻塞当前离线 M0-2B 完成
+- 下一步：M0-2C 前置条件已满足；从本交接文档提交后的最新 `main` 继续使用 `codex/m0-2-text-collection`，只实现自动保存、幂等、允许字段修改、逻辑删除和 Undo，完成后交回主控验收

@@ -8,7 +8,7 @@
 | 日期 | 2026-07-21 |
 | 状态 | 后续开发执行基线 |
 | 仓库 | /Users/zhangzihao/Documents/Shiguang_Nanobot |
-| 当前阶段 | M0-0A 项目基线与资料迁移 |
+| 当前阶段 | M0-2C 自动保存与可逆操作（允许开始） |
 
 ---
 
