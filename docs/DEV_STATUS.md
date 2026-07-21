@@ -7,11 +7,11 @@
 | 状态 | 待验收 |
 | 当前分支 | codex/m0-2-text-collection |
 | 最近更新 | 2026-07-21 |
-| 阻塞项 | M0-2B 主控验收发现城市准入规则脆弱；产品已改为“收藏不限城市、计划当前限深圳”，等待 M0-2A 数据约束与 M0-2B 抽取契约联合修复；M0-2C 暂不允许开始 |
+| 阻塞项 | “收藏不限城市、计划当前限深圳”的 M0-2A/M0-2B 联合修复已完成并待主控验收；M0-2C 未开始且暂不允许开始 |
 
 ## 当前任务
 
-M0-2A 的其他领域、用户隔离和状态机成果保持已完成，但其中 `CollectionItem.city: SupportedCity`、非空深圳数据库约束及相关 Repository 映射需要通过新的向前迁移调整为跨城市收藏契约。M0-2B 当前实现和两轮修复不再作为可验收终态：必须移除城市准入拒绝与 `OUT_OF_SCOPE_CITY`，改为抽取可空 `city_hint`，同时保留不支持内容、一次结构修复、异常与安全边界。M0-2C 自动保存与可逆操作仍未开始且暂不允许开始。
+M0-2A 已验收的领域、用户隔离和状态机成果保持完成；联合修复已将唯一城市枚举收敛为规划语义 `PlanCity`，并通过新增 `0004` 把 `CollectionItem.city` 安全迁移为可空 `city_hint`。M0-2B 已移除城市准入拒绝、`search_scope_city` 和 `OUT_OF_SCOPE_CITY`，其他城市 Place/Event 可正常形成候选，同时保留不支持内容、一次结构修复、异常与安全边界。当前整体仍为 M0-2B 待验收；M0-2C 自动保存与可逆操作未开始且暂不允许开始。
 
 ## M0 状态
 
@@ -21,7 +21,7 @@ M0-2A 的其他领域、用户隔离和状态机成果保持已完成，但其�
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
-| M0-2 文字收藏 | 进行中 | M0-2A 已验收部分需按新产品决策向前调整；M0-2B 待联合修复与重新验收；M0-2C 未开始且暂不允许开始 |
+| M0-2 文字收藏 | 进行中 | M0-2A 已验收能力保持完成且城市契约联合修复待复核；M0-2B 待重新验收；M0-2C 未开始且暂不允许开始 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
@@ -45,7 +45,7 @@ M0-2A 的其他领域、用户隔离和状态机成果保持已完成，但其�
 
 ## 下一步
 
-原 M0-2B 开发窗口在最新文档基线上联合修复 M0-2A 城市持久化约束和 M0-2B 候选/抽取契约：新增向前迁移，不改写已集成 `0003`；收藏允许其他城市，城市仅作为可空线索，正式城市留给统一地点引用/用户确认；不得开始 M0-2C、M0-2D 或前端。修复后主控重新执行完整离线、迁移、封网、范围和唯一性验收；通过前不合并、不推送、不执行真实或付费 API。
+主控在本联合修复提交上重新执行完整离线、迁移、封网、范围和唯一性验收，重点复核 `0004` 不兼容降级的先验拒绝、任意城市候选、标题城市词不等同正式城市、Provider 1/2 次边界及 M0-2A 用户隔离回归。通过前不开始 M0-2C/M0-2D，不合并、不推送、不执行真实或付费 API。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -411,3 +411,18 @@ M0-2A 的其他领域、用户隔离和状态机成果保持已完成，但其�
 - 文档：README、PRD、核心用户流程、MVP 技术方案、开发阶段和本状态文档已按该决策同步；M0-2B 继续待验收，M0-2C 继续未开始
 - 外部调用：本次为文档与任务重定义，没有读取 `.env`，没有运行 `real_provider`，真实模型、高德、外部消息和付费 API 调用均为 0
 - 下一步：原 M0-2B 开发窗口从本记录所在最新提交开始执行 M0-2A/M0-2B 联合修复，提交一个新的可回滚修复 commit 后交回主控完整复验；通过前不合并、不推送
+
+#### 2026-07-21｜M0-2 城市契约联合修复｜待验收
+
+- 分支与起点：`codex/m0-2-text-collection`；修改前 HEAD 严格等于 `e4724bb4356b3e89d59b644bec560d9e986edeab`、工作区干净，且包含已验收 `main` 基线 `76cbc96f9aa802496113f6e4216280691edb74ce`；本记录与代码将形成一个直接建立在 `e4724bb...` 上的新提交，不 amend、不合并、不推送
+- M0-2A 领域与持久化：唯一城市枚举由收藏准入语义收敛为 `PlanCity`，当前只含 `SHENZHEN`；`User.city` 改名为 `User.default_plan_city` 并同步 ORM/Repository；唯一 `CollectionItem.city` 改为经 trim 的可空 `city_hint: str | None`，长度 1–100，不表示正式城市或计划资格，`None`、深圳、广州、上海均完成实体与 Repository 往返覆盖；RecognitionStatus、CollectionStatus、用户隔离和六表归属保持不变
+- 0004 迁移：新增唯一 `20260721_0004_collection_city_hints.py`，`down_revision=20260721_0003`；upgrade 将 `users.city` 重命名为 `default_plan_city` 并保留深圳规划检查，把 `collection_items.city` 重命名为可空 `city_hint`、扩长到 100 并以检查约束拒绝空白、首尾空格和超长值；既有 `shenzhen` 原值无损保留为线索。downgrade 在任何 DDL 前检查全部收藏，仅空表或全为 `shenzhen` 时回退；存在 `NULL`、广州、上海或其他值时稳定拒绝，不强转、不删除且 revision、表结构与数据均不改变
+- M0-2B 候选与服务：现有唯一 Place/Event 候选改用可空字符串 `city_hint`，`CandidateField.CITY` 收敛为 `CITY_HINT`，移除 `search_scope_city` 与 `OUT_OF_SCOPE_CITY`；缺少城市线索必须进入 missing/uncertain，已有线索不得同时标缺失。抽取 Prompt 明确任意城市可收藏、标题/品牌城市词不是正式城市、跨城市对象分别输出且不得编造城市；服务删除深圳证据、非深圳拒绝列表、城市正则与城市 canonicalization，广州塔等明确其他城市内容同样进入 Provider 并可形成候选
+- 保持边界：空白、超长和高置信菜谱/商品/跨城多日规划/复杂户外路线仍零 Provider 调用；正常有效结果严格 1 次，只有 JSON/Schema 结构错误执行一次修复，总计最多 2 次且代码只有两个顺序 `Provider.chat` await 点；ProviderError、`asyncio.CancelledError` 继续原样传播。未创建或修改 CollectionItem 工作流，未实现 M0-2C/M0-2D、Undo/幂等、CityRepository、POI/高德、URL/OCR、SSE、前端或渠道 Adapter
+- 验证环境：仓库外全新 `/tmp/shiguang-m0-2-city-qa.U6pDpd/venv`，Python 3.14.0；`python -m pip install -e ".[dev]"` 和 `python -m pip check` 退出 0，Ruff 退出 0，strict mypy 对 49 个源文件无问题
+- 自动化结果：规定聚焦命令 192 passed；全部非真实测试 434 passed、1 deselected；核心测试 118 passed；迁移测试 11 passed；默认全集 434 passed、1 skipped，所有命令退出 0。临时 `/tmp` pytest 插件同时封锁 `socket.connect`、`connect_ex`、`create_connection` 与 DNS `getaddrinfo` 后，非真实全集再次 434 passed、1 deselected
+- 迁移实测：仓库外临时 SQLite 完成 `upgrade 0003 → 写入既有深圳数据 → upgrade head → downgrade 0003 → upgrade head`，用户规划城市与收藏线索均无损；`alembic heads` 仅 `20260721_0004`，`alembic check` 无待生成操作；加入 `city_hint=NULL` 后降级按设计非零退出，随后 revision 仍为 `0004` 且两条原数据完整。自动化另覆盖广州、上海、空白/超长约束和三种不兼容降级无局部变化
+- 安全与副作用：服务不记录或公开完整输入、系统 Prompt、模型响应、修复原文、密钥、Authorization 或 Cookie，验证继续覆盖 repr/错误摘要/重复及并发隔离；未读取或打印 `.env`，未运行 `real_provider`，真实模型、百炼、高德、外部消息及其他真实/付费 API 调用为 0；除临时 SQLite 迁移探针外无数据库、文件、消息或外部系统副作用
+- 范围与冗余：`0001`、`0002`、`0003` SHA-256 与修改前完全一致，revisions 仅 `0001`–`0004`；`PlanCity`、CollectionKind、CollectionStatus、RecognitionStatus、CollectionItem、CollectionRepository、TextExtractionService、PlaceCandidate、EventCandidate 与 ExtractionResult 均保持唯一；未修改 `nanobot_core`，核心无 `app`/SQLAlchemy/FastAPI 反向依赖；Git 未跟踪 `.env`、数据库、缓存、虚拟环境或测试生成物
+- 已知风险：按禁令未验证真实模型对新版 Prompt 的遵循率、真实供应商结构输出稳定性、延迟或成本；迁移和 ORM 仅在 SQLite 验证，未在 PostgreSQL、Windows、Python 3.11/3.12 复测；`city_hint` 仍是来源线索，正式城市确认与深圳计划资格必须留给 M0-3/后续规划阶段，不能由本字段推断
+- 主控复测范围：确认修复提交直接父提交为 `e4724bb...` 且只含本记录列出的 M0-2 城市契约文件；复跑 192 项聚焦、434 项非真实、118 core、11 migrations、默认与封网全集；重点审查 `PlanCity/default_plan_city/city_hint` 唯一语义、0003→0004 数据保留、兼容与不兼容 downgrade、Alembic 单 head/check、广州/上海/标题城市词/多城市对象、四类零调用拒绝、Provider 1/2 次及禁止第 3 次、异常和敏感信息边界、M0-2A 用户隔离、范围与反向依赖。M0-2B 仍为待验收，M0-2C 仍未开始且暂不允许开始

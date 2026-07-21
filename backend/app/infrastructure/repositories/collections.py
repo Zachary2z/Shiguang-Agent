@@ -16,6 +16,7 @@ from app.domain.collections import (
     Message,
     MessageContentType,
     MessageRole,
+    PlanCity,
     ResourceNotFoundError,
     Session,
     SessionChannel,
@@ -24,7 +25,6 @@ from app.domain.collections import (
     SourceMetadata,
     SourceParseStatus,
     SourceType,
-    SupportedCity,
     SupportedTimezone,
     User,
     UserMode,
@@ -62,7 +62,7 @@ class SqlAlchemyCollectionRepository:
         row = UserModel(
             id=user.id,
             mode=user.mode.value,
-            city=user.city.value,
+            default_plan_city=user.default_plan_city.value,
             timezone=user.timezone.value,
             created_at=user.created_at,
         )
@@ -243,7 +243,7 @@ class SqlAlchemyCollectionRepository:
             user_id=owner,
             kind=item.kind.value,
             title=item.title,
-            city=item.city.value,
+            city_hint=item.city_hint,
             district=item.district,
             address=item.address,
             event_start_at=item.event_start_at,
@@ -418,7 +418,7 @@ class SqlAlchemyCollectionRepository:
         return User(
             id=row.id,
             mode=UserMode(row.mode),
-            city=SupportedCity(row.city),
+            default_plan_city=PlanCity(row.default_plan_city),
             timezone=SupportedTimezone(row.timezone),
             created_at=required_utc(row.created_at),
         )
@@ -470,7 +470,7 @@ class SqlAlchemyCollectionRepository:
             user_id=row.user_id,
             kind=CollectionKind(row.kind),
             title=row.title,
-            city=SupportedCity(row.city),
+            city_hint=row.city_hint,
             district=row.district,
             address=row.address,
             event_start_at=as_utc(row.event_start_at),

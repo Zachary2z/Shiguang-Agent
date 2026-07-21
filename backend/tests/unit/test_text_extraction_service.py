@@ -24,7 +24,6 @@ from app.domain.collections import (
     ExtractionReasonCode,
     ExtractionResult,
     PlaceCandidate,
-    SupportedCity,
     UnsupportedReason,
 )
 from nanobot_core.providers import ModelResponse, ProviderError, ProviderErrorCode, ToolCall
@@ -36,12 +35,12 @@ START = datetime(2026, 7, 25, 6, 0, tzinfo=UTC)
 def _full_place(
     *,
     title: str = "深圳当代艺术与城市规划馆",
-    city: SupportedCity | None = SupportedCity.SHENZHEN,
+    city_hint: str | None = "深圳",
 ) -> PlaceCandidate:
-    missing = () if city is not None else (CandidateField.CITY,)
+    missing = () if city_hint is not None else (CandidateField.CITY_HINT,)
     return PlaceCandidate(
         title=title,
-        city=city,
+        city_hint=city_hint,
         district="福田区",
         address="福中路184号",
         business_district="市民中心",
@@ -57,8 +56,8 @@ def _full_place(
 def _only_name_place(*, title: str = "M Stand") -> PlaceCandidate:
     return PlaceCandidate(
         title=title,
-        city=SupportedCity.SHENZHEN,
         missing_fields=(
+            CandidateField.CITY_HINT,
             CandidateField.DISTRICT,
             CandidateField.ADDRESS,
             CandidateField.BUSINESS_DISTRICT,
@@ -70,10 +69,14 @@ def _only_name_place(*, title: str = "M Stand") -> PlaceCandidate:
     )
 
 
-def _full_event(*, title: str = "深圳设计周主题展") -> EventCandidate:
+def _full_event(
+    *,
+    title: str = "深圳设计周主题展",
+    city_hint: str = "深圳",
+) -> EventCandidate:
     return EventCandidate(
         title=title,
-        city=SupportedCity.SHENZHEN,
+        city_hint=city_hint,
         district="南山区",
         address="海上世界文化艺术中心",
         business_district="海上世界",
@@ -92,7 +95,7 @@ def _full_event(*, title: str = "深圳设计周主题展") -> EventCandidate:
 def _event_without_time() -> EventCandidate:
     return EventCandidate(
         title="深圳周末艺术市集",
-        city=SupportedCity.SHENZHEN,
+        city_hint="深圳",
         district="南山区",
         address="海上世界",
         business_district="海上世界",
@@ -125,7 +128,7 @@ async def test_explicit_shenzhen_place_uses_one_provider_call() -> None:
 
 
 @pytest.mark.asyncio
-async def test_only_store_name_keeps_candidate_but_does_not_confirm_shenzhen() -> None:
+async def test_only_store_name_keeps_candidate_with_missing_city_hint() -> None:
     provider = FakeProvider(
         [_result_response(ExtractionResult.with_candidates((_only_name_place(),)))]
     )
@@ -134,9 +137,8 @@ async def test_only_store_name_keeps_candidate_but_does_not_confirm_shenzhen() -
 
     candidate = result.candidates[0]
     assert isinstance(candidate, PlaceCandidate)
-    assert candidate.city is None
-    assert candidate.search_scope_city is SupportedCity.SHENZHEN
-    assert any(item.field is CandidateField.CITY for item in candidate.uncertainties)
+    assert candidate.city_hint is None
+    assert CandidateField.CITY_HINT in candidate.missing_fields
     assert CandidateField.DISTRICT in candidate.missing_fields
     assert CandidateField.ADDRESS in candidate.missing_fields
     assert len(provider.calls) == 1
@@ -155,17 +157,34 @@ async def test_overly_generic_name_is_insufficient_without_provider_call() -> No
     assert provider.calls == []
 
 
-@pytest.mark.parametrize("text", ["周末想去广州塔看夜景", "这个展览在广州举办"])
+@pytest.mark.parametrize(
+    ("text", "candidate"),
+    [
+        (
+            "周末想去广州塔看夜景",
+            _full_place(title="广州塔", city_hint="广州"),
+        ),
+        (
+            "这个展览在广州举办",
+            _full_event(title="广州展览", city_hint="广州"),
+        ),
+    ],
+)
 @pytest.mark.asyncio
-async def test_explicit_non_shenzhen_place_is_out_of_scope_without_candidate(text: str) -> None:
-    provider = FakeProvider([])
+async def test_explicit_other_city_content_enters_provider_and_is_collectable(
+    text: str,
+    candidate: PlaceCandidate | EventCandidate,
+) -> None:
+    provider = FakeProvider(
+        [_result_response(ExtractionResult.with_candidates((candidate,)))]
+    )
 
     result = await TextExtractionService(provider).extract(text)
 
-    assert result.outcome is ExtractionOutcome.UNSUPPORTED
-    assert result.reason_code is ExtractionReasonCode.OUT_OF_SCOPE_CITY
-    assert result.candidates == ()
-    assert provider.calls == []
+    assert result.outcome is ExtractionOutcome.CANDIDATES
+    assert result.candidates == (candidate,)
+    assert result.candidates[0].city_hint == "广州"
+    assert len(provider.calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -206,6 +225,25 @@ async def test_shenzhen_day_trip_source_can_extract_multiple_requested_places() 
     assert len(provider.calls) == 1
 
 
+@pytest.mark.asyncio
+async def test_one_source_can_return_separate_candidates_from_different_cities() -> None:
+    candidates = (
+        _full_place(title="广州塔", city_hint="广州"),
+        _full_place(title="上海外滩", city_hint="上海"),
+    )
+    provider = FakeProvider([_result_response(ExtractionResult.with_candidates(candidates))])
+
+    result = await TextExtractionService(provider).extract("收藏广州塔和位于上海的外滩")
+
+    assert result.candidates == candidates
+    assert [candidate.city_hint for candidate in result.candidates] == ["广州", "上海"]
+    assert len(provider.calls) == 1
+    system_prompt = provider.calls[0].messages[0]["content"]
+    assert "any city" in system_prompt
+    assert "OUT_OF_SCOPE_CITY" not in system_prompt
+    assert "search_scope_city" not in system_prompt
+
+
 @pytest.mark.parametrize("title", ["上海宾馆", "北京饭店", "广州酒家"])
 @pytest.mark.asyncio
 async def test_place_name_city_substring_does_not_confirm_or_reject_city(title: str) -> None:
@@ -218,9 +256,8 @@ async def test_place_name_city_substring_does_not_confirm_or_reject_city(title: 
     candidate = result.candidates[0]
     assert isinstance(candidate, PlaceCandidate)
     assert candidate.title == title
-    assert candidate.city is None
-    assert candidate.search_scope_city is SupportedCity.SHENZHEN
-    assert any(item.field is CandidateField.CITY for item in candidate.uncertainties)
+    assert candidate.city_hint is None
+    assert CandidateField.CITY_HINT in candidate.missing_fields
     assert len(provider.calls) == 1
 
 
@@ -392,7 +429,7 @@ def _invalid_event_time_json() -> str:
         "{not-json",
         "[]",
         '{"outcome":"candidates"}',
-        ('{"outcome":"unsupported","reason_code":"OUT_OF_SCOPE_CITY","extra":"forbidden"}'),
+        ('{"outcome":"unsupported","reason_code":"obsolete_city_code","extra":"forbidden"}'),
         '{"outcome":"wrong-enum"}',
         _invalid_event_time_json(),
     ],
@@ -490,7 +527,7 @@ async def test_input_and_provider_message_snapshots_are_not_mutated() -> None:
 
 
 @pytest.mark.asyncio
-async def test_repeated_ambiguous_name_calls_do_not_share_city_uncertainty() -> None:
+async def test_repeated_ambiguous_name_calls_do_not_share_city_gaps() -> None:
     responses = [
         _result_response(
             ExtractionResult.with_candidates((_only_name_place(title="上海宾馆"),))
@@ -506,7 +543,7 @@ async def test_repeated_ambiguous_name_calls_do_not_share_city_uncertainty() -> 
     assert first == second
     assert first is not second
     assert first.candidates[0] is not second.candidates[0]
-    assert first.candidates[0].city is None
+    assert first.candidates[0].city_hint is None
     assert len(provider.calls) == 2
 
 
@@ -591,7 +628,7 @@ async def test_validation_issue_summary_excludes_invalid_values() -> None:
     invalid = json.dumps(
         {
             "outcome": "unsupported",
-            "reason_code": "OUT_OF_SCOPE_CITY",
+            "reason_code": "obsolete_city_code",
             "unexpected": invalid_value,
         }
     )

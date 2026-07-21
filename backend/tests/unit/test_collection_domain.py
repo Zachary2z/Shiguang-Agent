@@ -19,6 +19,7 @@ from app.domain.collections import (
     Message,
     MessageContentType,
     MessageRole,
+    PlanCity,
     RecognitionStatus,
     Session,
     SessionChannel,
@@ -27,7 +28,6 @@ from app.domain.collections import (
     SourceMetadata,
     SourceParseStatus,
     SourceType,
-    SupportedCity,
     SupportedTimezone,
     User,
     UserMode,
@@ -112,17 +112,18 @@ def test_invalid_blank_sequential_and_wrong_namespace_ids_are_rejected(
         validator(invalid)
 
 
-def test_user_mode_city_timezone_and_utc_boundaries() -> None:
+def test_user_mode_default_plan_city_timezone_and_utc_boundaries() -> None:
     local_time = datetime(2026, 7, 21, 16, 0, tzinfo=timezone(timedelta(hours=8)))
     user = User(
         id=USER_ID,
         mode=UserMode.REAL,
-        city=SupportedCity.SHENZHEN,
+        default_plan_city=PlanCity.SHENZHEN,
         timezone=SupportedTimezone.ASIA_SHANGHAI,
         created_at=local_time,
     )
     assert user.created_at == NOW
     assert user.created_at.tzinfo is UTC
+    assert set(PlanCity) == {PlanCity.SHENZHEN}
 
     with pytest.raises(ValidationError):
         User(id=USER_ID, mode="real", created_at=NOW)  # type: ignore[arg-type]
@@ -131,7 +132,7 @@ def test_user_mode_city_timezone_and_utc_boundaries() -> None:
             {
                 "id": USER_ID,
                 "mode": UserMode.REAL,
-                "city": "guangzhou",
+                "default_plan_city": "guangzhou",
                 "timezone": SupportedTimezone.ASIA_SHANGHAI,
                 "created_at": NOW,
             }
@@ -302,6 +303,7 @@ def test_provider_independent_place_event_fields_version_price_and_tags() -> Non
         user_id=USER_ID,
         kind=CollectionKind.PLACE,
         title="  深圳当代艺术与城市规划馆  ",
+        city_hint="  广州市  ",
         district="福田区",
         price_amount=Decimal("0.00"),
         price_currency="CNY",
@@ -312,6 +314,7 @@ def test_provider_independent_place_event_fields_version_price_and_tags() -> Non
         updated_at=NOW,
     )
     assert place.title == "深圳当代艺术与城市规划馆"
+    assert place.city_hint == "广州市"
     assert place.kind is CollectionKind.PLACE
     assert can_collection_enter_plan(place.status)
 
@@ -340,6 +343,19 @@ def test_provider_independent_place_event_fields_version_price_and_tags() -> Non
         payload.update(update)
         with pytest.raises(ValidationError):
             CollectionItem.model_validate(payload)
+
+    for city_hint in ("", "   ", "城" * 101):
+        payload = place.model_dump()
+        payload["city_hint"] = city_hint
+        with pytest.raises(ValidationError):
+            CollectionItem.model_validate(payload)
+
+    assert CollectionItem.model_validate(
+        {**place.model_dump(), "city_hint": None}
+    ).city_hint is None
+    assert CollectionItem.model_validate(
+        {**place.model_dump(), "city_hint": "上海"}
+    ).city_hint == "上海"
 
     invalid_event = event.model_dump()
     invalid_event["event_end_at"] = NOW

@@ -1,4 +1,4 @@
-"""Alembic round-trip and M0-1C/M0-2A schema constraint tests."""
+"""Alembic round-trip and M0-1C/M0-2 city-contract schema tests."""
 
 from __future__ import annotations
 
@@ -8,10 +8,11 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-HEAD_REVISION = "20260721_0003"
-PREVIOUS_REVISION = "20260721_0002"
+HEAD_REVISION = "20260721_0004"
+PREVIOUS_REVISION = "20260721_0003"
 HEAD_TABLES = {
     "agent_runs",
     "alembic_version",
@@ -84,7 +85,7 @@ def _insert_agent_run(connection: sqlite3.Connection, *, suffix: str = "one") ->
 def _insert_user(connection: sqlite3.Connection, user_id: str) -> None:
     connection.execute(
         """
-        INSERT INTO users (id, mode, city, timezone, created_at)
+        INSERT INTO users (id, mode, default_plan_city, timezone, created_at)
         VALUES (?, 'real', 'shenzhen', 'Asia/Shanghai', ?)
         """,
         (user_id, "2026-07-21T00:00:00+00:00"),
@@ -119,19 +120,53 @@ def _insert_collection_item(
     user_id: str,
     status: str = "active",
     version: int = 1,
+    city_hint: str | None = "shenzhen",
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO collection_items (
+            id, user_id, kind, title, city_hint, tags_json, status, version,
+            created_at, updated_at
+        ) VALUES (?, ?, 'place', 'fixture', ?, '[]', ?, ?, ?, ?)
+        """,
+        (
+            item_id,
+            user_id,
+            city_hint,
+            status,
+            version,
+            "2026-07-21T00:00:00+00:00",
+            "2026-07-21T00:00:00+00:00",
+        ),
+    )
+
+
+def _insert_0003_user(connection: sqlite3.Connection, user_id: str) -> None:
+    connection.execute(
+        """
+        INSERT INTO users (id, mode, city, timezone, created_at)
+        VALUES (?, 'real', 'shenzhen', 'Asia/Shanghai', ?)
+        """,
+        (user_id, "2026-07-21T00:00:00+00:00"),
+    )
+
+
+def _insert_0003_collection_item(
+    connection: sqlite3.Connection,
+    *,
+    item_id: str,
+    user_id: str,
 ) -> None:
     connection.execute(
         """
         INSERT INTO collection_items (
             id, user_id, kind, title, city, tags_json, status, version,
             created_at, updated_at
-        ) VALUES (?, ?, 'place', 'fixture', 'shenzhen', '[]', ?, ?, ?, ?)
+        ) VALUES (?, ?, 'place', 'fixture', 'shenzhen', '[]', 'active', 1, ?, ?)
         """,
         (
             item_id,
             user_id,
-            status,
-            version,
             "2026-07-21T00:00:00+00:00",
             "2026-07-21T00:00:00+00:00",
         ),
@@ -240,7 +275,7 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
 
     command.downgrade(alembic_config, PREVIOUS_REVISION)
     assert current_revision(database_path) == PREVIOUS_REVISION
-    assert table_names(database_path) == {"agent_runs", "alembic_version", "tool_runs"}
+    assert table_names(database_path) == HEAD_TABLES
     with sqlite3.connect(database_path) as connection:
         preserved_run = connection.execute(
             "SELECT id, status FROM agent_runs WHERE id LIKE 'arn_preserved%'"
@@ -294,7 +329,7 @@ def test_collection_migration_from_previous_revision_accepts_only_final_statuses
 
     command.upgrade(alembic_config, PREVIOUS_REVISION)
     assert current_revision(database_path) == PREVIOUS_REVISION
-    assert table_names(database_path) == {"agent_runs", "alembic_version", "tool_runs"}
+    assert table_names(database_path) == HEAD_TABLES
 
     command.upgrade(alembic_config, "head")
     assert current_revision(database_path) == HEAD_REVISION
@@ -323,6 +358,174 @@ def test_collection_migration_from_previous_revision_accepts_only_final_statuses
                     status=transient_status,
                 )
             connection.rollback()
+
+
+def test_0003_to_0004_preserves_shenzhen_as_hint_and_supports_any_city_or_null(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "city-hints-upgrade.db"
+    alembic_config = _alembic_config(monkeypatch, database_path)
+    user_id = "usr_11111111111111111111111111111111"
+    old_item_id = "col_11111111111111111111111111111111"
+
+    command.upgrade(alembic_config, PREVIOUS_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        _insert_0003_user(connection, user_id)
+        _insert_0003_collection_item(
+            connection,
+            item_id=old_item_id,
+            user_id=user_id,
+        )
+        connection.commit()
+
+    command.upgrade(alembic_config, HEAD_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT default_plan_city FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone() == ("shenzhen",)
+        assert connection.execute(
+            "SELECT city_hint FROM collection_items WHERE id = ?",
+            (old_item_id,),
+        ).fetchone() == ("shenzhen",)
+        for index, hint in enumerate((None, "广州", "上海"), start=2):
+            _insert_collection_item(
+                connection,
+                item_id=f"col_{index:032x}",
+                user_id=user_id,
+                city_hint=hint,
+            )
+        connection.commit()
+        assert dict(
+            connection.execute(
+                "SELECT id, city_hint FROM collection_items ORDER BY id"
+            ).fetchall()
+        ) == {
+            old_item_id: "shenzhen",
+            "col_00000000000000000000000000000002": None,
+            "col_00000000000000000000000000000003": "广州",
+            "col_00000000000000000000000000000004": "上海",
+        }
+
+        for invalid_hint in ("", "   ", "x" * 101):
+            with pytest.raises(sqlite3.IntegrityError):
+                _insert_collection_item(
+                    connection,
+                    item_id="col_ffffffffffffffffffffffffffffffff",
+                    user_id=user_id,
+                    city_hint=invalid_hint,
+                )
+            connection.rollback()
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE users SET default_plan_city = 'guangzhou' WHERE id = ?",
+                (user_id,),
+            )
+        connection.rollback()
+
+
+def test_0004_compatible_shenzhen_data_downgrades_and_reupgrades_without_loss(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "city-hints-compatible-roundtrip.db"
+    alembic_config = _alembic_config(monkeypatch, database_path)
+    user_id = "usr_22222222222222222222222222222222"
+    item_id = "col_22222222222222222222222222222222"
+
+    command.upgrade(alembic_config, HEAD_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        _insert_user(connection, user_id)
+        _insert_collection_item(
+            connection,
+            item_id=item_id,
+            user_id=user_id,
+            city_hint="shenzhen",
+        )
+        connection.commit()
+
+    command.downgrade(alembic_config, PREVIOUS_REVISION)
+    assert current_revision(database_path) == PREVIOUS_REVISION
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT city FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone() == ("shenzhen",)
+        assert connection.execute(
+            "SELECT city FROM collection_items WHERE id = ?",
+            (item_id,),
+        ).fetchone() == ("shenzhen",)
+
+    command.upgrade(alembic_config, HEAD_REVISION)
+    assert current_revision(database_path) == HEAD_REVISION
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT default_plan_city FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone() == ("shenzhen",)
+        assert connection.execute(
+            "SELECT city_hint FROM collection_items WHERE id = ?",
+            (item_id,),
+        ).fetchone() == ("shenzhen",)
+
+
+@pytest.mark.parametrize("city_hint", [None, "广州", "上海"])
+def test_0004_incompatible_downgrade_fails_before_schema_or_data_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    city_hint: str | None,
+) -> None:
+    database_path = tmp_path / f"city-hints-incompatible-{city_hint or 'null'}.db"
+    alembic_config = _alembic_config(monkeypatch, database_path)
+    user_id = "usr_33333333333333333333333333333333"
+    item_id = "col_33333333333333333333333333333333"
+
+    command.upgrade(alembic_config, HEAD_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        _insert_user(connection, user_id)
+        _insert_collection_item(
+            connection,
+            item_id=item_id,
+            user_id=user_id,
+            city_hint=city_hint,
+        )
+        connection.commit()
+        before_schema = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('users', 'collection_items') ORDER BY name"
+        ).fetchall()
+        before_rows = connection.execute(
+            "SELECT id, city_hint FROM collection_items ORDER BY id"
+        ).fetchall()
+
+    with pytest.raises(RuntimeError, match="cannot downgrade"):
+        command.downgrade(alembic_config, PREVIOUS_REVISION)
+
+    assert current_revision(database_path) == HEAD_REVISION
+    with sqlite3.connect(database_path) as connection:
+        after_schema = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('users', 'collection_items') ORDER BY name"
+        ).fetchall()
+        after_rows = connection.execute(
+            "SELECT id, city_hint FROM collection_items ORDER BY id"
+        ).fetchall()
+    assert after_schema == before_schema
+    assert after_rows == before_rows
+
+
+def test_alembic_has_one_head_and_metadata_matches_head_schema(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "alembic-check.db"
+    alembic_config = _alembic_config(monkeypatch, database_path)
+    script = ScriptDirectory.from_config(alembic_config)
+
+    assert script.get_heads() == [HEAD_REVISION]
+    command.upgrade(alembic_config, "head")
+    command.check(alembic_config)
 
 
 def test_migration_enforces_unique_foreign_key_and_check_constraints(
@@ -466,7 +669,7 @@ def test_collection_migration_has_exact_fields_named_constraints_and_useful_inde
     command.upgrade(_alembic_config(monkeypatch, database_path), "head")
 
     expected_columns = {
-        "users": {"id", "mode", "city", "timezone", "created_at"},
+        "users": {"id", "mode", "default_plan_city", "timezone", "created_at"},
         "sessions": {
             "id",
             "user_id",
@@ -503,7 +706,7 @@ def test_collection_migration_has_exact_fields_named_constraints_and_useful_inde
             "user_id",
             "kind",
             "title",
-            "city",
+            "city_hint",
             "district",
             "address",
             "event_start_at",
@@ -593,10 +796,12 @@ def test_collection_migration_has_exact_fields_named_constraints_and_useful_inde
         "uq_sources_id_user_id",
         "uq_collection_items_id_user_id",
         "ck_users_mode",
+        "ck_users_default_plan_city",
         "ck_sessions_channel",
         "ck_messages_role",
         "ck_sources_type_fields",
         "ck_collection_items_status",
+        "ck_collection_items_city_hint",
         "ck_collection_items_version_positive",
     ):
         assert constraint_name in table_sql

@@ -17,7 +17,6 @@ from app.domain.collections import (
     ExtractionReasonCode,
     ExtractionResult,
     PlaceCandidate,
-    SupportedCity,
     Uncertainty,
     UnsupportedReason,
 )
@@ -29,7 +28,7 @@ def _full_place(**updates: object) -> PlaceCandidate:
     payload: dict[str, object] = {
         "kind": CollectionKind.PLACE,
         "title": "深圳当代艺术与城市规划馆",
-        "city": SupportedCity.SHENZHEN,
+        "city_hint": "深圳",
         "district": "福田区",
         "address": "福中路184号",
         "business_district": "市民中心",
@@ -47,7 +46,7 @@ def _full_event(**updates: object) -> EventCandidate:
     payload: dict[str, object] = {
         "kind": CollectionKind.EVENT,
         "title": "深圳设计周主题展",
-        "city": SupportedCity.SHENZHEN,
+        "city_hint": "深圳市",
         "district": "南山区",
         "address": "海上世界文化艺术中心",
         "business_district": "海上世界",
@@ -65,14 +64,19 @@ def _full_event(**updates: object) -> EventCandidate:
     return EventCandidate.model_validate(payload)
 
 
-def test_complete_place_candidate_uses_existing_kind_and_city_contracts() -> None:
+def test_complete_place_candidate_uses_city_hint_without_planning_contract() -> None:
     candidate = _full_place()
 
     assert candidate.kind is CollectionKind.PLACE
-    assert candidate.city is SupportedCity.SHENZHEN
-    assert candidate.search_scope_city is SupportedCity.SHENZHEN
+    assert candidate.city_hint == "深圳"
     assert candidate.price_amount == Decimal("0.00")
     assert candidate.missing_fields == ()
+
+    schema = PlaceCandidate.model_json_schema()
+    city_schema = schema["properties"]["city_hint"]["anyOf"][0]
+    assert city_schema["maxLength"] == 100
+    assert "search_scope_city" not in schema["properties"]
+    assert "city" not in schema["properties"]
 
 
 def test_complete_event_candidate_normalizes_aware_times_to_utc() -> None:
@@ -107,7 +111,7 @@ def test_event_rejects_invalid_time_order_and_naive_times() -> None:
 def test_missing_fields_and_uncertainties_are_explicit_and_non_overlapping() -> None:
     candidate = PlaceCandidate(
         title="M Stand",
-        city=None,
+        city_hint=None,
         missing_fields=(
             CandidateField.DISTRICT,
             CandidateField.ADDRESS,
@@ -117,15 +121,17 @@ def test_missing_fields_and_uncertainties_are_explicit_and_non_overlapping() -> 
             CandidateField.PRICE,
             CandidateField.TAGS,
         ),
-        uncertainties=(Uncertainty(field=CandidateField.CITY, reason="输入没有明确城市。"),),
+        uncertainties=(
+            Uncertainty(field=CandidateField.CITY_HINT, reason="输入没有明确城市线索。"),
+        ),
     )
 
-    assert candidate.city is None
+    assert candidate.city_hint is None
     assert CandidateField.DISTRICT in candidate.missing_fields
-    assert candidate.uncertainties[0].field is CandidateField.CITY
+    assert candidate.uncertainties[0].field is CandidateField.CITY_HINT
 
     payload = candidate.model_dump()
-    payload["missing_fields"] = (*candidate.missing_fields, CandidateField.CITY)
+    payload["missing_fields"] = (*candidate.missing_fields, CandidateField.CITY_HINT)
     with pytest.raises(ValidationError, match="both missing and uncertain"):
         PlaceCandidate.model_validate(payload)
 
@@ -167,6 +173,30 @@ def test_candidate_rejects_extra_fields_and_is_immutable() -> None:
     candidate = _full_place()
     with pytest.raises(ValidationError, match="frozen"):
         candidate.title = "changed"
+
+
+def test_city_hint_is_trimmed_bounded_and_not_a_plan_city_enum() -> None:
+    assert _full_place(city_hint="  广州市  ").city_hint == "广州市"
+    assert _full_place(city_hint="上海").city_hint == "上海"
+
+    with pytest.raises(ValidationError, match="city_hint cannot be blank"):
+        _full_place(city_hint="   ")
+    with pytest.raises(ValidationError, match="at most 100"):
+        _full_place(city_hint="城" * 101)
+    with pytest.raises(ValidationError, match="string_type"):
+        _full_place(city_hint=1)
+
+
+def test_absent_city_hint_must_be_missing_or_uncertain_and_present_hint_is_not_missing() -> None:
+    payload = _full_place().model_dump()
+    payload["city_hint"] = None
+    with pytest.raises(ValidationError, match="absent city_hint"):
+        PlaceCandidate.model_validate(payload)
+
+    payload = _full_place().model_dump()
+    payload["missing_fields"] = (CandidateField.CITY_HINT,)
+    with pytest.raises(ValidationError, match="present and missing"):
+        PlaceCandidate.model_validate(payload)
 
 
 def test_event_without_exact_times_requires_explicit_gaps() -> None:
@@ -227,7 +257,7 @@ def test_error_outcome_cannot_disguise_itself_as_empty_candidate_success() -> No
         ExtractionResult(
             outcome=ExtractionOutcome.UNSUPPORTED,
             candidates=(_full_place(),),
-            reason_code=ExtractionReasonCode.OUT_OF_SCOPE_CITY,
+            reason_code=ExtractionReasonCode.INPUT_EMPTY,
         )
 
 

@@ -41,7 +41,7 @@ class UserMode(StrEnum):
     DEMO = "demo"
 
 
-class SupportedCity(StrEnum):
+class PlanCity(StrEnum):
     SHENZHEN = "shenzhen"
 
 
@@ -116,7 +116,7 @@ class SourceMetadata(DomainModel):
 class User(DomainModel):
     id: str = Field(default_factory=generate_user_id)
     mode: UserMode
-    city: SupportedCity = SupportedCity.SHENZHEN
+    default_plan_city: PlanCity = PlanCity.SHENZHEN
     timezone: SupportedTimezone = SupportedTimezone.ASIA_SHANGHAI
     created_at: datetime
 
@@ -286,7 +286,7 @@ class CollectionItem(DomainModel):
     user_id: str
     kind: CollectionKind
     title: str = Field(min_length=1, max_length=200)
-    city: SupportedCity = SupportedCity.SHENZHEN
+    city_hint: str | None = Field(default=None, max_length=100)
     district: str | None = Field(default=None, max_length=100)
     address: str | None = Field(default=None, max_length=500)
     event_start_at: datetime | None = None
@@ -323,6 +323,16 @@ class CollectionItem(DomainModel):
         if value is not None and not value.strip():
             raise ValueError("optional text fields cannot be blank")
         return value
+
+    @field_validator("city_hint", mode="before")
+    @classmethod
+    def normalize_city_hint(cls, value: object) -> object:
+        if value is None or not isinstance(value, str):
+            return value
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("city_hint cannot be blank")
+        return normalized
 
     @field_validator("event_start_at", "event_end_at")
     @classmethod

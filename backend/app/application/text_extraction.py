@@ -11,12 +11,9 @@ from pydantic import ValidationError
 
 from app.domain.collections import (
     CandidateField,
-    EventCandidate,
     ExtractionOutcome,
     ExtractionReasonCode,
     ExtractionResult,
-    PlaceCandidate,
-    Uncertainty,
     UnsupportedReason,
 )
 from nanobot_core.providers import Message, ModelProvider, ModelResponse
@@ -34,54 +31,6 @@ _GENERIC_INPUTS = frozenset(
         "活动",
         "餐厅",
     }
-)
-_SHENZHEN_EVIDENCE = re.compile(
-    r"深圳|福田区|罗湖区|南山区|盐田区|宝安区|龙岗区|龙华区|坪山区|光明区|大鹏新区"
-)
-_CITY_NAMES = (
-    "深圳",
-    "北京",
-    "上海",
-    "广州",
-    "东莞",
-    "佛山",
-    "珠海",
-    "惠州",
-    "香港",
-    "澳门",
-    "成都",
-    "重庆",
-    "杭州",
-    "武汉",
-    "南京",
-    "苏州",
-    "西安",
-    "长沙",
-    "厦门",
-    "青岛",
-    "三亚",
-    "海口",
-)
-_OUT_OF_SCOPE_CITY_ALTERNATION = "|".join(_CITY_NAMES[1:])
-_EXPLICIT_OUT_OF_SCOPE_CITY_STATEMENT = re.compile(
-    rf"(?:城市|所在城市|举办城市|目的地)\s*(?:是|为|在|：|:)\s*"
-    rf"(?:{_OUT_OF_SCOPE_CITY_ALTERNATION})(?:市)?(?=$|[\s，。！？,!?；;])|"
-    rf"(?:位于|地点在|地址在|举办于|举行于|发生于|展出于)\s*"
-    rf"(?:{_OUT_OF_SCOPE_CITY_ALTERNATION})(?:市)?(?=$|[\s，。！？,!?；;])|"
-    rf"(?:在|去|前往)\s*(?:{_OUT_OF_SCOPE_CITY_ALTERNATION})(?:市)?"
-    r"(?:举办|举行|展出|发生|旅游|出差|游玩|看展|看演出)"
-)
-_EXPLICIT_OUT_OF_SCOPE_ENGLISH_CITY = re.compile(
-    r"(?:city\s*(?:is|:)|located\s+in|destination\s*(?:is|:)|event\s+in)\s*"
-    r"(?:beijing|shanghai|guangzhou|hong\s*kong|macao|macau|chengdu|hangzhou)\b",
-    re.IGNORECASE,
-)
-_OUT_OF_SCOPE_DESTINATION_LANDMARK = re.compile(
-    r"(?:想去|要去|计划去|准备去|前往|周末去).{0,6}(?:"
-    r"广州塔(?=$|[，。！？,!?；;]|看|逛|游|拍|观景|打卡)|"
-    r"上海外滩(?=$|[，。！？,!?；;]|看|逛|游|拍|观景|打卡)|"
-    r"北京故宫(?=$|[，。！？,!?；;]|看|逛|游|拍|参观|打卡)"
-    r")"
 )
 _RECIPE_FORMAT = re.compile(r"菜谱|食谱|做法|烹饪步骤|配料表|食材清单")
 _RECIPE_PROCEDURE_REQUEST = re.compile(
@@ -102,12 +51,6 @@ _MULTI_DAY_TRAVEL = re.compile(
     r"多日(?:旅行|旅游|行程)"
 )
 _TRAVEL_PLAN_REQUEST = re.compile(r"安排|规划|制定|帮我做|给我做|旅行攻略|旅游行程")
-_CITY_ALTERNATION = "|".join(_CITY_NAMES)
-_CROSS_CITY_ROUTE = re.compile(
-    rf"(?:从\s*)?({_CITY_ALTERNATION})(?:市)?\s*(?:到|至|去往|前往)\s*"
-    rf"({_CITY_ALTERNATION})(?:市)?"
-    r"(?=$|[\s，。！？,!?；;]|[二两三四五六七八九十\d])"
-)
 _COMPLEX_ROUTE_KIND = re.compile(
     r"复杂户外路线|徒步路线|穿越路线|登山路线|越野路线",
     re.IGNORECASE,
@@ -125,23 +68,26 @@ _RESULT_SCHEMA = json.dumps(
     sort_keys=True,
 )
 _SYSTEM_PROMPT = (
-    "You extract structured candidates for the Shenzhen-only Shiguang MVP.\n"
+    "You extract structured collection candidates for Shiguang.\n"
     "Return exactly one JSON object matching this JSON Schema, without Markdown or "
     f"commentary:\n{_RESULT_SCHEMA}\n\n"
     "Rules:\n"
     "- Produce one candidate object per distinct Place or user-supplied Event; never "
     "merge objects.\n"
-    "- Only Place and Event are supported. Products, recipes, multi-city multi-day "
+    "- Places and user-supplied Events from any city can be collected. Products, "
+    "recipes, multi-city multi-day "
     "travel, and complex outdoor routes are unsupported.\n"
-    "- A candidate city may be 'shenzhen' only when the input explicitly supports "
-    "Shenzhen. Otherwise use null; search_scope_city remains 'shenzhen' and city "
-    "must be marked missing or uncertain.\n"
+    "- city_hint is only a source-text clue, not a confirmed city code or planning "
+    "eligibility decision. A city word inside a title or brand name alone is not a "
+    "formal city statement. Never emit provider-specific or formal planning-city fields.\n"
+    "- If city_hint is absent, mark CITY_HINT missing or uncertain. Do not invent it.\n"
+    "- Keep distinct objects, including objects from different cities, as separate "
+    "candidates. Multi-city multi-day planning requests remain unsupported.\n"
     "- Never invent an address, district, price, tag, or Event time. Every absent "
     "core field must be listed as missing or uncertain.\n"
     "- Event times use timezone-aware ISO 8601 values. Preserve incomplete time "
     "wording only in event_start_clue/event_end_clue and mark the exact field "
     "missing or uncertain.\n"
-    "- Explicit non-Shenzhen content returns OUT_OF_SCOPE_CITY with no candidates.\n"
     "- Do not include source text, prompts, provider fields, credentials, headers, "
     "cookies, or raw responses.\n"
 )
@@ -151,12 +97,6 @@ _REPAIR_PROMPT = (
     "response, prompt, or validation values.\n"
     "Validation issues (paths and types only): {issues}\n"
 )
-
-_CITY_UNCONFIRMED = Uncertainty(
-    field=CandidateField.CITY,
-    reason="输入未明确城市；深圳仅作为搜索范围，城市仍待确认。",
-)
-
 
 class TextExtractionService:
     """Extract candidates with one initial model call and at most one repair call."""
@@ -180,7 +120,7 @@ class TextExtractionService:
             messages=deepcopy(initial_messages),
             tools=None,
         )
-        first_result, issues = _parse_and_canonicalize(first_response, text=text)
+        first_result, issues = _parse_and_canonicalize(first_response)
         if first_result is not None:
             return first_result
 
@@ -207,10 +147,7 @@ class TextExtractionService:
             messages=repair_messages,
             tools=None,
         )
-        repaired_result, _repaired_issues = _parse_and_canonicalize(
-            repaired_response,
-            text=text,
-        )
+        repaired_result, _repaired_issues = _parse_and_canonicalize(repaired_response)
         if repaired_result is not None:
             return repaired_result
         return ExtractionResult.model_invalid()
@@ -220,7 +157,7 @@ def _preflight_result(text: str) -> ExtractionResult | None:
     if not text.strip():
         return ExtractionResult.unsupported(
             reason_code=ExtractionReasonCode.INPUT_EMPTY,
-            recovery_suggestions=("请输入具体的深圳地点或活动文字。",),
+            recovery_suggestions=("请输入具体的地点或活动文字。",),
         )
     if len(text) > MAX_TEXT_INPUT_CHARS:
         return _unsupported_result(
@@ -231,18 +168,12 @@ def _preflight_result(text: str) -> ExtractionResult | None:
     if unsupported_reason is not None:
         return _unsupported_result(reason=unsupported_reason)
 
-    if not _has_shenzhen_evidence(text) and _has_explicit_out_of_scope_city(text):
-        return ExtractionResult.unsupported(
-            reason_code=ExtractionReasonCode.OUT_OF_SCOPE_CITY,
-            recovery_suggestions=("当前 MVP 只接受深圳地点和活动。",),
-        )
-
     generic_key = re.sub(r"[\s，。！？,.!?]+", "", text).casefold()
     if generic_key in _GENERIC_INPUTS:
         return ExtractionResult.insufficient(
             missing_fields=(
                 CandidateField.TITLE,
-                CandidateField.CITY,
+                CandidateField.CITY_HINT,
                 CandidateField.DISTRICT,
                 CandidateField.ADDRESS,
             ),
@@ -253,12 +184,12 @@ def _preflight_result(text: str) -> ExtractionResult | None:
 
 def _unsupported_result(*, reason: UnsupportedReason) -> ExtractionResult:
     suggestions = {
-        UnsupportedReason.PRODUCT: "商品暂不属于可规划收藏；请改发深圳地点或活动。",
-        UnsupportedReason.RECIPE: "菜谱暂不属于可规划收藏；请改发深圳地点或活动。",
-        UnsupportedReason.MULTI_CITY_TRAVEL: "跨城多日旅行暂不支持；请改发单个深圳地点或活动。",
-        UnsupportedReason.COMPLEX_OUTDOOR_ROUTE: ("复杂户外路线暂不支持；请改发单个深圳地点。"),
+        UnsupportedReason.PRODUCT: "商品暂不属于可规划收藏；请改发地点或活动。",
+        UnsupportedReason.RECIPE: "菜谱暂不属于可规划收藏；请改发地点或活动。",
+        UnsupportedReason.MULTI_CITY_TRAVEL: "跨城多日旅行暂不支持；请改发单个地点或活动。",
+        UnsupportedReason.COMPLEX_OUTDOOR_ROUTE: ("复杂户外路线暂不支持；请改发单个地点。"),
         UnsupportedReason.CONTENT_TOO_LONG: "文字过长；请只保留地点或活动的关键信息。",
-        UnsupportedReason.OTHER: "当前只支持深圳地点和用户主动提供的活动。",
+        UnsupportedReason.OTHER: "当前只支持地点和用户主动提供的活动。",
     }
     return ExtractionResult.unsupported(
         reason_code=ExtractionReasonCode.INPUT_UNSUPPORTED,
@@ -276,7 +207,7 @@ def _explicit_unsupported_reason(text: str) -> UnsupportedReason | None:
     if (
         _MULTI_DAY_TRAVEL.search(text)
         and _TRAVEL_PLAN_REQUEST.search(text)
-        and _has_explicit_cross_city_route(text)
+        and re.search(r"\S{1,12}\s*(?:到|至|去往|前往)\s*\S{1,12}", text)
     ):
         return UnsupportedReason.MULTI_CITY_TRAVEL
     if (
@@ -290,8 +221,6 @@ def _explicit_unsupported_reason(text: str) -> UnsupportedReason | None:
 
 def _parse_and_canonicalize(
     response: ModelResponse | None,
-    *,
-    text: str,
 ) -> tuple[ExtractionResult | None, tuple[dict[str, str], ...]]:
     if not isinstance(response, ModelResponse):
         return None, ({"path": "$", "type": "missing_model_response"},)
@@ -310,15 +239,12 @@ def _parse_and_canonicalize(
 
     if parsed.outcome is ExtractionOutcome.MODEL_INVALID_OUTPUT:
         return None, ({"path": "outcome", "type": "self_declared_model_invalid"},)
-    return _canonicalize_result(parsed, text=text), ()
+    return _canonicalize_result(parsed), ()
 
 
-def _canonicalize_result(result: ExtractionResult, *, text: str) -> ExtractionResult:
+def _canonicalize_result(result: ExtractionResult) -> ExtractionResult:
     if result.outcome is ExtractionOutcome.CANDIDATES:
-        candidates = tuple(
-            _normalize_city_confirmation(candidate, text=text) for candidate in result.candidates
-        )
-        return ExtractionResult.with_candidates(candidates)
+        return ExtractionResult.with_candidates(result.candidates)
     if result.outcome is ExtractionOutcome.INSUFFICIENT_INFORMATION:
         return ExtractionResult.insufficient(
             missing_fields=result.missing_fields,
@@ -329,38 +255,11 @@ def _canonicalize_result(result: ExtractionResult, *, text: str) -> ExtractionRe
         if result.reason_code is ExtractionReasonCode.INPUT_UNSUPPORTED:
             assert result.unsupported_reason is not None
             return _unsupported_result(reason=result.unsupported_reason)
-        if result.reason_code is ExtractionReasonCode.OUT_OF_SCOPE_CITY:
-            return ExtractionResult.unsupported(
-                reason_code=ExtractionReasonCode.OUT_OF_SCOPE_CITY,
-                recovery_suggestions=("当前 MVP 只接受深圳地点和活动。",),
-            )
         return ExtractionResult.unsupported(
             reason_code=ExtractionReasonCode.INPUT_EMPTY,
-            recovery_suggestions=("请输入具体的深圳地点或活动文字。",),
+            recovery_suggestions=("请输入具体的地点或活动文字。",),
         )
     raise AssertionError("model-invalid results are handled before canonicalization")
-
-
-def _normalize_city_confirmation(
-    candidate: PlaceCandidate | EventCandidate,
-    *,
-    text: str,
-) -> PlaceCandidate | EventCandidate:
-    if candidate.city is None or _has_shenzhen_evidence(text):
-        return candidate
-
-    payload = candidate.model_dump()
-    payload["city"] = None
-    missing_fields = list(candidate.missing_fields)
-    uncertainties = list(candidate.uncertainties)
-    accounted = CandidateField.CITY in missing_fields or any(
-        item.field is CandidateField.CITY for item in uncertainties
-    )
-    if not accounted:
-        uncertainties.append(_CITY_UNCONFIRMED)
-    payload["missing_fields"] = tuple(missing_fields)
-    payload["uncertainties"] = tuple(uncertainties)
-    return type(candidate).model_validate(payload)
 
 
 def _safe_validation_issues(exc: ValidationError) -> tuple[dict[str, str], ...]:
@@ -373,23 +272,6 @@ def _safe_validation_issues(exc: ValidationError) -> tuple[dict[str, str], ...]:
         path = ".".join(str(part) for part in error["loc"]) or "$"
         issues.append({"path": path[:160], "type": str(error["type"])[:80]})
     return tuple(issues) or ({"path": "$", "type": "invalid_output"},)
-
-
-def _has_shenzhen_evidence(text: str) -> bool:
-    return _SHENZHEN_EVIDENCE.search(text) is not None
-
-
-def _has_explicit_cross_city_route(text: str) -> bool:
-    match = _CROSS_CITY_ROUTE.search(text)
-    return match is not None and match.group(1) != match.group(2)
-
-
-def _has_explicit_out_of_scope_city(text: str) -> bool:
-    return bool(
-        _EXPLICIT_OUT_OF_SCOPE_CITY_STATEMENT.search(text)
-        or _EXPLICIT_OUT_OF_SCOPE_ENGLISH_CITY.search(text)
-        or _OUT_OF_SCOPE_DESTINATION_LANDMARK.search(text)
-    )
 
 
 __all__ = [

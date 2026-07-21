@@ -26,11 +26,11 @@ from app.domain.collections import (
     CollectionKind,
     MessageContentType,
     MessageRole,
+    PlanCity,
     SessionChannel,
     SessionStatus,
     SourceParseStatus,
     SourceType,
-    SupportedCity,
     SupportedTimezone,
     UserMode,
 )
@@ -46,7 +46,10 @@ class UserModel(Base):
     __tablename__ = "users"
     __table_args__ = (
         CheckConstraint(f"mode IN ({_sql_values(UserMode)})", name="ck_users_mode"),
-        CheckConstraint(f"city IN ({_sql_values(SupportedCity)})", name="ck_users_city"),
+        CheckConstraint(
+            f"default_plan_city IN ({_sql_values(PlanCity)})",
+            name="ck_users_default_plan_city",
+        ),
         CheckConstraint(
             f"timezone IN ({_sql_values(SupportedTimezone)})",
             name="ck_users_timezone",
@@ -59,7 +62,7 @@ class UserModel(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     mode: Mapped[str] = mapped_column(String(16), nullable=False)
-    city: Mapped[str] = mapped_column(String(32), nullable=False)
+    default_plan_city: Mapped[str] = mapped_column(String(32), nullable=False)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
@@ -196,8 +199,9 @@ class CollectionItemModel(Base):
             name="ck_collection_items_status",
         ),
         CheckConstraint(
-            f"city IN ({_sql_values(SupportedCity)})",
-            name="ck_collection_items_city",
+            "city_hint IS NULL OR "
+            "(city_hint = trim(city_hint) AND length(city_hint) BETWEEN 1 AND 100)",
+            name="ck_collection_items_city_hint",
         ),
         CheckConstraint(
             "length(id) = 36 AND substr(id, 1, 4) = 'col_'",
@@ -235,7 +239,7 @@ class CollectionItemModel(Base):
     )
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
-    city: Mapped[str] = mapped_column(String(32), nullable=False)
+    city_hint: Mapped[str | None] = mapped_column(String(100), nullable=True)
     district: Mapped[str | None] = mapped_column(String(100), nullable=True)
     address: Mapped[str | None] = mapped_column(String(500), nullable=True)
     event_start_at: Mapped[datetime | None] = mapped_column(

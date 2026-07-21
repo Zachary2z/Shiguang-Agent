@@ -99,12 +99,14 @@ def _item(
     *,
     status: CollectionStatus = CollectionStatus.ACTIVE,
     title: str = "深圳当代艺术与城市规划馆",
+    city_hint: str | None = None,
 ) -> CollectionItem:
     return CollectionItem(
         id=generate_collection_item_id(),
         user_id=user_id,
         kind=CollectionKind.PLACE,
         title=title,
+        city_hint=city_hint,
         status=status,
         created_at=NOW,
         updated_at=NOW,
@@ -121,7 +123,11 @@ async def test_all_entities_create_read_list_update_and_link_round_trip(
     session_entity = _session(user.id)
     message = _message(session_entity.id)
     source = _source(user.id)
-    item = _item(user.id, status=CollectionStatus.PENDING_SELECTION)
+    item = _item(
+        user.id,
+        status=CollectionStatus.PENDING_SELECTION,
+        city_hint="广州",
+    )
 
     async with database.session() as session:
         repository = SqlAlchemyCollectionRepository(session)
@@ -303,7 +309,7 @@ async def test_recognition_statuses_cannot_bypass_repository_or_database(
                 connection.execute(
                     """
                     INSERT INTO collection_items (
-                        id, user_id, kind, title, city, tags_json, status, version,
+                        id, user_id, kind, title, city_hint, tags_json, status, version,
                         created_at, updated_at
                     ) VALUES (?, ?, 'place', 'raw failure', 'shenzhen', '[]',
                         ?, 1, ?, ?)

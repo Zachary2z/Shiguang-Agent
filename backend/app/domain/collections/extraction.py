@@ -10,7 +10,7 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.domain.collections.entities import CollectionKind, SupportedCity
+from app.domain.collections.entities import CollectionKind
 from app.domain.time import require_aware_utc
 
 MAX_EXTRACTION_CANDIDATES = 10
@@ -36,7 +36,6 @@ class ExtractionReasonCode(StrEnum):
 
     INPUT_EMPTY = "INPUT_EMPTY"
     INPUT_UNSUPPORTED = "INPUT_UNSUPPORTED"
-    OUT_OF_SCOPE_CITY = "OUT_OF_SCOPE_CITY"
     INSUFFICIENT_INFORMATION = "INSUFFICIENT_INFORMATION"
     MODEL_INVALID_OUTPUT = "MODEL_INVALID_OUTPUT"
 
@@ -56,7 +55,7 @@ class CandidateField(StrEnum):
     """Provider-neutral fields that can be missing or uncertain."""
 
     TITLE = "title"
-    CITY = "city"
+    CITY_HINT = "city_hint"
     DISTRICT = "district"
     ADDRESS = "address"
     BUSINESS_DISTRICT = "business_district"
@@ -101,8 +100,7 @@ class Uncertainty(ExtractionDomainModel):
 
 class _CandidateBase(ExtractionDomainModel):
     title: str = Field(min_length=1, max_length=200, repr=False)
-    city: SupportedCity | None = None
-    search_scope_city: SupportedCity = SupportedCity.SHENZHEN
+    city_hint: str | None = Field(default=None, max_length=100, repr=False)
     district: str | None = Field(default=None, max_length=100, repr=False)
     address: str | None = Field(default=None, max_length=500, repr=False)
     business_district: str | None = Field(default=None, max_length=100, repr=False)
@@ -148,6 +146,13 @@ class _CandidateBase(ExtractionDomainModel):
     def validate_optional_text(cls, value: str | None) -> str | None:
         return _normalize_optional_text(value, field_name="candidate text")
 
+    @field_validator("city_hint", mode="before")
+    @classmethod
+    def normalize_city_hint(cls, value: object) -> object:
+        if value is None or not isinstance(value, str):
+            return value
+        return _normalize_required_text(value, field_name="city_hint")
+
     @field_validator("tags")
     @classmethod
     def validate_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
@@ -166,8 +171,6 @@ class _CandidateBase(ExtractionDomainModel):
 
     @model_validator(mode="after")
     def validate_common_semantics(self) -> Self:
-        if self.search_scope_city is not SupportedCity.SHENZHEN:
-            raise ValueError("the extraction search scope must be Shenzhen")
         if (self.price_amount is None) is not (self.price_currency is None):
             raise ValueError("price amount and currency must be provided together")
 
@@ -181,7 +184,7 @@ class _CandidateBase(ExtractionDomainModel):
             raise ValueError("a field cannot be both missing and uncertain")
 
         present_fields = {
-            CandidateField.CITY: self.city is not None,
+            CandidateField.CITY_HINT: self.city_hint is not None,
             CandidateField.DISTRICT: self.district is not None,
             CandidateField.ADDRESS: self.address is not None,
             CandidateField.BUSINESS_DISTRICT: self.business_district is not None,
@@ -199,7 +202,7 @@ class _CandidateBase(ExtractionDomainModel):
 
 
 class PlaceCandidate(_CandidateBase):
-    """A Shenzhen-scoped place candidate without Event-only schedule fields."""
+    """An any-city place candidate without Event-only schedule fields."""
 
     kind: Literal[CollectionKind.PLACE] = CollectionKind.PLACE
 
@@ -356,7 +359,6 @@ class ExtractionResult(ExtractionDomainModel):
             allowed = {
                 ExtractionReasonCode.INPUT_EMPTY,
                 ExtractionReasonCode.INPUT_UNSUPPORTED,
-                ExtractionReasonCode.OUT_OF_SCOPE_CITY,
             }
             if self.reason_code not in allowed:
                 raise ValueError("unsupported outcomes require a stable unsupported code")
