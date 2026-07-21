@@ -200,3 +200,29 @@ Run the focused contract suite with:
 ```bash
 python -m pytest -q tests/contract/test_m0_2d_api.py
 ```
+
+## M0-3A MapProvider Stub
+
+`app.domain.places` owns the only provider-neutral POI, coordinate, route, weather, and
+navigation DTOs. They are strict, extra-forbid, immutable Pydantic models with explicit stable
+city codes and coordinate systems. Distances use non-negative meters, durations use
+non-negative seconds, weather uses calendar dates and bounded Celsius values, and no DTO can
+retain provider field names, credentials, headers, or raw responses.
+
+`app.providers.MapProvider` owns the five asynchronous operations: `search_poi`, `get_poi`,
+`route`, `weather`, and `build_navigation_uri`. Every operation accepts a request object with an
+explicit `CityScope`; there is no global or mutable current city. `StubMapProvider` implements
+that exact interface using constructor-injected immutable mappings. It performs no network,
+environment, SDK, retry, cache, backoff, or persistence work and never consumes an ordered
+response queue.
+
+The shared `tests.fixtures.maps` module provides Shenzhen and Guangzhou fixtures for unique,
+multiple, empty, timeout, detail, route, weather, and navigation outcomes. Focused verification:
+
+```bash
+python -m pytest -q tests/unit/test_place_contracts.py tests/contract/test_map_provider_contract.py tests/integration/test_map_provider_stub.py
+```
+
+M0-3A adds no configuration, dependency, database model, or Alembic revision. The real Amap
+adapter, provider-field mapping, matching scores, candidate limits, formal POI persistence, and
+branch-selection behavior remain explicitly outside this phase.

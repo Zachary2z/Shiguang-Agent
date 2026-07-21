@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-3A MapProvider Stub |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-3-poi-matching |
 | 最近更新 | 2026-07-22 |
 | 阻塞项 | 无；M0-2D 已通过主控验收，M0-3A 前置条件满足 |
 
 ## 当前任务
 
-M0-2A 至 M0-2D 均已通过主控验收，文字输入可以离线完成结构化抽取、自动保存、修改、逻辑删除、Undo、AgentRun 查询和最小 HTTP 调用。下一阶段为 M0-3A，只允许定义内部 POI DTO、显式城市范围的 MapProvider 契约和离线 Stub/Fixture；真实高德适配、正式 POI 写入、匹配评分与分店策略仍属于后续子阶段。
+M0-3A 已在阶段分支实现内部 POI/坐标/路线/天气/导航 DTO、五类显式城市范围的唯一 MapProvider 契约，以及覆盖深圳和广州的可注入离线 Stub/Fixture，等待主控独立验收。M0-3B 仍为未开始；真实高德适配、正式 POI 写入、匹配评分与分店策略仍属于后续子阶段。
 
 ## M0 状态
 
@@ -22,7 +22,7 @@ M0-2A 至 M0-2D 均已通过主控验收，文字输入可以离线完成结构�
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
-| M0-3 地点匹配 | 未开始 | M0-3A 前置条件已满足，允许开始 MapProvider Stub |
+| M0-3 地点匹配 | 进行中 | M0-3A 待主控验收；M0-3B 未开始 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
@@ -48,7 +48,7 @@ M0-2A 至 M0-2D 均已通过主控验收，文字输入可以离线完成结构�
 
 ## 下一步
 
-从本次主控交接提交后的最新 `main` 创建 `codex/m0-3-poi-matching`，只实施 M0-3A MapProvider Stub：定义唯一内部 POI DTO、显式接收城市范围的 `search_poi`、`get_poi`、`route`、`weather` 和导航 URI 契约，并用深圳及至少一个其他城市的离线 Fixture 覆盖唯一、多结果、无结果和超时。不得调用真实高德或其他付费 API，不得提前实现 M0-3B/C/D、URL/截图、计划、SSE 或前端。
+主控从指定基线独立复核 `codex/m0-3-poi-matching` 的 M0-3A 阶段提交，重点检查五类接口的显式城市范围、严格 DTO、深圳/广州并发隔离、取消透传、安全错误、网络封锁和唯一公共归属。验收通过前不合并、不开始 M0-3B；不得调用真实高德或其他付费 API。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -512,3 +512,18 @@ M0-2A 至 M0-2D 均已通过主控验收，文字输入可以离线完成结构�
 - 验收结论：同步文字收藏闭环、范围、异常、边界、幂等、用户隔离、安全和冗余标准满足，没有未关闭的 P0/P1，M0-2D 与整个 M0-2 完成
 - 已知 P2 与风险：进程内 `IdempotencyLockRegistry` 当前会为已完成的唯一 key 保留锁对象，长时间高基数运行可能缓慢增长；它不影响数据库唯一约束和本阶段单进程正确性，不阻塞 M0 Gate，但 M1 正式身份/多进程设计或 M3 Demo 限流前必须改为引用计数清理或有界生命周期并补充并发回归。固定 Demo User、SQLite/macOS/Python 3.13.5 及单进程行为仍是 M0 临时边界，PostgreSQL、多进程和公开 Demo 的物理数据隔离需按既定后续阶段复验
 - 下一步：M0-3A 前置条件已满足；从本次交接文档提交后的最新 `main` 创建 `codex/m0-3-poi-matching`，只实现供应商无关 MapProvider 契约、内部 POI DTO 和覆盖深圳及至少一个其他城市的离线 Stub/Fixture。M0-3B 真实高德、M0-3C 匹配评分、M0-3D 分店策略及其他后续能力不得提前开始
+
+#### 2026-07-22｜M0-3A｜待主控验收
+
+- 分支与基线：`codex/m0-3-poi-matching`；开始门禁确认修改前工作区干净，`HEAD`、`main`、`origin/main` 和 merge-base 均严格等于指定基线 `5b64a58526910561494f0c6381f7671ce80c30c3`，阶段分支此前不存在，M0-2D 提交 `864ccee...` 已集成。阶段提交随本记录创建，完整 SHA 见开发窗口最终交接报告
+- 唯一契约与归属：`backend/app/domain/places/contracts.py` 是 `CityScope`、`Coordinate`、`Poi`、搜索/详情/路线/天气/导航请求响应 DTO 的唯一正式定义；`backend/app/providers/map.py` 是 `MapProvider`、`MapProviderError` 和 `MapProviderErrorCode` 的唯一正式定义。`search_poi`、`get_poi`、`route`、`weather`、`build_navigation_uri` 均接收各自 strict 请求对象，五类请求全部显式携带 `CityScope`；这是按最新阶段文档对技术方案早期简写签名的收敛，不读取或修改进程级当前城市
+- DTO 语义：全部内部 DTO 使用 strict、extra-forbid、frozen、禁止 NaN/Infinity 且隐藏校验输入的 Pydantic 契约；稳定 `city_code` 与来源 `city_hint` 分离，坐标显式携带 `gcj_02/wgs_84`，路线端点必须同坐标系，距离/耗时分别为非负米/秒，天气为 `date` 和 `[-100, 100]` 摄氏温度摘要，导航 URI 只接受无凭证的 `geo/https`。POI 提供内部 ID、名称/分店名、城市、行政区、商圈、地址、坐标、内部类型及可选电话/营业摘要，不保存 `adcode/pname/cityname`、Key、Header、签名或供应商原始响应
+- 离线 Stub 与 Fixture：唯一 `StubMapProvider` 直接实现正式接口，通过构造参数注入深拷贝后的不可变映射；无网络、环境变量、供应商 SDK、共享响应队列、全局城市、缓存、重试、退避或熔断。未配置搜索返回显式空结果，详情不存在和不可用能力使用固定安全错误，超时按请求 Fixture 决定；相同输入返回内容相等且对象独立的快照，不修改请求或调用者映射；`asyncio.CancelledError` 原样传播，测试 Hook 的内部异常不保留在公开错误上下文
+- 城市与场景：共享 `backend/tests/fixtures/maps.py` 集中提供深圳和广州数据，覆盖两城唯一结果、深圳同名连锁两结果、无结果、超时、详情成功/不存在、两城路线、天气和导航 URI。深圳/广州连续、交错及 40 个并发调用按请求局部城市返回，无串值；查询文本出现“广州”等城市词不会覆盖显式深圳范围，也没有把默认深圳搜索范围写成正式城市
+- 自动化覆盖：新增 35 项聚焦测试，覆盖 DTO 正常/未知字段/不可变、非法城市、坐标边界/非有限值、路线负数/布尔值/混合坐标系、天气日期/温度、导航 URI、混城/重复 POI、五类接口签名、唯一/多结果/无结果/超时、详情、路线/天气/导航、稳定快照、输入隔离、跨城顺序与并发、取消透传、内部异常收敛、校验/异常/repr/日志脱敏和供应商字段缺失
+- 验证环境与结果：macOS、仓库受忽略 `.venv`、Python 3.13.5；最终 `pip install -e ".[dev]"` 与 `pip check` 退出 0，Ruff 退出 0，strict mypy 对 66 个源文件无问题；聚焦 35 passed；非真实全集 512 passed/1 deselected；core 118 passed；migrations 15 passed；默认全集 512 passed/1 skipped，全部退出 0。macOS `sandbox-exec` 系统级拒绝全部网络后，非真实全集再次 512 passed/1 deselected
+- 迁移、依赖与配置：没有新增依赖、环境变量、数据库表、ORM、Repository 或 Alembic revision；`20260721_0001` 至 `0005` 未修改，仓库外 `/tmp` 数据库从空库 upgrade 后 `alembic heads` 仍仅 `20260721_0005`，`alembic check` 报告无待生成操作
+- 安全、范围与冗余：未读取或打印本机 `.env`，未设置真实测试开关，百炼、高德、其他网络、外部消息及真实/付费 API 调用均为 0。未修改 `nanobot_core`、CollectionItem、收藏状态、M0-2 API、迁移或基础设施；未实现真实高德字段映射/配置/HTTP、匹配评分/置信度/最多三个候选、正式 POI 引用、exact/any_branch、用户选择、URL/OCR、计划、SSE、前端或 Worker。MapProvider、Stub、POI/坐标/路线/天气/导航 DTO 各有单一正式归属，深圳和广州复用同一 Provider 与同一 Fixture 构造，不复制生产算法
+- 已知风险：M0-3A 只证明内部边界和确定性离线行为，尚未验证真实高德字段、坐标、POI ID、路线/天气响应、URI 格式、额度或错误映射；这些必须等待 M0-3B 的单独实现和用户明确真实调用授权。当前仅在 macOS/Python 3.13.5 复测，未在 Python 3.11/3.12、Windows 或真实供应商环境验证；当前没有已知未关闭 P0/P1
+- 主控复测重点：确认提交直接基于指定 baseline，复核五类请求均显式城市作用域、DTO 不含供应商字段、Stub 无网络/环境/队列/城市状态、深圳与广州并发隔离、取消及异常脱敏、无迁移/配置/后续阶段越界；在干净 Python 3.11+ 环境重跑 35 项聚焦、512 项非真实、118 项 core、15 项 migrations、默认全集、Alembic head/check 与网络封锁
+- 下一步：主控独立验收通过后才允许纯快进合并并另行安排 M0-3B；本开发窗口不合并 `main`、不推送、不调用真实高德、不进入 M0-3B/C/D

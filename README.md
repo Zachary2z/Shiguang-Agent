@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。M0-2A 至 M0-2D 已全部通过主控验收，文字输入到结构化收藏、可逆写入和最小 HTTP API 的离线闭环已经完成；当前允许开始 **M0-3A MapProvider Stub**。
+项目处于 **M0 技术验证**。M0-2A 至 M0-2D 已全部通过主控验收，文字输入到结构化收藏、可逆写入和最小 HTTP API 的离线闭环已经完成；**M0-3A MapProvider Stub 已实现，等待主控验收**，M0-3B 尚未开始。
 
-普通测试全部离线，不读取真实模型密钥或访问网络。当前没有任何真实调用授权；不得设置 `RUN_REAL_MODEL_TESTS=1`。M0-3A 只定义供应商无关的地图契约、内部 POI DTO 和覆盖深圳及至少一个其他城市的 Stub/Fixture；不得接入真实高德、写入正式 POI、实现匹配评分、URL/截图、计划、SSE 或前端。
+普通测试全部离线，不读取真实模型密钥或访问网络。当前没有任何真实调用授权；不得设置 `RUN_REAL_MODEL_TESTS=1`。M0-3A 只包含供应商无关的地图契约、内部 POI DTO 和覆盖深圳、广州的 Stub/Fixture；没有真实高德、正式 POI 写入、匹配评分、URL/截图、计划、SSE 或前端。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -53,6 +53,7 @@ python -m pytest -q -m "not real_provider"
 python -m pytest -q tests/core
 python -m pytest -q tests/test_migrations.py
 python -m pytest -q tests/contract/test_m0_2d_api.py
+python -m pytest -q tests/unit/test_place_contracts.py tests/contract/test_map_provider_contract.py tests/integration/test_map_provider_stub.py
 ```
 
 测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
@@ -149,6 +150,16 @@ Runner 在同一执行循环中保证：最多执行 8 次绝对 Tool Call；第
 M0 使用服务端固定 Demo User；所有 Repository 调用仍显式携带该 `user_id`。消息 ID、Source ID 和 trace ID 由 `user_id + idempotency_key` 确定性派生，数据库主键与既有收藏写唯一约束共同防止顺序或并发重试产生重复数据。同键不同 Session 或不同正文返回 `409 IDEMPOTENCY_CONFLICT`。请求校验错误为 422，不存在与跨用户资源统一为 404，真实版本冲突为 409；验证错误响应只返回字段路径和错误类型，不回显正文或 Undo Token。
 
 M0-2D 没有新增迁移或配置变量。应用、`/healthz`、OpenAPI 和 Demo Session 在没有模型配置时仍可启动；测试通过 `create_app(..., text_provider=FakeProvider(...))` 显式注入离线 Provider。
+
+### M0-3A MapProvider Stub
+
+`app.domain.places` 是坐标、POI、路线、天气和导航 DTO 的唯一归属。所有模型均为 strict、extra-forbid、不可变契约；坐标显式携带坐标系，城市使用稳定 `city_code`，距离和耗时分别使用非负米与秒，天气使用 `date` 和有界摄氏温度。DTO 不包含 `adcode`、`pname`、`cityname`、API Key、Header 或供应商原始响应。
+
+`app.providers.MapProvider` 是唯一地图能力边界。`search_poi`、`get_poi`、`route`、`weather` 和 `build_navigation_uri` 分别接收严格请求对象，每个请求都显式包含 `CityScope`；没有进程级当前城市、默认深圳状态或城市缓存。相比技术方案中的早期简写签名，M0-3A 按最新阶段要求让五类方法全部显式携带城市范围。
+
+`StubMapProvider` 通过构造参数注入不可变 Fixture 映射，不访问网络或环境变量，不使用供应商 SDK，也不按调用顺序消费共享队列。相同输入返回内容相等但对象独立的快照；深圳、广州连续、交错和并发调用互不污染。未配置的搜索返回显式空结果，详情不存在使用固定安全错误，超时由请求 Fixture 确定；取消会原样传播，不自动重试、退避、熔断或缓存。
+
+共享测试数据位于 `tests.fixtures.maps`，包含深圳和广州唯一结果、深圳连锁品牌多结果、无结果、超时、详情、路线、天气与导航 URI。它只配置正式 Stub，不复制搜索、验证或匹配算法。本阶段没有数据库模型、迁移、配置变量或真实地图测试开关。
 
 真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
 
