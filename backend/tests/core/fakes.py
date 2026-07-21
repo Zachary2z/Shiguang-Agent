@@ -52,14 +52,17 @@ def fake_response(
     *,
     content: str | None = None,
     tool_calls: Sequence[ToolCall] = (),
+    model_name: str = "fixture-model",
+    usage: TokenUsage | None = None,
+    latency_ms: int = 4,
 ) -> ModelResponse:
     """Build a complete, deterministic response for runner-focused tests."""
 
     calls = list(tool_calls)
     return ModelResponse(
-        model_name="fixture-model",
-        usage=TokenUsage(input_tokens=2, output_tokens=3),
-        latency_ms=4,
+        model_name=model_name,
+        usage=usage or TokenUsage(input_tokens=2, output_tokens=3),
+        latency_ms=latency_ms,
         finish_reason=FinishReason.TOOL_CALLS if calls else FinishReason.STOP,
         provider_request_id="fixture-request-id",
         content=content,

@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
@@ -26,6 +27,8 @@ class Database:
             echo=echo,
             pool_pre_ping=True,
         )
+        if make_url(database_url).get_backend_name() == "sqlite":
+            event.listen(self.engine.sync_engine, "connect", _enable_sqlite_foreign_keys)
         self.session_factory = async_sessionmaker(
             bind=self.engine,
             class_=AsyncSession,
@@ -59,3 +62,17 @@ class Database:
         """Dispose pooled connections deterministically."""
 
         await self.engine.dispose()
+
+
+def _enable_sqlite_foreign_keys(
+    dbapi_connection: Any,
+    connection_record: Any,
+) -> None:
+    """Enforce declared foreign keys for every application SQLite connection."""
+
+    del connection_record
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()

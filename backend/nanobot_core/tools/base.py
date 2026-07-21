@@ -24,12 +24,12 @@ class ToolResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     success: bool
-    data: JsonValue | None = None
-    message: str = Field(min_length=1)
-    sources: list[str] = Field(default_factory=list)
+    data: JsonValue | None = Field(default=None, repr=False)
+    message: str = Field(min_length=1, repr=False)
+    sources: list[str] = Field(default_factory=list, repr=False)
     error_code: ToolErrorCode | None = None
     retryable: bool = False
-    recovery: str | None = None
+    recovery: str | None = Field(default=None, repr=False)
 
     @model_validator(mode="after")
     def validate_status(self) -> Self:

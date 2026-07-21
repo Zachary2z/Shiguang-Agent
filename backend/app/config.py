@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from math import isfinite
 from pathlib import Path
 from typing import Literal
@@ -58,6 +59,12 @@ class Settings(BaseSettings):
     model_api_key: SecretStr | None = None
     model_name: str | None = None
     model_timeout_seconds: float | None = None
+    model_input_price_per_million_tokens: Decimal | None = None
+    model_output_price_per_million_tokens: Decimal | None = None
+    model_cost_currency: str = "CNY"
+    model_pricing_source: str = "configured_model_rates"
+    agent_max_tool_calls: int = 8
+    agent_timeout_seconds: float = 60
 
     @field_validator("app_timezone")
     @classmethod
@@ -93,6 +100,71 @@ class Settings(BaseSettings):
     def validate_model_timeout(cls, value: float | None) -> float | None:
         if value is not None and (not isfinite(value) or value <= 0):
             raise ValueError("MODEL_TIMEOUT_SECONDS must be a finite positive number")
+        return value
+
+    @field_validator(
+        "model_input_price_per_million_tokens",
+        "model_output_price_per_million_tokens",
+        mode="before",
+    )
+    @classmethod
+    def validate_model_price(cls, value: object) -> object:
+        if value is None:
+            return value
+        if isinstance(value, bool | float):
+            raise ValueError("model token prices must be finite non-negative decimals")
+        try:
+            decimal_value = Decimal(value)  # type: ignore[arg-type]
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError(
+                "model token prices must be finite non-negative decimals"
+            ) from exc
+        if not decimal_value.is_finite() or decimal_value < 0:
+            raise ValueError("model token prices must be finite non-negative decimals")
+        return decimal_value
+
+    @field_validator("model_cost_currency")
+    @classmethod
+    def validate_model_cost_currency(cls, value: str) -> str:
+        if len(value) != 3 or not value.isascii() or not value.isalpha() or not value.isupper():
+            raise ValueError("MODEL_COST_CURRENCY must be a three-letter uppercase code")
+        return value
+
+    @field_validator("model_pricing_source")
+    @classmethod
+    def validate_model_pricing_source(cls, value: str) -> str:
+        if not value or len(value) > 64 or not all(
+            character.isalnum() or character in "._:-" for character in value
+        ):
+            raise ValueError("MODEL_PRICING_SOURCE must be a safe label up to 64 characters")
+        return value
+
+    @field_validator("agent_max_tool_calls", mode="before")
+    @classmethod
+    def reject_boolean_agent_max_tool_calls(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("AGENT_MAX_TOOL_CALLS must be an integer from 1 to 8")
+        return value
+
+    @field_validator("agent_max_tool_calls")
+    @classmethod
+    def validate_agent_max_tool_calls(cls, value: int) -> int:
+        if value < 1 or value > 8:
+            raise ValueError("AGENT_MAX_TOOL_CALLS must be an integer from 1 to 8")
+        return value
+
+    @field_validator("agent_timeout_seconds", mode="before")
+    @classmethod
+    def reject_boolean_agent_timeout(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("AGENT_TIMEOUT_SECONDS must be a finite number in (0, 60]")
+        return value
+
+    @field_validator("agent_timeout_seconds")
+    @classmethod
+    def validate_agent_timeout(cls, value: float) -> float:
+        if not isfinite(value) or value <= 0 or value > 60:
+            raise ValueError("AGENT_TIMEOUT_SECONDS must be a finite number in (0, 60]")
         return value
 
     def require_model_provider(self) -> ModelProviderSettings:

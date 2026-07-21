@@ -81,4 +81,37 @@ RUN_REAL_MODEL_TESTS=1 python -m pytest -q -m real_provider -rs
 ```
 
 This authorizes one test case and at most two non-streaming Chat Completions requests. It must not
-be run without explicit user approval. M0-1B remains pending acceptance until that test succeeds.
+be run without explicit user approval. M0-1B has passed that separately authorized acceptance;
+M0-1C development has no authorization to repeat it.
+
+## M0-1C AgentRun and ToolRun
+
+`nanobot_core.agent.AgentRunner` remains the only execution loop. Its optional synchronous
+observer emits immutable provider-neutral events containing only model metadata, structural tool
+summaries, safe identifiers, and argument fingerprints. Events never contain prompts, model
+content, raw tool values, SDK types, database sessions, or application entities.
+
+The same Runner now enforces three generic boundaries:
+
+- at most eight executed Tool Calls per Run, counting every call in multi-call responses;
+- a cancellable total deadline of at most 60 seconds using monotonic time;
+- SHA-256 detection of the same tool with canonically equivalent JSON arguments.
+
+The ninth call and a repeated call are recorded as blocked and are not executed. Active Provider
+or Tool awaits are cancelled at the deadline. Caller cancellation is never swallowed.
+
+The application owns `AgentRunStatus` and `ToolRunStatus`, `AgentRunService`, the single
+`AgentRunRepository`, SQLAlchemy models, trace generation, aggregation, and pricing. The
+`20260721_0002` migration creates only `agent_runs` and `tool_runs` directly on
+`20260721_0001`; downgrade removes both and a second upgrade recreates them. SQLite foreign keys
+are enabled on every application connection.
+
+Model-call metadata is stored as a safe JSON summary on `agent_runs` because M0-1C allows only
+two new tables. Stable query fields remain dedicated columns. Token values reuse the core
+`TokenUsage` contract: `None` stays unknown and zero stays zero. Configured per-million input and
+output prices use `Decimal`; missing tokens, missing rates, or a changed model produce an unknown
+cost with a reason rather than zero.
+
+`AgentRunService.get_by_trace_id()` returns the complete safe summary with ToolRuns ordered by
+sequence and explicit timeout, tool-limit, repetition, and external-cancellation flags. No HTTP
+route, SSE stream, approval flow, User/Session/Message table, or M0-2 feature is included.

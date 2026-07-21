@@ -12,15 +12,18 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.config import load_settings
 from app.infrastructure.db.base import Base
+from app.infrastructure.db.models import AgentRunModel, ToolRunModel
 
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 settings = load_settings()
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 target_metadata = Base.metadata
+assert AgentRunModel.metadata is target_metadata
+assert ToolRunModel.metadata is target_metadata
 
 
 def ensure_sqlite_directory(database_url: str) -> None:

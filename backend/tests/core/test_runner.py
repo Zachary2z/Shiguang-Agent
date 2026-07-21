@@ -202,8 +202,8 @@ async def test_runner_minimum_limit_executes_exactly_one_round_then_stops() -> N
 async def test_runner_stops_at_exact_iteration_boundary_without_extra_provider_call() -> None:
     provider = FakeProvider(
         [
-            fake_response(tool_calls=[ToolCall("call-1", "missing", {})]),
-            fake_response(tool_calls=[ToolCall("call-2", "missing", {})]),
+            fake_response(tool_calls=[ToolCall("call-1", "missing", {"attempt": 1})]),
+            fake_response(tool_calls=[ToolCall("call-2", "missing", {"attempt": 2})]),
         ]
     )
 

@@ -18,7 +18,7 @@ class ToolCall:
 
     id: str
     name: str
-    arguments: dict[str, Any] | str
+    arguments: dict[str, Any] | str = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -70,8 +70,8 @@ class ModelResponse:
     latency_ms: int
     finish_reason: FinishReason
     provider_request_id: str | None = None
-    content: str | None = None
-    tool_calls: list[ToolCall] = field(default_factory=list)
+    content: str | None = field(default=None, repr=False)
+    tool_calls: list[ToolCall] = field(default_factory=list, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.model_name, str) or not self.model_name.strip():

@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。当前开发子阶段是 **M0-1B 真实百炼接入**，状态为**待验收（真实验证未执行）**：应用层已实现 OpenAI-compatible Chat Completions Provider，并复用唯一的 Nanobot Core Provider、Runner 与 Tool Registry 契约。
+项目处于 **M0 技术验证**。当前开发子阶段是 **M0-1C AgentRun 与 ToolRun**，状态为**待验收**：现有 Nanobot Core Runner 已具备供应商无关的安全观察事件、绝对工具调用上限、总时限和重复调用保护；应用层已实现 AgentRun/ToolRun 契约、SQLite 持久化、Decimal 费用估算和 trace 查询服务。
 
-普通测试全部离线，不读取真实模型密钥或访问网络。真实 Tool Calling 入口必须同时具备完整模型配置并显式设置 `RUN_REAL_MODEL_TESTS=1`；未经用户授权不得运行。当前不包含 Provider 自动重试、AgentRun/ToolRun、trace_id、收藏/地点/计划/记忆等业务功能，也没有前端；M0-1B 真实验证通过前不会进入 M0-1C。
+普通测试全部离线，不读取真实模型密钥或访问网络。M0-1B 的真实百炼 Tool Calling 已由主控验收，但 M0-1C 未获得任何新真实调用授权；不得设置 `RUN_REAL_MODEL_TESTS=1`。当前不包含 AgentRun HTTP API、SSE、审批、收藏/地点/计划/记忆等 M0-2 业务功能，也没有前端；M0-1C 经主控验收前不允许开始 M0-2。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -17,7 +17,7 @@ Shiguang_Nanobot/
 ├── backend/
 │   ├── app/                    # FastAPI、配置、日志和数据库基础设施
 │   ├── nanobot_core/           # 与 Web、数据库和业务解耦的最小 Agent 核心
-│   ├── migrations/             # Alembic 空基线迁移
+│   ├── migrations/             # Alembic 基线和 AgentRun/ToolRun 迁移
 │   ├── tests/                  # 后端与 Nanobot Core 离线自动化测试
 │   ├── alembic.ini
 │   └── pyproject.toml
@@ -51,6 +51,7 @@ python -m ruff check .
 python -m mypy app migrations nanobot_core
 python -m pytest -q -m "not real_provider"
 python -m pytest -q tests/core
+python -m pytest -q tests/test_migrations.py
 ```
 
 测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
@@ -65,7 +66,7 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前 revision 是无业务表的 M0-0B 基线。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+当前 HEAD revision 是 `20260721_0002`，直接基于空基线 `20260721_0001`，只创建 `agent_runs` 和 `tool_runs`。迁移支持升级到 HEAD、回滚到上一 revision、再次升级；应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
 
 ### 启动 API
 
@@ -100,9 +101,25 @@ curl -i -H 'X-Request-ID: local-check-001' http://127.0.0.1:8000/healthz
 | `MODEL_API_KEY` | 无 | 服务端密钥，以 `SecretStr` 脱敏，仅启用真实 Provider 时必填 |
 | `MODEL_NAME` | 无 | 供应商侧模型名称，仅启用真实 Provider 时必填 |
 | `MODEL_TIMEOUT_SECONDS` | `30`（示例） | 有限正数的单次模型请求超时，仅启用真实 Provider 时必填 |
+| `MODEL_INPUT_PRICE_PER_MILLION_TOKENS` | 无 | `MODEL_NAME` 的每百万输入 Token Decimal 单价；非负有限值 |
+| `MODEL_OUTPUT_PRICE_PER_MILLION_TOKENS` | 无 | `MODEL_NAME` 的每百万输出 Token Decimal 单价；非负有限值 |
+| `MODEL_COST_CURRENCY` | `CNY` | 三位大写币种代码 |
+| `MODEL_PRICING_SOURCE` | `configured_model_rates` | 可审计的价格配置来源标签 |
+| `AGENT_MAX_TOOL_CALLS` | `8` | 单次 Run 绝对工具调用上限，只允许 `1..8` |
+| `AGENT_TIMEOUT_SECONDS` | `60` | 单次 Run 总时限，只允许有限值 `(0, 60]` |
 | `RUN_REAL_MODEL_TESTS` | `0` | 只有精确设为 `1` 才授权真实 Provider 测试 |
 
 `.env` 会被 Git 忽略，不要把真实密钥、Token、Cookie 或账号写入代码、示例、测试输出或提交。
+
+模型价格不会硬编码。只有模型名、输入/输出 Token 和两项配置单价都完整时才使用 Decimal 估算并以 8 位小数保存；未知 Token、模型名变化或价格缺失都会保留未知费用和明确原因，不会伪造零费用。合法的零 Token 与零单价仍得到真实的零费用。
+
+### M0-1C 运行记录
+
+每次应用层执行先创建不可推测的 `trace_id`，持久化 `queued → running`，再进入唯一 Runner。最终状态为 `succeeded`、`partially_succeeded`、`failed` 或 `cancelled`；`waiting_user` 已纳入契约但本阶段不实现审批流程。
+
+Runner 在同一执行循环中保证：最多执行 8 次绝对 Tool Call；第 9 次记录为 blocked 且不执行；使用工具名与规范化 JSON 参数的 SHA-256 指纹阻止异常重复；通过可取消等待和单调时钟把总时限限制在 60 秒。Provider 或 Tool 正在等待时也会被总时限取消，外部 `CancelledError` 落库后继续向调用方传播。
+
+`AgentRunService.get_by_trace_id()` 返回模型调用元数据、Token/费用汇总、有序 ToolRun、安全错误码和结束原因。数据库只保存结构化输入/输出摘要与指纹，不保存消息、完整模型响应、Prompt、思维链、完整工具参数、异常对象、Authorization、Cookie 或密钥。本阶段故意不提供 `GET /agent-runs` 路由。
 
 真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
 
