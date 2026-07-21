@@ -11,7 +11,6 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
-    Index,
     Integer,
     Numeric,
     String,
@@ -72,7 +71,6 @@ class AgentRunModel(Base):
             "finished_at IS NULL OR started_at IS NULL OR finished_at >= started_at",
             name="ck_agent_runs_time_order",
         ),
-        Index("ix_agent_runs_trace_id", "trace_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -135,7 +133,6 @@ class ToolRunModel(Base):
             "finished_at IS NULL OR finished_at >= started_at",
             name="ck_tool_runs_time_order",
         ),
-        Index("ix_tool_runs_agent_run_id", "agent_run_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

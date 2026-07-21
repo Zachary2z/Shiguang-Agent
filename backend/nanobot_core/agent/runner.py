@@ -25,6 +25,7 @@ from nanobot_core.agent.events import (
     ToolCallFinished,
     ToolCallStarted,
 )
+from nanobot_core.agent.limits import MAX_RUN_TIMEOUT_SECONDS, MAX_TOOL_CALLS_PER_RUN
 from nanobot_core.providers import Message, ModelProvider, ModelResponse, ProviderError, ToolCall
 from nanobot_core.tools import ToolRegistry, ToolResult
 
@@ -69,22 +70,32 @@ class AgentRunner:
         tools: ToolRegistry,
         *,
         max_iterations: int = 8,
-        max_tool_calls: int = 8,
-        timeout_seconds: float = 60,
+        max_tool_calls: int = MAX_TOOL_CALLS_PER_RUN,
+        timeout_seconds: float = MAX_RUN_TIMEOUT_SECONDS,
         clock: Callable[[], float] = monotonic,
         timeout_runner: TimeoutRunner = _wait_for,
     ) -> None:
         if type(max_iterations) is not int or max_iterations < 1:
             raise ValueError("max_iterations must be greater than 0")
-        if type(max_tool_calls) is not int or max_tool_calls < 1:
-            raise ValueError("max_tool_calls must be greater than 0")
+        if (
+            type(max_tool_calls) is not int
+            or max_tool_calls < 1
+            or max_tool_calls > MAX_TOOL_CALLS_PER_RUN
+        ):
+            raise ValueError(
+                f"max_tool_calls must be an integer from 1 to {MAX_TOOL_CALLS_PER_RUN}"
+            )
         if (
             isinstance(timeout_seconds, bool)
             or not isinstance(timeout_seconds, int | float)
             or not isfinite(timeout_seconds)
             or timeout_seconds <= 0
+            or timeout_seconds > MAX_RUN_TIMEOUT_SECONDS
         ):
-            raise ValueError("timeout_seconds must be a finite positive number")
+            raise ValueError(
+                "timeout_seconds must be a finite number in "
+                f"(0, {MAX_RUN_TIMEOUT_SECONDS:g}]"
+            )
         self.provider = provider
         self.tools = tools
         self.max_iterations = max_iterations
@@ -157,7 +168,7 @@ class AgentRunner:
                     safe_call_id = self._safe_identifier(call.id, prefix="call")
                     safe_tool_name = self._safe_identifier(call.name, prefix="tool")
 
-                    if tool_sequence > self.max_tool_calls:
+                    if tool_sequence > min(self.max_tool_calls, MAX_TOOL_CALLS_PER_RUN):
                         self._observe(
                             observer,
                             ToolCallBlocked(
@@ -381,14 +392,15 @@ class AgentRunner:
         *,
         started_at: float,
     ) -> _T:
-        remaining = self.timeout_seconds - (self._clock() - started_at)
+        budget_seconds = min(self.timeout_seconds, MAX_RUN_TIMEOUT_SECONDS)
+        remaining = budget_seconds - (self._clock() - started_at)
         if remaining <= 0:
             raise _RunTimedOut
         try:
             result = await self._timeout_runner(operation(), remaining)
         except TimeoutError as exc:
             raise _RunTimedOut from exc
-        if self._clock() - started_at >= self.timeout_seconds:
+        if self._clock() - started_at >= budget_seconds:
             raise _RunTimedOut
         return cast(_T, result)
 
@@ -407,7 +419,8 @@ class AgentRunner:
     ) -> RunResult:
         duration_ms = self._elapsed_ms(started_at)
         if termination is RunTermination.TIMEOUT:
-            duration_ms = min(duration_ms, int(self.timeout_seconds * 1000))
+            budget_seconds = min(self.timeout_seconds, MAX_RUN_TIMEOUT_SECONDS)
+            duration_ms = min(duration_ms, int(budget_seconds * 1000))
         return RunResult(
             answer=answer,
             messages=conversation,

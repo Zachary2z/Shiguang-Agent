@@ -13,6 +13,7 @@ from nanobot_core.agent.events import (
     ToolCallFinished,
     ToolCallStarted,
 )
+from nanobot_core.agent.limits import MAX_RUN_TIMEOUT_SECONDS, MAX_TOOL_CALLS_PER_RUN
 from nanobot_core.agent.loop import AgentLoop
 from nanobot_core.agent.runner import AgentRunner, RunResult
 
@@ -24,6 +25,8 @@ __all__ = [
     "ModelCallCancelled",
     "ModelCallFailed",
     "ModelCallFinished",
+    "MAX_RUN_TIMEOUT_SECONDS",
+    "MAX_TOOL_CALLS_PER_RUN",
     "RunEvent",
     "RunObserver",
     "RunResult",

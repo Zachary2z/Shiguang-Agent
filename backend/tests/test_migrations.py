@@ -28,6 +28,21 @@ def table_names(database_path: Path) -> set[str]:
     return {str(row[0]) for row in rows}
 
 
+def index_definitions(
+    connection: sqlite3.Connection,
+    table_name: str,
+) -> dict[str, tuple[bool, tuple[str, ...]]]:
+    definitions: dict[str, tuple[bool, tuple[str, ...]]] = {}
+    for row in connection.execute(f'PRAGMA index_list("{table_name}")'):
+        index_name = str(row[1])
+        columns = tuple(
+            str(column[2])
+            for column in connection.execute(f'PRAGMA index_info("{index_name}")')
+        )
+        definitions[index_name] = (bool(row[2]), columns)
+    return definitions
+
+
 def _alembic_config(monkeypatch: pytest.MonkeyPatch, database_path: Path) -> Config:
     monkeypatch.setenv("APP_ENV", "test")
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{database_path}")
@@ -73,14 +88,8 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
         tool_columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_info(tool_runs)")
         }
-        agent_indexes = {
-            str(row[1]): bool(row[2])
-            for row in connection.execute("PRAGMA index_list(agent_runs)")
-        }
-        tool_indexes = {
-            str(row[1]): bool(row[2])
-            for row in connection.execute("PRAGMA index_list(tool_runs)")
-        }
+        agent_indexes = index_definitions(connection, "agent_runs")
+        tool_indexes = index_definitions(connection, "tool_runs")
         foreign_keys = connection.execute("PRAGMA foreign_key_list(tool_runs)").fetchall()
         table_sql = " ".join(
             str(row[0])
@@ -130,14 +139,20 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
         "finished_at",
         "created_at",
     } == tool_columns
-    assert agent_indexes["ix_agent_runs_trace_id"] is False
-    assert any(unique for name, unique in agent_indexes.items() if name != "ix_agent_runs_trace_id")
-    assert tool_indexes["ix_tool_runs_agent_run_id"] is False
+    assert "ix_agent_runs_trace_id" not in agent_indexes
+    assert "ix_tool_runs_agent_run_id" not in tool_indexes
     assert any(
-        unique
-        for name, unique in tool_indexes.items()
-        if name != "ix_tool_runs_agent_run_id"
+        unique and columns == ("trace_id",)
+        for unique, columns in agent_indexes.values()
     )
+    assert any(
+        unique and columns == ("agent_run_id", "sequence")
+        for unique, columns in tool_indexes.values()
+    )
+    assert all(unique for unique, _columns in agent_indexes.values())
+    assert all(unique for unique, _columns in tool_indexes.values())
+    assert "uq_agent_runs_trace_id" in table_sql
+    assert "uq_tool_runs_run_sequence" in table_sql
     assert len(foreign_keys) == 1
     assert foreign_keys[0][2] == "agent_runs"
     assert foreign_keys[0][3:5] == ("agent_run_id", "id")
@@ -171,6 +186,14 @@ def test_migration_enforces_unique_foreign_key_and_check_constraints(
         connection.execute("PRAGMA foreign_keys=ON")
         _insert_agent_run(connection)
         connection.commit()
+
+        run_id, trace_id = connection.execute(
+            "SELECT id, trace_id FROM agent_runs"
+        ).fetchone()
+        assert connection.execute(
+            "SELECT id FROM agent_runs WHERE trace_id = ?",
+            (trace_id,),
+        ).fetchone() == (run_id,)
 
         with pytest.raises(sqlite3.IntegrityError):
             connection.execute(
@@ -212,7 +235,6 @@ def test_migration_enforces_unique_foreign_key_and_check_constraints(
             )
         connection.rollback()
 
-        run_id = connection.execute("SELECT id FROM agent_runs").fetchone()[0]
         tool_values = (
             "tlr_one",
             run_id,
@@ -249,3 +271,38 @@ def test_migration_enforces_unique_foreign_key_and_check_constraints(
                 """,
                 ("tlr_two", *tool_values[1:]),
             )
+        connection.rollback()
+
+        connection.execute(
+            """
+            INSERT INTO tool_runs (
+                id, agent_run_id, sequence, tool_call_id, tool_name,
+                arguments_fingerprint, input_summary, status, latency_ms,
+                started_at, finished_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "tlr_two",
+                run_id,
+                2,
+                "call-2",
+                "echo",
+                "c" * 64,
+                "{}",
+                "succeeded",
+                0,
+                "2026-07-21T00:00:00+00:00",
+                "2026-07-21T00:00:00+00:00",
+                "2026-07-21T00:00:00+00:00",
+            ),
+        )
+        connection.commit()
+
+        assert connection.execute(
+            "SELECT id FROM tool_runs WHERE agent_run_id = ? AND sequence = ?",
+            (run_id, 2),
+        ).fetchone() == ("tlr_two",)
+        assert connection.execute(
+            "SELECT sequence FROM tool_runs WHERE agent_run_id = ? ORDER BY sequence",
+            (run_id,),
+        ).fetchall() == [(1,), (2,)]

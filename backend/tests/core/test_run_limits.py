@@ -9,6 +9,8 @@ from typing import Any
 import pytest
 
 from nanobot_core.agent import (
+    MAX_RUN_TIMEOUT_SECONDS,
+    MAX_TOOL_CALLS_PER_RUN,
     AgentRunner,
     ModelCallFinished,
     RunEvent,
@@ -19,6 +21,87 @@ from nanobot_core.agent import (
 from nanobot_core.providers import Message, ModelProvider, ModelResponse, ToolCall, ToolDefinition
 from nanobot_core.tools import Tool, ToolInput, ToolRegistry, ToolResult
 from tests.core.fakes import EchoTool, FakeProvider, fake_response
+
+
+@pytest.mark.parametrize("max_tool_calls", [False, True, 0, -1, 9, 8.0])
+def test_runner_rejects_tool_call_limits_outside_integer_hard_bounds(
+    max_tool_calls: object,
+) -> None:
+    with pytest.raises(ValueError, match="integer from 1 to 8"):
+        AgentRunner(
+            FakeProvider([]),
+            ToolRegistry(),
+            max_tool_calls=max_tool_calls,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("max_tool_calls", [1, MAX_TOOL_CALLS_PER_RUN])
+def test_runner_accepts_tool_call_limit_boundaries(max_tool_calls: int) -> None:
+    runner = AgentRunner(
+        FakeProvider([]),
+        ToolRegistry(),
+        max_tool_calls=max_tool_calls,
+    )
+
+    assert runner.max_tool_calls == max_tool_calls
+
+
+@pytest.mark.parametrize(
+    "timeout_seconds",
+    [
+        False,
+        True,
+        0,
+        -1,
+        60.001,
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+    ],
+)
+def test_runner_rejects_timeouts_outside_finite_hard_bounds(
+    timeout_seconds: object,
+) -> None:
+    with pytest.raises(ValueError, match=r"finite number in \(0, 60\]"):
+        AgentRunner(
+            FakeProvider([]),
+            ToolRegistry(),
+            timeout_seconds=timeout_seconds,  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("timeout_seconds", [0.001, MAX_RUN_TIMEOUT_SECONDS])
+def test_runner_accepts_timeout_boundaries(timeout_seconds: float) -> None:
+    runner = AgentRunner(
+        FakeProvider([]),
+        ToolRegistry(),
+        timeout_seconds=timeout_seconds,
+    )
+
+    assert runner.timeout_seconds == timeout_seconds
+
+
+def test_direct_construction_cannot_raise_tool_budget_to_nine() -> None:
+    executed: list[str] = []
+    calls = [ToolCall(f"call-{index}", "echo", {"text": str(index)}) for index in range(9)]
+    provider = FakeProvider([fake_response(tool_calls=calls)])
+    registry = ToolRegistry()
+    registry.register(EchoTool(executed))
+
+    with pytest.raises(ValueError, match="integer from 1 to 8"):
+        AgentRunner(provider, registry, max_tool_calls=9)
+
+    assert provider.calls == []
+    assert executed == []
+
+
+def test_direct_construction_cannot_raise_timeout_budget_above_sixty_seconds() -> None:
+    provider = FakeProvider([fake_response(content="late success")])
+
+    with pytest.raises(ValueError, match=r"finite number in \(0, 60\]"):
+        AgentRunner(provider, ToolRegistry(), timeout_seconds=60.001)
+
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio

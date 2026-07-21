@@ -16,6 +16,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
+from nanobot_core.agent.limits import MAX_RUN_TIMEOUT_SECONDS, MAX_TOOL_CALLS_PER_RUN
+
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = REPOSITORY_ROOT / ".env"
 
@@ -63,8 +65,8 @@ class Settings(BaseSettings):
     model_output_price_per_million_tokens: Decimal | None = None
     model_cost_currency: str = "CNY"
     model_pricing_source: str = "configured_model_rates"
-    agent_max_tool_calls: int = 8
-    agent_timeout_seconds: float = 60
+    agent_max_tool_calls: int = MAX_TOOL_CALLS_PER_RUN
+    agent_timeout_seconds: float = MAX_RUN_TIMEOUT_SECONDS
 
     @field_validator("app_timezone")
     @classmethod
@@ -143,28 +145,40 @@ class Settings(BaseSettings):
     @classmethod
     def reject_boolean_agent_max_tool_calls(cls, value: object) -> object:
         if isinstance(value, bool):
-            raise ValueError("AGENT_MAX_TOOL_CALLS must be an integer from 1 to 8")
+            raise ValueError(
+                "AGENT_MAX_TOOL_CALLS must be an integer from 1 to "
+                f"{MAX_TOOL_CALLS_PER_RUN}"
+            )
         return value
 
     @field_validator("agent_max_tool_calls")
     @classmethod
     def validate_agent_max_tool_calls(cls, value: int) -> int:
-        if value < 1 or value > 8:
-            raise ValueError("AGENT_MAX_TOOL_CALLS must be an integer from 1 to 8")
+        if value < 1 or value > MAX_TOOL_CALLS_PER_RUN:
+            raise ValueError(
+                "AGENT_MAX_TOOL_CALLS must be an integer from 1 to "
+                f"{MAX_TOOL_CALLS_PER_RUN}"
+            )
         return value
 
     @field_validator("agent_timeout_seconds", mode="before")
     @classmethod
     def reject_boolean_agent_timeout(cls, value: object) -> object:
         if isinstance(value, bool):
-            raise ValueError("AGENT_TIMEOUT_SECONDS must be a finite number in (0, 60]")
+            raise ValueError(
+                "AGENT_TIMEOUT_SECONDS must be a finite number in "
+                f"(0, {MAX_RUN_TIMEOUT_SECONDS:g}]"
+            )
         return value
 
     @field_validator("agent_timeout_seconds")
     @classmethod
     def validate_agent_timeout(cls, value: float) -> float:
-        if not isfinite(value) or value <= 0 or value > 60:
-            raise ValueError("AGENT_TIMEOUT_SECONDS must be a finite number in (0, 60]")
+        if not isfinite(value) or value <= 0 or value > MAX_RUN_TIMEOUT_SECONDS:
+            raise ValueError(
+                "AGENT_TIMEOUT_SECONDS must be a finite number in "
+                f"(0, {MAX_RUN_TIMEOUT_SECONDS:g}]"
+            )
         return value
 
     def require_model_provider(self) -> ModelProviderSettings:

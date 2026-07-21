@@ -32,7 +32,7 @@ def _in_values(values: tuple[str, ...]) -> str:
 
 
 def upgrade() -> None:
-    """Create only the two M0-1C run tracking tables and their indexes."""
+    """Create only the two M0-1C run tracking tables and constraints."""
 
     op.create_table(
         "agent_runs",
@@ -108,8 +108,6 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id", name="pk_agent_runs"),
         sa.UniqueConstraint("trace_id", name="uq_agent_runs_trace_id"),
     )
-    op.create_index("ix_agent_runs_trace_id", "agent_runs", ["trace_id"], unique=False)
-
     op.create_table(
         "tool_runs",
         sa.Column("id", sa.String(length=36), nullable=False),
@@ -164,18 +162,10 @@ def upgrade() -> None:
             name="uq_tool_runs_run_sequence",
         ),
     )
-    op.create_index(
-        "ix_tool_runs_agent_run_id",
-        "tool_runs",
-        ["agent_run_id"],
-        unique=False,
-    )
 
 
 def downgrade() -> None:
-    """Remove all M0-1C tables and indexes."""
+    """Remove all M0-1C tables."""
 
-    op.drop_index("ix_tool_runs_agent_run_id", table_name="tool_runs")
     op.drop_table("tool_runs")
-    op.drop_index("ix_agent_runs_trace_id", table_name="agent_runs")
     op.drop_table("agent_runs")

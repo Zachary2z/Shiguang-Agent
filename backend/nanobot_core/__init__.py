@@ -1,6 +1,8 @@
 """Minimal, business-neutral Nanobot agent core used by Shiguang."""
 
 from nanobot_core.agent import (
+    MAX_RUN_TIMEOUT_SECONDS,
+    MAX_TOOL_CALLS_PER_RUN,
     AgentContext,
     AgentLoop,
     AgentRunner,
@@ -35,6 +37,8 @@ __all__ = [
     "AgentRunner",
     "ContextBuilder",
     "FinishReason",
+    "MAX_RUN_TIMEOUT_SECONDS",
+    "MAX_TOOL_CALLS_PER_RUN",
     "Message",
     "ModelCallCancelled",
     "ModelCallFailed",
