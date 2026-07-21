@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Callable
 from copy import deepcopy
@@ -45,6 +46,7 @@ _FINISH_REASONS = {
     "length": FinishReason.LENGTH,
     "content_filter": FinishReason.CONTENT_FILTER,
 }
+_OPENAI_SDK_LOGGER = logging.getLogger("openai._base_client")
 
 
 class OpenAICompatibleProvider(ModelProvider):
@@ -57,6 +59,8 @@ class OpenAICompatibleProvider(ModelProvider):
         http_client: httpx.AsyncClient | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        # The SDK's DEBUG request-options entry includes messages when extra_body is set.
+        _OPENAI_SDK_LOGGER.setLevel(max(_OPENAI_SDK_LOGGER.level, logging.INFO))
         self._client = AsyncOpenAI(
             api_key=config.api_key.get_secret_value(),
             base_url=config.api_base,
@@ -105,6 +109,7 @@ class OpenAICompatibleProvider(ModelProvider):
                 completion = await self._client.chat.completions.create(
                     model=self._model,
                     messages=request_messages,
+                    extra_body={"enable_thinking": False},
                     stream=False,
                 )
             else:
@@ -112,6 +117,7 @@ class OpenAICompatibleProvider(ModelProvider):
                     model=self._model,
                     messages=request_messages,
                     tools=request_tools,
+                    extra_body={"enable_thinking": False},
                     stream=False,
                 )
         except asyncio.CancelledError:

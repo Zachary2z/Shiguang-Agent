@@ -162,6 +162,9 @@ async def test_maps_text_response_and_all_metadata(
     assert requests[0].url.path == "/compatible-mode/v1/chat/completions"
     request_body = json.loads(requests[0].content)
     assert request_body["model"] == FAKE_MODEL
+    assert request_body["messages"] == [{"role": "user", "content": "hello"}]
+    assert "tools" not in request_body
+    assert request_body["enable_thinking"] is False
     assert request_body["stream"] is False
 
 
@@ -171,7 +174,7 @@ async def test_maps_multiple_function_tool_calls_in_order_and_preserves_json(
 ) -> None:
     first_arguments = '{ "text": "first" }'
     second_arguments = '{"text":"second"}'
-    provider, _ = provider_factory.build(
+    provider, requests = provider_factory.build(
         [
             _response(
                 _completion(
@@ -194,7 +197,23 @@ async def test_maps_multiple_function_tool_calls_in_order_and_preserves_json(
         ]
     )
 
-    result = await provider.chat(messages=[], tools=[])
+    result = await provider.chat(
+        messages=[{"role": "user", "content": "Use echo."}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "echo",
+                    "description": "Echo input.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                },
+            }
+        ],
+    )
 
     assert [call.id for call in result.tool_calls] == ["call-1", "call-2"]
     assert [call.name for call in result.tool_calls] == ["echo", "echo"]
@@ -203,6 +222,28 @@ async def test_maps_multiple_function_tool_calls_in_order_and_preserves_json(
         second_arguments,
     ]
     assert result.finish_reason is FinishReason.TOOL_CALLS
+    assert len(requests) == 1
+    request_body = json.loads(requests[0].content)
+    assert request_body["model"] == FAKE_MODEL
+    assert request_body["messages"] == [
+        {"role": "user", "content": "Use echo."}
+    ]
+    assert request_body["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "echo",
+                "description": "Echo input.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"],
+                },
+            },
+        }
+    ]
+    assert request_body["enable_thinking"] is False
+    assert request_body["stream"] is False
 
 
 @pytest.mark.parametrize(
@@ -484,12 +525,16 @@ async def test_repeated_calls_do_not_accumulate_request_state(
     assert first.content == "first"
     assert second.content == "second"
     assert len(requests) == 2
-    assert json.loads(requests[0].content)["messages"] == [
+    first_request = json.loads(requests[0].content)
+    second_request = json.loads(requests[1].content)
+    assert first_request["messages"] == [
         {"role": "user", "content": "one"}
     ]
-    assert json.loads(requests[1].content)["messages"] == [
+    assert second_request["messages"] == [
         {"role": "user", "content": "two"}
     ]
+    assert first_request["enable_thinking"] is False
+    assert second_request["enable_thinking"] is False
 
 
 @pytest.mark.asyncio
@@ -569,7 +614,9 @@ async def test_existing_runner_and_registry_complete_real_adapter_tool_cycle_off
     assert result.answer == "The deterministic tool completed."
     assert result.tools_used == ["echo"]
     assert len(requests) == 2
-    second_messages = json.loads(requests[1].content)["messages"]
+    request_bodies = [json.loads(request.content) for request in requests]
+    assert [body["enable_thinking"] for body in request_bodies] == [False, False]
+    second_messages = request_bodies[1]["messages"]
     assert second_messages[-1]["role"] == "tool"
     assert json.loads(second_messages[-1]["content"])["data"] == {
         "text": "deterministic"
