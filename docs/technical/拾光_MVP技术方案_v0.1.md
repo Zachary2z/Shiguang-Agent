@@ -60,7 +60,7 @@
 | 实时进度 | SSE | 单向状态推送足够，暂不需要 WebSocket |
 | 后台任务 | PostgreSQL Job + Worker + APScheduler | 持久、可恢复，预留队列接口 |
 | 外部 Place | 高德 Web 服务 API | 深圳 POI、路线和天气使用同一供应商 |
-| 城市范围 | MVP 固定深圳；后续可显式切换一个已开放城市 | 先完成单城市闭环，避免把城市切换误做成跨城旅行 |
+| 城市范围 | 收藏不限城市；MVP 计划固定深圳，后续可显式切换一个已开放计划城市 | 收藏与规划解耦，既保留未来兴趣，也避免把城市切换误做成跨城旅行 |
 | 模型 | 阿里云百炼的 OpenAI 兼容接口 | 复用现有 Provider 边界，不写死模型细节 |
 | 文件 | 本地私有目录，公开部署后使用 COS 私有桶 | 本地开发简单，生产环境保持私有 |
 | 部署 | Docker Compose + Caddy | 统一 Mac、Windows/WSL2 与云服务器环境 |
@@ -110,18 +110,20 @@ flowchart LR
 - 只读工具可以自动执行，重要写操作由应用层检查授权；
 - 原始模型思维过程不写入用户界面，只记录可解释的工具和规则结果。
 
-### 4.3 城市扩展预留原则
+### 4.3 收藏城市与计划城市边界
 
-当前实现和全部 M0/M1 验收仍以深圳为唯一启用城市，不为未来功能提前增加城市切换 API、城市表或第二套业务服务。后续升级应在独立阶段引入城市上下文，并保持现有分层不变：
+当前基础能力允许收藏不同城市的地点与活动，但 M0/M1 的计划、外部补充和 Demo 仍只启用深圳。收藏城市不是请求准入条件，抽取层不得维护“非深圳城市拒绝”正则或地标白名单。
 
-- 不使用进程级可变的 `CURRENT_CITY`；城市范围必须属于用户、会话或单次用例上下文，避免并发用户互相影响；
-- 领域和持久化使用稳定的内部 `city_code`，展示名、高德 `adcode`、时区和行政区别名由唯一 `CityCatalog` 管理；
-- 抽取、地图查询、收藏检索和计划生成显式接收当前城市范围，不从 Prompt、环境变量或地点标题隐式改变城市；
-- `User.default_city_code`、`Session.active_city_code`、收藏实际城市和 `Plan.city_code` 语义分离；首个升级版本的一份计划仍只能有一个城市；
-- MapProvider 继续使用现有带 `city` 参数的供应商无关接口，供应商城市编码只在 Provider 内映射；
-- 城市切换不要求修改 `AgentRunner`、`ToolRegistry`、`ModelProvider` 或 Web/微信共享应用层；跨城多日规划另行设计。
+- `city_hint` 是来自原文的可选城市线索，可为空、可由用户修改，不能单独作为正式规划条件；
+- 正式城市由后续统一地点引用/POI 匹配或用户确认产生稳定 `city_code`，供应商 `adcode` 只在 MapProvider 适配层映射；
+- Place/Event 标题、品牌名中的城市词不能自动确认或拒绝城市；缺少城市时进入“城市待确认”，不伪造深圳；
+- 收藏库可以按正式城市分类和筛选；只有线索而未确认的条目统一进入“城市待确认”，不复制第二套收藏模型；
+- `User` 的城市表示默认计划上下文，`city_hint`、收藏正式城市和 `Plan.city_code` 语义分离；
+- 当前计划查询必须显式使用 `PlanConstraints.city_code=shenzhen` 并只选择同城、位置已确认且状态有效的收藏；供应商 `adcode` 不进入领域契约；
+- 不使用进程级可变 `CURRENT_CITY`，也不修改 `AgentRunner`、`ToolRegistry`、`ModelProvider` 或 Web/微信共享应用层；
+- 一条输入可产生不同城市的多个候选；跨城多日计划请求仍属于不支持的规划意图。
 
-在城市升级阶段开始前，应通过 ADR 确认启用城市、城市目录存储方式、会话切换规则、历史数据迁移和高德覆盖范围。当前阶段只保留上述边界，不实现兼容层或未来空接口。
+后续 U1 只负责开放其他计划城市和 Session 城市切换，不再承担“允许保存其他城市收藏”。启动 U1 前仍需 ADR 确认唯一 `CityCatalog`、启用城市、会话规则、历史数据和高德覆盖；当前不为此创建第二套 Provider、Repository 或业务流程。
 
 ## 5. 建议项目结构
 
@@ -407,15 +409,17 @@ pending → approved / rejected / expired / revoked
 
 | 表 | 核心字段 |
 |---|---|
-| `users` | id、mode、city、timezone、created_at |
+| `users` | id、mode、default_plan_city、timezone、created_at |
 | `sessions` | id、user_id、channel、status、summary、updated_at |
 | `messages` | id、session_id、role、content_type、content、trace_id、created_at |
 | `sources` | id、user_id、type、url、file_key、platform、parse_status、metadata_json |
-| `collection_items` | id、user_id、kind、title、place_scope（exact / any_branch）、district、address、price、tags、status、version |
+| `collection_items` | id、user_id、kind、title、city_hint（nullable）、place_scope（exact / any_branch）、district、address、price、tags、status、version |
 | `collection_sources` | collection_item_id、source_id、created_at |
-| `poi_references` | id、collection_item_id、provider、poi_id、coordinates、match_status、confidence、confirmed_by、queried_at |
+| `poi_references` | id、collection_item_id、provider、poi_id、city_code、coordinates、match_status、confidence、confirmed_by、queried_at |
 | `agent_runs` | id、trace_id、user_id、session_id、intent、workflow、status、usage_json、error_code |
 | `tool_runs` | id、agent_run_id、tool_name、input_summary、status、output_summary、latency_ms、error_code |
+
+M0-2 城市契约调整使用新的 `20260721_0004` 向前迁移：将用户字段明确为 `default_plan_city`，将 `collection_items.city` 调整为 nullable `city_hint`，移除收藏表“只能是 shenzhen”的检查约束，但保留用户默认计划城市的当前深圳约束。迁移既有 `shenzhen` 值时只把它视为历史线索，不提升为正式城市；downgrade 遇到旧结构无法表达的新城市数据时必须明确拒绝，不能静默改成深圳或删除数据。已经集成的 `0003` 不得改写。
 
 ### 10.2 M1 增加的表
 
@@ -446,12 +450,20 @@ pending → approved / rejected / expired / revoked
   → 保存 Source
   → 获取正文或图片
   → 提取 Place/Event 候选
-  → 校验深圳与内容类型
-  → Place 调用高德候选搜索
+  → 校验内容类型并保留可选 city_hint
+  → Place 按显式城市线索或默认搜索上下文调用高德候选搜索
   → 计算匹配证据
   → active / pending_selection / pending_details / failed
   → 保存结果并返回可逆操作
 ```
+
+城市字段规则：
+
+- 抽取候选只保存 `city_hint: str | null`，不再使用只包含深圳的枚举限制候选，也不返回 `OUT_OF_SCOPE_CITY`；
+- 明确广州、上海等单个地点或活动是合法收藏候选；`深圳到广州三日游` 等规划请求仍按不支持意图区分；
+- `search_scope_city` 不持久化在候选或 CollectionItem 中，地点搜索范围由应用用例根据显式 `city_hint`、用户补充或当前默认计划城市传给唯一 MapProvider；
+- `collection_items.city_hint` 只供展示、补充和初步城市分类，不参与正式计划硬过滤；正式 `city_code` 只从统一地点引用或用户确认读取；
+- 在 M0-3 尚未建立正式地点引用前，其他城市收藏和城市不明确收藏可以保存，但不得错误标记为深圳或进入正式计划。
 
 ### 11.2 匹配证据
 
@@ -526,7 +538,7 @@ PlaceTarget
 
 ### 12.2 确定性处理顺序
 
-1. SQL 查询深圳、状态有效、时间有效的收藏；
+1. SQL 查询正式城市与 `PlanConstraints.city_code` 一致、状态有效、位置和时间有效的收藏；当前值固定为 `shenzhen`；
 2. 应用明确包含项、排除项和预算上限；
 3. 核验 POI、天气和路线；
 4. 判断现有收藏是否满足本次意图；
@@ -566,7 +578,7 @@ score = 兴趣匹配 + 区域匹配 + 时间适配 + 天气适配
 | 工具 | 类型 | 说明 | 授权 |
 |---|---|---|---|
 | `extract_content` | 只读 | 从文字、网页或截图提取候选结构 | 不需要 |
-| `search_amap_poi` | 外部只读 | 搜索深圳 POI 候选 | 不需要 |
+| `search_amap_poi` | 外部只读 | 按显式城市线索或默认深圳范围搜索 POI 候选 | 不需要 |
 | `get_amap_poi` | 外部只读 | 获取地点详情 | 不需要 |
 | `save_collection_item` | 可逆写入 | 自动保存结构化收藏 | 允许，必须提供撤销 |
 | `list_collection_items` | 只读 | 按结构化条件检索收藏 | 不需要 |
@@ -634,7 +646,7 @@ score = 兴趣匹配 + 区域匹配 + 时间适配 + 天气适配
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| GET | `/collections` | 搜索、筛选和分页 |
+| GET | `/collections` | 搜索、城市/城市待确认筛选和分页 |
 | GET | `/collections/{item_id}` | 查看收藏及来源 |
 | PATCH | `/collections/{item_id}` | 修改允许编辑的字段 |
 | DELETE | `/collections/{item_id}` | 逻辑删除 |
@@ -846,8 +858,8 @@ DEMO_MAX_RUNS_PER_DAY=5
 
 ### M0-2：文字收藏
 
-- 建立 Source、CollectionItem 和状态机；
-- 实现文字抽取、保存、修改和撤销；
+- 建立 Source、支持 nullable `city_hint` 的 CollectionItem 和状态机；
+- 实现不限城市的文字抽取、保存、修改和撤销；
 - 增加幂等与用户隔离测试。
 
 交付物：纯文字可以完成首次收藏闭环。
@@ -855,6 +867,7 @@ DEMO_MAX_RUNS_PER_DAY=5
 ### M0-3：地点匹配
 
 - 实现 MapProvider 和高德适配；
+- 地点搜索显式接收城市范围，正式城市写入唯一 PoiReference；其他城市不得复制 Provider 或匹配流程；
 - 实现唯一匹配、候选列表、待补充与选择确认；
 - 保存 POI ID、坐标系、匹配证据和核验时间。
 
@@ -883,7 +896,7 @@ M0 达标后，才开始正式 Next.js 页面和 PostgreSQL：
 
 1. Agent 首页与运行进度；
 2. 收藏结果、修改、撤销和地点消歧；
-3. 收藏库搜索与筛选；
+3. 收藏库搜索、城市分类（含城市待确认）与筛选；
 4. 计划生成、调整、确认；
 5. 日历、路线和手动反馈；
 6. 记忆中心、公开 Demo 和作品集说明。
@@ -902,7 +915,7 @@ M0 达标后，才开始正式 Next.js 页面和 PostgreSQL：
 | 6 | 实现文字 `extract_content` | 返回通过 Schema 校验的候选 |
 | 7 | 实现收藏 Repository 与状态机 | 自动保存、幂等和撤销通过 |
 | 8 | 实现高德 MapProvider Stub | 唯一、多候选、无结果均可测 |
-| 9 | 接入真实高德开发环境 | 深圳测试地点返回标准 DTO |
+| 9 | 接入真实高德开发环境 | 深圳及一个其他城市测试地点按同一 DTO 返回；真实调用需单独授权 |
 | 10 | 完成首条端到端技术验证 | 文字店名 → 消歧/收藏 → 运行记录 |
 
 ## 23. 与 UX 原型的映射
@@ -911,7 +924,7 @@ M0 达标后，才开始正式 Next.js 页面和 PostgreSQL：
 |---|---|
 | M01 Agent 首页 | Session、Message、AgentRun、SSE |
 | M02 对话与收藏结果 | Source、内容抽取、Collection 状态、Undo |
-| M03 收藏库 | 结构化检索、分页、筛选、状态管理 |
+| M03 收藏库 | 结构化检索、分页、城市分类/城市待确认筛选、状态管理 |
 | M04 收藏详情与消歧 | PoiReference、候选、选择确认、字段修改 |
 | M05 计划草稿 | PlanConstraints、检索、规划、路线、预算、外部来源 |
 | M06 已确认计划 | Plan 版本、Approval、日历、路线、Feedback |
