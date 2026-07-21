@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-2B 结构化抽取 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-2-text-collection |
 | 最近更新 | 2026-07-21 |
-| 阻塞项 | 无；M0-2A 已完成主控验收，M0-2B 允许开始 |
+| 阻塞项 | 无；M0-2B 已完成离线开发，等待主控验收；M0-2C 暂不允许开始 |
 
 ## 当前任务
 
-M0-2A 已通过主控验收并纯快进集成到 `main`：User、Session、Message、Source、CollectionItem、CollectionSource、用户隔离和单一 `20260721_0003` 迁移均已确认；recognizing/failed 只属于识别流程，失败不会创建或残留 CollectionItem。M0-2B 结构化抽取现在允许开始，但尚未开发；真实或付费 API 未获本阶段授权。
+M0-2A 保持已完成。M0-2B 已在指定基线 `76cbc96f9aa802496113f6e4216280691edb74ce` 上完成纯文字 Place/Event 候选契约、深圳范围与不支持内容判定、单一应用层抽取服务及最多一次结构修复，全部使用 Fake/Stub 离线验证；本阶段未读取 `.env`、未运行 `real_provider`、未创建 CollectionItem 或任何持久化写入。当前等待主控验收，M0-2C 自动保存与可逆操作仍未开始且暂不允许开始。
 
 ## M0 状态
 
@@ -21,7 +21,7 @@ M0-2A 已通过主控验收并纯快进集成到 `main`：User、Session、Messa
 | M0-0B 后端工程骨架 | 已完成 | 主控验收通过，阶段提交 `6cd5646` 已集成到 `main` |
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
-| M0-2 文字收藏 | 进行中 | M0-2A 已完成主控验收；M0-2B 尚未开始且允许开始 |
+| M0-2 文字收藏 | 进行中 | M0-2A 已完成主控验收；M0-2B 待验收；M0-2C 未开始且暂不允许开始 |
 | M0-3 地点匹配 | 未开始 | 依赖 M0-2 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
@@ -45,7 +45,7 @@ M0-2A 已通过主控验收并纯快进集成到 `main`：User、Session、Messa
 
 ## 下一步
 
-从本交接文档提交后的最新 `main` 继续使用 `codex/m0-2-text-collection` 开发 M0-2B，只实现 Place/Event 候选 Schema、纯文字结构化抽取、深圳范围校验、不支持原因和最多一次结构修复；不得提前实现 M0-2C 自动保存/Undo 或 M0-2D API。默认使用 Fake/Stub，未经当前任务明确授权不得调用真实模型或付费 API。
+主控窗口在 M0-2B 阶段提交上独立复核候选 Schema、深圳与不支持边界、Provider 调用上限、安全结果、封网测试、范围和公共实现唯一性；验收通过前不得开始 M0-2C，不合并 `main`，不推送，不执行真实或付费 API 调用。
 
 ## 阶段交接记录
 
@@ -352,3 +352,20 @@ M0-2A 已通过主控验收并纯快进集成到 `main`：User、Session、Messa
 - 真实 API：未读取或打印 `.env`，未运行 `real_provider`，真实模型、高德、外部消息及付费 API 调用均为 0；此前阶段的真实调用授权不延续
 - 验收结论：所有已发现 P1/P2 均已关闭，没有未关闭的 P0/P1；M0-2A 完成标准满足，M0-2B 允许开始
 - 下一步：在本交接文档提交后的最新 `main` 上继续使用 `codex/m0-2-text-collection` 开发 M0-2B；只实现结构化抽取，不提前进入自动保存、Undo 或 API
+
+#### 2026-07-21｜M0-2B｜待验收
+
+- 分支与指定基线：`codex/m0-2-text-collection`；开始时 `main` HEAD 与任务指定基线均为 `76cbc96f9aa802496113f6e4216280691edb74ce`，阶段分支以 `git merge --ff-only main` 快进到同一提交且无额外代码变化；门禁时 `main` 比 `origin/main` 领先 5 个既有未推送提交，只记录、未推送；任务期间本地远端跟踪引用由外部更新到同一基线，本窗口未执行 fetch、push 或发布；本记录随单一阶段提交创建，完整 SHA 见开发窗口最终交接报告
+- 候选契约：新增供应商无关、strict、`extra="forbid"`、不可变的 `PlaceCandidate`、`EventCandidate`、判别联合 `ExtractionCandidate` 与 `ExtractionResult`；继续复用 M0-2A 唯一 `CollectionKind`、`SupportedCity` 和 `event_start_at/event_end_at` 语义，不新增第二套收藏状态、城市、金额或时间枚举；标题、地址线索、商圈、地标、地铁、时间线索、价格/币种、标签、缺失字段和逐字段不确定原因均有长度、数量、唯一性及语义约束，单次最多 10 个抽取对象且不静默合并
+- 结果与错误码：`ExtractionOutcome` 明确区分候选成功、信息不足、不支持和模型结构无效；稳定原因码为 `INPUT_EMPTY`、`INPUT_UNSUPPORTED`、`OUT_OF_SCOPE_CITY`、`INSUFFICIENT_INFORMATION`、`MODEL_INVALID_OUTPUT`，并以 `UnsupportedReason` 细分商品、菜谱、跨城多日旅行、复杂户外路线、过长内容及其他不支持内容；任何错误结果都不能携带候选或伪装为空成功
+- 深圳及内容边界：明确深圳 Place/Event 可形成候选；只有店名时保留待核验 Place，若原文没有深圳或深圳行政区证据则 `city=None`，只保留 `search_scope_city=shenzhen` 并标记城市未确认；过于通用名称返回最小补充建议；明确非深圳城市返回范围外；Event 缺少精确起止时间时保留线索并强制进入缺失/不确定项，不编造时间；商品、菜谱、跨城多日旅行和复杂户外路线确定性返回不支持；未调用高德或生成 POI 候选
+- 抽取服务与调用上限：新增唯一 `TextExtractionService`，构造函数只注入现有 `nanobot_core.providers.ModelProvider`，每次调用创建独立消息与结果状态；空白、明显不支持、范围外、过于通用和过长输入在确定性预检后零 Provider 请求，普通合法结构严格 1 次 `Provider.chat`，只有 JSON/Schema/判别联合/字段语义或意外 Tool Call 错误才执行第 2 次结构修复，代码中只有两个顺序 await 点且没有循环或第三次调用；连续两次无效返回稳定 `MODEL_INVALID_OUTPUT`
+- 异常与安全：五类 `ProviderError` 均原样传播且不触发自动重试，修复调用中的 ProviderError 也不会产生第三次请求，`asyncio.CancelledError` 原样传播；Pydantic 错误摘要只含最多 8 个路径与错误类型并显式排除 input/context/URL；服务不记录完整输入、Prompt、响应或修复原文，不导入日志、数据库、文件、网络 SDK、真实 Provider、Runner、ToolRegistry 或 ToolResult，不把原文或供应商字段写入候选结果、异常、repr 或公开错误字典
+- 主要文件：`backend/app/domain/collections/extraction.py`、`backend/app/domain/collections/__init__.py`、`backend/app/application/text_extraction.py`、`backend/tests/unit/test_text_extraction_contracts.py`、`backend/tests/unit/test_text_extraction_service.py`、`docs/DEV_STATUS.md`
+- 修改前门禁：完整读取规定文档与现有 M0-2A/Provider/Fake/Runner/Registry/测试；工作区干净，指定基线包含已验收 M0-2A，revisions 仅 `0001/0002/0003`，RecognitionStatus/CollectionStatus/CollectionItem 和用户隔离边界唯一；项目 `.venv`、macOS、Python 3.13.5 下 `pip check`、Ruff、strict mypy 通过，非真实测试 348 passed/1 deselected，核心 118 passed，迁移 5 passed，默认全集 348 passed/1 skipped
+- 最终验证命令与数量：`python -m pip install -e ".[dev]"`、`python -m pip check`、`python -m ruff check .`、`python -m mypy app migrations nanobot_core`、`python -m pytest -q -m "not real_provider"`、`python -m pytest -q tests/core`、`python -m pytest -q tests/test_migrations.py`、`python -m pytest -q` 全部退出 0；mypy 检查 48 个源文件，新增候选/服务聚焦测试 68 passed，非真实全集 416 passed/1 deselected，核心 118 passed，迁移 5 passed，默认全集 416 passed/1 skipped
+- 离线与副作用检查：临时 `/tmp` pytest 插件同时封锁 `socket.connect`、`connect_ex`、`create_connection` 与 DNS `getaddrinfo` 后，全部 416 个非真实测试再次通过、1 deselected；测试只使用 FakeProvider、固定 JSON Fixture 和受控异常，不写数据库、文件、消息或外部系统；未读取或打印本机 `.env`，未运行 `real_provider`，真实模型、百炼、高德、消息发送和其他付费 API 调用均为 0
+- 迁移、范围与冗余：revisions 仍只有 `20260721_0001`、`0002`、`0003`，本阶段未修改迁移、ORM、Repository、配置、依赖、`nanobot_core` 或真实 Provider；未实现 CollectionItem 创建/修改/删除、自动保存、Undo、幂等键、重复收藏、M0-2D 路由/Demo/Session、GET AgentRun、POI/坐标/匹配评分、高德、URL/HTML、图片/OCR、SSE、前端或微信；AgentRunner、ToolRegistry、ToolResult、ModelProvider、CollectionKind、SupportedCity、CollectionStatus、RecognitionStatus、CollectionItem、PlaceCandidate、EventCandidate、ExtractionResult 和抽取服务均各有唯一正式定义，核心无应用层反向依赖；Git 未包含 `.env`、数据库、缓存、虚拟环境或测试产物
+- 已知风险与未验证：按任务禁令未用真实模型验证 Prompt 遵循率、供应商结构输出稳定性、真实延迟或 Token/费用；显式城市和不支持类型的离线预检采用保守固定规则，当前 Fixture 范围已通过但更广语言覆盖仍需后续评测集扩充；只在 macOS/Python 3.13.5 验证，未在 Python 3.11/3.12、Windows 或 PostgreSQL 复测；这些不构成当前纯离线 M0-2B 的已知 P0/P1
+- 主控复测范围：核对阶段提交直接父提交为指定基线且只含上述 6 个文件；全新 Python 3.11+ 环境复现安装、静态检查、68 项聚焦测试、非真实/核心/迁移/默认全集和 socket/DNS 封锁；重点复核缺失/不确定字段、Place/Event 时间边界、无城市不伪造深圳、明确非深圳/四类不支持、多个及混合候选、1/2 次 Provider 边界、连续无效输出、五类 ProviderError、取消透传、敏感输入/Prompt/响应脱敏、零持久化副作用、迁移数量、范围和唯一实现扫描
+- 下一步：等待主控独立验收并决定是否纯快进集成；验收通过前 M0-2B 保持待验收，M0-2A 保持已完成，M0-2C 保持未开始且暂不允许开始；本分支不合并 `main`、不推送、不执行任何真实或付费调用
