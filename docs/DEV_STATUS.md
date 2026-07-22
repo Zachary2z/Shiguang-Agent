@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-3C 匹配评分和候选 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-3c-poi-matching |
 | 最近更新 | 2026-07-22 |
-| 阻塞项 | 无；M0-3B 已完成主控离线、真实高德和合并后验收，M0-3C 前置条件已满足 |
+| 阻塞项 | 无；M0-3C 已完成开发与离线验证，等待主控验收 |
 
 ## 当前任务
 
-M0-3B 已通过主控验收并纯快进集成到 `main`：唯一真实高德适配已完成离线、封网、边界、安全、冗余及 5 次零重试只读真实请求验证。当前允许开始 M0-3C，只实现匹配评分、证据、置信度和最多 3 个候选；M0-3D 分店目标与正式 POI 写入仍不得提前开发。
+M0-3C 已在指定基线完成供应商无关、可解释和确定性的地点评分、最多 3 个候选、四种匹配结果与显式用户选择契约，全部验证使用手写 Fixture 和现有 StubMapProvider。当前等待主控离线验收；M0-3D 的 PlaceTarget、`exact / any_branch` 持久化、品牌幂等和正式 POI 写入仍未开始。
 
 ## M0 状态
 
@@ -22,7 +22,7 @@ M0-3B 已通过主控验收并纯快进集成到 `main`：唯一真实高德适�
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
-| M0-3 地点匹配 | 进行中 | M0-3A、M0-3B 已完成；M0-3C 允许开始 |
+| M0-3 地点匹配 | 进行中 | M0-3A、M0-3B 已完成；M0-3C 待主控验收，M0-3D 未开始 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
@@ -50,7 +50,7 @@ M0-3B 已通过主控验收并纯快进集成到 `main`：唯一真实高德适�
 
 ## 下一步
 
-从最新 `main` 创建 M0-3C 阶段分支，只实现供应商无关的地点匹配评分、证据、置信度、最多 3 个候选及用户选择结果契约；复用现有 MapProvider、Poi、PlaceCandidate 和收藏状态，不新增数据库迁移，不调用真实高德或模型。M0-3D 的 `exact / any_branch`、品牌级幂等、正式 POI 写入和计划目标解析继续不得开始。
+主控从开发提交 `8ae61d4574ee6ab0f3bd0cc25329c3591a610b6e` 和本交接文档所在分支独立复核 M0-3C 的评分、阈值、候选、选择、城市隔离、取消、安全与无副作用边界。验收通过前不合并 `main`、不推送、不调用真实 Provider，也不开始 M0-3D。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -609,3 +609,19 @@ M0-3B 已通过主控验收并纯快进集成到 `main`：唯一真实高德适�
 - 范围、安全与冗余：M0-3B 只增加服务端高德适配、必要配置/文档及离线和显式真实测试；没有数据库或 Alembic 变化，没有修改 `nanobot_core`，没有实现 M0-3C 评分/候选或 M0-3D `exact / any_branch`/正式 POI 写入。Git 未跟踪 `.env`、数据库、缓存、虚拟环境或测试产物；MapProvider、AmapMapProvider、Poi、Provider 客户端构造、AgentRunner 和 ToolRegistry 均保持唯一，没有真实密钥匹配
 - 合并后检查与结论：纯快进后代码树与已验收提交一致，因此未重复真实调用；合并后 Ruff、strict mypy 和非真实全集再次通过，结果为 `743 passed/2 deselected`。所有已发现 P1 均已关闭，没有未关闭的 P0/P1，M0-3B 完成标准满足
 - 下一步：M0-3C 前置条件已满足；从本交接文档提交后的最新 `main` 创建 `codex/m0-3c-poi-matching`，只实现供应商无关的匹配评分、证据、置信度、最多 3 个候选及用户选择结果契约。复用现有 MapProvider、Poi、PlaceCandidate 和收藏状态；本阶段不新增迁移、不调用真实高德或模型，也不提前实现 M0-3D 的分店目标或正式 POI 写入
+
+#### 2026-07-22｜M0-3C｜待主控验收
+
+- 分支与基线：`codex/m0-3c-poi-matching`；开始门禁确认工作区干净，`HEAD`、`main`、`origin/main` 与 merge-base 均严格等于指定基线 `7ec83d64449c6a42aa12ca4e2fbad2973251459a`，该基线包含已验收 M0-3B 最终实现 `0b92b55e7af4077b9f4321bb8979d58f88156f0f`。完整开发提交为 `8ae61d4574ee6ab0f3bd0cc25329c3591a610b6e`；本记录使用独立文档提交追加，便于在状态中保留真实开发 SHA
+- 唯一领域契约：新增唯一 `app/domain/places/matching.py`，复用既有 `PlaceCandidate`、`CityScope`、`Poi`、`PoiProvider` 和 GCJ-02 坐标；定义 `matched / ambiguous / needs_context / not_found`、高/中/低置信度、固定顺序结构化证据、`0..100` 有限分数、最多 3 个候选和 `(provider, poi_id)` 唯一身份。评分为纯函数，不修改输入、不访问 Provider/数据库/文件/消息，也不保留来源全文或供应商响应
+- 评分与排序：按固定顺序评估名称、分店名、行政区、商圈、地址、地标、地铁站、电话、POI 类型和安全处理后的来源上下文；城市只作为硬边界且分值固定为 0，默认搜索城市不构成已确认城市的正向证明。候选按分数降序，只有同分时才使用供应商原始排名，再以 provider 与 poi_id 决胜；set/dict 顺序不影响结果。唯一自动匹配必须同时满足最低分数、第一二名最小差距且首位无城市、行政区、分店或电话硬冲突
+- 唯一应用编排：新增唯一 `PlaceMatchingService`，每次请求显式携带 `CityScope`，只向注入的现有 `MapProvider.search_poi` 发送候选标题、城市和可选行政区；Event 在 Provider 调用前固定拒绝。Provider 结果在评分前重建并复验内部 `Poi`、重复身份、城市归属和 GCJ-02，损坏、混城、重复、非 GCJ-02 或 `model_construct` 绕过结果统一收敛为固定 `MAP_PROVIDER_INVALID_RESPONSE`；既有安全 MapProviderError 与 `asyncio.CancelledError` 原样传播
+- 阈值与选择：唯一服务端入口 `Settings.place_matching_policy()` 读取 `PLACE_MATCH_UNIQUE_SCORE=75`、`PLACE_MATCH_MINIMUM_SCORE_GAP=12` 和 `PLACE_MATCH_CANDIDATE_SCORE=35`，拒绝 bool、NaN、Infinity、越界和候选阈值高于唯一阈值；证据权重只在同一策略对象定义。用户选择契约只表达当前候选集内一个具体 POI、显式 `any_branch` 或 `none_of_above`，不存在/不属于当前快照的身份与重复候选均拒绝；匹配结果本身不会自动产生 `any_branch`
+- 自动化覆盖：新增 58 项 M0-3C 领域与应用测试及 17 项配置测试，共比指定基线增加 75 项。覆盖深圳当代艺术与城市规划馆唯一高置信、M Stand/星巴克两个连锁、多分店与同名异区、行政区冲突、名称/分店/商圈/地址/地标/地铁/电话/类型/上下文正负证据、四种结果、不把供应商第一名当确认、最多 3 项、重复身份、阈值和最小分差等于/略低/略高、同分确定排序、城市线索/城市结果冲突、搜索范围零分、深圳广州顺序及 40 路并发隔离、第二候选/任意分店/以上都不是选择、非法选择、输入隔离、重复调用、活动调用取消、全部 MapProvider 安全错误、恶意结果脱敏与零副作用
+- 验证环境与精确结果：macOS、仓库受忽略 `.venv`、Python 3.13.5；`pip install -e ".[dev]"` 与 `pip check` 退出 0；Ruff 退出 0；strict mypy 对 69 个源文件无问题；非真实全集 `818 passed / 2 deselected`；core `118 passed`；migrations `15 passed`；默认全集 `818 passed / 2 skipped`。临时 `/tmp` pytest 插件同时封锁 `socket.connect`、`connect_ex`、`create_connection`、`getaddrinfo`、`gethostbyname` 与 `gethostbyname_ex` 后，非真实全集再次 `818 passed / 2 deselected`
+- 离线、安全与副作用：全部最终命令先移除 `RUN_REAL_MODEL_TESTS` 与 `RUN_REAL_MAP_TESTS` 并设置 `APP_ENV=test`；未读取、打印或修改本机 `.env`，未运行 `real_provider`/`real_map_provider`，百炼、高德、DNS、网络、外部消息及其他真实/付费 API 调用均为 0。来源完整上下文使用 `SecretStr` 请求边界且只在内存生成必要证据，电话、伪密钥、恶意供应商载荷、异常链和完整响应不进入结果、异常、repr 或日志；离线测试未创建数据库、业务文件或消息
+- 迁移与范围：未新增或修改 Alembic revision、ORM 表、Repository、持久化字段或依赖；`alembic heads` 仍只有 `20260721_0005`，`0001` 至 `0005` 相对指定基线无差异。未修改 Amap HTTP 实现、`nanobot_core`、CollectionItem、收藏状态或 M0-2 API；未新增路由、前端、计划、URL/OCR、Worker、消息渠道或外部发布
+- 冗余结论：代码扫描确认 `AgentRunner`、`ToolRegistry`、`MapProvider`、`AmapMapProvider`、`StubMapProvider`、`Poi`、`PlaceCandidate`、`PlaceMatchingService`、评分函数和选择校验均各有唯一正式定义；没有 `PlaceTarget`、`BranchCandidate`、`BranchRepository`、第二套 Provider/匹配服务或品牌版 CollectionItem。API、抽取、收藏与计划模块未复制评分算法
+- 已知风险：本阶段按禁令只使用手写 Fixture 与离线 Stub，未以真实高德数据评估阈值分布、供应商数据质量或更广中文别名；电话证据来自安全处理后的来源上下文，类型证据来自标题/标签/上下文，未扩展 M0-2B 候选 Schema。当前城市线索冲突识别覆盖现有 MapProvider Fixture 的深圳和广州；未来开放更多计划城市时必须复用 U1 唯一 CityCatalog，而不是在本模块继续扩城市目录。当前只在 macOS/Python 3.13.5 验证，未在 Python 3.11/3.12、Windows 或 PostgreSQL 复测；当前没有已知未关闭 P0/P1
+- M0-3D 状态：仍未开始；没有实现 `PlaceTarget`、`exact / any_branch` 持久化、正式 POI 绑定、品牌归一/幂等、多分店收藏或计划时分店解析。主控验收通过并另行下达 M0-3D 任务前，本分支停止业务开发
+- 主控复测重点：确认开发提交直接基于指定 baseline 且文档提交只修改本状态文件；重跑 editable 安装、依赖检查、Ruff、mypy、58 项 M0-3C 聚焦、非真实/core/migrations/默认全集和 `/tmp` socket/DNS 封锁；重点复核阈值/分差边界、供应商第一名、硬冲突、搜索城市零分、重复身份、具体/任意/以上都不是选择、深圳广州并发、取消与错误传播、`model_construct` 绕过、完整上下文/伪密钥/供应商载荷脱敏、无迁移/副作用/后续阶段越界及唯一实现扫描
