@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。M0-2A 至 M0-2D、M0-3A 至 M0-3D、M0-4A 至 M0-4D 以及 M0-5A/M0-5B 均已通过主控验收。M0-5C 草案生成是下一唯一允许阶段；M0-5D 及后续阶段仍未开始。
+项目处于 **M0 技术验证**。M0-2A 至 M0-2D、M0-3A 至 M0-3D、M0-4A 至 M0-4D 以及 M0-5A/M0-5B 均已通过主控验收。M0-5C 确定性草案生成已实现并保持待主控验收；M0-5D 及后续阶段仍未开始。
 
 普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。此前真实模型和高德的单次授权均不延续到 M0-5C；真实模型、高德、网页、对象存储及其他外部/付费调用默认未授权。M0-5C 只允许基于已验收检索结果生成和校验计划草案，不实现 M0-5D 外部地点补充、SSE、Worker 或前端。
 
@@ -61,6 +61,7 @@ python -m pytest -q tests/unit/test_image_recognition_service.py tests/unit/test
 python -m pytest -q tests/contract/test_m0_4d_unified_input.py
 python -m pytest -q tests/unit/test_plan_constraints.py
 python -m pytest -q tests/application/test_structured_collection_retrieval.py
+python -m pytest -q tests/application/test_plan_drafts.py
 ```
 
 测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
@@ -85,6 +86,16 @@ python -m pytest -q tests/application/test_structured_collection_retrieval.py
 
 聚焦回归入口为 `APP_ENV=test RUN_REAL_MODEL_TESTS=0 RUN_REAL_MAP_TESTS=0 python -m pytest -q tests/application/test_structured_collection_retrieval.py`。
 
+### M0-5C 确定性计划草案
+
+`PlanDraftService` 是唯一草案生成与复核入口。它只读取 M0-5B `StructuredCollectionResult.included`，并接收冻结的 `PlanDraftFactSnapshot`：每个候选的访问时长、Event 固定时间、任意分店查询时间，以及从出发点或上一地点到下一地点的供应商无关路线事实都必须显式注入。缺少访问时长或首段路线时不猜测；缺少地点间路线时只生成合法单地点方案；没有任何可执行组合时返回稳定的不可生成原因。
+
+默认按 pace 确定性使用 10/15/20 分钟地点切换缓冲和 15/20/30 分钟结束留白。每个方案最多一个核心地点和一个辅助地点；输出为一个主方案和最多两个备选。排序依次使用已知首段路线时长、规范化标题、POI 身份和收藏 ID，因此相同输入与相同事实重复调用得到完全相同的业务结果。费用未知保持 `None` 并显示 `PRICE_UNKNOWN` 风险，不伪造为 0；已知预算下无法证明费用合规的组合不会生成。
+
+每个 PlanItem 草案快照包含时间、访问时长、入站路线、费用、收藏来源 ID、具体 POI、风险和稳定选择理由。任意分店必须同时保存本次解析出的具体 POI、查询时间、品牌级来源 ID，并固定标记为 `collection_derived`；M0-5B 已合并的 exact/any_branch 同 POI 来源只产生一个 PlanItem。生成后 `PlanDraftService.validate()` 使用同一事实契约重新检查时间/Event 边界、路线和交通方式、缓冲、结束留白、预算、费用、来源、任意分店快照及重复 POI；被篡改结果返回稳定违反码。
+
+本阶段只有不可变技术验证契约，不创建 Plan/PlanItem Repository 或数据库表，不调用模型、地图、路线、天气、网页及其他外部 API。20 组固定 Fixture 的生成后硬约束违反数为 0。聚焦回归入口为 `APP_ENV=test RUN_REAL_MODEL_TESTS=0 RUN_REAL_MAP_TESTS=0 python -m pytest -q tests/application/test_plan_drafts.py`。
+
 ### 数据库迁移
 
 默认数据库是 `backend/data/shiguang.db`，目录和数据库文件均被 Git 忽略。从 `backend` 目录运行：
@@ -95,7 +106,7 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前 HEAD revision 是 `20260722_0006`。M0-4D、M0-5A 与 M0-5B 均未新增迁移；现有 Message、Source、AgentRun/ToolRun、收藏、地点目标和幂等表继续作为检索的唯一持久数据来源。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+当前 HEAD revision 是 `20260722_0006`。M0-4D、M0-5A、M0-5B 与 M0-5C 均未新增迁移；现有 Message、Source、AgentRun/ToolRun、收藏、地点目标和幂等表继续作为检索的唯一持久数据来源。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
 
 ### 启动 API
 

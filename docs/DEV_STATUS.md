@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-5C 草案生成 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-5-planning |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 无；M0-5B 已完成，M0-5C 前置条件已满足 |
+| 阻塞项 | 无；M0-5C 已实现，等待主控验收 |
 
 ## 当前任务
 
-M0-4A 至 M0-4D、M0-5A 与 M0-5B 均已通过主控验收并集成到 `main`。计划约束、安全解析、结构化检索、硬约束过滤、请求级任意分店解析和同 POI 去重边界已经闭合。M0-5C 草案生成是下一唯一允许阶段；M0-5D 外部地点补充以及后续阶段仍未开始且不得提前开发。
+M0-4A 至 M0-4D、M0-5A 与 M0-5B 均已通过主控验收并集成到 `main`。M0-5C 已在 `codex/m0-5-planning` 实现确定性草案生成与生成后复核，当前保持待验收。M0-5D 外部地点补充以及后续阶段仍未开始且不得提前开发。
 
 ## M0 状态
 
@@ -24,7 +24,7 @@ M0-4A 至 M0-4D、M0-5A 与 M0-5B 均已通过主控验收并集成到 `main`。
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
 | M0-4 URL 与截图 | 已完成 | M0-4A、M0-4B、M0-4C、M0-4D 均已通过主控验收 |
-| M0-5 计划技术验证 | 进行中 | M0-5A/B 已完成；M0-5C 允许开始；M0-5D 未开始 |
+| M0-5 计划技术验证 | 进行中 | M0-5A/B 已完成；M0-5C 待验收；M0-5D 未开始 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
 状态只允许使用：未开始、进行中、待验收、已完成、阻塞。
@@ -57,7 +57,7 @@ M0-4A 至 M0-4D、M0-5A 与 M0-5B 均已通过主控验收并集成到 `main`。
 
 ## 下一步
 
-从本交接文档提交后的最新 `main` 创建或快进 `codex/m0-5-planning`，只实施 M0-5C 草案生成：复用 M0-5A `PlanConstraints` 与 M0-5B `StructuredCollectionResult`，生成一个主方案和最多两个备选，并在保存前执行确定性硬约束复核。不得提前实现 M0-5D 外部地点补充，也不得调用真实模型、高德、路线、天气、网页或其他外部/付费 API。
+主控从本阶段提交独立复核 M0-5C 的契约、20 组 Fixture、生成后硬约束校验、范围与完整离线/禁网测试。验收通过前 M0-5C 保持待验收，M0-5D 保持未开始；不得调用真实模型、高德、路线、天气、网页或其他外部/付费 API。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -969,3 +969,19 @@ M0-4A 至 M0-4D、M0-5A 与 M0-5B 均已通过主控验收并集成到 `main`。
 - 范围与冗余：没有 Plan、PlanItem、草案、主/备方案、外部高德补充、Approval、迁移、依赖、API、前端、SSE、Worker、自动重试或 M0-5C/D 代码；`StructuredCollectionRetrievalService`、`PlaceMatchingService`、地点评分/分类、MapProvider、CollectionRepository、AgentRunner 和 ToolRegistry 均保持唯一，没有为测试增加平行规则或重复公共模块。
 - 合并后检查：在 `main` 再次执行 Ruff、strict mypy 和正式非真实全集，结果分别为退出 0、89 个源文件无问题、`1359 passed / 2 deselected`。没有未关闭 P0/P1；本轮未读取或打印 `.env`，真实模型、高德、路线、天气、网页、对象存储、消息及其他真实/付费 API 调用均为 0。
 - 已知边界与下一步：当前验证限于 macOS、Python 3.13.5、SQLite、Fake/Stub/固定事实，未验证真实路线/天气延迟和 PostgreSQL；这些留待既定后续阶段，不阻塞 M0-5B。M0-5C 前置条件已满足，是下一唯一允许阶段；从本记录提交后的最新 `main` 开始，只实现草案生成与确定性复核，M0-5D 继续未开始。
+
+#### 2026-07-23｜M0-5C 确定性计划草案｜待主控验收
+
+- 分支与门禁：`codex/m0-5-planning`；开始时工作区干净，`main`、`origin/main` 与原 `HEAD` 均精确等于指定基线 `952c94bdf0a7d9b4465e30d85f1b7c74d78e5ff9`，阶段分支经 `git merge --ff-only main` 快进到同一提交。M0-5B 已完成，M0-5C 是唯一允许阶段；Alembic 为唯一 `20260722_0006 (head)`。未 amend、rebase、reset、合并或推送
+- 唯一契约与入口：在 `app/domain/plans/drafts.py` 增加最小冻结草案与显式事实契约；唯一 `PlanDraftService` 同时负责生成和生成后复核，直接消费 M0-5A `PlanConstraints` 与 M0-5B `StructuredCollectionResult.included`。`PlanDraftFactSnapshot` 只接受供应商无关的访问时长、Event 时间、POI 查询时间及出发点/地点间路线事实，不创建 Provider、规则引擎、Repository 或第二套检索
+- 生成行为：确定性生成一个主方案和最多两个备选，每个方案最多一个核心地点与一个辅助地点；pace 分别映射为 10/15/20 分钟切换缓冲与 15/20/30 分钟结束留白。短窗口或缺少地点间路线时只生成合法单地点方案；缺少候选访问时长、首段路线、Event 固定时间、任意分店查询时间，或无法形成任何可执行组合时不猜测并返回稳定不可生成原因
+- 时间、路线与预算：所有 PlanItem 位于 PlanConstraints 窗口内，Event 访问必须完整位于明确活动时间内，首段和地点间路线方式必须属于本次允许方式。已知费用以 Decimal/CNY 求和且不超过预算；费用未知保持 `None` 和 `PRICE_UNKNOWN` 风险，不伪造为 0；已知预算下费用无法证明合规的组合不生成。排序使用首段路线时长、规范化标题、POI 身份和收藏 ID 稳定破同分，不依赖输入顺序或哈希种子
+- 来源与任意分店：每项展示访问时间、入站路线/距离/方式、单项和总费用、收藏来源、风险和稳定选择理由。任意分店保存本次具体 POI、全部来源 CollectionItem ID、品牌级来源 ID 和查询时间，固定标记为 `collection_derived`；不改绑收藏、不写数据库、不标为外部补充。M0-5B 已合并的 exact/any_branch 同 POI 来源只生成一个 PlanItem
+- 生成后复核：`validate()` 重新核对方案/角色数量、来源必须属于 included、候选和访问事实、路线与 M0-5B 首段事实、交通方式、时间/Event 边界、切换缓冲、结束留白、费用/预算、风险、任意分店快照和同方案 POI 唯一性。生成入口强制调用该复核；篡改时间、费用、来源或事实会返回稳定违反码
+- 测试与 Fixture：新增 M0-5C 聚焦 `40 passed`，覆盖无 included、单/多候选、主/备数量、每方案地点上限、短窗口、10/20 与 15/30 分钟等号边界、Event 到达边界、budget null/已知、超预算组合、未知费用、excluded/verification 排除、任意分店快照与来源标记、同 POI 单项、稳定同分顺序、输入不变、幂等、缺时长/路线降级、非法交通方式和篡改校验。`tests/fixtures/plans.py` 明确提供 20 组计划 Fixture，全部生成后再次校验为 0 条硬约束违反
+- 当前验证：macOS、项目受忽略 `.venv`、Python 3.13.5；editable 安装和 `pip check` 通过，Ruff 通过，strict mypy 对 91 个源文件无问题。M0-5A `57 passed`、M0-5B `41 passed`、M0-5C `40 passed`、Core `118 passed`、迁移 `21 passed`；正式非真实全集 `1399 passed / 2 deselected`，默认全集 `1399 passed / 2 skipped`，封锁 socket connect/connect_ex/create_connection 与 DNS 后非真实全集再次 `1399 passed / 2 deselected`，全部退出 0
+- 测试环境提示：两次非真实全集在全部 1399 项通过后各报告 1 条既有 aiosqlite worker 于事件循环关闭后的 `PytestUnhandledThreadExceptionWarning`，落点均为 M0-5B 测试但不稳定对应具体用例；M0-5B 单独 41 项、迁移 21 项和默认全集均无 warning。本阶段不修改数据库生命周期或既有检索测试以掩盖环境级竞态，主控应在隔离新环境复核是否复现
+- 迁移、依赖与外部调用：没有新增依赖、环境变量、ORM、数据库表、Plan/PlanItem Repository 或 Alembic revision；未修改历史 `0001`–`0006`，head 保持 `20260722_0006`。所有测试显式设置 `APP_ENV=test RUN_REAL_MODEL_TESTS=0 RUN_REAL_MAP_TESTS=0`，未读取、打印或修改 `.env`；真实模型、高德、路线、天气、网页、DNS、对象存储、消息及其他真实/付费 API 调用均为 0
+- 范围、冗余与安全：未修改 `nanobot_core`、AgentRunner、ToolRegistry、Provider、Collection Repository、M0-5B 检索/去重或地点匹配；没有 M0-5D 外部地点补充、Approval、Prompt、Tool Calling、API、SSE、Worker、队列、前端、正式确认/调整、日历、提醒、分享或反馈。PlanDraftService、草案契约和事实快照各只有一份正式实现，没有为测试复制生产算法，当前无已知未关闭 P0/P1
+- 已知风险与主控复测：当前仅验证 macOS/Python 3.13.5、不可变内存契约和固定离线事实，未验证 Python 3.11/3.12、Windows、PostgreSQL 或真实路线/天气数据采集；后者不在本阶段授权范围。主控应重点复测 Event 到达起止等号、两类缓冲最小/最大与结束等号、已知预算加总、未知费用、缺少地点间路线的单地点降级、任意分店具体 POI/查询时间/来源标记、篡改校验、20 组 Fixture、输入隔离、重复调用、禁网、迁移 head、唯一实现和上述 aiosqlite warning
+- 下一步：等待主控独立验收；M0-5C 保持待验收，M0-5D 保持未开始。本分支不合并 `main`、不推送、不执行任何真实或付费调用
