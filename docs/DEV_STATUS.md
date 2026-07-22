@@ -7,11 +7,11 @@
 | 状态 | 待验收 |
 | 当前分支 | codex/m0-3c-poi-matching |
 | 最近更新 | 2026-07-22 |
-| 阻塞项 | 无；M0-3C 已完成开发与离线验证，等待主控验收 |
+| 阻塞项 | 无；M0-3C 四项验收缺陷已修复并完成离线验证，等待主控复验 |
 
 ## 当前任务
 
-M0-3C 已在指定基线完成供应商无关、可解释和确定性的地点评分、最多 3 个候选、四种匹配结果与显式用户选择契约，全部验证使用手写 Fixture 和现有 StubMapProvider。当前等待主控离线验收；M0-3D 的 PlaceTarget、`exact / any_branch` 持久化、品牌幂等和正式 POI 写入仍未开始。
+M0-3C 已在指定基线完成供应商无关、可解释和确定性的地点评分、最多 3 个可靠候选、四种匹配结果与显式用户选择契约，并关闭零阈值、未解析城市线索、通用店名误判分店及低质量候选可选四项验收缺陷。全部验证使用手写 Fixture 和现有 StubMapProvider。当前等待主控离线复验；M0-3D 的 PlaceTarget、`exact / any_branch` 持久化、品牌幂等和正式 POI 写入仍未开始。
 
 ## M0 状态
 
@@ -50,7 +50,7 @@ M0-3C 已在指定基线完成供应商无关、可解释和确定性的地点�
 
 ## 下一步
 
-主控从开发提交 `8ae61d4574ee6ab0f3bd0cc25329c3591a610b6e` 和本交接文档所在分支独立复核 M0-3C 的评分、阈值、候选、选择、城市隔离、取消、安全与无副作用边界。验收通过前不合并 `main`、不推送、不调用真实 Provider，也不开始 M0-3D。
+主控从原开发提交 `8ae61d4574ee6ab0f3bd0cc25329c3591a610b6e`、修复提交 `ae8d67edd358a5c3c5214720878a61cfdb9e1d23` 和本交接文档所在分支独立复核 M0-3C 的评分、阈值、候选、选择、城市隔离、取消、安全与无副作用边界。验收通过前不合并 `main`、不推送、不调用真实 Provider，也不开始 M0-3D。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -625,3 +625,16 @@ M0-3C 已在指定基线完成供应商无关、可解释和确定性的地点�
 - 已知风险：本阶段按禁令只使用手写 Fixture 与离线 Stub，未以真实高德数据评估阈值分布、供应商数据质量或更广中文别名；电话证据来自安全处理后的来源上下文，类型证据来自标题/标签/上下文，未扩展 M0-2B 候选 Schema。当前城市线索冲突识别覆盖现有 MapProvider Fixture 的深圳和广州；未来开放更多计划城市时必须复用 U1 唯一 CityCatalog，而不是在本模块继续扩城市目录。当前只在 macOS/Python 3.13.5 验证，未在 Python 3.11/3.12、Windows 或 PostgreSQL 复测；当前没有已知未关闭 P0/P1
 - M0-3D 状态：仍未开始；没有实现 `PlaceTarget`、`exact / any_branch` 持久化、正式 POI 绑定、品牌归一/幂等、多分店收藏或计划时分店解析。主控验收通过并另行下达 M0-3D 任务前，本分支停止业务开发
 - 主控复测重点：确认开发提交直接基于指定 baseline 且文档提交只修改本状态文件；重跑 editable 安装、依赖检查、Ruff、mypy、58 项 M0-3C 聚焦、非真实/core/migrations/默认全集和 `/tmp` socket/DNS 封锁；重点复核阈值/分差边界、供应商第一名、硬冲突、搜索城市零分、重复身份、具体/任意/以上都不是选择、深圳广州并发、取消与错误传播、`model_construct` 绕过、完整上下文/伪密钥/供应商载荷脱敏、无迁移/副作用/后续阶段越界及唯一实现扫描
+
+#### 2026-07-22｜M0-3C 验收缺陷修复｜待主控复验
+
+- 分支与提交关系：修复在 `codex/m0-3c-poi-matching` 上直接基于当前交接 HEAD `3d96dfc91fc2284428c562edcd9baaf2a4215501` 追加；该提交链包含指定 `main` 基线 `7ec83d64449c6a42aa12ca4e2fbad2973251459a` 和原开发提交 `8ae61d4574ee6ab0f3bd0cc25329c3591a610b6e`。开始门禁确认工作区干净、分支和 HEAD 精确一致，`main` 与 `origin/main` 仍严格等于指定基线。本轮生产代码、配置说明和回归测试修复提交为 `ae8d67edd358a5c3c5214720878a61cfdb9e1d23`，未 amend、未合并、未推送
+- P1 零阈值关闭：唯一 `PlaceMatchingPolicy` 和 `Settings` 配置入口均要求唯一匹配分数、候选分数和最小分差为有限正数 `(0, 100]`，并继续要求候选阈值不高于唯一阈值；评分与分类入口增加运行时安全复验，`model_construct` 绕过零阈值也会被拒绝。同分候选另有显式正分差条件，即使后续校验变化也不能按供应商排名自动 `matched`；三份配置说明已同步合法范围
+- P1 城市线索关闭：现有匹配模块使用单一 `_resolve_city_hint` 接入点区分“无提示”“已支持提示”“非空但未解析提示”，没有复制全国城市目录或提前实现 U1 CityCatalog。上海、北京和未知文本会形成固定 `city_hint_unresolved` 硬冲突，不能自动绑定深圳 POI；深圳、深圳市、shenzhen、广州、广州市和 canton 别名在正确显式 `CityScope` 下继续正常，支持别名与搜索范围冲突时同样阻止匹配。搜索范围仍只作零分调用上下文，不提升为已确认城市事实
+- P2 通用店名关闭：唯一名称/分店证据逻辑共享一份通用业态后缀规则；“M Stand咖啡店”“星巴克咖啡店”“诚品书店”“海底捞餐厅”等不再被当成具体分店，也不会产生分店硬冲突。海岸城店、万象天地店、COCO Park店和卓悦中心店等可区分线索继续产生明确分店一致或冲突证据；没有新增第二套名称或分店算法
+- P2 候选质量关闭：`classify_place_matches` 只公开得分达到 `candidate_score` 且没有任何硬冲突的候选，再按既有确定性规则最多保留 3 个；零分、略低阈值和城市/行政区/分店/电话硬冲突候选不进入公开选择契约。Provider 有 POI 但没有可靠候选时返回候选可为空的 `needs_context`，只有 Provider 真正空结果才为 `not_found`；恰好等于阈值的无冲突候选可见。`PlaceMatchResult` 只允许 `needs_context`/`not_found` 安全表达空候选，公开候选契约拒绝硬冲突；现有选择校验因此不能选择被隐藏的低质量或冲突 POI
+- 自动化覆盖与数量：领域聚焦 `64 passed`，应用服务聚焦 `26 passed`，配置聚焦 `22 passed / 90 deselected`；新增和更新覆盖直接策略构造、环境变量零值、三类阈值零值、同分、`model_construct`、上海/北京/未知提示、深圳/广州别名及冲突、两个连锁品牌的通用/正确/错误分店、零分/略低/等于/高于候选阈值、硬冲突隐藏、空可靠集合和选择拒绝。既有唯一匹配、第二候选、任意分店、以上都不是、重复身份、输入不变、取消、并发城市隔离、错误脱敏和零副作用测试全部保留
+- 最终验证环境与结果：macOS、仓库受忽略 `.venv`、Python 3.13.5；`pip install -e ".[dev]"` 与 `pip check` 退出 0，Ruff 退出 0，strict mypy 对 69 个源文件无问题；core `118 passed`，migrations `15 passed`。用户给出的精确 marker `not real_provider and not real_map` 得到 `856 passed / 1 skipped / 1 deselected`，其中仓库正式地图 marker 名为 `real_map_provider`；按正式 marker 运行纯非真实全集得到 `856 passed / 2 deselected`，默认全集 `856 passed / 2 skipped`
+- 封网、安全与副作用：临时 `/tmp` pytest 插件同时封锁 `socket.connect`、`connect_ex`、`create_connection`、`getaddrinfo`、`gethostbyname` 和 `gethostbyname_ex` 后，纯非真实全集再次 `856 passed / 2 deselected`。所有测试均移除 `RUN_REAL_MODEL_TESTS` 与 `RUN_REAL_MAP_TESTS` 并设置 `APP_ENV=test`；未读取、打印或修改本机 `.env`，未运行任何真实 marker，百炼、高德、DNS、网络、外部消息及真实/付费 API 调用均为 0。来源全文、电话、伪密钥、供应商响应和硬冲突原始载荷均未进入公开候选、异常、repr 或日志；测试没有数据库、业务文件或消息副作用
+- 迁移、范围与冗余：没有新增或修改依赖、数据库、ORM、Repository 或 Alembic revision；head 仍唯一为 `20260721_0005`，`0001`–`0005` 与指定基线无差异。未修改 `AmapMapProvider` HTTP 实现、`nanobot_core`、CollectionItem 或收藏状态；未实现 M0-3D `PlaceTarget`、`exact / any_branch` 持久化、品牌幂等、正式 POI 写入、多分店收藏或计划解析。扫描确认 `MapProvider`、`AmapMapProvider`、`StubMapProvider`、`Poi`、`PlaceCandidate`、`PlaceMatchingService`、评分函数、分类函数和选择校验均各有唯一正式定义，没有 `BranchCandidate`、`BranchRepository` 或第二套城市目录/匹配服务
+- 已知风险与主控复测：当前只在 macOS/Python 3.13.5、手写 Fixture 与离线 Stub 上验证；更广城市别名必须等待 U1 的唯一 CityCatalog，不能继续扩充本模块目录；真实高德数据的阈值分布和名称质量仍未获本阶段授权验证。主控应重点复跑三类正阈值及绕过、同分、未解析城市提示、两个连锁通用/明确分店、候选质量五档、空 `needs_context`、选择拒绝、并发/取消/安全边界、迁移与唯一实现扫描；通过前 M0-3C 继续待验收，M0-3D 仍未开始
