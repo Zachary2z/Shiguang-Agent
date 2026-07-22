@@ -317,3 +317,34 @@ Offline focus suite:
 ```bash
 python -m pytest -q tests/contract/test_storage_provider_contract.py tests/integration/test_local_private_storage.py tests/test_config.py
 ```
+
+## M0-4B safe web parsing
+
+`app.providers.WebContentProvider` is the only provider-neutral public web boundary. Its strict
+contracts live in `app.domain.web` and return either bounded page content or a stable recoverable
+failure. Success contains normalized and final URLs, title, cleaned text, allowlisted metadata,
+content type, UTC fetch time, and safe diagnostics. Failure contains no source URL, response body,
+credentials, DNS details, exception text, or traceback, and advertises future supply-text and
+send-screenshot recovery actions without implementing those workflows.
+
+`HttpxWebContentProvider` receives an explicit `AsyncClient` and resolver. The single URL/SSRF
+policy permits only HTTP(S) on ports 80/443, rejects userinfo, ambiguous IP spellings, localhost,
+metadata targets, and every non-global resolved address, and rejects mixed public/private DNS
+answers. Before every request and redirect it resolves and validates again, then connects to the
+validated IP while retaining the logical Host header and TLS SNI. Redirects are explicit, capped
+at five, and loop-checked. Environment proxies, authentication, cookies, automatic redirects,
+automatic retries, and keepalive reuse are disabled; cancellation propagates.
+
+Only HTML, XHTML, and plain text are accepted. Wire and decompressed bodies are limited to 2 MB,
+cleaned text to 50,000 characters, and title/metadata fields to contract-specific limits. One
+BeautifulSoup extractor removes scripts, styles, navigation, and hidden content and exposes only
+description, canonical, and the title/description/site-name Open Graph allowlist. BeautifulSoup is
+the only dependency added because the standard library has no maintained tolerant HTML tree parser
+and maintaining a second extractor is forbidden. There are no new settings, routes, persistence,
+migrations, screenshot/OCR handling, or unified input workflow.
+
+Offline focus suite:
+
+```bash
+python -m pytest -q tests/contract/test_web_content_provider_contract.py tests/unit/test_web_url_security.py tests/unit/test_httpx_web_content_provider.py
+```

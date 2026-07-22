@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-4B 网页解析 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-4b-web-parsing |
 | 最近更新 | 2026-07-22 |
-| 阻塞项 | 无；M0-4B 前置条件已满足 |
+| 阻塞项 | 无；等待主控独立验收 |
 
 ## 当前任务
 
-M0-4A 已通过主控验收并纯快进集成到 `main`：唯一 StorageProvider 契约和本地私有目录适配器已具备随机 key、类型/大小限制、生命周期元数据、排他原子发布、异常/取消清理、符号链接防护和幂等删除。当前允许开始 M0-4B 网页解析；M0-4C 截图识别、M0-4D 统一输入和 M0-5 仍未开始。
+M0-4A 已通过主控验收并纯快进集成到 `main`。M0-4B 已在 `codex/m0-4b-web-parsing` 实现唯一网页内容契约、集中 URL/SSRF 策略、DNS 校验后连接绑定、显式安全重定向、有界 HTML/文本解析与可恢复失败结果，当前等待主控验收。当前允许阶段仍为 M0-4B；M0-4C 截图识别、M0-4D 统一输入和 M0-5 仍未开始。
 
 ## M0 状态
 
@@ -23,7 +23,7 @@ M0-4A 已通过主控验收并纯快进集成到 `main`：唯一 StorageProvider
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
-| M0-4 URL 与截图 | 进行中 | M0-4A 私有文件存储已完成；M0-4B 允许开始，M0-4C、M0-4D 未开始 |
+| M0-4 URL 与截图 | 进行中 | M0-4A 私有文件存储已完成；M0-4B 待验收；M0-4C、M0-4D 未开始 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
@@ -50,10 +50,11 @@ M0-4A 已通过主控验收并纯快进集成到 `main`：唯一 StorageProvider
 - M0-3C 已完成：供应商无关的确定性匹配评分、可靠候选过滤、城市与分店硬冲突、四种结果和显式用户选择契约已通过主控验收。
 - M0-3D 已完成：统一 PlaceTarget、具体地点与任意分店目标、持久化候选快照、正式 POI/品牌幂等、多选事务、规划解析边界和异常链安全均已通过主控验收。
 - M0-4A 已完成：唯一 StorageProvider、本地私有目录、随机 key、类型/大小边界、生命周期元数据、原子排他发布、失败/取消清理和幂等删除已通过主控验收。
+- M0-4B 待验收：唯一 WebContentProvider、网页成功/失败契约、集中 URL/SSRF 策略、DNS 连接绑定、显式重定向、响应/解压/文本边界和 BeautifulSoup 白名单抽取已完成离线验证。
 
 ## 下一步
 
-从最新 `main` 创建 `codex/m0-4b-web-parsing`，只实施 M0-4B 网页解析：建立唯一网页内容获取/抽取边界，严格限制 HTTP(S)，阻止本机、内网、云元数据和重定向绕过，输出标题、正文、元数据与最终 URL，并为超时、过长、格式错误和访问失败提供可恢复结果。默认测试必须使用 Stub/MockTransport 和固定 HTML，未经用户明确授权不得访问任何真实网页、模型、地图或付费 Provider；不得提前开发 M0-4C/M0-4D/M0-5。
+主控在仓库外隔离环境独立复核 M0-4B 阶段提交与完整离线回归，重点验证 URL 混淆、全部非全局地址、混合 DNS、DNS 重绑定、逐跳重定向校验、代理/凭证隔离、流式及解压后上限、charset、正文清理、取消传播和安全失败对象。验收通过前当前允许阶段保持 M0-4B；本分支不合并、不推送，不开始 M0-4C/M0-4D/M0-5，也不访问任何真实网页或外部 Provider。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -730,3 +731,15 @@ M0-4A 已通过主控验收并纯快进集成到 `main`：唯一 StorageProvider
 - 存储、安全与冗余：StorageProvider、LocalPrivateStorageProvider、Source、AgentRunner、ToolRegistry、ModelProvider 和 MapProvider 均保持唯一；未发现第二套存储契约、适配器、配置入口或 SDK 客户端。私有路径、随机 key、类型/签名/流式大小边界、0700/0600 权限、符号链接拒绝、排他发布、碰撞与并发、过期访问、幂等删除、异常链脱敏和测试自动清理均满足 M0-4A；Git 未跟踪 `.env`、上传文件、数据库、缓存、临时文件或响应快照
 - 迁移、外部调用与合并后检查：M0-4A 没有依赖或 Alembic 变化；临时 SQLite 完成 fresh upgrade、check、downgrade `20260721_0005`、re-upgrade、check 和 current，最终仍为唯一 `20260722_0006 (head)`。未读取本机 `.env`，未运行真实 marker，百炼、高德、网页、COS、DNS、HTTP、消息及其他真实/付费 API 调用均为 0。合并后 Ruff、77 文件 mypy 和非真实全集再次通过（`993 passed / 2 deselected`）
 - 验收结论与下一步：没有未关闭的 P0/P1，M0-4A 完成标准满足。M0-4B 前置条件已满足；从本次状态提交后的最新 `main` 创建 `codex/m0-4b-web-parsing`，只实现安全网页获取与内容抽取，不提前实现截图识别、统一输入、计划、前端或真实网络验收
+
+#### 2026-07-22｜M0-4B 安全网页解析｜待主控验收
+
+- 分支与门禁：开发分支为 `codex/m0-4b-web-parsing`，严格从指定且已验收的 `main` 基线 `2a6872e1752baadd5a42cfab1d7adec0bda58ee2` 创建；开始时工作区干净，`HEAD`、`main`、`origin/main` 与 merge-base 均等于该 SHA。M0-4A 已完成，Alembic 仍只有 `20260722_0006 (head)`；开始前扫描确认仓库没有网页获取、URL SSRF 或正文抽取实现，StorageProvider、AgentRunner、ToolRegistry、ModelProvider 和 MapProvider 各自唯一。阶段提交随本记录创建，完整开发 commit SHA 见最终交接报告
+- 唯一公共契约：新增 `app.domain.web` 作为唯一网页领域归属，严格不可变成功对象只包含规范化原始 URL、最终 URL、标题、清理正文、固定白名单元数据、Content-Type、UTC 获取时间和有界诊断；失败对象区分非法 URL、安全阻止、DNS、连接、超时、重定向阻止/循环/超限、HTTP 状态、类型不支持、响应过大、不可读、格式损坏和未知错误。固定失败摘要与 retryable 语义不包含 URL/query、HTML、Header、凭证、DNS 细节、路径、异常文本或异常链，并声明未来可请求用户补充文字或截图；未实现对应工作流
+- SSRF、重定向与连接绑定：唯一 `app.domain.web.security` 规范化大小写、尾点和 IDN，只允许无 userinfo 的 HTTP/HTTPS 标准端口，拒绝控制/格式字符、坏百分号、反斜杠、混淆整数/十六/八进制 IP、本机/内网/链路本地/组播/未指定/保留/IPv4-mapped IPv6、云元数据主机和地址。DNS 答案必须每个地址都为全局地址，公开/私有混合答案整体拒绝；每次请求与每个重定向都重新执行 URL 和 DNS 策略，实际 httpx 请求 URL 使用已验证 IP，逻辑 hostname 只保留在 Host 与 HTTPS SNI 中，且发送 `Connection: close` 避免连接池跨目标复用。301/302/303/307/308 由应用显式处理，最多 5 跳、检测循环；非法或安全阻止的下一跳返回固定可恢复失败
+- HTTP 与内容边界：唯一 `HttpxWebContentProvider` 显式注入 `AsyncClient`、Resolver、配置与时钟；唯一客户端工厂固定 `trust_env=False`、无认证/Cookie、无自动重定向、无自动重试、无 keepalive，并设 5 秒连接、10 秒读取、20 秒总边界；`asyncio.CancelledError` 原样传播。只接受 `text/html`、`application/xhtml+xml`、`text/plain`，流式限制线上及解压后实际内容为 2,000,000 字节，只接受 identity/gzip/deflate，正文确定性截断至 50,000 字符；严格处理 Content-Type、Content-Length、BOM/header/meta charset 及冲突。唯一 BeautifulSoup 抽取器移除 script/style/nav/header/footer/aside/noscript/template/svg 和 hidden 内容，元数据只允许 description、canonical、Open Graph title/description/site_name
+- 依赖、迁移与范围：唯一新增运行依赖为 `beautifulsoup4>=4.12,<5`，原因是需要一套容错 HTML 树解析与清理能力，标准库没有可维护的等价抽取器；没有加入 trafilatura 或第二套解析器。没有新增环境变量、配置文件项、数据库表、Repository、Alembic revision 或 Source 写入；没有修改 `.env`、历史 `0001`–`0006`、StorageProvider、`nanobot_core` 或高德 Provider；没有实现 FastAPI URL 路由、自动收藏、M0-4C 上传/OCR/多模态、M0-4D 统一输入、M0-5、浏览器自动化、登录抓取、缓存、Worker、前端或通用网络 Tool
+- 验证环境与命令：macOS、仓库受忽略 `.venv`、Python 3.13.5。为遵守禁网要求，editable 安装使用 `PIP_NO_INDEX=1 PIP_FIND_LINKS=<本机临时 wheelhouse> python -m pip install -e '.[dev]'`，构建依赖和 BeautifulSoup 均来自本机缓存，退出 0；`python -m pip check`、`python -m ruff check .`、`python -m mypy app migrations nanobot_core` 分别退出 0，mypy 检查 81 个源文件。网页聚焦命令退出 0，`143 passed`；存储契约/集成命令退出 0，`71 passed`；core 命令退出 0，`118 passed`；迁移命令退出 0，`21 passed`；正式非真实全集退出 0，`1136 passed / 2 deselected`；默认全集退出 0，`1136 passed / 2 skipped`
+- 禁网、安全与幂等验证：所有网页测试只使用 httpx MockTransport、Stub Resolver 和固定 HTML，覆盖公开 HTTP/HTTPS、规范化/IDN、协议/userinfo/端口/混淆 URL、IPv4/IPv6/元数据、私有及混合 DNS、安全/危险重定向、全部重定向状态、循环/上限、DNS 重绑定、代理/认证/Cookie 隔离、HTML/plain text/charset、类型/状态、分块/精确大小/超一字节/解压炸弹、连接/DNS/超时/取消、截断、不可读、未知错误、单跳单请求、无自动重试、重复与并发隔离，以及 HTML/query secret/伪凭证不进入失败对象、日志、repr 或公开字典。临时 `/tmp` pytest 插件首次加载因 pytest 9 hook 参数名不匹配而在收集前退出 1，未运行项目测试；修正临时插件后封锁 socket connect/connect_ex/create_connection 与 DNS，非真实全集退出 0，仍为 `1136 passed / 2 deselected`。真实 DNS、socket、网页、模型、地图、对象存储、消息和付费 API 调用均为 0，临时 QA 文件未写入仓库
+- 扫描与结论：Ruff、strict mypy、`git diff --check`、依赖检查、迁移 head、范围/敏感信息/重复定义扫描均通过；WebContentProvider、HttpxWebContentProvider、URL/SSRF 策略和成功/失败内容 DTO 各只有一套正式实现，既有 StorageProvider、AgentRunner、ToolRegistry、ModelProvider 与 MapProvider 仍保持唯一。没有未关闭的 P0/P1，没有 Git 跟踪的 `.env`、响应快照、HTML、数据库、上传、缓存或临时文件
+- 已知风险与主控复测重点：实现仅在 macOS/Python 3.13.5 和离线 transport/resolver 上验证；按授权禁令没有用真实 TLS、DNS、代理环境或畸形线上服务器复验。正文清理是面向静态 HTML 的确定性启发式规则，不执行 JavaScript，也不会读取登录态页面；复杂站点可能得到较少正文并返回可恢复失败。主控应在仓库外隔离环境重点复测混淆 URL/IPv6、混合 DNS 与连接 pinning、逐跳重定向、代理/凭证隔离、压缩流边界、charset 冲突、异常链与伪 secret 脱敏、取消/并发及全量封网。验收前 M0-4B 保持“待验收”且为当前允许阶段；本分支不合并、不推送，不开始 M0-4C

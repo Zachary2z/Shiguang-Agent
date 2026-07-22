@@ -14,6 +14,13 @@ from app.providers.storage import (
     StorageProviderError,
     StorageProviderErrorCode,
 )
+from app.providers.web import (
+    HttpxWebContentProvider,
+    SystemHostResolver,
+    WebContentProvider,
+    WebFetchConfig,
+    create_web_http_client,
+)
 
 __all__ = [
     "AmapMapProvider",
@@ -30,5 +37,10 @@ __all__ = [
     "StorageProviderError",
     "StorageProviderErrorCode",
     "StubMapProvider",
+    "SystemHostResolver",
+    "WebContentProvider",
+    "WebFetchConfig",
+    "HttpxWebContentProvider",
     "create_amap_http_client",
+    "create_web_http_client",
 ]
