@@ -11,8 +11,10 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-HEAD_REVISION = "20260721_0005"
-PREVIOUS_REVISION = "20260721_0004"
+HEAD_REVISION = "20260722_0006"
+PREVIOUS_REVISION = "20260721_0005"
+M02C_REVISION = "20260721_0005"
+M02C_PREVIOUS_REVISION = "20260721_0004"
 CITY_REVISION = "20260721_0004"
 CITY_PREVIOUS_REVISION = "20260721_0003"
 PREVIOUS_TABLES = {
@@ -20,6 +22,8 @@ PREVIOUS_TABLES = {
     "alembic_version",
     "collection_items",
     "collection_sources",
+    "collection_write_operation_items",
+    "collection_write_operations",
     "messages",
     "sessions",
     "sources",
@@ -34,6 +38,7 @@ HEAD_TABLES = {
     "collection_write_operation_items",
     "collection_write_operations",
     "messages",
+    "place_selection_operations",
     "sessions",
     "sources",
     "tool_runs",
@@ -710,7 +715,7 @@ def test_0005_compatible_data_downgrades_to_0004_and_reupgrades_without_loss(
     alembic_config = _alembic_config(monkeypatch, database_path)
     user_id = "usr_55555555555555555555555555555555"
     item_id = "col_55555555555555555555555555555555"
-    command.upgrade(alembic_config, "head")
+    command.upgrade(alembic_config, M02C_REVISION)
     with sqlite3.connect(database_path) as connection:
         _insert_user(connection, user_id)
         _insert_collection_item(
@@ -721,17 +726,16 @@ def test_0005_compatible_data_downgrades_to_0004_and_reupgrades_without_loss(
         )
         connection.commit()
 
-    command.downgrade(alembic_config, PREVIOUS_REVISION)
-    assert current_revision(database_path) == PREVIOUS_REVISION
-    assert table_names(database_path) == PREVIOUS_TABLES
+    command.downgrade(alembic_config, M02C_PREVIOUS_REVISION)
+    assert current_revision(database_path) == M02C_PREVIOUS_REVISION
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT id, city_hint, title FROM collection_items WHERE id = ?",
             (item_id,),
         ).fetchone() == (item_id, "广州", "fixture")
 
-    command.upgrade(alembic_config, "head")
-    assert current_revision(database_path) == HEAD_REVISION
+    command.upgrade(alembic_config, M02C_REVISION)
+    assert current_revision(database_path) == M02C_REVISION
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT id, city_hint, business_district, missing_fields_json "
@@ -751,7 +755,7 @@ def test_0005_incompatible_downgrade_fails_before_any_schema_or_data_change(
     user_id = "usr_44444444444444444444444444444444"
     source_id = "src_44444444444444444444444444444444"
     item_id = "col_44444444444444444444444444444444"
-    command.upgrade(alembic_config, "head")
+    command.upgrade(alembic_config, M02C_REVISION)
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         _insert_user(connection, user_id)
@@ -781,9 +785,9 @@ def test_0005_incompatible_downgrade_fails_before_any_schema_or_data_change(
         ).fetchall()
 
     with pytest.raises(RuntimeError, match="cannot downgrade"):
-        command.downgrade(alembic_config, PREVIOUS_REVISION)
+        command.downgrade(alembic_config, M02C_PREVIOUS_REVISION)
 
-    assert current_revision(database_path) == HEAD_REVISION
+    assert current_revision(database_path) == M02C_REVISION
     with sqlite3.connect(database_path) as connection:
         after_schema = connection.execute(
             "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -793,6 +797,192 @@ def test_0005_incompatible_downgrade_fails_before_any_schema_or_data_change(
         ).fetchall()
     assert after_schema == before_schema
     assert after_data == before_data
+
+
+def test_0006_preserves_legacy_collection_and_round_trips_to_0005(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "m03d-legacy-roundtrip.db"
+    alembic_config = _alembic_config(monkeypatch, database_path)
+    user_id = "usr_66666666666666666666666666666666"
+    item_id = "col_66666666666666666666666666666666"
+    command.upgrade(alembic_config, PREVIOUS_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        _insert_user(connection, user_id)
+        _insert_collection_item(connection, item_id=item_id, user_id=user_id)
+        connection.commit()
+
+    command.upgrade(alembic_config, "head")
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT place_scope, place_target_json, candidate_count "
+            "FROM collection_items WHERE id = ?",
+            (item_id,),
+        ).fetchone() == (None, None, 0)
+
+    command.downgrade(alembic_config, PREVIOUS_REVISION)
+    assert current_revision(database_path) == PREVIOUS_REVISION
+    assert table_names(database_path) == PREVIOUS_TABLES
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT id, title, status FROM collection_items WHERE id = ?",
+            (item_id,),
+        ).fetchone() == (item_id, "fixture", "active")
+
+    command.upgrade(alembic_config, "head")
+    assert current_revision(database_path) == HEAD_REVISION
+
+
+@pytest.mark.parametrize("incompatible_kind", ["target", "snapshot", "operation"])
+def test_0006_incompatible_downgrade_fails_before_schema_or_data_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    incompatible_kind: str,
+) -> None:
+    database_path = tmp_path / f"m03d-downgrade-{incompatible_kind}.db"
+    alembic_config = _alembic_config(monkeypatch, database_path)
+    user_id = "usr_77777777777777777777777777777777"
+    source_id = "src_77777777777777777777777777777777"
+    item_id = "col_77777777777777777777777777777777"
+    command.upgrade(alembic_config, "head")
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        _insert_user(connection, user_id)
+        _insert_source(connection, source_id=source_id, user_id=user_id)
+        _insert_collection_item(connection, item_id=item_id, user_id=user_id)
+        if incompatible_kind == "target":
+            connection.execute(
+                "UPDATE collection_items SET place_scope = 'exact', "
+                "place_target_json = '{}', poi_provider = 'fixture', poi_id = 'poi-1', "
+                "poi_city_code = '0755', poi_latitude = 22.5, poi_longitude = 114.0, "
+                "poi_coordinate_system = 'gcj_02', place_match_status = 'matched', "
+                "place_confirmed_by = 'user_selection', place_confirmed_at = ? "
+                "WHERE id = ?",
+                ("2026-07-22T00:00:00+00:00", item_id),
+            )
+        elif incompatible_kind == "snapshot":
+            connection.execute(
+                "UPDATE collection_items SET place_candidate_snapshot_json = '{}', "
+                "candidate_count = 1, candidates_queried_at = ? WHERE id = ?",
+                ("2026-07-22T00:00:00+00:00", item_id),
+            )
+        else:
+            connection.execute(
+                "INSERT INTO place_selection_operations ("
+                "user_id, idempotency_key, collection_item_id, source_id, "
+                "request_fingerprint, result_item_ids_json, created_at"
+                ") VALUES (?, 'selection-1', ?, ?, ?, ?, ?)",
+                (
+                    user_id,
+                    item_id,
+                    source_id,
+                    "a" * 64,
+                    f'["{item_id}"]',
+                    "2026-07-22T00:00:00+00:00",
+                ),
+            )
+        connection.commit()
+        before_schema = connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall()
+        before_data = connection.execute(
+            "SELECT id, place_scope, candidate_count FROM collection_items"
+        ).fetchall()
+
+    with pytest.raises(RuntimeError, match="cannot downgrade"):
+        command.downgrade(alembic_config, PREVIOUS_REVISION)
+
+    assert current_revision(database_path) == HEAD_REVISION
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name"
+        ).fetchall() == before_schema
+        assert connection.execute(
+            "SELECT id, place_scope, candidate_count FROM collection_items"
+        ).fetchall() == before_data
+
+
+def test_0006_database_rejects_invalid_targets_duplicates_and_cross_user_operations(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "m03d-constraints.db"
+    command.upgrade(_alembic_config(monkeypatch, database_path), "head")
+    user_a = "usr_88888888888888888888888888888888"
+    user_b = "usr_99999999999999999999999999999999"
+    source_a = "src_88888888888888888888888888888888"
+    source_b = "src_99999999999999999999999999999999"
+    item_a = "col_88888888888888888888888888888881"
+    item_duplicate = "col_88888888888888888888888888888882"
+    item_b = "col_99999999999999999999999999999991"
+
+    exact_update = (
+        "UPDATE collection_items SET place_scope = 'exact', place_target_json = '{}', "
+        "poi_provider = 'fixture', poi_id = 'shared-poi', poi_city_code = '0755', "
+        "poi_latitude = 22.5, poi_longitude = 114.0, "
+        "poi_coordinate_system = 'gcj_02', place_match_status = 'matched', "
+        "place_confirmed_by = 'user_selection', place_confirmed_at = ? WHERE id = ?"
+    )
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        _insert_user(connection, user_a)
+        _insert_user(connection, user_b)
+        _insert_source(connection, source_id=source_a, user_id=user_a)
+        _insert_source(connection, source_id=source_b, user_id=user_b)
+        _insert_collection_item(connection, item_id=item_a, user_id=user_a)
+        _insert_collection_item(connection, item_id=item_duplicate, user_id=user_a)
+        _insert_collection_item(connection, item_id=item_b, user_id=user_b)
+        connection.commit()
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE collection_items SET place_scope = 'exact', "
+                "place_target_json = '{}', poi_provider = 'fixture', poi_id = 'bad', "
+                "poi_latitude = 22.5, poi_longitude = 114.0, "
+                "poi_coordinate_system = 'gcj_02', place_match_status = 'matched', "
+                "place_confirmed_by = 'user_selection', place_confirmed_at = ? "
+                "WHERE id = ?",
+                ("2026-07-22T00:00:00+00:00", item_a),
+            )
+        connection.rollback()
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE collection_items SET place_candidate_snapshot_json = '{}', "
+                "candidate_count = 4, candidates_queried_at = ? WHERE id = ?",
+                ("2026-07-22T00:00:00+00:00", item_a),
+            )
+        connection.rollback()
+
+        confirmed_at = "2026-07-22T00:00:00+00:00"
+        connection.execute(exact_update, (confirmed_at, item_a))
+        connection.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(exact_update, (confirmed_at, item_duplicate))
+        connection.rollback()
+
+        connection.execute(exact_update, (confirmed_at, item_b))
+        connection.commit()
+        assert connection.execute(
+            "SELECT COUNT(*) FROM collection_items WHERE poi_id = 'shared-poi'"
+        ).fetchone() == (2,)
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO place_selection_operations ("
+                "user_id, idempotency_key, collection_item_id, source_id, "
+                "request_fingerprint, result_item_ids_json, created_at"
+                ") VALUES (?, 'cross-owner', ?, ?, ?, ?, ?)",
+                (
+                    user_a,
+                    item_a,
+                    source_b,
+                    "b" * 64,
+                    f'["{item_a}"]',
+                    confirmed_at,
+                ),
+            )
 
 
 def test_alembic_has_one_head_and_metadata_matches_head_schema(
@@ -1001,6 +1191,22 @@ def test_collection_migration_has_exact_fields_named_constraints_and_useful_inde
             "tags_json",
             "missing_fields_json",
             "uncertainties_json",
+            "place_scope",
+            "place_target_json",
+            "poi_provider",
+            "poi_id",
+            "poi_city_code",
+            "poi_latitude",
+            "poi_longitude",
+            "poi_coordinate_system",
+            "brand_namespace",
+            "brand_id",
+            "place_match_status",
+            "place_confirmed_by",
+            "place_confirmed_at",
+            "place_candidate_snapshot_json",
+            "candidate_count",
+            "candidates_queried_at",
             "status",
             "version",
             "created_at",

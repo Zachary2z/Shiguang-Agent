@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-3D 连锁品牌与任意分店目标 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-3d-place-targets |
 | 最近更新 | 2026-07-22 |
-| 阻塞项 | 无；M0-3C 已通过主控验收，M0-3D 前置条件已满足 |
+| 阻塞项 | 无；等待 M0-3D 主控验收，当前允许阶段仍为 M0-3D |
 
 ## 当前任务
 
-M0-3C 已通过主控验收：供应商无关、可解释且确定性的地点评分、最多 3 个可靠候选、四种匹配结果与显式用户选择契约均已集成，并关闭零阈值、未解析城市线索、通用店名误判分店及低质量候选可选四项验收缺陷。下一允许阶段为 M0-3D，只实现唯一 PlaceTarget、`exact / any_branch` 持久化、品牌幂等、正式 POI 绑定和分店选择写入；当前尚未开始。
+M0-3D 已完成开发并待主控验收：唯一 PlaceTarget 已最小集成现有 CollectionItem，支持 `pending_selection`、`active + exact`、显式 `active + any_branch` 和“以上都不是”回到 `pending_details`；正式 POI、稳定品牌身份、最多 3 项候选快照、确认信息、并发幂等、多选事务、Source/Undo 关联和规划解析边界均已离线验证。当前不得开始 M0-4A 或 M0-5。
 
 ## M0 状态
 
@@ -22,7 +22,7 @@ M0-3C 已通过主控验收：供应商无关、可解释且确定性的地点�
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
-| M0-3 地点匹配 | 进行中 | M0-3A、M0-3B、M0-3C 已完成；M0-3D 未开始 |
+| M0-3 地点匹配 | 待验收 | M0-3A、M0-3B、M0-3C 已完成；M0-3D 待主控验收 |
 | M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
@@ -51,7 +51,7 @@ M0-3C 已通过主控验收：供应商无关、可解释且确定性的地点�
 
 ## 下一步
 
-从本次状态文档提交后的最新 `main` 创建 `codex/m0-3d-place-targets`，只实现 M0-3D 的连锁品牌与任意分店目标、正式 POI 绑定及必要的持久化迁移。复用现有 CollectionItem、MapProvider、Poi、M0-3C 匹配与候选契约，不调用真实 Provider，不开始 M0-4 或 M0-5。
+由主控复验并验收 `codex/m0-3d-place-targets`。验收前当前允许阶段仍为 M0-3D；M0-4A、M0-5、真实 Provider 调用、合并和推送均不得开始。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -651,3 +651,15 @@ M0-3C 已通过主控验收：供应商无关、可解释且确定性的地点�
 - 网络与密钥：主控未读取、打印或修改本机 `.env`，未运行 `real_provider` 或 `real_map_provider`；百炼、高德、DNS、外部消息和其他真实/付费 API 调用均为 0。Git 未跟踪 `.env`、数据库、虚拟环境、缓存、响应快照或测试产物
 - 合并后检查：纯快进合并后再次运行 Ruff、strict mypy 和正式非真实全集，结果分别为通过、69 个源文件无问题、`856 passed / 2 deselected`；因代码树未变化，没有重复调用任何真实 API
 - 验收结论与下一步：M0-3C 的范围、行为、异常、边界、幂等、并发、取消、安全和冗余要求全部满足。M0-3D 前置条件已满足；从本记录提交后的最新 `main` 创建 `codex/m0-3d-place-targets`，复用现有地点、候选和收藏契约，只实现 PlaceTarget、`exact / any_branch`、品牌幂等、正式 POI 绑定及必要迁移
+
+#### 2026-07-22｜M0-3D｜待主控验收
+
+- 分支与基线：`codex/m0-3d-place-targets`；开始门禁确认工作区干净，`HEAD`、`main`、`origin/main` 与 merge-base 均严格等于指定基线 `3dd8139a5caeb83e34a19a0e4a372ea6b12ae928`，Alembic 当时唯一 head 为 `20260721_0005`。本交接的业务、测试和文档使用一个可回滚提交，最终 SHA 见窗口交付
+- 唯一领域边界：新增唯一 `app/domain/places/targets.py`，定义 `exact / any_branch` PlaceTarget、稳定且已确认的品牌身份、候选查询快照、确认来源/时间和 exact/any_branch/unconfirmed 规划解析结果。exact 绑定一个正式 Poi，保留 provider、poi_id、正式 city_code、GCJ-02 坐标、匹配状态、置信度和证据摘要；低置信或硬冲突候选不能提升为 exact。any_branch 只接受用户显式选择和稳定品牌命名空间/ID，显示名归一只用于展示/检索，不作为合并证明
+- 收藏、状态与应用编排：在现有 CollectionItem、状态机和 Repository 上最小增加 target/snapshot；未选择时保存最多 3 项候选及 queried_at 并保持 `pending_selection`，具体选择成为 `active + exact`，显式任意分店成为 `active + any_branch`，“以上都不是”进入 `pending_details`。通用 Repository 禁止把无确认目标的 pending Place 直接切为 active；现有 legacy active 收藏保持可读。公开 CollectionItem 响应同步返回允许字段化的 target/snapshot，不包含来源全文或供应商原始响应
+- 多选、幂等与事务：用户多选的每个不同 POI 形成独立 exact CollectionItem，复用同一 Source，并在单一事务内提交；第二分店失败会完整回滚。若原条目来自 M0-2C 自动保存，新分店追加到同一写入操作组，原 Undo 会原子删除全部拆分分店但保留 Source。相同用户的 `(provider, poi_id)` 与稳定品牌身份分别由部分唯一索引保护；不同幂等键仍会收敛到同一品牌收藏，并发唯一冲突回滚后回读/重试；选择操作以 `(user_id, idempotency_key)` 持久化稳定重放和 payload 冲突检测
+- 持久化与迁移：新增唯一向前 revision `20260722_0006`，直接 down_revision `20260721_0005`；仅扩展既有 collection_items 并新增选择幂等记录，不建立品牌版 CollectionItem、BranchCandidate 或 BranchRepository。扁平身份/确认列与统一 JSON 契约并存，数据库检查约束限制 exact/any_branch 形状、候选数量和 Event 边界，复合外键限制 Source/收藏/操作同一用户，部分唯一索引阻止同用户重复 POI/品牌。旧 active 数据升级后 target 为空且继续可读；存在 M0-3D 数据时 downgrade 在任何 DDL 前拒绝，兼容空数据可 0006→0005→0006 往返。历史 `0001`–`0005` 未修改，head 保持唯一
+- 自动化覆盖：M0-3D 领域 `6 passed`，M0-3D 应用/持久化 `12 passed`，Repository/写入/目标综合回归 `41 passed`，migrations `20 passed`，core `118 passed`。覆盖合法/损坏 exact、显式/缺失品牌 any_branch、第二候选、多选、none、queried_at、候选不制造收藏、低分/硬冲突拒绝、待选不可规划、输入不变、同/不同稳定身份、同/不同用户、同 POI 复用、并发品牌收敛、同键重放/冲突、不同键品牌去重、用户隔离、version、第二写失败回滚、Undo 整组回滚、迁移约束及兼容/拒绝往返
+- 环境与验证：macOS、仓库受忽略 `.venv`、Python 3.13.5；editable install 和 `pip check` 退出 0；Ruff 退出 0；strict mypy 对 73 个源文件无问题；正式非真实 marker 全集 `879 passed / 2 deselected`，默认全集 `879 passed / 2 skipped`。Alembic `heads`、仓库外临时 SQLite `upgrade head`、`check`、`downgrade 20260721_0005`、再次 `upgrade head` 和 `current` 全部退出 0，最终为 `20260722_0006 (head)`。补充 `/tmp` pytest 插件封锁 socket connect/connect_ex/create_connection 与 DNS 后，非真实全集再次 `879 passed / 2 deselected`；首次误把插件文件路径直接传给 `-p` 的补充命令在测试收集前退出 1，改用 `PYTHONPATH=/tmp` 和模块名后成功，不涉及产品代码或外部调用
+- 安全与范围：本窗口未读取、打印或修改 `.env`，始终移除真实测试开关并设置 `APP_ENV=test`；未运行 `real_provider`/`real_map_provider`，百炼、高德、DNS、HTTP、文件上传、外部消息和其他真实/付费 API 调用均为 0。未修改 `nanobot_core`、Amap HTTP 实现或依赖；未实现 M0-4 URL/截图/文件/OCR、M0-5 Plan/路线/动态选店、U1 城市切换、前端、Worker、重试服务、缓存或消息渠道
+- 冗余结论与主控复测：扫描确认 AgentRunner、ToolRegistry、MapProvider、AmapMapProvider、StubMapProvider、PlaceMatchingService、Poi、CollectionItem 和 Collection Repository 均保持唯一；PlaceTarget 与 PlaceTargetSelectionService 各只有一个正式定义，没有品牌专用收藏/Repository/状态机、BranchCandidate、BranchRepository、第二套 Provider/匹配/规划或城市目录。主控应重点复测 exact 正式城市/GCJ-02/证据、pending 不可规划、显式 any_branch、并发与不同键品牌去重、多用户/同名异身份隔离、多选半失败、Undo 组、直接 SQL 约束、0006 往返/拒绝及完整非真实封网回归。验收前当前允许阶段仍为 M0-3D，M0-4A 未开始

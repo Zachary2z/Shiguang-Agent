@@ -3,7 +3,6 @@
 from app.domain.collections.candidate_metadata import CandidateField, Uncertainty
 from app.domain.collections.entities import (
     CollectionItem,
-    CollectionKind,
     CollectionSource,
     Message,
     MessageContentType,
@@ -46,6 +45,7 @@ from app.domain.collections.statuses import (
     ensure_persistable_collection_status,
     is_collection_visible_by_default,
 )
+from app.domain.collections.types import CollectionKind
 from app.domain.collections.writes import (
     AutoSaveResult,
     CollectionItemPatch,

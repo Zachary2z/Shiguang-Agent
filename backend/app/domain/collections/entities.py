@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Self
+from typing import Any, Self
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -16,6 +16,7 @@ from app.domain.collections.statuses import (
     CollectionStatus,
     ensure_persistable_collection_status,
 )
+from app.domain.collections.types import CollectionKind
 from app.domain.identifiers import (
     generate_collection_item_id,
     generate_message_id,
@@ -83,11 +84,6 @@ class SourceParseStatus(StrEnum):
     FAILED = "failed"
 
 
-class CollectionKind(StrEnum):
-    PLACE = "place"
-    EVENT = "event"
-
-
 class DomainModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
@@ -113,6 +109,7 @@ class SourceMetadata(DomainModel):
         if value is not None and _SHA256.fullmatch(value) is None:
             raise ValueError("content_sha256 must be 64 lowercase hexadecimal characters")
         return value
+
 
 class User(DomainModel):
     id: str = Field(default_factory=generate_user_id)
@@ -308,6 +305,10 @@ class CollectionItem(DomainModel):
         default_factory=tuple,
         max_length=len(CandidateField),
     )
+    # Validated below through the concrete contracts. Runtime imports avoid the
+    # matching -> collection extraction -> collection entity import cycle.
+    place_target: Any | None = None
+    place_candidate_snapshot: Any | None = None
     status: CollectionStatus
     version: int = Field(default=1, ge=1)
     created_at: datetime
@@ -360,6 +361,24 @@ class CollectionItem(DomainModel):
     @classmethod
     def normalize_optional_times(cls, value: datetime | None) -> datetime | None:
         return _domain_utc(value)
+
+    @field_validator("place_target", mode="before")
+    @classmethod
+    def validate_place_target(cls, value: object) -> object:
+        if value is None:
+            return None
+        from app.domain.places.targets import PlaceTarget
+
+        return PlaceTarget.model_validate(value)
+
+    @field_validator("place_candidate_snapshot", mode="before")
+    @classmethod
+    def validate_place_candidate_snapshot(cls, value: object) -> object:
+        if value is None:
+            return None
+        from app.domain.places.targets import PlaceCandidateSnapshot
+
+        return PlaceCandidateSnapshot.model_validate(value)
 
     @field_validator("created_at", "updated_at")
     @classmethod
@@ -418,6 +437,16 @@ class CollectionItem(DomainModel):
             or self.event_end_clue is not None
         ):
             raise ValueError("Place items cannot carry Event schedule fields or clues")
+        if self.kind is CollectionKind.EVENT and (
+            self.place_target is not None or self.place_candidate_snapshot is not None
+        ):
+            raise ValueError("Event items cannot carry Place target data")
+        if self.kind is CollectionKind.PLACE:
+            if self.status is CollectionStatus.PENDING_SELECTION:
+                if self.place_target is not None:
+                    raise ValueError("pending selection cannot carry a confirmed Place target")
+            if self.status is CollectionStatus.PENDING_DETAILS and self.place_target is not None:
+                raise ValueError("pending details cannot carry a confirmed Place target")
         if (self.price_amount is None) is not (self.price_currency is None):
             raise ValueError("price amount and currency must be provided together")
 

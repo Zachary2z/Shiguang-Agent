@@ -176,19 +176,29 @@ async def test_all_entities_create_read_list_update_and_link_round_trip(
             parse_status=SourceParseStatus.PARSED,
             updated_at=NOW + timedelta(seconds=1),
         )
-        active_item = await repository.transition_collection_status(
+        with pytest.raises(
+            ValueError,
+            match="pending Place selection requires a confirmed target",
+        ):
+            await repository.transition_collection_status(
+                user_id=user.id,
+                collection_item_id=item.id,
+                target=CollectionStatus.ACTIVE,
+                updated_at=NOW + timedelta(seconds=1),
+            )
+        pending_details_item = await repository.transition_collection_status(
             user_id=user.id,
             collection_item_id=item.id,
-            target=CollectionStatus.ACTIVE,
+            target=CollectionStatus.PENDING_DETAILS,
             updated_at=NOW + timedelta(seconds=1),
         )
         await session.commit()
 
         assert updated_source.parse_status is SourceParseStatus.PARSED
         assert updated_source.updated_at == NOW + timedelta(seconds=1)
-        assert active_item.status is CollectionStatus.ACTIVE
-        assert active_item.version == 2
-        assert await repository.list_collection_items(user_id=user.id) == [active_item]
+        assert pending_details_item.status is CollectionStatus.PENDING_DETAILS
+        assert pending_details_item.version == 2
+        assert await repository.list_collection_items(user_id=user.id) == [pending_details_item]
     await database.close()
 
 

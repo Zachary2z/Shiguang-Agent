@@ -398,6 +398,7 @@ LEGAL_TRANSITIONS = {
     (CollectionStatus.PENDING_SELECTION, CollectionStatus.PENDING_DETAILS),
     (CollectionStatus.PENDING_SELECTION, CollectionStatus.DELETED),
     (CollectionStatus.PENDING_DETAILS, RecognitionStatus.RECOGNIZING),
+    (CollectionStatus.PENDING_DETAILS, CollectionStatus.PENDING_SELECTION),
     (CollectionStatus.PENDING_DETAILS, CollectionStatus.DELETED),
 }
 

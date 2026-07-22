@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from app.domain.collections.entities import (
     CollectionItem,
@@ -16,6 +16,13 @@ from app.domain.collections.entities import (
 )
 from app.domain.collections.statuses import CollectionStatus
 from app.domain.collections.writes import CollectionWriteOperation
+
+if TYPE_CHECKING:
+    from app.domain.places.contracts import PoiProvider
+    from app.domain.places.targets import (
+        ConfirmedBrandIdentity,
+        PlaceSelectionOperation,
+    )
 
 
 class ResourceNotFoundError(LookupError):
@@ -175,3 +182,49 @@ class CollectionRepository(Protocol):
         undo_token_hash: str,
         claimed_at: datetime,
     ) -> bool: ...
+
+    async def apply_place_resolution(
+        self,
+        *,
+        user_id: str,
+        item: CollectionItem,
+        expected_version: int,
+    ) -> CollectionItem: ...
+
+    async def find_exact_place_item(
+        self, *, user_id: str, provider: PoiProvider, poi_id: str
+    ) -> CollectionItem | None: ...
+
+    async def find_any_branch_item(
+        self, *, user_id: str, brand: ConfirmedBrandIdentity
+    ) -> CollectionItem | None: ...
+
+    async def ensure_collection_source(
+        self,
+        *,
+        user_id: str,
+        collection_item_id: str,
+        source_id: str,
+        created_at: datetime,
+    ) -> CollectionSource: ...
+
+    async def add_place_selection_operation(
+        self, *, user_id: str, operation: PlaceSelectionOperation
+    ) -> PlaceSelectionOperation: ...
+
+    async def get_place_selection_operation(
+        self, *, user_id: str, idempotency_key: str
+    ) -> PlaceSelectionOperation | None: ...
+
+    async def get_write_operation_for_item(
+        self, *, user_id: str, collection_item_id: str
+    ) -> CollectionWriteOperation | None: ...
+
+    async def append_write_operation_item(
+        self,
+        *,
+        user_id: str,
+        operation_id: str,
+        collection_item_id: str,
+        created_at: datetime,
+    ) -> None: ...

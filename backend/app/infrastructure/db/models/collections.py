@@ -10,6 +10,7 @@ from sqlalchemy import (
     JSON,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -18,6 +19,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -218,8 +220,7 @@ class CollectionItemModel(Base):
             name="ck_collection_items_place_without_event_time",
         ),
         CheckConstraint(
-            "kind <> 'place' OR "
-            "(event_start_clue IS NULL AND event_end_clue IS NULL)",
+            "kind <> 'place' OR (event_start_clue IS NULL AND event_end_clue IS NULL)",
             name="ck_collection_items_place_without_event_clues",
         ),
         CheckConstraint(
@@ -228,11 +229,65 @@ class CollectionItemModel(Base):
             name="ck_collection_items_price_pair",
         ),
         CheckConstraint("updated_at >= created_at", name="ck_collection_items_time_order"),
+        CheckConstraint(
+            "place_scope IS NULL OR place_scope IN ('exact', 'any_branch')",
+            name="ck_collection_items_place_scope",
+        ),
+        CheckConstraint(
+            "(place_scope IS NULL AND place_target_json IS NULL AND "
+            "poi_provider IS NULL AND poi_id IS NULL AND poi_city_code IS NULL AND "
+            "poi_latitude IS NULL AND poi_longitude IS NULL AND "
+            "poi_coordinate_system IS NULL AND brand_namespace IS NULL AND "
+            "brand_id IS NULL AND place_confirmed_by IS NULL AND "
+            "place_confirmed_at IS NULL AND place_match_status IS NULL) OR "
+            "(place_scope = 'exact' AND place_target_json IS NOT NULL AND "
+            "poi_provider IS NOT NULL AND poi_id IS NOT NULL AND "
+            "poi_city_code IS NOT NULL AND poi_latitude IS NOT NULL AND "
+            "poi_longitude IS NOT NULL AND poi_coordinate_system = 'gcj_02' AND "
+            "brand_namespace IS NULL AND brand_id IS NULL AND "
+            "place_confirmed_by IS NOT NULL AND place_confirmed_at IS NOT NULL AND "
+            "place_match_status = 'matched') OR "
+            "(place_scope = 'any_branch' AND place_target_json IS NOT NULL AND "
+            "poi_provider IS NULL AND poi_id IS NULL AND poi_city_code IS NULL AND "
+            "poi_latitude IS NULL AND poi_longitude IS NULL AND "
+            "poi_coordinate_system IS NULL AND brand_namespace IS NOT NULL AND "
+            "brand_id IS NOT NULL AND place_confirmed_by = 'user_selection' AND "
+            "place_confirmed_at IS NOT NULL AND place_match_status IS NOT NULL)",
+            name="ck_collection_items_place_target_shape",
+        ),
+        CheckConstraint(
+            "(place_candidate_snapshot_json IS NULL AND candidate_count = 0 AND "
+            "candidates_queried_at IS NULL) OR "
+            "(place_candidate_snapshot_json IS NOT NULL AND "
+            "candidate_count BETWEEN 0 AND 3 AND candidates_queried_at IS NOT NULL)",
+            name="ck_collection_items_candidate_snapshot_shape",
+        ),
+        CheckConstraint(
+            "kind = 'place' OR (place_scope IS NULL AND place_target_json IS NULL AND "
+            "place_candidate_snapshot_json IS NULL AND candidate_count = 0)",
+            name="ck_collection_items_event_without_place_target",
+        ),
         Index(
             "ix_collection_items_user_status_created",
             "user_id",
             "status",
             "created_at",
+        ),
+        Index(
+            "uq_collection_items_user_exact_poi",
+            "user_id",
+            "poi_provider",
+            "poi_id",
+            unique=True,
+            sqlite_where=text("place_scope = 'exact' AND status <> 'deleted'"),
+        ),
+        Index(
+            "uq_collection_items_user_any_brand",
+            "user_id",
+            "brand_namespace",
+            "brand_id",
+            unique=True,
+            sqlite_where=text("place_scope = 'any_branch' AND status <> 'deleted'"),
         ),
     )
 
@@ -250,9 +305,7 @@ class CollectionItemModel(Base):
     business_district: Mapped[str | None] = mapped_column(String(100), nullable=True)
     landmark: Mapped[str | None] = mapped_column(String(160), nullable=True)
     metro_station: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    event_start_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    event_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     event_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     event_start_clue: Mapped[str | None] = mapped_column(String(120), nullable=True)
     event_end_clue: Mapped[str | None] = mapped_column(String(120), nullable=True)
@@ -264,6 +317,30 @@ class CollectionItemModel(Base):
         JSON,
         nullable=False,
         default=list,
+    )
+    place_scope: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    place_target_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    poi_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    poi_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    poi_city_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    poi_latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    poi_longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    poi_coordinate_system: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    brand_namespace: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    brand_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    place_match_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    place_confirmed_by: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    place_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    place_candidate_snapshot_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    candidate_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    candidates_queried_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -400,4 +477,46 @@ class CollectionWriteOperationItemModel(Base):
     collection_item_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(36), nullable=False)
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PlaceSelectionOperationModel(Base):
+    __tablename__ = "place_selection_operations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_item_id", "user_id"],
+            ["collection_items.id", "collection_items.user_id"],
+            name="fk_place_selection_operations_item_owner",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["source_id", "user_id"],
+            ["sources.id", "sources.user_id"],
+            name="fk_place_selection_operations_source_owner",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "length(idempotency_key) BETWEEN 1 AND 128",
+            name="ck_place_selection_operations_idempotency_length",
+        ),
+        CheckConstraint(
+            "length(request_fingerprint) = 64",
+            name="ck_place_selection_operations_fingerprint_length",
+        ),
+        CheckConstraint(
+            "json_array_length(result_item_ids_json) >= 1",
+            name="ck_place_selection_operations_results_nonempty",
+        ),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", name="fk_place_selection_operations_user", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    collection_item_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_item_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

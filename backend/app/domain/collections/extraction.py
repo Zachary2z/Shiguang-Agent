@@ -15,10 +15,11 @@ from app.domain.collections.candidate_metadata import (
     normalize_optional_candidate_text,
     normalize_required_candidate_text,
 )
-from app.domain.collections.entities import CollectionKind
+from app.domain.collections.types import CollectionKind
 from app.domain.time import require_aware_utc
 
 MAX_EXTRACTION_CANDIDATES = 10
+
 
 class ExtractionOutcome(StrEnum):
     """Mutually exclusive outcomes of one text extraction attempt."""

@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。M0-2A 至 M0-2D 已全部通过主控验收，文字输入到结构化收藏、可逆写入和最小 HTTP API 的离线闭环已经完成；M0-3A MapProvider Stub、M0-3B 高德适配和 M0-3C 地点匹配评分均已通过主控验收，下一允许阶段为 **M0-3D 连锁品牌与任意分店目标**。
+项目处于 **M0 技术验证**。M0-2A 至 M0-2D 已全部通过主控验收，文字输入到结构化收藏、可逆写入和最小 HTTP API 的离线闭环已经完成；M0-3A MapProvider Stub、M0-3B 高德适配和 M0-3C 地点匹配评分均已通过主控验收，M0-3D 连锁品牌与任意分店目标已完成开发并待主控验收。
 
-普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。M0-3B 已在一次单独授权下完成 5 次零重试、只读真实高德验收；该授权不延续到后续任务。M0-3D 分店策略、正式 POI 写入、URL/截图、计划、SSE 和前端均未开始。
+普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。M0-3B 已在一次单独授权下完成 5 次零重试、只读真实高德验收；该授权不延续到后续任务。M0-3D 未调用真实 Provider；URL/截图、计划、SSE 和前端仍未开始。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -199,6 +199,12 @@ RUN_REAL_MAP_TESTS=1 python -m pytest -q -m real_map_provider -rs
 `PlaceMatchingService` 是唯一应用层编排入口。每次调用显式接收 `CityScope`，只把标题与可选行政区交给现有 `MapProvider` 搜索；Event 会在 Provider 调用前拒绝。搜索范围的城市证据固定为零分，只用于拒绝混城结果，因此默认搜索深圳不会成为已确认城市事实。空结果为 `not_found`，弱证据或硬冲突为 `needs_context`，多个合理候选为 `ambiguous`；只有分数、第一二名差距和无硬冲突三项同时通过才为 `matched`，输出最多 3 项。
 
 唯一服务端阈值入口是 `Settings.place_matching_policy()`，由 `PLACE_MATCH_UNIQUE_SCORE`、`PLACE_MATCH_MINIMUM_SCORE_GAP` 和 `PLACE_MATCH_CANDIDATE_SCORE` 构造；三者只接受有限正数 `(0, 100]`，候选阈值不得高于唯一阈值。同分结果不会自动匹配。用户可见候选必须达到候选阈值且无硬冲突；Provider 有返回但没有可靠候选时返回可为空候选的 `needs_context`。用户选择契约仅表达当前候选中的具体 POI、显式“任意分店”或“以上都不是”；M0-3C 不写数据库，不持久化 `exact / any_branch`，也不修改 CollectionItem。
+
+### M0-3D 连锁品牌与统一地点目标
+
+`app.domain.places.targets` 定义唯一 `PlaceTarget`：`exact` 保存一个已确认 POI 的 `provider + poi_id`、正式 `city_code`、GCJ-02 坐标、确认来源/时间、匹配状态与必要证据；`any_branch` 只接受显式用户选择和已确认的稳定品牌命名空间/身份，不根据相似名称推断或合并。候选快照继续复用 M0-3C 契约，最多 3 项并保存 `queried_at`，不是独立收藏。`resolve_place_target()` 只提供 exact、any_branch、unconfirmed 三态规划边界，不包含路线或动态选店实现。
+
+`PlaceTargetSelectionService` 在现有 CollectionItem、Repository、Source 和事务上完成选择：未选保持 `pending_selection`；具体 POI 转为 `active + exact`；显式任意分店转为 `active + any_branch`；“以上都不是”回到 `pending_details`。多选具体分店在一个事务内拆成独立收藏并共享原 Source，新增分店会加入原写入操作的 Undo 组。每用户的 exact POI、any-branch 品牌和选择幂等键均有数据库约束；唯一冲突会回读并收敛，跨用户复合外键继续阻止 Source、收藏与操作串用。Alembic `20260722_0006` 是从 `20260721_0005` 向前的唯一新迁移。
 
 真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
 

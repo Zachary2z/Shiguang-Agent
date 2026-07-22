@@ -76,7 +76,11 @@ _ALLOWED_TRANSITIONS: dict[
         }
     ),
     CollectionStatus.PENDING_DETAILS: frozenset(
-        {RecognitionStatus.RECOGNIZING, CollectionStatus.DELETED}
+        {
+            RecognitionStatus.RECOGNIZING,
+            CollectionStatus.PENDING_SELECTION,
+            CollectionStatus.DELETED,
+        }
     ),
 }
 

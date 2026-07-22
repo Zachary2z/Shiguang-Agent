@@ -38,6 +38,20 @@ from app.domain.places.matching import (
     score_place_candidate,
     validate_place_selection,
 )
+from app.domain.places.targets import (
+    BrandIdentityConfirmationSource,
+    ConfirmedBrandIdentity,
+    PlaceCandidateSnapshot,
+    PlaceConfirmationSource,
+    PlaceScope,
+    PlaceSelectionOperation,
+    PlaceTarget,
+    ResolvedPlaceTarget,
+    ResolvedPlaceTargetKind,
+    exact_target_from_candidate,
+    normalize_brand_name,
+    resolve_place_target,
+)
 
 __all__ = [
     "CityScope",
@@ -74,4 +88,16 @@ __all__ = [
     "classify_place_matches",
     "score_place_candidate",
     "validate_place_selection",
+    "BrandIdentityConfirmationSource",
+    "ConfirmedBrandIdentity",
+    "PlaceCandidateSnapshot",
+    "PlaceConfirmationSource",
+    "PlaceScope",
+    "PlaceSelectionOperation",
+    "PlaceTarget",
+    "ResolvedPlaceTarget",
+    "ResolvedPlaceTargetKind",
+    "exact_target_from_candidate",
+    "normalize_brand_name",
+    "resolve_place_target",
 ]

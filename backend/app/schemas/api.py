@@ -22,6 +22,7 @@ from app.domain.collections import (
     UndoOutcome,
     UnsupportedReason,
 )
+from app.domain.places import PlaceCandidateSnapshot, PlaceTarget
 from app.domain.runs import AgentRunStatus, ToolRunStatus
 from nanobot_core.providers import FinishReason, TokenUsage
 
@@ -85,6 +86,8 @@ class CollectionItemResponse(ApiModel):
     tags: tuple[str, ...]
     missing_fields: tuple[CandidateField, ...]
     uncertainties: tuple[Uncertainty, ...]
+    place_target: PlaceTarget | None
+    place_candidate_snapshot: PlaceCandidateSnapshot | None
     status: CollectionStatus
     version: int
     created_at: datetime
@@ -112,6 +115,8 @@ class CollectionItemResponse(ApiModel):
             tags=item.tags,
             missing_fields=item.missing_fields,
             uncertainties=item.uncertainties,
+            place_target=item.place_target,
+            place_candidate_snapshot=item.place_candidate_snapshot,
             status=item.status,
             version=item.version,
             created_at=item.created_at,
