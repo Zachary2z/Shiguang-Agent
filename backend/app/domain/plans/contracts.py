@@ -5,25 +5,18 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Self
+from typing import Any, Self, cast
 from unicodedata import category
 
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    GetCoreSchemaHandler,
     ValidationError,
     field_validator,
     model_validator,
 )
-from pydantic.config import ExtraValues
-from pydantic_core import (
-    CoreSchema,
-    ErrorDetails,
-    InitErrorDetails,
-    core_schema,
-)
+from pydantic_core import ErrorDetails, InitErrorDetails
 
 from app.domain.collections import PlanCity
 from app.domain.places import CityScope, Coordinate, TransportMode
@@ -123,20 +116,37 @@ def _sanitize_validation_error(error: ValidationError) -> ValidationError:
     )
 
 
-def _redact_contract_validation(
-    value: Any,
-    handler: core_schema.ValidatorFunctionWrapHandler,
-) -> Any:
-    """Run a complete contract schema and discard any raw validation failure."""
+class _RedactingSchemaValidator:
+    """Delegate to one compiled Pydantic validator and sanitize every failure."""
 
-    safe_error: ValidationError | None = None
-    try:
-        return handler(value)
-    except ValidationError as error:
-        safe_error = _sanitize_validation_error(error)
-    if safe_error is not None:
-        raise safe_error from None
-    raise AssertionError("validation boundary did not return or raise")
+    def __init__(self, validator: Any) -> None:
+        self._validator = validator
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._validator, name)
+
+    def _validate(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
+        safe_error: ValidationError | None = None
+        try:
+            method = getattr(self._validator, method_name)
+            return method(*args, **kwargs)
+        except ValidationError as error:
+            safe_error = _sanitize_validation_error(error)
+        if safe_error is not None:
+            raise safe_error from None
+        raise AssertionError("schema validation boundary did not return or raise")
+
+    def validate_python(self, *args: Any, **kwargs: Any) -> Any:
+        return self._validate("validate_python", *args, **kwargs)
+
+    def validate_json(self, *args: Any, **kwargs: Any) -> Any:
+        return self._validate("validate_json", *args, **kwargs)
+
+    def validate_strings(self, *args: Any, **kwargs: Any) -> Any:
+        return self._validate("validate_strings", *args, **kwargs)
+
+    def validate_assignment(self, *args: Any, **kwargs: Any) -> Any:
+        return self._validate("validate_assignment", *args, **kwargs)
 
 
 class PlanContract(BaseModel):
@@ -151,50 +161,16 @@ class PlanContract(BaseModel):
     )
 
     @classmethod
-    def __get_pydantic_core_schema__(
-        cls,
-        source_type: Any,
-        handler: GetCoreSchemaHandler,
-    ) -> CoreSchema:
-        """Wrap the whole concrete model schema in the single safe error boundary."""
+    def __pydantic_on_complete__(cls) -> None:
+        """Install one safety boundary around the compiled core validator."""
 
-        schema = handler(source_type)
-        return core_schema.json_or_python_schema(
-            json_schema=schema,
-            python_schema=core_schema.no_info_wrap_validator_function(
-                _redact_contract_validation,
-                schema,
-            ),
-        )
-
-    @classmethod
-    def model_validate_json(
-        cls,
-        json_data: str | bytes | bytearray,
-        *,
-        strict: bool | None = None,
-        extra: ExtraValues | None = None,
-        context: Any | None = None,
-        by_alias: bool | None = None,
-        by_name: bool | None = None,
-    ) -> Self:
-        """Preserve native JSON coercions, then expose only rebuilt safe errors."""
-
-        safe_error: ValidationError | None = None
-        try:
-            return super().model_validate_json(
-                json_data,
-                strict=strict,
-                extra=extra,
-                context=context,
-                by_alias=by_alias,
-                by_name=by_name,
+        super().__pydantic_on_complete__()
+        validator = cls.__pydantic_validator__
+        if not isinstance(validator, _RedactingSchemaValidator):
+            cls.__pydantic_validator__ = cast(
+                Any,
+                _RedactingSchemaValidator(validator),
             )
-        except ValidationError as error:
-            safe_error = _sanitize_validation_error(error)
-        if safe_error is not None:
-            raise safe_error from None
-        raise AssertionError("JSON validation boundary did not return or raise")
 
 
 class PlanPace(StrEnum):

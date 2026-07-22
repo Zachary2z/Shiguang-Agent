@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from app.domain.collections import PlanCity
 from app.domain.places import Coordinate, CoordinateSystem, TransportMode
@@ -372,6 +372,42 @@ PRIVATE_VALUES = (
     PRIVATE_LATITUDE,
     PRIVATE_LONGITUDE,
 )
+PLAN_CONSTRAINTS_ADAPTER = TypeAdapter(PlanConstraints)
+
+
+def private_python_values(**changes: object) -> dict[str, Any]:
+    values = input_values(
+        area=ActivityArea(labels=(PRIVATE_AREA,)),
+        origin=PRIVATE_ORIGIN,
+        include=(PRIVATE_REQUIREMENT,),
+        exclude=(PRIVATE_EXCLUSION,),
+    )
+    values.update(changes)
+    return values
+
+
+def private_json_values(**changes: object) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "city_code": "shenzhen",
+        "start_at": START_AT.isoformat(),
+        "end_at": END_AT.isoformat(),
+        "area": {"labels": [PRIVATE_AREA]},
+        "origin": {
+            "latitude": float(PRIVATE_LATITUDE),
+            "longitude": float(PRIVATE_LONGITUDE),
+            "coordinate_system": "gcj_02",
+        },
+        "budget": 12.34,
+        "pace": "relaxed",
+        "transport_modes": ["walking"],
+        "include": [PRIVATE_REQUIREMENT],
+        "exclude": [PRIVATE_EXCLUSION],
+        "collection_only": False,
+        "created_at": CREATED_AT.isoformat(),
+        "expires_at": EXPIRES_AT.isoformat(),
+    }
+    values.update(changes)
+    return values
 
 
 def assert_validation_error_is_safe(
@@ -390,6 +426,11 @@ def assert_validation_error_is_safe(
     assert all(value not in output for value in PRIVATE_VALUES for output in outputs)
     assert all(value not in caplog.text for value in PRIVATE_VALUES)
     assert all(item["input"] is None for item in structured)
+    assert all(
+        set(item.get("ctx", {})) == {"error"}
+        and isinstance(item["ctx"]["error"], ValueError)
+        for item in structured
+    )
     assert error.__cause__ is None
     assert error.__context__ is None
 
@@ -406,27 +447,28 @@ def assert_validation_error_is_safe(
     ],
     ids=("invalid-time-window", "invalid-temporary-lifetime", "private-conflict"),
 )
-def test_validation_error_boundary_redacts_complete_python_input(
+@pytest.mark.parametrize(
+    "validation_path",
+    ["constructor", "model_validate", "type_adapter"],
+)
+def test_validation_error_boundary_redacts_every_python_path(
     changes: dict[str, object],
+    validation_path: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    raw = input_values(
-        area=ActivityArea(labels=(PRIVATE_AREA,)),
-        origin=PRIVATE_ORIGIN,
-        include=(PRIVATE_REQUIREMENT,),
-        exclude=(PRIVATE_EXCLUSION,),
-    )
-    raw.update(changes)
+    raw = private_python_values(**changes)
     original = deepcopy(raw)
 
     results: list[tuple[object, str]] = []
-    for use_model_validate in (False, True):
+    for _ in range(2):
         caplog.clear()
         with pytest.raises(ValidationError) as exc_info:
-            if use_model_validate:
+            if validation_path == "constructor":
+                PlanConstraints(**raw)
+            elif validation_path == "model_validate":
                 PlanConstraints.model_validate(raw)
             else:
-                PlanConstraints(**raw)
+                PLAN_CONSTRAINTS_ADAPTER.validate_python(raw)
         assert_validation_error_is_safe(exc_info.value, caplog)
         results.append(
             (
@@ -439,37 +481,43 @@ def test_validation_error_boundary_redacts_complete_python_input(
     assert raw == original
 
 
-def test_validation_error_boundary_redacts_complete_json_input(
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param(
+            {"end_at": START_AT.isoformat()},
+            id="invalid-time-window",
+        ),
+        pytest.param(
+            {"expires_at": CREATED_AT.isoformat()},
+            id="invalid-temporary-lifetime",
+        ),
+        pytest.param(
+            {
+                "include": [PRIVATE_REQUIREMENT],
+                "exclude": [PRIVATE_REQUIREMENT],
+            },
+            id="private-conflict",
+        ),
+    ],
+)
+@pytest.mark.parametrize("validation_path", ["model_validate_json", "type_adapter"])
+def test_validation_error_boundary_redacts_every_json_path(
+    changes: dict[str, object],
+    validation_path: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    payload = json.dumps(
-        {
-            "city_code": "shenzhen",
-            "start_at": START_AT.isoformat(),
-            "end_at": START_AT.isoformat(),
-            "area": {"labels": [PRIVATE_AREA]},
-            "origin": {
-                "latitude": float(PRIVATE_LATITUDE),
-                "longitude": float(PRIVATE_LONGITUDE),
-                "coordinate_system": "gcj_02",
-            },
-            "budget": None,
-            "pace": "relaxed",
-            "transport_modes": ["walking"],
-            "include": [PRIVATE_REQUIREMENT],
-            "exclude": [PRIVATE_EXCLUSION],
-            "collection_only": False,
-            "created_at": CREATED_AT.isoformat(),
-            "expires_at": EXPIRES_AT.isoformat(),
-        }
-    )
+    payload = json.dumps(private_json_values(**changes))
     original = payload
 
     rendered: list[str] = []
     for _ in range(2):
         caplog.clear()
         with pytest.raises(ValidationError) as exc_info:
-            PlanConstraints.model_validate_json(payload)
+            if validation_path == "model_validate_json":
+                PlanConstraints.model_validate_json(payload)
+            else:
+                PLAN_CONSTRAINTS_ADAPTER.validate_json(payload)
         assert_validation_error_is_safe(exc_info.value, caplog)
         rendered.append(exc_info.value.json(include_url=False))
 
@@ -477,26 +525,58 @@ def test_validation_error_boundary_redacts_complete_json_input(
     assert payload == original
 
 
+@pytest.mark.parametrize("validation_path", ["model_validate_json", "type_adapter"])
+def test_malformed_json_is_redacted_at_every_json_path(
+    validation_path: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    payload = json.dumps(private_json_values())[:-1]
+
+    rendered: list[str] = []
+    for _ in range(2):
+        caplog.clear()
+        with pytest.raises(ValidationError) as exc_info:
+            if validation_path == "model_validate_json":
+                PlanConstraints.model_validate_json(payload)
+            else:
+                PLAN_CONSTRAINTS_ADAPTER.validate_json(payload)
+        assert_validation_error_is_safe(exc_info.value, caplog)
+        rendered.append(exc_info.value.json(include_url=False))
+
+    assert rendered[0] == rendered[1]
+
+
+def test_type_adapter_python_validation_remains_strict_and_redacted(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw = private_json_values()
+    original = deepcopy(raw)
+
+    with pytest.raises(ValidationError) as exc_info:
+        PLAN_CONSTRAINTS_ADAPTER.validate_python(raw)
+
+    assert_validation_error_is_safe(exc_info.value, caplog)
+    assert raw == original
+
+
 def test_successful_python_and_json_public_dumps_exclude_precise_origin() -> None:
     constraints = complete(origin=PRIVATE_ORIGIN)
-    json_constraints = PlanConstraints.model_validate_json(
-        json.dumps(
-            {
-                **constraints.model_dump(mode="json"),
-                "origin": {
-                    "latitude": float(PRIVATE_LATITUDE),
-                    "longitude": float(PRIVATE_LONGITUDE),
-                    "coordinate_system": "gcj_02",
-                },
-            }
-        )
-    )
+    payload = json.dumps(private_json_values())
+    model_json_constraints = PlanConstraints.model_validate_json(payload)
+    adapter_json_constraints = PLAN_CONSTRAINTS_ADAPTER.validate_json(payload)
 
-    for value in (constraints, json_constraints):
+    for value in (constraints, model_json_constraints, adapter_json_constraints):
         dumped = value.model_dump()
         serialized = value.model_dump_json()
         assert "origin" not in dumped
         assert all(item not in serialized for item in ("origin", *PRIVATE_VALUES[-2:]))
+
+    for value in (model_json_constraints, adapter_json_constraints):
+        assert value.start_at == START_AT
+        assert value.end_at == END_AT
+        assert value.budget == Decimal("12.34")
+        assert value.pace is PlanPace.RELAXED
+        assert value.transport_modes == (TransportMode.WALKING,)
 
 
 def test_resolution_has_no_network_file_database_or_provider_side_effects(
