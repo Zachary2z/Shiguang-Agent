@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。M0-2A 至 M0-2D、M0-3A 至 M0-3D、M0-4A 至 M0-4D 均已通过主控验收。M0-5A PlanConstraints 已实现并待主控验收；M0-5B 及后续阶段仍未开始。
+项目处于 **M0 技术验证**。M0-2A 至 M0-2D、M0-3A 至 M0-3D、M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收。当前允许开始 M0-5B 结构化检索和规则；M0-5C 及后续阶段仍未开始。
 
-普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。此前真实模型和高德的单次授权均不延续到 M0-5A；真实模型、高德、网页、对象存储及其他外部/付费调用默认未授权。M0-5A 只处理计划约束契约与缺失项判断，不实现 M0-5B/C/D、SSE、Worker 或前端。
+普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。此前真实模型和高德的单次授权均不延续到 M0-5B；真实模型、高德、网页、对象存储及其他外部/付费调用默认未授权。M0-5B 只实现结构化检索、硬约束过滤、明确排除原因和规划时分店解析，不实现 M0-5C/D、SSE、Worker 或前端。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -82,7 +82,7 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前 HEAD revision 是 `20260722_0006`。M0-4D 没有新增迁移：现有 `sources` 已有原始 URL、私有 `file_key`、解析状态、抓取时间和受限 JSON 元数据，足以保存最终 URL、网页失败码、MIME、大小及 SHA-256；现有 Message、AgentRun/ToolRun 与收藏幂等表也可直接复用。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+当前 HEAD revision 是 `20260722_0006`。M0-4D 与 M0-5A 均未新增迁移；现有 Message、Source、AgentRun/ToolRun、收藏、地点目标和幂等表继续作为后续检索的唯一数据来源。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
 
 ### 启动 API
 

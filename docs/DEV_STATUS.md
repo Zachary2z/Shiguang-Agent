@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-5A PlanConstraints |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-5-planning |
+| 当前子阶段 | M0-5B 结构化检索和规则 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 无；M0-5A 前置条件已满足 |
+| 阻塞项 | 无；M0-5B 前置条件已满足 |
 
 ## 当前任务
 
-M0-4A 至 M0-4D 均已通过主控验收并集成到 `main`，M0 的输入、收藏与地点匹配技术验证前置链路已经闭合。M0-5A PlanConstraints 已在独立阶段分支实现，当前等待主控验收；M0-5B 结构化检索、M0-5C 草案生成、M0-5D 外部地点补充以及后续阶段仍未开始且不得提前开发。
+M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收并集成到 `main`，计划约束契约和安全解析边界已经闭合。当前只允许开始 M0-5B 结构化检索和规则；M0-5C 草案生成、M0-5D 外部地点补充以及后续阶段仍未开始且不得提前开发。
 
 ## M0 状态
 
@@ -24,7 +24,7 @@ M0-4A 至 M0-4D 均已通过主控验收并集成到 `main`，M0 的输入、收
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
 | M0-4 URL 与截图 | 已完成 | M0-4A、M0-4B、M0-4C、M0-4D 均已通过主控验收 |
-| M0-5 计划技术验证 | 进行中 | M0-5A 待主控验收；M0-5B/C/D 未开始 |
+| M0-5 计划技术验证 | 进行中 | M0-5A 已完成；M0-5B 允许开始；M0-5C/D 未开始 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
 状态只允许使用：未开始、进行中、待验收、已完成、阻塞。
@@ -56,7 +56,7 @@ M0-4A 至 M0-4D 均已通过主控验收并集成到 `main`，M0 的输入、收
 
 ## 下一步
 
-主控从精确阶段提交独立复验 M0-5A 的严格契约、缺失项顺序、过期边界、敏感信息安全、无副作用和完整离线回归。验收通过前不合并 `main`、不开始 M0-5B/C/D，也不调用真实模型、高德、路线、天气、网页或其他外部/付费 API。
+从最新 `main` 开始 M0-5B，只实现结构化收藏检索、硬约束过滤、明确排除原因、同 POI 去重和任意分店的规划时解析。必须复用 M0-5A 的 `PlanConstraints`、既有 Collection Repository、`PlaceTarget`、MapProvider 与地点匹配结果；不得新增第二套检索/地点/分店模型，不开始 M0-5C/D，也不调用真实模型、高德、路线、天气、网页或其他外部/付费 API。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -912,3 +912,14 @@ M0-4A 至 M0-4D 均已通过主控验收并集成到 `main`，M0 的输入、收
 - 安全回归：聚焦测试 `57 passed`，覆盖合法 Python/JSON、完整与部分约束入口、非法/超 24 小时时间窗口、非法临时有效期、include/exclude 私人冲突、缺少 area/origin、错误 Python 类型、malformed JSON、非法嵌套 Coordinate 和 extra 字段。每个失败结果检查固定 code/摘要、冻结状态、`str`/`repr`/`args`/`vars`/公开字典/日志、cause/context 和原输入不变；连续两次 `PlanConstraintInput.model_rebuild(force=True)` 后同一公开入口仍安全，证明安全性来自外部解析边界而非 Pydantic 内部代理
 - 完整验证：editable 安装、`pip check`、Ruff、strict mypy（87 个源文件）均退出 0；M0-5A `57 passed`、Core `118 passed`、迁移 `21 passed`、非真实全集 `1318 passed / 2 deselected`、默认全集 `1318 passed / 2 skipped`，全部退出 0；所有 pytest 均设置 `APP_ENV=test RUN_REAL_MODEL_TESTS=0 RUN_REAL_MAP_TESTS=0`
 - 迁移、冗余与下一步：未新增或修改迁移、ORM、Repository、API、Provider、数据库、依赖、配置、`nanobot_core`、M0-5B 检索、M0-5C 草案或 M0-5D 外部补充；Alembic head 保持唯一 `20260722_0006`。扫描确认 PlanConstraints、PlanCity、Coordinate、TransportMode、AgentRunner、ToolRegistry、Provider 和安全解析映射各自唯一。未读取、打印或修改 `.env`，真实模型、高德、路线、天气、网页、对象存储、消息及其他外部/付费 API 调用均为 0；当前无已知未关闭 P0/P1，阶段继续为 M0-5A 待主控验收，不合并、不推送、不开始 M0-5B/C/D
+
+#### 2026-07-23｜M0-5A PlanConstraints｜已完成（主控验收）
+
+- 提交与集成：阶段功能提交 `2fb9e53ceee3e35bc22728fa0778738c351fc4d2`，最终安全边界收敛提交 `67982c6558b44d7b8d72951c291a348e6a5496a0`；提交链直接包含 `main`/`origin/main` 基线 `eb8e1a7ab83a0c784508943020db06fb6aea9b44`。主控确认工作区干净后以 `--ff-only` 无冲突快进，合并后 tree 与精确待验收提交完全一致，没有额外代码变化。
+- 功能与边界结论：唯一 `PlanConstraints`/`PlanConstraintInput` 覆盖显式深圳、时间与活动范围、可空预算、pace、交通、include/exclude、`collection_only` 和临时有效期；缺失项固定先时间、后范围。原生 Pydantic 业务校验保持一份，不可信 Python/JSON 只通过共享安全解析边界进入；失败只公开固定 `INVALID_PLAN_CONSTRAINTS`，不带输入、底层校验细节或异常链。
+- 简洁性复核：最终修复删除 `_RedactingSchemaValidator`、Pydantic 内部属性替换、错误消息/位置白名单、`ValidationError` 重建和 Python/JSON schema 分叉；相对上一问题提交净减少代码，没有为测试追加业务特例。PlanConstraints、安全错误映射、AgentRunner、ToolRegistry、MapProvider、ModelProvider、Collection Repository 与 PlaceTarget 均保持唯一，无重复校验算法或第二套规划入口。
+- 独立环境：主控从精确 `67982c6` 使用 `git archive` 建立仓库外副本和全新 Python 3.13.5 虚拟环境，重新安装 `backend[dev]`。`pip check`、Ruff、strict mypy 均退出 0，mypy 检查 87 个源文件；Alembic 仍为唯一 `20260722_0006 (head)`。
+- 自动化结果：M0-5A 聚焦 `57 passed`；Core `118 passed`；迁移 `21 passed`；非真实全集 `1318 passed / 2 deselected`；默认全集 `1318 passed / 2 skipped`；封锁 socket connect/connect_ex/create_connection 与 DNS 后非真实全集再次 `1318 passed / 2 deselected`，全部退出 0。
+- 独立安全探针：仓库外脚本验证合法 Python/JSON、重复解析不修改输入、连续两次重建 `PlanConstraints` 和 `PlanConstraintInput` 后安全入口仍有效，以及非法 Python、畸形 JSON、非法 UTF-8、异常 `str/repr/args/vars/to_dict`、标准 traceback 日志和 cause/context 均不泄露私人哨兵或底层 Pydantic 信息。
+- 合并后检查：在 `main` 使用项目 `.venv` 再次执行 Ruff、strict mypy、M0-5A 聚焦和非真实全集，分别为退出 0、退出 0、`57 passed`、`1318 passed / 2 deselected`。没有未关闭 P0/P1。
+- 范围、安全与下一步：未新增迁移、ORM、Repository、API、Provider、依赖、配置、前端或 M0-5B/C/D 功能；Git 不含 `.env`、数据库、缓存、虚拟环境或响应快照。未读取、打印或修改本机 `.env`，真实模型、高德、路线、天气、网页、对象存储、消息及任何外部/付费 API 调用均为 0。M0-5A 已完成，M0-5B 前置条件满足且是下一唯一允许阶段，M0-5C/D 保持未开始。
