@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-4D 统一输入流水线 |
-| 状态 | 待主控复验 |
-| 当前分支 | codex/m0-4d-unified-input |
-| 最近更新 | 2026-07-22 |
-| 阻塞项 | 无；M0-4D 前置条件已满足 |
+| 当前子阶段 | M0-5A PlanConstraints |
+| 状态 | 未开始 |
+| 当前分支 | main |
+| 最近更新 | 2026-07-23 |
+| 阻塞项 | 无；M0-5A 前置条件已满足 |
 
 ## 当前任务
 
-M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4D 已在 `codex/m0-4d-unified-input` 完成统一文字、URL、图片流水线，并在问题提交 `80b3f9d6a3b2b41062868ced9dc7ee828710ffeb` 之上修复主控 QA 发现的图片 MIME 幂等、恢复状态重放、取消清理和重复校验问题，当前等待主控复验。M0-5 仍未开始且不允许提前开发。
+M0-4A 至 M0-4D 均已通过主控验收并集成到 `main`，M0 的输入、收藏与地点匹配技术验证前置链路已经闭合。当前只允许从最新 `main` 开始 M0-5A PlanConstraints；M0-5B 结构化检索、M0-5C 草案生成、M0-5D 外部地点补充以及后续阶段仍不得提前开发。
 
 ## M0 状态
 
@@ -23,8 +23,8 @@ M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4D 已�
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
-| M0-4 URL 与截图 | 进行中 | M0-4A、M0-4B、M0-4C 已完成；M0-4D 待主控复验 |
-| M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
+| M0-4 URL 与截图 | 已完成 | M0-4A、M0-4B、M0-4C、M0-4D 均已通过主控验收 |
+| M0-5 计划技术验证 | 未开始 | M0-5A 前置条件已满足，允许开始 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
 状态只允许使用：未开始、进行中、待验收、已完成、阻塞。
@@ -52,10 +52,11 @@ M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4D 已�
 - M0-4A 已完成：唯一 StorageProvider、本地私有目录、随机 key、类型/大小边界、生命周期元数据、原子排他发布、失败/取消清理和幂等删除已通过主控验收。
 - M0-4B 已完成：唯一 WebContentProvider、网页成功/失败契约、集中 URL/SSRF 策略、DNS 连接绑定、显式重定向、响应/解压/文本边界、Cookie 零状态、HTTP 日志防泄漏和 BeautifulSoup 白名单抽取已通过主控验收。
 - M0-4C 已完成：唯一 ImageRecognitionService、私有原图生命周期、多模态候选抽取、图片与模型载荷边界、不确定字段保护、失败清理和异常脱敏已通过主控验收。
+- M0-4D 已完成：文字、URL 与图片已进入唯一 Message、Source、AgentRun/ToolRun、结构抽取和收藏写入流水线；MIME 幂等、可恢复状态重放、取消清理、用户/Session 隔离和统一约束已通过主控验收。
 
 ## 下一步
 
-主控窗口从指定基线独立复核 `codex/m0-4d-unified-input` 的范围、统一实现、幂等、20 秒预算、失败清理、脱敏和全部离线测试；验收通过后再决定是否集成。开发窗口停止在 M0-4D，不合并 `main`、不推送、不开始 M0-5，也不执行未经授权的真实调用。
+从本次状态提交后的最新 `main` 创建 M0-5A 开发分支，只实现 PlanConstraints、严格校验、临时约束有效期与缺失项追问契约。复用现有用户、Session、城市和时间领域能力；不实现 M0-5B/C/D，不调用真实模型、高德、路线、天气、网页或其他外部/付费 API。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -851,3 +852,13 @@ M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4D 已�
 - 测试覆盖：M0-4D 契约由 `10 passed` 增至 `19 passed`，新增 PNG 字节 MIME 冲突、JPEG/PNG/WebP 规范 MIME 重放、文字/URL/图片恢复状态重放、Provider/取消重放、取消时固定删除错误、非取消清理异常脱敏、跨用户/Session 隔离、冻结输入、一次 URL 抓取及一次图片识别/存储。图片服务 `52 passed`、旧 M0-2D API `16 passed`、core `118 passed`、迁移 `21 passed`；正式非真实全集 `1261 passed / 2 deselected`，默认全集 `1261 passed / 2 skipped`，全部退出 0
 - 静态、迁移与范围：editable 安装、`pip check`、Ruff、strict mypy（85 个源文件）均退出 0；根 README 的迁移命令已修正为 `tests/integration/test_migrations.py`。本轮没有新增迁移、依赖、配置、表、Repository、Runner、Registry、Provider、工作流、响应 DTO 或 `nanobot_core` 修改；Alembic head 保持唯一 `20260722_0006`
 - 真实调用与下一步：未读取、打印或修改本机 `.env`，未启用真实 marker；真实模型、高德、网页、DNS、对象存储、消息及任何真实/付费 API 调用均为 0。M0-5、计划、路线、天气、前端、SSE、Worker、队列和后台清理均未开始。当前状态保持待主控复验，本分支不合并、不推送
+
+#### 2026-07-23｜M0-4D｜已完成（主控验收）
+
+- 提交与集成：阶段功能提交 `80b3f9d6a3b2b41062868ced9dc7ee828710ffeb`、修复提交 `24e0901412b1939a887b80193339843d1a0a34e6`，均直接包含指定基线 `c6d8ac570983c5bd9fd6d73e672030ba65644b7b`。验收前 `main` 与 `origin/main` 均精确位于该基线；主控以 `--ff-only` 无冲突快进到修复提交，代码树没有额外变化。独立 UX 提交 `3000c2b` 保持在 `codex/ux-composer-dock`，未混入本阶段。
+- 修复复验：上一轮图片 MIME 未纳入幂等身份、可恢复 Extraction/恢复动作重放丢失、取消被清理失败覆盖、README 迁移路径错误和幂等约束重复五项缺陷均已关闭。JPEG/PNG/WebP MIME 与摘要共同构成安全身份；文字、URL、图片和网页失败均从持久状态确定性重放；原始取消在固定清理失败后仍以同一对象传播，Run 为 `cancelled / RUN_CANCELLED`。
+- 隔离环境与静态检查：对精确修复提交使用仓库外 `git archive` 和全新 Python 3.13.5 虚拟环境重新安装 `backend[dev]`；`pip check`、Ruff 与 strict mypy 均退出 0，mypy 检查 85 个源文件。工作区、提交父链、main/origin/main 关系、Git 敏感文件和差异范围均通过门禁。
+- 自动化结果：M0-4D 契约 `19 passed`；图片服务 `52 passed`；旧 M0-2D API `16 passed`；Core `118 passed`；迁移 `21 passed`；正式非真实全集 `1261 passed / 2 deselected`；默认全集 `1261 passed / 2 skipped`；封锁 socket connect/connect_ex/create_connection 与 DNS 后非真实全集再次 `1261 passed / 2 deselected`，全部退出 0。
+- 独立对抗与迁移检查：仓库外 4 项独立探针全部通过，覆盖同字节不同 MIME 冲突且零额外副作用、信息不足状态完整重放、取消与固定存储清理失败竞争，以及图片契约与 OpenAPI 共用同一幂等约束。Alembic `upgrade head`、`check`、`downgrade base`、再次 `upgrade head` 均通过；迁移文件仍为 6 个，唯一 head 为 `20260722_0006`。无外部 Provider 配置时健康检查正常。
+- 范围、安全与冗余：M0-4D 只原位扩展既有文字收藏工作流、运行记录、Source 元数据和唯一消息 API；AgentRunner、ToolRegistry、ModelProvider、WebContentProvider、StorageProvider、TextExtractionService、ImageRecognitionService、CollectionWriteService、Repository 和响应 DTO 均保持唯一。没有新依赖、配置、迁移、M0-5、路线、天气、前端、SSE、Worker、队列、自动重试或后台任务；Git 不含 `.env`、数据库、图片、响应快照、缓存或虚拟环境。
+- 真实调用与结论：本轮未读取、打印或修改本机 `.env`，未启用真实 marker；真实模型、高德、网页、DNS、对象存储、消息及任何真实/付费 API 调用均为 0。没有未关闭的 P0/P1，M0-4D 与 M0-4 已完成，M0-5A 前置条件满足；下一阶段只实现 PlanConstraints，不提前实现 M0-5B/C/D。

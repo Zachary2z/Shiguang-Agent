@@ -5,10 +5,10 @@
 | 项目 | Shiguang_Nanobot |
 | 产品 | 拾光｜把收藏变成行动的个人生活 Agent |
 | 文档版本 | v1.0 |
-| 日期 | 2026-07-21 |
+| 日期 | 2026-07-23 |
 | 状态 | 后续开发执行基线 |
 | 仓库 | /Users/zhangzihao/Documents/Shiguang_Nanobot |
-| 当前阶段 | M0-4C 截图识别（允许开始） |
+| 当前阶段 | M0-5A PlanConstraints（允许开始） |
 
 ---
 
