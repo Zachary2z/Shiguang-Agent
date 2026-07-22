@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-4B 网页解析 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-4b-web-parsing |
+| 当前子阶段 | M0-4C 截图识别 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-22 |
-| 阻塞项 | 无；等待主控独立验收 |
+| 阻塞项 | 无；M0-4C 前置条件已满足 |
 
 ## 当前任务
 
-M0-4A 已通过主控验收并纯快进集成到 `main`。M0-4B 已在 `codex/m0-4b-web-parsing` 实现唯一网页内容契约、集中 URL/SSRF 策略、DNS 校验后连接绑定、显式安全重定向、有界 HTML/文本解析与可恢复失败结果，当前等待主控验收。当前允许阶段仍为 M0-4B；M0-4C 截图识别、M0-4D 统一输入和 M0-5 仍未开始。
+M0-4A 与 M0-4B 均已通过主控验收并纯快进集成到 `main`。网页内容契约、集中 URL/SSRF 策略、DNS 校验后连接绑定、显式安全重定向、有界 HTML/文本解析和可恢复失败结果现已形成完整离线边界。当前允许阶段为 M0-4C 截图识别；M0-4C 尚未开始，M0-4D 统一输入和 M0-5 仍未开始。
 
 ## M0 状态
 
@@ -23,7 +23,7 @@ M0-4A 已通过主控验收并纯快进集成到 `main`。M0-4B 已在 `codex/m0
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
-| M0-4 URL 与截图 | 进行中 | M0-4A 私有文件存储已完成；M0-4B 待验收；M0-4C、M0-4D 未开始 |
+| M0-4 URL 与截图 | 进行中 | M0-4A 私有文件存储、M0-4B 网页解析已完成；M0-4C 允许开始；M0-4D 未开始 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
@@ -50,11 +50,11 @@ M0-4A 已通过主控验收并纯快进集成到 `main`。M0-4B 已在 `codex/m0
 - M0-3C 已完成：供应商无关的确定性匹配评分、可靠候选过滤、城市与分店硬冲突、四种结果和显式用户选择契约已通过主控验收。
 - M0-3D 已完成：统一 PlaceTarget、具体地点与任意分店目标、持久化候选快照、正式 POI/品牌幂等、多选事务、规划解析边界和异常链安全均已通过主控验收。
 - M0-4A 已完成：唯一 StorageProvider、本地私有目录、随机 key、类型/大小边界、生命周期元数据、原子排他发布、失败/取消清理和幂等删除已通过主控验收。
-- M0-4B 待验收：唯一 WebContentProvider、网页成功/失败契约、集中 URL/SSRF 策略、DNS 连接绑定、显式重定向、响应/解压/文本边界和 BeautifulSoup 白名单抽取已完成离线验证。
+- M0-4B 已完成：唯一 WebContentProvider、网页成功/失败契约、集中 URL/SSRF 策略、DNS 连接绑定、显式重定向、响应/解压/文本边界、Cookie 零状态、HTTP 日志防泄漏和 BeautifulSoup 白名单抽取已通过主控验收。
 
 ## 下一步
 
-主控在仓库外隔离环境独立复核 M0-4B 阶段提交与完整离线回归，重点验证 URL 混淆、全部非全局地址、混合 DNS、DNS 重绑定、逐跳重定向校验、代理/凭证隔离、流式及解压后上限、charset、正文清理、取消传播和安全失败对象。验收通过前当前允许阶段保持 M0-4B；本分支不合并、不推送，不开始 M0-4C/M0-4D/M0-5，也不访问任何真实网页或外部 Provider。
+从本次状态提交后的最新 `main` 创建 `codex/m0-4c-image-recognition`，只实现 M0-4C 图片上传、多模态抽取、OCR/视觉字段进入现有候选 Schema，以及低置信字段标记。复用 M0-4A 的唯一 StorageProvider、M0-1 的唯一 ModelProvider/Runner 和 M0-2B 的候选契约；不得提前实现 M0-4D 统一输入流水线、Source/Collection 编排、M0-5、前端或真实外部调用。真实多模态模型调用必须在新的当前任务中单独取得明确授权。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -755,3 +755,12 @@ M0-4A 已通过主控验收并纯快进集成到 `main`。M0-4B 已在 `codex/m0
 - 正式回归数量：全新环境网页契约/URL 安全/实现聚焦命令退出 0，`195 passed`；M0-4A 存储契约/集成命令退出 0，`71 passed`；core 退出 0，`118 passed`；迁移退出 0，`21 passed`；正式非真实全集退出 0，`1188 passed / 2 deselected`；默认全集退出 0，`1188 passed / 2 skipped`。新增 52 项正式 case 覆盖 INFO/DEBUG 初始和重定向 query、共享 CookieJar、嵌套/相邻/全隐藏内容、注释/data/script/其他标签伪 charset、合法 http-equiv/大小写/顺序，以及三项整数限制和 timeout 的严格类型边界
 - 禁网、范围与安全：临时 `/tmp` pytest 插件封锁 socket connect/connect_ex/create_connection 与 DNS 后，非真实全集再次退出 0，`1188 passed / 2 deselected`。所有网页用例仍只使用 MockTransport、Stub Resolver 和固定 HTML；真实网页、模型、高德、对象存储、消息和付费 API 调用均为 0。没有迁移、配置变量、数据库/Source 写入、路由或新解析器；没有修改 StorageProvider、AgentRunner、ToolRegistry、ModelProvider 或地图业务行为，只把高德已有日志保护抽成共享安全函数。没有实现 M0-4C/M0-4D/M0-5，没有删除测试、放宽断言或增加跳过，当前没有已知未关闭 P0/P1
 - 剩余风险与主控复测：共享日志保护是进程级 logger 下限，避免第三方库在 INFO/DEBUG 输出敏感请求细节；若未来业务确需低级 HTTP 诊断，必须引入经过审计的结构化脱敏事件，不能恢复原始 httpx/httpcore URL/header 日志。实际网页/TLS/DNS 仍按授权禁令未验证；静态 HTML 启发式抽取仍不执行 JavaScript 或登录态。主控应在隔离环境重点复测两个 root 日志级别、重定向 query、异常链、Set-Cookie 并发、BeautifulSoup 4.15 strict mypy、嵌套 decompose、meta charset 伪装及全量封网；M0-4B 继续“待验收”并保持当前允许阶段，本分支不合并、不推送、不开始 M0-4C
+
+#### 2026-07-22｜M0-4B｜已完成（主控验收）
+
+- 提交与集成：阶段提交 `28b3b0527087688426a5a1d16649727a06ec1a54` 与修复提交 `475ba0ca8d7d9361073cfadf6612fc5645e8e162` 均直接包含已验收基线 `2a6872e1752baadd5a42cfab1d7adec0bda58ee2`；主控以 `git merge --ff-only` 将 `codex/m0-4b-web-parsing` 纯快进集成到 `main`，无冲突、无额外代码变化，阶段分支与合并后树哈希均为 `6889323930821bbe4e798d89ba979552f1f25f42`
+- 验收环境与自动化：对最终阶段 HEAD 使用仓库外 `git archive` 和全新 Python 3.13.5 虚拟环境，实际解析 BeautifulSoup 4.15.0、mypy 1.20.2、pytest 9.1.1；editable 安装、`pip check`、Ruff 均通过，strict mypy 对 82 个源文件无问题。网页聚焦测试 `195 passed`、存储 `71 passed`、core `118 passed`、迁移 `21 passed`；正式非真实全集 `1188 passed / 2 deselected`，默认全集 `1188 passed / 2 skipped`；封锁 socket connect/connect_ex/create_connection 和 DNS 后非真实全集再次 `1188 passed / 2 deselected`
+- 缺陷关闭与独立对抗：原验收发现的 2 个 P1 与 4 个 P2 全部关闭。旧 8 项缺陷复现和另写的 16 项独立探针均通过，覆盖 INFO/DEBUG 下初始及重定向 query/响应正文脱敏、BeautifulSoup 4.15 clean-env 类型检查、预置/响应/重定向/重复/并发 Cookie 零状态、嵌套噪声与 hidden 节点、注释/script/data 属性伪 charset、合法 http-equiv charset，以及整数限制和 timeout 的精确类型边界
+- 范围、安全与冗余：WebContentProvider、HttpxWebContentProvider、URL/SSRF 策略、BeautifulSoup 抽取器、StorageProvider、AgentRunner、ToolRegistry、ModelProvider 和 MapProvider 均保持唯一；高德与网页适配器只共享一处 HTTP 日志安全边界，没有第二套客户端构造、解析器或响应 DTO。没有截图识别、图片上传、统一输入、Source/Collection 写入、路由、自动重试、缓存、Worker、前端或 M0-5；Git 未跟踪 `.env`、数据库、HTML 响应、Cookie、缓存或临时文件，当前没有未关闭 P0/P1
+- 迁移、外部调用与合并后检查：M0-4B 没有数据库变化；临时 SQLite 完成 fresh upgrade、check、downgrade `20260721_0005`、re-upgrade、check 和 current，最终仍为唯一 `20260722_0006 (head)`。未读取本机 `.env`，未运行真实 marker，真实 DNS、网页、百炼、高德、对象存储、消息及其他真实/付费 API 调用均为 0。纯快进合并后 Ruff、82 文件 mypy 和非真实全集再次通过（`1188 passed / 2 deselected`）
+- 验收结论与下一步：M0-4B 的范围、依赖、SSRF、逐跳重定向、大小/解压/charset、异常、取消、幂等、并发、日志脱敏与 Cookie 隔离要求满足。M0-4C 前置条件已满足；从本次状态提交后的最新 `main` 创建 `codex/m0-4c-image-recognition`，复用唯一 StorageProvider、ModelProvider/Runner 和候选 Schema，只实现私有图片输入与多模态字段抽取，不提前实现 M0-4D 或真实调用

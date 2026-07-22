@@ -8,7 +8,7 @@
 | 日期 | 2026-07-21 |
 | 状态 | 后续开发执行基线 |
 | 仓库 | /Users/zhangzihao/Documents/Shiguang_Nanobot |
-| 当前阶段 | M0-4B 网页解析（允许开始） |
+| 当前阶段 | M0-4C 截图识别（允许开始） |
 
 ---
 
