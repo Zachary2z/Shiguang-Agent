@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -224,6 +225,95 @@ def _candidate_choice(index: int) -> PlaceSelection:
 def _snapshot_fingerprint(item: CollectionItem) -> str:
     assert item.place_candidate_snapshot is not None
     return item.place_candidate_snapshot.fingerprint
+
+
+def _exception_graph_text(error: BaseException) -> str:
+    pending: list[object] = [error]
+    seen: set[int] = set()
+    rendered: list[str] = []
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        rendered.append(repr(current))
+        if isinstance(current, BaseException):
+            rendered.extend((str(current), repr(current.args), repr(vars(current))))
+            pending.extend(current.args)
+            pending.extend(vars(current).values())
+            pending.extend(
+                linked
+                for linked in (current.__context__, current.__cause__)
+                if linked is not None
+            )
+        elif isinstance(current, dict):
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif isinstance(current, (list, tuple, set, frozenset)):
+            pending.extend(current)
+    return "\n".join(rendered)
+
+
+def _assert_safe_collection_integrity_error(
+    error: CollectionDataIntegrityError,
+    *,
+    sensitive_values: tuple[str, ...],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fixed_message = "collection data integrity violation"
+    assert error.__context__ is None
+    assert error.__cause__ is None
+    assert str(error) == fixed_message
+    assert repr(error) == f"CollectionDataIntegrityError('{fixed_message}')"
+    assert error.args == (fixed_message,)
+    assert vars(error) == {}
+    exposed = _exception_graph_text(error)
+    for sensitive in sensitive_values:
+        assert sensitive not in exposed
+        assert sensitive not in caplog.text
+
+
+async def _select_exact_place(
+    database: Database,
+    *,
+    idempotency_key: str,
+) -> tuple[User, CollectionItem]:
+    user, source, initial = await _seed_pending(database)
+    pending = await _record(database, user, source, initial)
+    async with database.session() as session:
+        result = await PlaceTargetSelectionService(session=session).apply_selection(
+            user_id=user.id,
+            collection_item_id=pending.id,
+            source_id=source.id,
+            selections=(_candidate_choice(0),),
+            queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending),
+            idempotency_key=idempotency_key,
+            expected_version=pending.version,
+        )
+    return user, result.items[0]
+
+
+async def _select_any_branch_place(
+    database: Database,
+    *,
+    idempotency_key: str,
+) -> tuple[User, CollectionItem]:
+    user, source, initial = await _seed_pending(database)
+    pending = await _record(database, user, source, initial)
+    async with database.session() as session:
+        result = await PlaceTargetSelectionService(session=session).apply_selection(
+            user_id=user.id,
+            collection_item_id=pending.id,
+            source_id=source.id,
+            selections=(PlaceSelection(kind=PlaceSelectionKind.ANY_BRANCH),),
+            queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending),
+            idempotency_key=idempotency_key,
+            expected_version=pending.version,
+            brand_identity=_brand(),
+        )
+    return user, result.items[0]
 
 
 @pytest.mark.asyncio
@@ -1167,3 +1257,147 @@ async def test_repository_rejects_brand_json_and_flat_identity_mismatch(
                 user_id=user.id,
                 collection_item_id=brand_id,
             )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "corruption_kind",
+    ["place_target_schema", "candidate_snapshot_schema", "invalid_json_structure"],
+)
+async def test_malformed_place_json_raises_detached_secret_safe_error(
+    target_database: tuple[str, Path],
+    caplog: pytest.LogCaptureFixture,
+    corruption_kind: str,
+) -> None:
+    database_url, database_path = target_database
+    database = Database(database_url)
+    fake_secret = f"FAKE_PERSISTED_PLACE_SECRET_{corruption_kind.upper()}"
+
+    if corruption_kind == "place_target_schema":
+        user, item = await _select_exact_place(
+            database,
+            idempotency_key="malformed-target",
+        )
+        raw_json = json.dumps(
+            {"scope": fake_secret, "raw_provider_payload": fake_secret},
+            separators=(",", ":"),
+        )
+        statement = "UPDATE collection_items SET place_target_json = ? WHERE id = ?"
+    else:
+        user, source, initial = await _seed_pending(database)
+        item = await _record(database, user, source, initial)
+        payload: object
+        if corruption_kind == "candidate_snapshot_schema":
+            payload = {
+                "match_result": {"status": fake_secret},
+                "queried_at": NOW.isoformat(),
+                "raw_provider_payload": fake_secret,
+            }
+        else:
+            payload = [fake_secret, {"raw_provider_payload": fake_secret}]
+        raw_json = json.dumps(payload, separators=(",", ":"))
+        statement = (
+            "UPDATE collection_items SET place_candidate_snapshot_json = ? WHERE id = ?"
+        )
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(statement, (raw_json, item.id))
+        connection.commit()
+
+    caplog.clear()
+    async with database.session() as session:
+        with caplog.at_level("DEBUG"), pytest.raises(
+            CollectionDataIntegrityError,
+            match="^collection data integrity violation$",
+        ) as exc_info:
+            await SqlAlchemyCollectionRepository(session).get_collection_item(
+                user_id=user.id,
+                collection_item_id=item.id,
+            )
+
+    _assert_safe_collection_integrity_error(
+        exc_info.value,
+        sensitive_values=(fake_secret, raw_json),
+        caplog=caplog,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mismatch_kind",
+    ["poi", "brand", "candidate_count", "queried_at"],
+)
+async def test_place_json_flat_mismatches_raise_detached_secret_safe_error(
+    target_database: tuple[str, Path],
+    caplog: pytest.LogCaptureFixture,
+    mismatch_kind: str,
+) -> None:
+    database_url, database_path = target_database
+    database = Database(database_url)
+    fake_secret = f"FAKE_FLAT_PLACE_SECRET_{mismatch_kind.upper()}"
+
+    if mismatch_kind == "poi":
+        user, item = await _select_exact_place(
+            database,
+            idempotency_key="safe-mismatch-poi",
+        )
+    elif mismatch_kind == "brand":
+        user, item = await _select_any_branch_place(
+            database,
+            idempotency_key="safe-mismatch-brand",
+        )
+    else:
+        user, source, initial = await _seed_pending(database)
+        item = await _record(database, user, source, initial)
+
+    with sqlite3.connect(database_path) as connection:
+        raw_place_json = connection.execute(
+            "SELECT place_target_json, place_candidate_snapshot_json "
+            "FROM collection_items WHERE id = ?",
+            (item.id,),
+        ).fetchone()
+        assert raw_place_json is not None
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        if mismatch_kind == "poi":
+            connection.execute(
+                "UPDATE collection_items SET poi_id = ? WHERE id = ?",
+                (fake_secret, item.id),
+            )
+        elif mismatch_kind == "brand":
+            connection.execute(
+                "UPDATE collection_items SET brand_id = ? WHERE id = ?",
+                (fake_secret, item.id),
+            )
+        elif mismatch_kind == "candidate_count":
+            connection.execute(
+                "UPDATE collection_items SET address = ?, candidate_count = 1 WHERE id = ?",
+                (fake_secret, item.id),
+            )
+        else:
+            connection.execute(
+                "UPDATE collection_items SET address = ?, candidates_queried_at = ? "
+                "WHERE id = ?",
+                (fake_secret, "2026-07-22 04:59:00.000000", item.id),
+            )
+        connection.commit()
+
+    persisted_json = tuple(
+        value for value in raw_place_json if isinstance(value, str)
+    )
+    caplog.clear()
+    async with database.session() as session:
+        with caplog.at_level("DEBUG"), pytest.raises(
+            CollectionDataIntegrityError,
+            match="^collection data integrity violation$",
+        ) as exc_info:
+            await SqlAlchemyCollectionRepository(session).get_collection_item(
+                user_id=user.id,
+                collection_item_id=item.id,
+            )
+
+    _assert_safe_collection_integrity_error(
+        exc_info.value,
+        sensitive_values=(fake_secret, *persisted_json),
+        caplog=caplog,
+    )

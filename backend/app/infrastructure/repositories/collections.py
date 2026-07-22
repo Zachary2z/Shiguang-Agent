@@ -995,6 +995,9 @@ class SqlAlchemyCollectionRepository:
 
     @staticmethod
     def _collection_item(row: CollectionItemModel) -> CollectionItem:
+        target: PlaceTarget | None = None
+        snapshot: PlaceCandidateSnapshot | None = None
+        invalid_place_json = False
         try:
             target = (
                 None
@@ -1008,13 +1011,15 @@ class SqlAlchemyCollectionRepository:
                     json.dumps(row.place_candidate_snapshot_json)
                 )
             )
-            SqlAlchemyCollectionRepository._validate_place_storage_consistency(
-                row,
-                target=target,
-                snapshot=snapshot,
-            )
         except (KeyError, TypeError, ValueError):
-            raise CollectionDataIntegrityError from None
+            invalid_place_json = True
+        if invalid_place_json:
+            raise CollectionDataIntegrityError
+        SqlAlchemyCollectionRepository._validate_place_storage_consistency(
+            row,
+            target=target,
+            snapshot=snapshot,
+        )
         return CollectionItem(
             id=row.id,
             user_id=row.user_id,

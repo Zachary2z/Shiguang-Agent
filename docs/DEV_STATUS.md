@@ -676,3 +676,12 @@ M0-3D 已完成开发并待主控验收：唯一 PlaceTarget 已最小集成现�
 - 迁移验证：仓库外全新临时 SQLite 从空库 `upgrade head`、`alembic check`、空数据 `downgrade 20260721_0005`、再次 `upgrade head`、再次 `alembic check` 和 `current` 全部退出 0，最终为唯一 `20260722_0006 (head)`；新增直接约束测试确认 JSON 与 POI、品牌、坐标、确认来源、候选数量和查询时间不一致会被 SQLite 拒绝
 - 安全、范围与冗余：本轮未读取、打印或修改 `.env`，所有最终 pytest 命令都移除真实模型/地图开关并使用 `APP_ENV=test`；未运行 `real_provider`/`real_map_provider`，百炼、高德、DNS、HTTP、消息、发布及其他真实/付费 API 调用均为 0。未修改 `nanobot_core`、Amap Provider 或依赖，未实现 M0-4/M0-5、路线、推荐排序、业务 API、前端、Worker 或云部署；扫描确认 AgentRunner、ToolRegistry、MapProvider、PlaceMatchingService、PlaceTarget、PlaceTargetSelectionService、CollectionItem 和 Collection Repository 仍各有唯一正式实现
 - 阶段状态：M0-3D 继续待 QA，不提前标记完成；本分支不合并 `main`、不推送，M0-4/M0-5 仍未开始
+
+#### 2026-07-22｜M0-3D 异常链安全修复｜待 QA
+
+- 分支与提交关系：本轮直接建立在 `codex/m0-3d-place-targets` 的待修复提交 `99d97615737b275b804c87d1dc13079aebcc6fa2` 上；开始门禁确认工作区干净、分支与 HEAD 精确一致，指定阶段基线 `3dd8139a5caeb83e34a19a0e4a372ea6b12ae928` 是该提交祖先。本轮只追加独立修复提交，不 amend、不合并、不推送
+- P1 安全修复：`SqlAlchemyCollectionRepository._collection_item` 对 `place_target_json` 和 `place_candidate_snapshot_json` 的 Schema/结构解析失败先转换为内部布尔状态，退出 `except` 后才创建并抛出全新的固定 `CollectionDataIntegrityError`；公开异常的 `__context__` 与 `__cause__` 均为 `None`，不再保留 Pydantic `ValidationError`。JSON 与扁平 POI、品牌、候选数量或查询时间不一致仍返回同一固定 `collection data integrity violation`
+- 安全回归：新增 7 个参数化场景，覆盖地点目标 JSON 伪 secret、候选快照 JSON 伪 secret、非法 JSON 结构，以及 POI、品牌身份、候选数量和查询时间不一致；逐项断言固定 `str/repr/args`、空 `vars`、空异常链，并递归遍历公开异常参数/属性，确认伪 secret、原始持久化 JSON 和供应商伪内容不进入异常对象或日志。安全聚焦结果为 `7 passed / 35 deselected`
+- 最终验证：macOS、仓库受忽略 `.venv`、Python 3.13.5；editable install、`pip check`、Ruff 和 strict mypy（73 个源文件）全部退出 0；地点领域 `6 passed`、地点应用 `42 passed`、迁移 `21 passed`、core `118 passed`、正式非真实全集 `910 passed / 2 deselected`、默认全集 `910 passed / 2 skipped`，全部退出 0
+- 迁移、范围与真实调用：未修改 `0001`–`0006`、ORM、依赖、`nanobot_core` 或 Amap Provider；迁移 fresh upgrade、downgrade、re-upgrade 与 Alembic check 继续由 21 项迁移测试覆盖并全部通过。未读取、打印或修改 `.env`，未启用或运行真实 Provider marker，百炼、高德及其他外部/真实/付费 API 调用均为 0；未实现 M0-4/M0-5、业务 API、前端、路线、规划、重试或第二套 Repository/错误/JSON DTO
+- 阶段状态：M0-3D 继续待 QA，不提前标记完成；修复提交完整 SHA 见本窗口最终交接，M0-4/M0-5 仍未开始
