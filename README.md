@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。M0-2A 至 M0-2D 已全部通过主控验收，文字输入到结构化收藏、可逆写入和最小 HTTP API 的离线闭环已经完成；**M0-3A MapProvider Stub 已通过主控验收**，当前允许开始 M0-3B 真实高德适配。
+项目处于 **M0 技术验证**。M0-2A 至 M0-2D 已全部通过主控验收，文字输入到结构化收藏、可逆写入和最小 HTTP API 的离线闭环已经完成；**M0-3A MapProvider Stub 已通过主控验收**，M0-3B 高德适配及主控 P1 修复正在等待离线复验。
 
-普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。当前没有任何真实高德调用授权；M0-3B 必须先完成离线适配与测试，只有在本机配置高德 Web 服务 Key 并获得用户单独授权后才能运行显式真实测试。M0-3C 评分、M0-3D 分店策略、正式 POI 写入、URL/截图、计划、SSE 和前端均未开始。
+普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。当前没有任何真实高德调用授权；只有 M0-3B 修复通过离线复验、本机配置高德 Web 服务 Key 且用户另行授权后，才能运行显式真实测试。M0-3C 评分、M0-3D 分店策略、正式 POI 写入、URL/截图、计划、SSE 和前端均未开始。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -112,7 +112,7 @@ curl -i -H 'X-Request-ID: local-check-001' http://127.0.0.1:8000/healthz
 | `AGENT_TIMEOUT_SECONDS` | `60` | 单次 Run 总时限，只允许有限值 `(0, 60]` |
 | `RUN_REAL_MODEL_TESTS` | `0` | 只有精确设为 `1` 才授权真实 Provider 测试 |
 | `AMAP_API_KEY` | 无 | 高德 Web 服务 Key，以 `SecretStr` 脱敏；只在显式构造真实地图 Provider 时必填 |
-| `AMAP_BASE_URL` | `https://restapi.amap.com` | 高德 HTTPS Web 服务入口；禁止凭证、查询串和 fragment |
+| `AMAP_BASE_URL` | `https://restapi.amap.com` | 固定高德 Web 服务官方 origin；只允许可规范化的末尾 `/`，拒绝其他域名、端口、路径、凭证、查询和 fragment |
 | `AMAP_TIMEOUT_SECONDS` | `5` | 单次 HTTP 尝试超时，只允许有限值 `(0, 30]` |
 | `AMAP_MAX_RETRIES` | `1` | 每个逻辑请求额外尝试次数，只允许 `0..1` |
 | `AMAP_RETRY_AFTER_MAX_SECONDS` | `1` | `Retry-After` 等待上限，只允许有限值 `[0, 5]` |
@@ -160,17 +160,21 @@ M0-2D 没有新增迁移或配置变量。应用、`/healthz`、OpenAPI 和 Demo
 
 ### M0-3A MapProvider Stub
 
-`app.domain.places` 是坐标、POI、路线、天气和导航 DTO 的唯一归属。所有模型均为 strict、extra-forbid、不可变契约；坐标显式携带坐标系，城市使用稳定 `city_code`，距离和耗时分别使用非负米与秒，天气使用 `date` 和有界摄氏温度。DTO 不包含 `adcode`、`pname`、`cityname`、API Key、Header 或供应商原始响应。
+`app.domain.places` 是坐标、POI、路线、天气和导航 DTO 的唯一归属。所有模型均为 strict、extra-forbid、不可变契约；坐标显式携带坐标系，城市使用稳定 `city_code`，POI 使用唯一受限 `PoiProvider` 身份，距离和耗时分别使用非负米与秒，天气使用 `date` 和有界摄氏温度。DTO 不包含 `adcode`、`pname`、`cityname`、API Key、Header 或供应商原始响应。
 
 `app.providers.MapProvider` 是唯一地图能力边界。`search_poi`、`get_poi`、`route`、`weather` 和 `build_navigation_uri` 分别接收严格请求对象，每个请求都显式包含 `CityScope`；没有进程级当前城市、默认深圳状态或城市缓存。相比技术方案中的早期简写签名，M0-3A 按最新阶段要求让五类方法全部显式携带城市范围。
 
 `StubMapProvider` 通过构造参数注入不可变 Fixture 映射，不访问网络或环境变量，不使用供应商 SDK，也不按调用顺序消费共享队列。相同输入返回内容相等但对象独立的快照；深圳、广州连续、交错和并发调用互不污染。未配置的搜索返回显式空结果，详情不存在使用固定安全错误，超时由请求 Fixture 确定；取消会原样传播，不自动重试、退避、熔断或缓存。
 
-共享测试数据位于 `tests.fixtures.maps`，包含深圳和广州唯一结果、深圳连锁品牌多结果、无结果、超时、详情、路线、天气与导航 URI。它只配置正式 Stub，不复制搜索、验证或匹配算法。本阶段没有数据库模型、迁移、配置变量或真实地图测试开关。
+共享测试数据位于 `tests.fixtures.maps`，包含深圳和广州唯一结果、深圳连锁品牌多结果、无结果、超时、详情、路线、天气与导航 URI。Stub Fixture 明确模拟 Amap 来源，因此稳定携带 `provider=amap`；`provider + poi_id` 可作为后续正式地点引用的供应商身份。Fixture 只配置正式 Stub，不复制搜索、验证或匹配算法。本阶段没有数据库模型或迁移。
 
 ### M0-3B 高德 Web 服务适配
 
-`AmapMapProvider` 是复用现有 `MapProvider` 和地点 DTO 的唯一正式高德适配器。深圳和广州共享同一实现与同一内部城市目录：`shenzhen → adcode 440300 / citycode 0755`，`guangzhou → adcode 440100 / citycode 020`。每次调用从请求内 `CityScope` 取值；没有 `AMAP_CITY`、`CURRENT_CITY` 或默认深圳状态。供应商 `adcode`、`pname`、`cityname`、`typecode` 和 `infocode` 只在适配层校验/映射，不进入领域 DTO。
+`AmapMapProvider` 是复用现有 `MapProvider` 和地点 DTO 的唯一正式高德适配器。其输出 POI 固定携带受限身份 `provider=amap`，并保留供应商 `poi_id`、正式 `city_code` 和 GCJ-02；深圳和广州共享同一实现与同一内部城市目录：`shenzhen → adcode 440300 / citycode 0755`，`guangzhou → adcode 440100 / citycode 020`。每次调用从请求内 `CityScope` 取值；没有 `AMAP_CITY`、`CURRENT_CITY` 或默认深圳状态。供应商 `adcode`、`pname`、`cityname`、`typecode` 和 `infocode` 只在适配层校验/映射，不进入领域 DTO。
+
+高德 HTTP origin 固定为 `https://restapi.amap.com`；安全的末尾 `/` 会规范化，其他 hostname、相似后缀域名、userinfo、HTTP、显式端口、路径、查询、fragment、控制字符和损坏 URL 都在 Provider 构造前拒绝。所有供应商/解析异常先在内部收敛，退出 `except` 后再创建并抛出固定 `MapProviderError`；公开错误的 `context` 与 `cause` 均为空，也不保留 request、response、URL、Key、正文或原始字段。
+
+高德 `10012/10013` 映射鉴权权限失败且不重试；`10014/10015/10019` 映射限流，`10016/10017` 映射临时不可用；后两类与 `3xxxx` 服务错误一样最多额外尝试一次。未知 infocode 保持 `INVALID_RESPONSE`，供应商 `info` 文本不会成为公开错误。
 
 POI 搜索使用显式城市与 `citylimit=true`，无结果保留空列表；详情同时核验 POI ID 与城市归属。步行、骑行、公交和驾车使用高德 v5 路线接口，只返回 GCJ-02 端点、总米数和总秒数。天气使用城市正式 adcode 和预报日期。导航链接在本地生成 `https://uri.amap.com/marker`，不发 HTTP，也不包含 Key。
 

@@ -7,11 +7,11 @@
 | 状态 | 待验收 |
 | 当前分支 | codex/m0-3b-amap-provider |
 | 最近更新 | 2026-07-22 |
-| 阻塞项 | 离线实现与开发验证已完成，等待主控离线 QA；真实验收仍需本机高德 Web 服务 Key 和用户单独授权 |
+| 阻塞项 | M0-3B 主控 P1 修复与离线验证已完成，等待主控复验；真实验收仍需本机高德 Web 服务 Key 和用户单独授权 |
 
 ## 当前任务
 
-M0-3B 已在阶段分支完成离线开发：唯一 `AmapMapProvider` 复用 M0-3A 契约，覆盖服务端配置、深圳/广州城市映射、POI 搜索/详情、四种路线、天气、导航 URI、严格响应校验和最多一次额外尝试。当前等待主控离线 QA；真实 marker 未获授权且未运行。M0-3C 匹配评分、M0-3D 分店策略及正式 POI 写入仍不得提前开发。
+M0-3B 已在阶段分支完成主控 P1 修复：高德 HTTP origin 固定为官方入口，公开 Provider 异常链彻底断开，指定官方 infocode 分类与有限 attempts 已补齐，唯一 `Poi` 增加受限 `provider=amap` 身份并与 `poi_id` 组成稳定供应商身份。当前等待主控离线复验；真实 marker 未获授权且未运行。M0-3C 匹配评分、M0-3D 分店策略及正式 POI 写入仍不得提前开发。
 
 ## M0 状态
 
@@ -567,3 +567,15 @@ M0-3B 已在阶段分支完成离线开发：唯一 `AmapMapProvider` 复用 M0-
 - 迁移、依赖、范围与冗余：没有新增运行时或开发依赖、数据库表、ORM、Repository 或 Alembic revision；现有 migration 未修改。未修改 `nanobot_core`、CollectionItem、收藏状态或 M0-2 API；未实现 M0-3C 匹配评分/置信度/最多三个候选，也未实现 M0-3D exact/any_branch/分店选择、正式 POI 写入、URL/OCR、计划、SSE、前端或 Worker
 - 已知风险：真实高德 Key 类型、配额、字段差异、HTTP 状态与业务 infocode 的组合、路线/天气可用性和 POI 数据质量尚未通过线上响应验证；当前城市白名单仅深圳和广州，天气结果依赖高德预报中存在请求日期，路线只映射首个方案总量而不保存步骤。当前仅在 macOS/Python 3.13.5 复测，未在 Python 3.11/3.12、Windows 或真实供应商环境验证；当前没有已知未关闭 P0/P1
 - 主控复测重点与下一步：先独立复核提交直接基于指定 baseline、唯一 MapProvider/客户端构造、深圳广州映射、每类错误的 attempts、取消/关闭/脱敏、无迁移/依赖/后续阶段越界，并重跑聚焦、非真实、core、migrations、默认全集与系统禁网测试。离线验收通过后，再由用户在本机 `.env` 放置 Web 服务 Key 并另行明确授权执行受限真实 QA；本开发窗口不合并 `main`、不推送、不调用真实高德、不进入 M0-3C/D
+
+#### 2026-07-22｜M0-3B 主控验收 P1 修复｜待主控复验
+
+- 分支与提交关系：修复在 `codex/m0-3b-amap-provider` 上直接基于待修复提交 `06834a4e3e14a6dc84c1d6d0da3b1fbe8b3adddb` 追加，不 amend；开始时工作区干净且 HEAD 精确等于该提交，`main`、`origin/main` 与 merge-base 均为阶段基线 `33421205241461b94482a2390e3ca9b5f716bdcc`。修复提交随本记录创建，完整 SHA 见开发窗口最终交接报告
+- 官方 origin 锁定：`AmapProviderSettings` 是配置与直接 Provider 构造共享的唯一规范化门禁，只接受无凭证、无显式端口、无查询/fragment 且 path 为空或单个末尾 `/` 的 `https://restapi.amap.com`，并统一返回无末尾斜杠的 canonical origin；其他 hostname、`restapi.amap.com.evil.example`、userinfo、HTTP、443/其他显式端口、路径、查询、fragment、空白/控制字符、反斜杠和损坏 URL 均在 HTTP Client 创建前以固定错误拒绝，错误不回显 URL 或 Key。参数化测试确认非法配置不能完成 Provider 构造且 HTTP attempts 为 0
+- 异常链清理：Timeout、Transport、JSON 解码、Pydantic/字段映射和可注入等待异常只在内部 handler 中转换为无敏感字段的状态，退出 `except` 后再新建并抛出固定 `MapProviderError`；不再依赖 `raise ... from None` 隐藏 context。公开错误的 `__context__` 与 `__cause__` 均为 `None`，属性、args、repr、公开字典和日志不保留 request、response、完整 URL、Key、原始正文、供应商 `info` 或恶意字段；`asyncio.CancelledError` 继续原样传播
+- infocode 分类与 attempts：`10012 INSUFFICIENT_PRIVILEGES`、`10013 USER_KEY_RECYCLED` → `AUTHENTICATION_FAILED`、`retryable=false`、1 attempt；`10014 QPS_HAS_EXCEEDED_THE_LIMIT`、`10015 GATEWAY_TIMEOUT/QPS`、`10019 CQPS_HAS_EXCEEDED_THE_LIMIT` → `RATE_LIMITED`、`retryable=true`、失败时最多 2 attempts；`10016 SERVER_IS_BUSY`、`10017 RESOURCE_UNAVAILABLE` → `UNAVAILABLE`、`retryable=true`、失败时最多 2 attempts。上述可恢复码均覆盖第一次失败/第二次成功与两次均失败；权限码覆盖即使后续响应可成功也只尝试一次。`2xxxx` 与明确非法请求不重试，未知码保持 `INVALID_RESPONSE`，`3xxxx` 保持最多一次额外尝试，公开错误不使用 `info` 文本
+- 稳定 provider 身份：在 M0-3A 唯一 `Poi` 上最小增加唯一受限枚举 `PoiProvider`，当前只允许 `AMAP="amap"`；Amap 搜索和详情都明确输出 `provider=amap`，并与供应商局部 `poi_id` 形成后续 `PoiReference` 可复用的稳定身份。搜索结果去重使用 `(provider, poi_id)`；正式 `city_code` 与 `coordinate_system=gcj_02` 继续保留。离线 Stub Fixture 明确选择模拟 Amap 来源，因此同样确定性携带 `provider=amap`；没有新增 Poi/PoiReference/候选 DTO、Repository、表或迁移
+- 新增安全与契约覆盖：Base URL 覆盖域名混淆、端口、路径、凭证和控制字符；异常图测试分别构造 URL 含伪 Key 的 Timeout/ConnectError、正文含伪 secret 的非 JSON、字段含伪 secret 的 Pydantic 失败，并递归检查 context/cause/vars/args、str、repr、公开字典与日志；契约/Stub/Amap/真实入口静态断言搜索与详情保留 provider、poi_id、city_code 和 GCJ-02
+- 验证环境与结果：macOS、仓库受忽略 `.venv`、Python 3.13.5；`pip install -e ".[dev]"`、`pip check`、Ruff 与 strict mypy（67 个源文件）均退出 0；用户指定聚焦集合 `237 passed/1 skipped`，其中 skip 是未授权真实高德入口；非真实全集 `693 passed/2 deselected`；core `118 passed`；migrations `15 passed`；默认全集 `693 passed/2 skipped`。系统级 `sandbox-exec` 拒绝全部网络后，非真实全集再次 `693 passed/2 deselected`
+- 网络、安全与范围：所有测试均显式移除 `RUN_REAL_MAP_TESTS`/`RUN_REAL_MODEL_TESTS` 并设置 `APP_ENV=test`；未读取、打印或修改本机 `.env`，未运行 `real_map_provider`，高德、百炼、其他网络及真实/付费 API 调用均为 0。没有依赖或迁移变化，没有修改 `nanobot_core`、CollectionItem、收藏状态、M0-2 API、前端或基础设施；MapProvider、AmapMapProvider、StubMapProvider、HTTP Client 构造、城市表、Poi 和错误体系仍各有唯一归属
+- 已知风险与下一步：真实高德响应、Key 权限、配额、线上 infocode/HTTP 组合、POI 字段质量及路线/天气兼容性仍未验证；当前 provider 枚举只包含本阶段唯一正式地图来源 Amap，未来新增供应商必须另行扩展同一枚举和契约，不得复制 DTO。当前仅在 macOS/Python 3.13.5 复测。主控修复复验通过后，仍需用户在本机 `.env` 配置 Web 服务 Key 并对受限真实验收单独授权；本分支不合并、不推送，且没有实现 M0-3C 评分/候选/用户选择或 M0-3D exact/any_branch/分店策略

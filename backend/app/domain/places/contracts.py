@@ -53,6 +53,12 @@ class CoordinateSystem(StrEnum):
     WGS_84 = "wgs_84"
 
 
+class PoiProvider(StrEnum):
+    """Stable provider identities that can pair with provider-local POI IDs."""
+
+    AMAP = "amap"
+
+
 class PoiType(StrEnum):
     """Coarse application categories; provider taxonomies are mapped into these."""
 
@@ -92,6 +98,7 @@ class Coordinate(PlaceContract):
 class Poi(PlaceContract):
     """One internal POI without a retained provider response."""
 
+    provider: PoiProvider
     poi_id: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=200)
     branch_name: str | None = Field(default=None, max_length=160)
@@ -150,8 +157,8 @@ class PoiSearchResult(PlaceContract):
     def require_one_city(self) -> Self:
         if any(poi.city_code != self.city_code for poi in self.pois):
             raise ValueError("all search results must belong to the declared city")
-        if len({poi.poi_id for poi in self.pois}) != len(self.pois):
-            raise ValueError("search results must contain unique POI identifiers")
+        if len({(poi.provider, poi.poi_id) for poi in self.pois}) != len(self.pois):
+            raise ValueError("search results must contain unique provider and POI identities")
         return self
 
 

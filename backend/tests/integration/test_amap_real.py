@@ -13,6 +13,7 @@ from app.domain.places import (
     CoordinateSystem,
     GetPoiRequest,
     NavigationRequest,
+    PoiProvider,
     RouteRequest,
     SearchPoiRequest,
     TransportMode,
@@ -81,7 +82,13 @@ async def test_real_amap_read_only_shenzhen_guangzhou_acceptance() -> None:
     finally:
         await provider.close()
 
-    assert detail.poi.city_code == "shenzhen"
+    assert (detail.poi.provider, detail.poi.poi_id, detail.poi.city_code) == (
+        PoiProvider.AMAP,
+        selected.poi_id,
+        "shenzhen",
+    )
+    assert all(poi.provider is PoiProvider.AMAP for poi in shenzhen_search.pois)
+    assert all(poi.provider is PoiProvider.AMAP for poi in guangzhou_search.pois)
     assert route.city_code == "shenzhen"
     assert weather.city_code == "shenzhen"
     assert navigation.uri.startswith("https://uri.amap.com/marker?")

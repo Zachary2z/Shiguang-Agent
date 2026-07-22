@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from math import isfinite
 from pathlib import Path
 from typing import Literal
+from unicodedata import category
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -53,6 +54,44 @@ class AmapProviderSettings:
     timeout_seconds: float
     max_retries: int
     retry_after_max_seconds: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "base_url", _normalize_amap_base_url(self.base_url))
+
+
+def _normalize_amap_base_url(value: str) -> str:
+    """Accept only Amap's canonical Web Service origin and return that origin."""
+
+    invalid_character = not isinstance(value, str) or not value or any(
+        character.isspace()
+        or category(character).startswith("C")
+        or character == "\\"
+        for character in value
+    )
+    valid = False
+    if not invalid_character:
+        try:
+            parsed = urlsplit(value)
+            valid = (
+                parsed.scheme == "https"
+                and parsed.hostname == "restapi.amap.com"
+                and parsed.netloc.casefold() == "restapi.amap.com"
+                and parsed.port is None
+                and parsed.username is None
+                and parsed.password is None
+                and parsed.path in {"", "/"}
+                and not parsed.query
+                and not parsed.fragment
+                and "?" not in value
+                and "#" not in value
+            )
+        except ValueError:
+            valid = False
+    if not valid:
+        raise AmapConfigurationError(
+            "AMAP_BASE_URL must use the fixed official Amap Web Service origin"
+        )
+    return DEFAULT_AMAP_BASE_URL
 
 
 class Settings(BaseSettings):
@@ -316,29 +355,9 @@ class Settings(BaseSettings):
         if api_key is None or not api_key.get_secret_value().strip():
             raise AmapConfigurationError("Missing Amap provider configuration: AMAP_API_KEY")
 
-        base_url = self.amap_base_url.strip().rstrip("/")
-        try:
-            parsed = urlsplit(base_url)
-            port = parsed.port
-            valid_base = (
-                parsed.scheme == "https"
-                and parsed.hostname is not None
-                and (port is None or port > 0)
-                and parsed.username is None
-                and parsed.password is None
-                and not parsed.query
-                and not parsed.fragment
-            )
-        except ValueError:
-            valid_base = False
-        if not valid_base:
-            raise AmapConfigurationError(
-                "AMAP_BASE_URL must be an HTTPS URL without credentials, query, or fragment"
-            )
-
         return AmapProviderSettings(
             api_key=api_key,
-            base_url=base_url,
+            base_url=self.amap_base_url,
             timeout_seconds=self.amap_timeout_seconds,
             max_retries=self.amap_max_retries,
             retry_after_max_seconds=self.amap_retry_after_max_seconds,

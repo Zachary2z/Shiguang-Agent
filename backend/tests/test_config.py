@@ -136,10 +136,23 @@ def test_missing_amap_key_is_required_only_when_real_adapter_is_requested() -> N
     "base_url",
     [
         "http://restapi.amap.com",
+        "https://example.com",
+        "https://restapi.amap.com.evil.example",
         "https://user:password@restapi.amap.com",
+        "https://restapi.amap.com:443",
+        "https://restapi.amap.com:8443",
+        "https://restapi.amap.com:",
         "https://restapi.amap.com:0",
+        "https://restapi.amap.com/v3/place/text",
         "https://restapi.amap.com?key=unsafe",
+        "https://restapi.amap.com?",
         "https://restapi.amap.com#unsafe",
+        "https://restapi.amap.com#",
+        "https://restapi.amap.com\n.evil.example",
+        "https://restapi.amap.com\x00.evil.example",
+        "https://restapi.amap.com\\@evil.example",
+        "https://[broken",
+        " https://restapi.amap.com",
         "not-a-url",
     ],
 )
@@ -156,6 +169,29 @@ def test_invalid_amap_base_url_is_rejected_without_echoing_value(base_url: str) 
         settings.require_amap_provider()
 
     assert base_url not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [
+        ("https://restapi.amap.com", "https://restapi.amap.com"),
+        ("https://restapi.amap.com/", "https://restapi.amap.com"),
+        ("https://RESTAPI.AMAP.COM/", "https://restapi.amap.com"),
+    ],
+)
+def test_official_amap_base_url_is_canonically_normalized(
+    base_url: str,
+    expected: str,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        app_env="test",
+        database_url="sqlite+aiosqlite:///:memory:",
+        amap_api_key="fake-amap-key",
+        amap_base_url=base_url,
+    )
+
+    assert settings.require_amap_provider().base_url == expected
 
 
 @pytest.mark.parametrize("timeout", [0, 30.1, -1, float("nan"), float("inf"), True])

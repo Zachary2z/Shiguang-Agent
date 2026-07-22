@@ -13,6 +13,7 @@ from app.domain.places import (
     NavigationRequest,
     NavigationUri,
     Poi,
+    PoiProvider,
     PoiSearchResult,
     PoiType,
     RouteRequest,
@@ -44,6 +45,7 @@ GUANGZHOU_MUSEUM_COORDINATE = Coordinate(
 )
 
 SHENZHEN_MUSEUM = Poi(
+    provider=PoiProvider.AMAP,
     poi_id="poi_sz_moca_up",
     name="深圳当代艺术与城市规划馆",
     city_code="shenzhen",
@@ -56,6 +58,7 @@ SHENZHEN_MUSEUM = Poi(
     opening_hours_summary="周二至周日开放",
 )
 SHENZHEN_CHAIN_CAFE_ONE = Poi(
+    provider=PoiProvider.AMAP,
     poi_id="poi_sz_chain_cafe_one",
     name="未名咖啡",
     branch_name="市民中心店",
@@ -67,6 +70,7 @@ SHENZHEN_CHAIN_CAFE_ONE = Poi(
     poi_type=PoiType.CAFE,
 )
 SHENZHEN_CHAIN_CAFE_TWO = Poi(
+    provider=PoiProvider.AMAP,
     poi_id="poi_sz_chain_cafe_two",
     name="未名咖啡",
     branch_name="中心书城店",
@@ -82,6 +86,7 @@ SHENZHEN_CHAIN_CAFE_TWO = Poi(
     poi_type=PoiType.CAFE,
 )
 GUANGZHOU_MUSEUM = Poi(
+    provider=PoiProvider.AMAP,
     poi_id="poi_gz_museum",
     name="广东省博物馆",
     city_code="guangzhou",

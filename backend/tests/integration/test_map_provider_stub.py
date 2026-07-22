@@ -7,7 +7,13 @@ import logging
 
 import pytest
 
-from app.domain.places import CityScope, NavigationRequest, PoiSearchResult, SearchPoiRequest
+from app.domain.places import (
+    CityScope,
+    NavigationRequest,
+    PoiProvider,
+    PoiSearchResult,
+    SearchPoiRequest,
+)
 from app.providers import MapProviderError, MapProviderErrorCode, StubMapProvider
 from tests.fixtures.maps import (
     GZ_NAVIGATION,
@@ -32,6 +38,7 @@ async def test_same_input_is_stable_and_returns_independent_snapshots() -> None:
     assert first == second
     assert first is not second
     assert first.pois[0] is not second.pois[0]
+    assert first.pois[0].provider is PoiProvider.AMAP
 
 
 @pytest.mark.parametrize("navigation_request", [SZ_NAVIGATION, GZ_NAVIGATION])

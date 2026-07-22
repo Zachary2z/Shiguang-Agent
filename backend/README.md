@@ -205,8 +205,8 @@ python -m pytest -q tests/contract/test_m0_2d_api.py
 
 `app.domain.places` owns the only provider-neutral POI, coordinate, route, weather, and
 navigation DTOs. They are strict, extra-forbid, immutable Pydantic models with explicit stable
-city codes and coordinate systems. Distances use non-negative meters, durations use
-non-negative seconds, weather uses calendar dates and bounded Celsius values, and no DTO can
+city codes, a restricted `PoiProvider` identity, and coordinate systems. Distances use
+non-negative meters, durations use non-negative seconds, weather uses calendar dates and bounded Celsius values, and no DTO can
 retain provider field names, credentials, headers, or raw responses.
 
 `app.providers.MapProvider` owns the five asynchronous operations: `search_poi`, `get_poi`,
@@ -217,7 +217,11 @@ environment, SDK, retry, cache, backoff, or persistence work and never consumes 
 response queue.
 
 The shared `tests.fixtures.maps` module provides Shenzhen and Guangzhou fixtures for unique,
-multiple, empty, timeout, detail, route, weather, and navigation outcomes. Focused verification:
+multiple, empty, timeout, detail, route, weather, and navigation outcomes. The Stub fixtures
+explicitly simulate Amap-origin data, so each POI carries `provider=amap` and
+can be stably identified by `provider + poi_id` without adding a second POI contract.
+
+Focused verification:
 
 ```bash
 python -m pytest -q tests/unit/test_place_contracts.py tests/contract/test_map_provider_contract.py tests/integration/test_map_provider_stub.py
@@ -234,7 +238,21 @@ existing `MapProvider`. One internal city mapping supplies both Amap adcodes and
 Shenzhen and Guangzhou; every method reads the explicit request `CityScope`, with no process-wide
 city setting. Search uses `citylimit=true`, detail validates POI ID and city ownership, all four
 route modes return only GCJ-02 endpoints plus total meters/seconds, forecast weather maps dates
-and bounded Celsius values, and the Amap marker URI is built locally without a key.
+and bounded Celsius values, and the Amap marker URI is built locally without a key. Search and
+detail POIs always preserve the restricted `provider=amap`, provider-local `poi_id`, formal
+`city_code`, and GCJ-02 coordinate system.
+
+The HTTP origin is fixed to `https://restapi.amap.com`. A trailing slash is normalized; every
+other hostname, suffix-confusion hostname, userinfo, non-HTTPS scheme, explicit port, path,
+query, fragment, control character, or malformed URL fails before provider construction. Vendor
+and parsing exceptions are caught internally and a new fixed `MapProviderError` is raised only
+after leaving the `except` block, so public errors have no context/cause and retain no HTTP
+request, response, URL, key, raw body, or vendor field.
+
+Infocodes `10012/10013` are non-retryable authentication/permission failures;
+`10014/10015/10019` are bounded rate-limit failures; `10016/10017` and `3xxxx` are bounded
+temporary-unavailability failures. Unknown infocodes remain invalid responses and Amap `info`
+text is never published.
 
 `create_amap_http_client()` is the only HTTP client constructor and accepts an injected
 `MockTransport`. The provider owns and closes the client. One logical call makes at most two HTTP

@@ -13,13 +13,14 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
-from app.config import AmapProviderSettings, Settings
+from app.config import AmapConfigurationError, AmapProviderSettings, Settings
 from app.domain.places import (
     CityScope,
     Coordinate,
     CoordinateSystem,
     GetPoiRequest,
     NavigationRequest,
+    PoiProvider,
     PoiType,
     RouteRequest,
     SearchPoiRequest,
@@ -155,6 +156,91 @@ def safe_params(request: httpx.Request) -> dict[str, str]:
     return params
 
 
+def exception_graph_text(error: BaseException) -> str:
+    """Traverse every public exception link and attribute for leak assertions."""
+
+    pending = [error]
+    seen: set[int] = set()
+    rendered: list[str] = []
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        rendered.extend(
+            (
+                str(current),
+                repr(current),
+                repr(current.args),
+                repr(vars(current)),
+            )
+        )
+        for linked in (current.__context__, current.__cause__):
+            if linked is not None:
+                pending.append(linked)
+        pending.extend(
+            value for value in vars(current).values() if isinstance(value, BaseException)
+        )
+    return "\n".join(rendered)
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://example.com",
+        "https://restapi.amap.com.evil.example",
+        "https://user:password@restapi.amap.com",
+        "http://restapi.amap.com",
+        "https://restapi.amap.com:443",
+        "https://restapi.amap.com/v3/place/text",
+        "https://restapi.amap.com?key=fake-url-secret",
+        "https://restapi.amap.com?",
+        "https://restapi.amap.com#fragment",
+        "https://restapi.amap.com#",
+        "https://restapi.amap.com\n.evil.example",
+        "https://[broken",
+    ],
+)
+def test_non_official_base_url_cannot_construct_provider_or_make_http_request(
+    base_url: str,
+) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(200, json=envelope(pois=[]))
+
+    with pytest.raises(AmapConfigurationError) as exc_info:
+        AmapMapProvider(
+            config=AmapProviderSettings(
+                api_key=SecretStr(FAKE_KEY),
+                base_url=base_url,
+                timeout_seconds=1,
+                max_retries=0,
+                retry_after_max_seconds=0,
+            ),
+            transport=mock_transport(handler),
+        )
+
+    exposed = str(exc_info.value) + repr(exc_info.value) + repr(vars(exc_info.value))
+    assert attempts == 0
+    assert base_url not in exposed
+    assert FAKE_KEY not in exposed
+
+
+def test_direct_provider_config_normalizes_safe_trailing_slash() -> None:
+    config = AmapProviderSettings(
+        api_key=SecretStr(FAKE_KEY),
+        base_url="https://restapi.amap.com/",
+        timeout_seconds=1,
+        max_retries=0,
+        retry_after_max_seconds=0,
+    )
+
+    assert config.base_url == "https://restapi.amap.com"
+
+
 @pytest.mark.asyncio
 async def test_search_uses_request_local_city_citylimit_and_gcj_longitude_first() -> None:
     seen: list[tuple[str, dict[str, str]]] = []
@@ -184,6 +270,7 @@ async def test_search_uses_request_local_city_citylimit_and_gcj_longitude_first(
     gz_result = await provider.search_poi(gz_request)
 
     assert (sz_result.city_code, gz_result.city_code) == ("shenzhen", "guangzhou")
+    assert sz_result.pois[0].provider is PoiProvider.AMAP
     assert sz_result.pois[0].coordinate == Coordinate(
         latitude=22.541174,
         longitude=114.057701,
@@ -290,7 +377,12 @@ async def test_get_poi_success_not_found_and_city_conflict() -> None:
     )
     request = GetPoiRequest(poi_id="B0SZ000001", city=SHENZHEN)
 
-    assert (await provider.get_poi(request)).poi.city_code == "shenzhen"
+    detail = (await provider.get_poi(request)).poi
+    assert (detail.provider, detail.poi_id, detail.city_code) == (
+        PoiProvider.AMAP,
+        "B0SZ000001",
+        "shenzhen",
+    )
     with pytest.raises(MapProviderError) as missing:
         await provider.get_poi(request)
     with pytest.raises(MapProviderError) as conflict:
@@ -634,7 +726,15 @@ async def test_non_retryable_http_errors_attempt_once(
     ("infocode", "expected", "attempts"),
     [
         ("10001", MapProviderErrorCode.AUTHENTICATION_FAILED, 1),
+        ("10012", MapProviderErrorCode.AUTHENTICATION_FAILED, 1),
+        ("10013", MapProviderErrorCode.AUTHENTICATION_FAILED, 1),
         ("10004", MapProviderErrorCode.RATE_LIMITED, 2),
+        ("10014", MapProviderErrorCode.RATE_LIMITED, 2),
+        ("10015", MapProviderErrorCode.RATE_LIMITED, 2),
+        ("10019", MapProviderErrorCode.RATE_LIMITED, 2),
+        ("10016", MapProviderErrorCode.UNAVAILABLE, 2),
+        ("10017", MapProviderErrorCode.UNAVAILABLE, 2),
+        ("10011", MapProviderErrorCode.INVALID_REQUEST, 1),
         ("20000", MapProviderErrorCode.INVALID_REQUEST, 1),
         ("30001", MapProviderErrorCode.UNAVAILABLE, 2),
         ("99999", MapProviderErrorCode.INVALID_RESPONSE, 1),
@@ -666,7 +766,67 @@ async def test_amap_status_zero_infocodes_are_safely_classified(
         await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
 
     assert exc_info.value.code is expected
+    assert exc_info.value.retryable is (attempts == 2)
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
     assert actual_attempts == attempts
+    await provider.close()
+
+
+@pytest.mark.parametrize(
+    "infocode",
+    ["10014", "10015", "10019", "10016", "10017", "30001"],
+)
+@pytest.mark.asyncio
+async def test_retryable_infocode_first_failure_then_success_attempts_twice(
+    infocode: str,
+) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(
+                200,
+                json={"status": "0", "info": FAKE_RAW_RESPONSE, "infocode": infocode},
+            )
+        return httpx.Response(200, json=envelope(pois=[]))
+
+    provider = AmapMapProvider(config=amap_config(), transport=mock_transport(handler))
+
+    result = await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
+
+    assert result.pois == ()
+    assert attempts == 2
+    await provider.close()
+
+
+@pytest.mark.parametrize("infocode", ["10012", "10013"])
+@pytest.mark.asyncio
+async def test_permission_infocode_never_attempts_a_second_success(
+    infocode: str,
+) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(
+                200,
+                json={"status": "0", "info": FAKE_RAW_RESPONSE, "infocode": infocode},
+            )
+        return httpx.Response(200, json=envelope(pois=[]))
+
+    provider = AmapMapProvider(config=amap_config(), transport=mock_transport(handler))
+
+    with pytest.raises(MapProviderError) as exc_info:
+        await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
+
+    assert exc_info.value.code is MapProviderErrorCode.AUTHENTICATION_FAILED
+    assert exc_info.value.retryable is False
+    assert attempts == 1
     await provider.close()
 
 
@@ -796,6 +956,68 @@ async def test_errors_repr_public_dict_and_logs_never_expose_secret_url_or_body(
         assert sensitive not in public_text
         assert sensitive not in caplog.text
     assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    await provider.close()
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        ("timeout", MapProviderErrorCode.TIMEOUT),
+        ("connect", MapProviderErrorCode.UNAVAILABLE),
+        ("non_json", MapProviderErrorCode.INVALID_RESPONSE),
+        ("poi_validation", MapProviderErrorCode.INVALID_RESPONSE),
+    ],
+)
+@pytest.mark.asyncio
+async def test_public_error_chain_fully_detaches_sensitive_provider_objects(
+    failure: str,
+    expected_code: MapProviderErrorCode,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    nested_secret = "fake-nested-provider-secret-must-not-leak"
+    query = "sensitive query for detached exception"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if failure == "timeout":
+            raise httpx.ReadTimeout(nested_secret, request=request)
+        if failure == "connect":
+            raise httpx.ConnectError(nested_secret, request=request)
+        if failure == "non_json":
+            return httpx.Response(200, text=f"not-json {nested_secret} {FAKE_RAW_RESPONSE}")
+        poi = raw_poi(name=(nested_secret + "-") * 12)
+        return httpx.Response(200, json=envelope(pois=[poi]))
+
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(handler),
+    )
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(MapProviderError) as exc_info:
+        await provider.search_poi(SearchPoiRequest(query=query, city=SHENZHEN))
+
+    error = exc_info.value
+    exposed = "\n".join(
+        (
+            exception_graph_text(error),
+            repr(provider),
+            str(error.to_public_dict()),
+            caplog.text,
+        )
+    )
+    assert error.code is expected_code
+    assert error.__context__ is None
+    assert error.__cause__ is None
+    for sensitive in (
+        FAKE_KEY,
+        nested_secret,
+        FAKE_RAW_RESPONSE,
+        query,
+        "https://restapi.amap.com/v3/place/text",
+        "?key=",
+    ):
+        assert sensitive not in exposed
+
     await provider.close()
 
 

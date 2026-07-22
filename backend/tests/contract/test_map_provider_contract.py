@@ -9,6 +9,7 @@ import pytest
 from app.domain.places import (
     GetPoiRequest,
     NavigationRequest,
+    PoiProvider,
     RouteRequest,
     SearchPoiRequest,
     WeatherRequest,
@@ -53,7 +54,8 @@ def test_map_provider_has_exactly_five_explicit_request_contracts() -> None:
 async def test_search_covers_unique_multiple_empty_and_timeout_results() -> None:
     provider = make_stub_map_provider()
 
-    assert (await provider.search_poi(SZ_UNIQUE_SEARCH)).pois[0].poi_id == "poi_sz_moca_up"
+    sz_poi = (await provider.search_poi(SZ_UNIQUE_SEARCH)).pois[0]
+    assert (sz_poi.provider, sz_poi.poi_id) == (PoiProvider.AMAP, "poi_sz_moca_up")
     assert (await provider.search_poi(GZ_UNIQUE_SEARCH)).pois[0].city_code == "guangzhou"
     assert len((await provider.search_poi(CHAIN_SEARCH)).pois) == 2
     assert (await provider.search_poi(NO_RESULT_SEARCH)).pois == ()
@@ -66,7 +68,12 @@ async def test_search_covers_unique_multiple_empty_and_timeout_results() -> None
 async def test_get_poi_success_and_safe_not_found() -> None:
     provider = make_stub_map_provider()
 
-    assert (await provider.get_poi(SZ_GET_POI)).poi.city_code == "shenzhen"
+    sz_poi = (await provider.get_poi(SZ_GET_POI)).poi
+    assert (sz_poi.provider, sz_poi.poi_id, sz_poi.city_code) == (
+        PoiProvider.AMAP,
+        "poi_sz_moca_up",
+        "shenzhen",
+    )
     assert (await provider.get_poi(GZ_GET_POI)).poi.city_code == "guangzhou"
     with pytest.raises(MapProviderError) as error:
         await provider.get_poi(MISSING_GET_POI)

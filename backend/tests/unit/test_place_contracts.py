@@ -14,6 +14,7 @@ from app.domain.places import (
     CoordinateSystem,
     NavigationUri,
     Poi,
+    PoiProvider,
     PoiSearchResult,
     RouteRequest,
     RouteResult,
@@ -29,12 +30,28 @@ FAKE_URI_SECRET = "fake-navigation-secret-must-not-leak"
 def test_poi_contract_is_strict_immutable_and_rejects_unknown_fields() -> None:
     poi = SHENZHEN_MUSEUM
 
+    assert poi.provider is PoiProvider.AMAP
     assert poi.city_code == "shenzhen"
     assert poi.coordinate.coordinate_system is CoordinateSystem.GCJ_02
     with pytest.raises(ValidationError):
         Poi(**poi.model_dump(), adcode="440300")  # type: ignore[call-arg]
     with pytest.raises(ValidationError):
         poi.name = "changed"  # type: ignore[misc]
+
+
+def test_poi_provider_is_required_strict_and_stable_with_poi_id() -> None:
+    payload = SHENZHEN_MUSEUM.model_dump()
+    payload.pop("provider")
+    with pytest.raises(ValidationError):
+        Poi(**payload)
+    payload["provider"] = "amap"
+    with pytest.raises(ValidationError):
+        Poi(**payload)
+
+    assert (SHENZHEN_MUSEUM.provider, SHENZHEN_MUSEUM.poi_id) == (
+        PoiProvider.AMAP,
+        "poi_sz_moca_up",
+    )
 
 
 @pytest.mark.parametrize("city_code", ["", " ", "Shenzhen", "shenzhen city", "a"])
