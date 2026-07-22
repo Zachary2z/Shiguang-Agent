@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-5A PlanConstraints |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-5-planning |
 | 最近更新 | 2026-07-23 |
 | 阻塞项 | 无；M0-5A 前置条件已满足 |
 
 ## 当前任务
 
-M0-4A 至 M0-4D 均已通过主控验收并集成到 `main`，M0 的输入、收藏与地点匹配技术验证前置链路已经闭合。当前只允许从最新 `main` 开始 M0-5A PlanConstraints；M0-5B 结构化检索、M0-5C 草案生成、M0-5D 外部地点补充以及后续阶段仍不得提前开发。
+M0-4A 至 M0-4D 均已通过主控验收并集成到 `main`，M0 的输入、收藏与地点匹配技术验证前置链路已经闭合。M0-5A PlanConstraints 已在独立阶段分支实现，当前等待主控验收；M0-5B 结构化检索、M0-5C 草案生成、M0-5D 外部地点补充以及后续阶段仍未开始且不得提前开发。
 
 ## M0 状态
 
@@ -24,7 +24,7 @@ M0-4A 至 M0-4D 均已通过主控验收并集成到 `main`，M0 的输入、收
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
 | M0-4 URL 与截图 | 已完成 | M0-4A、M0-4B、M0-4C、M0-4D 均已通过主控验收 |
-| M0-5 计划技术验证 | 未开始 | M0-5A 前置条件已满足，允许开始 |
+| M0-5 计划技术验证 | 进行中 | M0-5A 待主控验收；M0-5B/C/D 未开始 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
 状态只允许使用：未开始、进行中、待验收、已完成、阻塞。
@@ -56,7 +56,7 @@ M0-4A 至 M0-4D 均已通过主控验收并集成到 `main`，M0 的输入、收
 
 ## 下一步
 
-从本次状态提交后的最新 `main` 创建 M0-5A 开发分支，只实现 PlanConstraints、严格校验、临时约束有效期与缺失项追问契约。复用现有用户、Session、城市和时间领域能力；不实现 M0-5B/C/D，不调用真实模型、高德、路线、天气、网页或其他外部/付费 API。
+主控从精确阶段提交独立复验 M0-5A 的严格契约、缺失项顺序、过期边界、敏感信息安全、无副作用和完整离线回归。验收通过前不合并 `main`、不开始 M0-5B/C/D，也不调用真实模型、高德、路线、天气、网页或其他外部/付费 API。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -862,3 +862,17 @@ M0-4A 至 M0-4D 均已通过主控验收并集成到 `main`，M0 的输入、收
 - 独立对抗与迁移检查：仓库外 4 项独立探针全部通过，覆盖同字节不同 MIME 冲突且零额外副作用、信息不足状态完整重放、取消与固定存储清理失败竞争，以及图片契约与 OpenAPI 共用同一幂等约束。Alembic `upgrade head`、`check`、`downgrade base`、再次 `upgrade head` 均通过；迁移文件仍为 6 个，唯一 head 为 `20260722_0006`。无外部 Provider 配置时健康检查正常。
 - 范围、安全与冗余：M0-4D 只原位扩展既有文字收藏工作流、运行记录、Source 元数据和唯一消息 API；AgentRunner、ToolRegistry、ModelProvider、WebContentProvider、StorageProvider、TextExtractionService、ImageRecognitionService、CollectionWriteService、Repository 和响应 DTO 均保持唯一。没有新依赖、配置、迁移、M0-5、路线、天气、前端、SSE、Worker、队列、自动重试或后台任务；Git 不含 `.env`、数据库、图片、响应快照、缓存或虚拟环境。
 - 真实调用与结论：本轮未读取、打印或修改本机 `.env`，未启用真实 marker；真实模型、高德、网页、DNS、对象存储、消息及任何真实/付费 API 调用均为 0。没有未关闭的 P0/P1，M0-4D 与 M0-4 已完成，M0-5A 前置条件满足；下一阶段只实现 PlanConstraints，不提前实现 M0-5B/C/D。
+
+#### 2026-07-23｜M0-5A PlanConstraints｜待主控验收
+
+- 分支与基线：`codex/m0-5-planning` 从指定 `main` 基线 `eb8e1a7ab83a0c784508943020db06fb6aea9b44` 创建；开始时 `HEAD`、`main`、`origin/main` 均精确等于该 SHA，工作区干净，M0-4D 已完成且 M0-5A 是唯一允许阶段。独立 `codex/ux-composer-dock` 仅有自身 UX 原型差异，未检出、合并、变基或拣选到本阶段
+- 唯一契约：新增 `app.domain.plans.PlanConstraints` 作为严格、冻结、供应商无关的唯一完整计划约束；显式复用 `PlanCity.SHENZHEN`、`CityScope`、`Coordinate`、`TransportMode` 和 `require_aware_utc`，没有复制城市、交通、坐标、金额或时间类型。公共交通继续使用既有 `transit`，未复制技术文档早期示例 `public_transit`
+- 约束边界：完整契约显式携带 `city_code=shenzhen`、aware UTC 规范化后的 `start_at/end_at`、`ActivityArea` 或敏感 `origin`、严格 `Decimal | None` budget、pace、交通方式、include/exclude、`collection_only` 及 `created_at/expires_at`。结束时间必须更晚，精确 24 小时允许且超过即拒绝；预算 `None`、合法零和正数保持不同语义，不伪造默认值；区域、标签和要求具有空白、长度、数量、重复与 include/exclude 冲突校验
+- 缺失项与过期：纯函数 `resolve_plan_constraints()` 输入冻结的 `PlanConstraintInput`，只返回完整 `PlanConstraints` 或一个 `MissingPlanConstraintInfo`；固定先询问 `time_window`，再询问 `activity_range`，预算、交通和特殊要求缺失均不阻塞。临时约束只在 `[created_at, expires_at)` 有效，到达过期时刻后整组输入按不可用处理，不继续用于计划，也没有任何长期记忆写入路径
+- 安全与副作用：`origin` 不进入 repr 或公开序列化；活动范围和 include/exclude 不进入 repr，`hide_input_in_errors` 防止校验错误回显，日志使用安全 repr。解析函数不导入或调用 Repository、数据库、Provider、模型、地图、路线、天气、文件或网络，不修改输入；本阶段没有 API、Worker、队列、前端、缓存、Prompt、Tool Calling 或 `nanobot_core` 改动
+- 主要文件：`backend/app/domain/plans/__init__.py`、`backend/app/domain/plans/contracts.py`、`backend/tests/unit/test_plan_constraints.py`、`README.md`、`docs/DEV_STATUS.md`
+- 验证环境与命令：macOS、项目 `.venv`、Python 3.13.5；从 `backend` 执行 `python -m pip install -e ".[dev]"`、`python -m pip check`、`python -m ruff check .`、`python -m mypy app migrations nanobot_core`、`python -m pytest -q tests/unit/test_plan_constraints.py`、`python -m pytest -q tests/core`、`python -m pytest -q tests/integration/test_migrations.py`、`python -m pytest -q -m "not real_provider and not real_map_provider"`、`python -m pytest -q`，均显式设置 `APP_ENV=test` 和两个真实测试开关为 `0`
+- 验证结果：editable 安装退出 0；`pip check`、Ruff、strict mypy 均退出 0，mypy 检查 87 个源文件；M0-5A 聚焦 `45 passed`、Core `118 passed`、迁移 `21 passed`、非真实全集 `1306 passed / 2 deselected`、默认全集 `1306 passed / 2 skipped`，全部退出 0。新增用例覆盖完整/缺失条件、显式深圳、时间与 24 小时边界、area/origin、预算类型、交通去重、include/exclude、严格布尔、稳定追问、临时有效期、冻结/extra、输入不变、脱敏和 I/O 禁止
+- 迁移与范围：没有新增或修改 ORM、Repository、表、依赖、配置或 `0001`–`0006`；`python -m alembic heads` 仍为唯一 `20260722_0006 (head)`。没有 M0-5B 检索/过滤/分店解析、M0-5C Plan/PlanItem/草案、M0-5D 高德补充/Approval 或外部调用
+- 冗余、安全与风险：扫描确认 PlanConstraints 只有本阶段一套，PlanCity、CityScope、TransportMode、Coordinate、AgentRunner、ToolRegistry 和 Provider 均沿用既有唯一实现；Git 未包含 `.env`、数据库、缓存、虚拟环境、响应快照或独立 UX 改动。未读取、打印或修改本机 `.env`，真实模型、高德、路线、天气、网页、DNS、对象存储、消息及任何外部/付费 API 调用均为 0；当前没有已知未关闭 P0/P1
+- 已知风险与主控复测：当前只在 macOS/Python 3.13.5 和纯领域 Fixture 上验证；主控应重点复核严格 Python/JSON 输入差异、`origin` 公开序列化排除、临时约束边界、过期输入固定回到时间追问、Decimal 上限/精度及 M0-5B 后续只通过 `city_scope` 显式传递深圳。本阶段状态保持待验收，不提前标记完成、不合并、不推送、不开始 M0-5B

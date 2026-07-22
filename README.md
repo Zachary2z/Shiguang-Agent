@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。M0-2A 至 M0-2D、M0-3A 至 M0-3D、M0-4A 至 M0-4D 均已通过主控验收。当前允许开始 M0-5A：只建立显式、可验证的 PlanConstraints，不提前实现检索、草案生成或外部地点补充。
+项目处于 **M0 技术验证**。M0-2A 至 M0-2D、M0-3A 至 M0-3D、M0-4A 至 M0-4D 均已通过主控验收。M0-5A PlanConstraints 已实现并待主控验收；M0-5B 及后续阶段仍未开始。
 
 普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。此前真实模型和高德的单次授权均不延续到 M0-5A；真实模型、高德、网页、对象存储及其他外部/付费调用默认未授权。M0-5A 只处理计划约束契约与缺失项判断，不实现 M0-5B/C/D、SSE、Worker 或前端。
 
@@ -59,9 +59,16 @@ python -m pytest -q tests/contract/test_storage_provider_contract.py tests/integ
 python -m pytest -q tests/contract/test_web_content_provider_contract.py tests/unit/test_web_url_security.py tests/unit/test_httpx_web_content_provider.py
 python -m pytest -q tests/unit/test_image_recognition_service.py tests/unit/test_openai_compatible_provider.py tests/unit/test_text_extraction_service.py
 python -m pytest -q tests/contract/test_m0_4d_unified_input.py
+python -m pytest -q tests/unit/test_plan_constraints.py
 ```
 
 测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
+
+### M0-5A PlanConstraints
+
+`app.domain.plans.PlanConstraints` 是唯一完整计划约束契约。调用方必须显式传入 `PlanCity.SHENZHEN`；通过 `city_scope` 可转换为既有 `CityScope`，不依赖全局当前城市。契约复用既有 `Coordinate` 和 `TransportMode`（公共交通值保持 `transit`），要求一个 aware 且不超过 24 小时的连续时间段，以及粗粒度 `ActivityArea` 或敏感 `origin` 二者之一。
+
+预算使用严格 `Decimal | None`，`None` 不会被改写成默认金额；pace、交通方式、include/exclude 和 `collection_only` 均为可选且不阻塞。`resolve_plan_constraints()` 只会按稳定顺序返回一个缺失项：先 `time_window`，再 `activity_range`。临时约束在 `[created_at, expires_at)` 内有效，到达过期时刻后整组约束不可继续解析；该纯函数不访问数据库、文件、网络或 Provider，也不写入长期记忆。精确 `origin` 不进入 repr、日志或公开序列化。
 
 ### 数据库迁移
 
