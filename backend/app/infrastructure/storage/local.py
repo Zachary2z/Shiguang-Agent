@@ -41,6 +41,15 @@ _CREATE_FLAGS: Final = (
 _READ_FLAGS: Final = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
 
 
+class _PublicationState:
+    """Track only directory entries exclusively created by the current request."""
+
+    __slots__ = ("directory_entry_owned",)
+
+    def __init__(self) -> None:
+        self.directory_entry_owned = False
+
+
 class LocalPrivateStorageProvider(StorageProvider):
     """The only local private-directory adapter; it never returns filesystem paths."""
 
@@ -96,8 +105,9 @@ class LocalPrivateStorageProvider(StorageProvider):
         file_key, reservation_name = self._reserve_file_key()
         data_temp_name = _new_temporary_name()
         metadata_temp_name = _new_temporary_name()
-        data_published = False
-        metadata_published = False
+        data_publication = _PublicationState()
+        metadata_publication = _PublicationState()
+        write_completed = False
         public_error: StorageProviderError | None = None
         unexpected_failure = False
         stored_metadata: PrivateFileMetadata | None = None
@@ -133,14 +143,15 @@ class LocalPrivateStorageProvider(StorageProvider):
                 data_temp_name,
                 destination_name=file_key,
                 destination_directory=self._objects,
+                publication=data_publication,
             )
-            data_published = True
             self._publish_temp(
                 metadata_temp_name,
                 destination_name=file_key,
                 destination_directory=self._metadata,
+                publication=metadata_publication,
             )
-            metadata_published = True
+            write_completed = True
         except asyncio.CancelledError:
             raise
         except StorageProviderError as error:
@@ -148,8 +159,11 @@ class LocalPrivateStorageProvider(StorageProvider):
         except Exception:
             unexpected_failure = True
         finally:
-            if not metadata_published and data_published:
-                _safe_unlink(self._objects, file_key)
+            if not write_completed:
+                if metadata_publication.directory_entry_owned:
+                    _safe_unlink(self._metadata, file_key)
+                if data_publication.directory_entry_owned:
+                    _safe_unlink(self._objects, file_key)
             _safe_unlink(self._temporary, data_temp_name)
             _safe_unlink(self._temporary, metadata_temp_name)
             _safe_unlink(self._reservations, reservation_name)
@@ -158,7 +172,12 @@ class LocalPrivateStorageProvider(StorageProvider):
             raise public_error
         if unexpected_failure:
             raise StorageProviderError(code=StorageProviderErrorCode.WRITE_FAILED)
-        assert stored_metadata is not None and data_published and metadata_published
+        assert (
+            stored_metadata is not None
+            and write_completed
+            and data_publication.directory_entry_owned
+            and metadata_publication.directory_entry_owned
+        )
         return stored_metadata
 
     async def get_private_access(self, file_key: str) -> PrivateFileAccess:
@@ -222,6 +241,8 @@ class LocalPrivateStorageProvider(StorageProvider):
         reservations_fd = -1
         objects_fd = -1
         metadata_fd = -1
+        reservation_file_fd = -1
+        owned_reservation_name: str | None = None
         reservation: tuple[str, str] | None = None
         public_error: StorageProviderError | None = None
         unexpected_failure = False
@@ -233,7 +254,7 @@ class LocalPrivateStorageProvider(StorageProvider):
                 file_key = self._key_factory()
                 validate_storage_file_key(file_key)
                 try:
-                    reservation_fd = os.open(
+                    reservation_file_fd = os.open(
                         file_key,
                         _CREATE_FLAGS,
                         _FILE_MODE,
@@ -241,9 +262,12 @@ class LocalPrivateStorageProvider(StorageProvider):
                     )
                 except FileExistsError:
                     continue
-                os.close(reservation_fd)
+                owned_reservation_name = file_key
+                os.close(reservation_file_fd)
+                reservation_file_fd = -1
                 if _name_exists(objects_fd, file_key) or _name_exists(metadata_fd, file_key):
                     os.unlink(file_key, dir_fd=reservations_fd)
+                    owned_reservation_name = None
                     continue
                 reservation = (file_key, file_key)
                 break
@@ -252,9 +276,23 @@ class LocalPrivateStorageProvider(StorageProvider):
         except Exception:
             unexpected_failure = True
         finally:
-            for descriptor in (reservations_fd, objects_fd, metadata_fd):
-                if descriptor >= 0:
-                    os.close(descriptor)
+            if reservation is None and owned_reservation_name is not None:
+                reservation_removed = False
+                if reservations_fd >= 0:
+                    try:
+                        os.unlink(owned_reservation_name, dir_fd=reservations_fd)
+                        reservation_removed = True
+                    except OSError:
+                        pass
+                if not reservation_removed:
+                    _safe_unlink(self._reservations, owned_reservation_name)
+            for descriptor in (
+                reservation_file_fd,
+                reservations_fd,
+                objects_fd,
+                metadata_fd,
+            ):
+                _safe_close(descriptor)
         if public_error is not None:
             raise public_error
         if unexpected_failure or reservation is None:
@@ -332,6 +370,7 @@ class LocalPrivateStorageProvider(StorageProvider):
         *,
         destination_name: str,
         destination_directory: Path,
+        publication: _PublicationState,
     ) -> None:
         source_fd = _open_directory(self._temporary)
         destination_fd = _open_directory(destination_directory)
@@ -343,10 +382,11 @@ class LocalPrivateStorageProvider(StorageProvider):
                 dst_dir_fd=destination_fd,
                 follow_symlinks=False,
             )
+            publication.directory_entry_owned = True
             os.fsync(destination_fd)
         finally:
-            os.close(source_fd)
-            os.close(destination_fd)
+            _safe_close(source_fd)
+            _safe_close(destination_fd)
 
 
 def _prepare_private_root(configured_root: Path) -> Path:
@@ -479,8 +519,16 @@ def _safe_unlink(directory: Path, name: str) -> None:
     except OSError:
         pass
     finally:
-        if directory_fd >= 0:
-            os.close(directory_fd)
+        _safe_close(directory_fd)
+
+
+def _safe_close(file_descriptor: int) -> None:
+    if file_descriptor < 0:
+        return
+    try:
+        os.close(file_descriptor)
+    except OSError:
+        pass
 
 
 def _unlink_name(directory: Path, name: str) -> None:

@@ -322,6 +322,215 @@ async def test_two_concurrent_writes_do_not_overlap(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failed_directory", ["objects", "metadata"])
+async def test_directory_fsync_failure_after_link_cleans_every_owned_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_directory: str,
+) -> None:
+    file_key = "F" * 43
+    provider = _provider(tmp_path, key_factory=lambda: file_key)
+    root = tmp_path / "private"
+    failed_stat = (root / failed_directory).stat()
+    original_fsync = os.fsync
+
+    def fail_target_directory(file_descriptor: int) -> None:
+        descriptor_stat = os.fstat(file_descriptor)
+        if (
+            descriptor_stat.st_dev == failed_stat.st_dev
+            and descriptor_stat.st_ino == failed_stat.st_ino
+        ):
+            assert (root / failed_directory / file_key).exists()
+            raise OSError("private path and content must stay hidden")
+        original_fsync(file_descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_target_directory)
+
+    with pytest.raises(StorageProviderError) as raised:
+        await provider.put_private(
+            _chunks(PNG + b"atomic"),
+            content_type="image/png",
+            retention_policy=RetentionPolicy.ORIGINAL_SCREENSHOT,
+        )
+
+    assert raised.value.code is StorageProviderErrorCode.WRITE_FAILED
+    assert raised.value.__context__ is None
+    assert raised.value.__cause__ is None
+    assert _private_entries(root) == {
+        "objects": [],
+        "metadata": [],
+        ".tmp": [],
+        ".reservations": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_link_propagates_and_cleans_owned_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_key = "C" * 43
+    provider = _provider(tmp_path, key_factory=lambda: file_key)
+    root = tmp_path / "private"
+    objects_stat = (root / "objects").stat()
+    original_fsync = os.fsync
+
+    def cancel_objects_directory(file_descriptor: int) -> None:
+        descriptor_stat = os.fstat(file_descriptor)
+        if (
+            descriptor_stat.st_dev == objects_stat.st_dev
+            and descriptor_stat.st_ino == objects_stat.st_ino
+        ):
+            assert (root / "objects" / file_key).exists()
+            raise asyncio.CancelledError
+        original_fsync(file_descriptor)
+
+    monkeypatch.setattr(os, "fsync", cancel_objects_directory)
+
+    with pytest.raises(asyncio.CancelledError):
+        await provider.put_private(
+            _chunks(PNG + b"cancelled"),
+            content_type="image/png",
+            retention_policy=RetentionPolicy.ORIGINAL_SCREENSHOT,
+        )
+
+    assert _private_entries(root) == {
+        "objects": [],
+        "metadata": [],
+        ".tmp": [],
+        ".reservations": [],
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_directory", ["objects", "metadata"])
+async def test_reservation_is_cleaned_when_existing_entry_probe_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_directory: str,
+) -> None:
+    existing_reservation = "R" * 43
+    requested_key = "P" * 43
+    generated: Iterator[str] = iter((existing_reservation, requested_key))
+    provider = _provider(tmp_path, key_factory=generated.__next__)
+    root = tmp_path / "private"
+    (root / ".reservations" / existing_reservation).write_bytes(b"other-request")
+    original_name_exists = local_module._name_exists
+    failed_stat = (root / failed_directory).stat()
+
+    def fail_selected_probe(directory_fd: int, name: str) -> bool:
+        descriptor_stat = os.fstat(directory_fd)
+        if (
+            descriptor_stat.st_dev == failed_stat.st_dev
+            and descriptor_stat.st_ino == failed_stat.st_ino
+        ):
+            raise OSError("private probe details")
+        return original_name_exists(directory_fd, name)
+
+    monkeypatch.setattr(local_module, "_name_exists", fail_selected_probe)
+
+    with pytest.raises(StorageProviderError) as raised:
+        await provider.put_private(
+            _chunks(PNG + b"probe"),
+            content_type="image/png",
+            retention_policy=RetentionPolicy.ORIGINAL_SCREENSHOT,
+        )
+
+    assert raised.value.code is StorageProviderErrorCode.WRITE_FAILED
+    assert raised.value.__context__ is None
+    assert raised.value.__cause__ is None
+    assert _private_entries(root) == {
+        "objects": [],
+        "metadata": [],
+        ".tmp": [],
+        ".reservations": [existing_reservation],
+    }
+
+
+@pytest.mark.asyncio
+async def test_link_failure_before_creation_preserves_existing_objects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requested_key = "L" * 43
+    existing_key = "E" * 43
+    provider = _provider(tmp_path, key_factory=lambda: requested_key)
+    root = tmp_path / "private"
+    existing = root / "objects" / existing_key
+    existing.write_bytes(b"existing-object")
+
+    def fail_before_link(*_: object, **__: object) -> NoReturn:
+        raise OSError("private link details")
+
+    monkeypatch.setattr(os, "link", fail_before_link)
+
+    with pytest.raises(StorageProviderError) as raised:
+        await provider.put_private(
+            _chunks(PNG + b"new"),
+            content_type="image/png",
+            retention_policy=RetentionPolicy.ORIGINAL_SCREENSHOT,
+        )
+
+    assert raised.value.code is StorageProviderErrorCode.WRITE_FAILED
+    assert existing.read_bytes() == b"existing-object"
+    assert _private_entries(root) == {
+        "objects": [existing_key],
+        "metadata": [],
+        ".tmp": [],
+        ".reservations": [],
+    }
+
+
+@pytest.mark.asyncio
+async def test_same_key_can_be_reused_after_post_link_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_key = "K" * 43
+    provider = _provider(tmp_path, key_factory=lambda: file_key)
+    root = tmp_path / "private"
+    objects_stat = (root / "objects").stat()
+    original_fsync = os.fsync
+    failure_pending = True
+
+    def fail_objects_directory_once(file_descriptor: int) -> None:
+        nonlocal failure_pending
+        descriptor_stat = os.fstat(file_descriptor)
+        if (
+            failure_pending
+            and descriptor_stat.st_dev == objects_stat.st_dev
+            and descriptor_stat.st_ino == objects_stat.st_ino
+        ):
+            failure_pending = False
+            raise OSError("private sync details")
+        original_fsync(file_descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_objects_directory_once)
+
+    with pytest.raises(StorageProviderError) as raised:
+        await provider.put_private(
+            _chunks(PNG + b"first"),
+            content_type="image/png",
+            retention_policy=RetentionPolicy.ORIGINAL_SCREENSHOT,
+        )
+    stored = await provider.put_private(
+        _chunks(PNG + b"second"),
+        content_type="image/png",
+        retention_policy=RetentionPolicy.ORIGINAL_SCREENSHOT,
+    )
+
+    assert raised.value.code is StorageProviderErrorCode.WRITE_FAILED
+    assert stored.file_key == file_key
+    assert (root / "objects" / file_key).read_bytes() == PNG + b"second"
+    assert _private_entries(root) == {
+        "objects": [file_key],
+        "metadata": [file_key],
+        ".tmp": [],
+        ".reservations": [],
+    }
+
+
+@pytest.mark.asyncio
 async def test_write_exception_is_safe_and_leaves_no_partial_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
