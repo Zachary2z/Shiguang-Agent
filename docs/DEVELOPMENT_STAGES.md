@@ -8,7 +8,7 @@
 | 日期 | 2026-07-23 |
 | 状态 | 后续开发执行基线 |
 | 仓库 | /Users/zhangzihao/Documents/Shiguang_Nanobot |
-| 当前阶段 | M0-5B 结构化检索和规则（允许开始） |
+| 当前阶段 | M0-5C 草案生成（允许开始） |
 
 ---
 

@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-5B 结构化检索和规则 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-5-planning |
+| 当前子阶段 | M0-5C 草案生成 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 无；M0-5B 已实现，等待主控验收 |
+| 阻塞项 | 无；M0-5B 已完成，M0-5C 前置条件已满足 |
 
 ## 当前任务
 
-M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收并集成到 `main`，计划约束契约和安全解析边界已经闭合。M0-5B 结构化检索和规则已在 `codex/m0-5-planning` 实现并标记为待主控验收；M0-5C 草案生成、M0-5D 外部地点补充以及后续阶段仍未开始且不得提前开发。
+M0-4A 至 M0-4D、M0-5A 与 M0-5B 均已通过主控验收并集成到 `main`。计划约束、安全解析、结构化检索、硬约束过滤、请求级任意分店解析和同 POI 去重边界已经闭合。M0-5C 草案生成是下一唯一允许阶段；M0-5D 外部地点补充以及后续阶段仍未开始且不得提前开发。
 
 ## M0 状态
 
@@ -24,7 +24,7 @@ M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收并集成到 `main`，计�
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
 | M0-4 URL 与截图 | 已完成 | M0-4A、M0-4B、M0-4C、M0-4D 均已通过主控验收 |
-| M0-5 计划技术验证 | 进行中 | M0-5A 已完成；M0-5B 待主控验收；M0-5C/D 未开始 |
+| M0-5 计划技术验证 | 进行中 | M0-5A/B 已完成；M0-5C 允许开始；M0-5D 未开始 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
 状态只允许使用：未开始、进行中、待验收、已完成、阻塞。
@@ -53,10 +53,11 @@ M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收并集成到 `main`，计�
 - M0-4B 已完成：唯一 WebContentProvider、网页成功/失败契约、集中 URL/SSRF 策略、DNS 连接绑定、显式重定向、响应/解压/文本边界、Cookie 零状态、HTTP 日志防泄漏和 BeautifulSoup 白名单抽取已通过主控验收。
 - M0-4C 已完成：唯一 ImageRecognitionService、私有原图生命周期、多模态候选抽取、图片与模型载荷边界、不确定字段保护、失败清理和异常脱敏已通过主控验收。
 - M0-4D 已完成：文字、URL 与图片已进入唯一 Message、Source、AgentRun/ToolRun、结构抽取和收藏写入流水线；MIME 幂等、可恢复状态重放、取消清理、用户/Session 隔离和统一约束已通过主控验收。
+- M0-5B 已完成：唯一结构化收藏检索入口、正式城市和状态边界、硬约束过滤、动态事实、请求级任意分店解析、同 POI 去重、安全错误及只读幂等均已通过主控验收。
 
 ## 下一步
 
-主控从精确 `main` 基线 `78f2ae65de09d13a22e7d4cef4bbcee6b3734ab7` 复核 M0-5B 提交、唯一检索入口、规则边界、只读用户隔离、任意分店解析、同 POI 去重、测试结果和无迁移结论。验收前不得开始 M0-5C/D，也不得调用真实模型、高德、路线、天气、网页或其他外部/付费 API。
+从本交接文档提交后的最新 `main` 创建或快进 `codex/m0-5-planning`，只实施 M0-5C 草案生成：复用 M0-5A `PlanConstraints` 与 M0-5B `StructuredCollectionResult`，生成一个主方案和最多两个备选，并在保存前执行确定性硬约束复核。不得提前实现 M0-5D 外部地点补充，也不得调用真实模型、高德、路线、天气、网页或其他外部/付费 API。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -957,3 +958,14 @@ M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收并集成到 `main`，计�
 - 测试策略与覆盖：M0-5B `_service()` 统一改用 `Settings(_env_file=None, app_env="test").place_matching_policy()`，并显式锁定生产默认 `75/12/35`，不再手写宽松阈值。聚焦 `41 passed`，覆盖单个 `NEEDS_CONTEXT + candidates` 有效分店纳入、空 candidates 证据不足、多候选按路线选择、旧行政区不限制新分店、unresolved 不产生旧位置冲突、exact 行政区冲突、解析后路线/天气/营业/预算、重复调用与输入不变、Provider fail-closed 及同 POI 去重
 - 验证结果：Python 3.13.5；`pip check`、Ruff、strict mypy（89 个源文件）均退出 0；指定相关回归 `204 passed`、Core `118 passed`、正式迁移入口 `tests/integration/test_migrations.py` 为 `21 passed`。任务清单中的 `tests/migrations` 路径在仓库不存在，原样命令退出 4 且无测试被收集，未为修正命令制造重复测试目录；任务给出的 `not real_provider and not real_map` 因仓库 marker 实名为 `real_map_provider` 得到 `1359 passed / 1 skipped / 1 deselected`，随后使用正式排除表达式得到 `1359 passed / 2 deselected`，全部实际执行测试均离线
 - 范围与冗余：未修改 `app/config.py` 默认阈值，未新增匹配、评分、分店 Repository/DTO/Provider、迁移、依赖、API、M0-5C/D 或重试逻辑；Alembic head 保持 `20260722_0006`。生产改动只删除一个过宽早退并收敛 any_branch 旧位置读取，唯一 `StructuredCollectionRetrievalService`、`PlaceMatchingService`、`score_place_candidate`、`classify_place_matches` 和 `MapProvider` 保持不变。真实或付费 API 调用为 0，M0-5B 继续待主控验收且尚未集成
+
+#### 2026-07-23｜M0-5B 结构化检索和规则｜已完成（主控验收）
+
+- 提交与集成：阶段提交 `6aa7aec1f7228cb6ff2d1b78580f3fb505dfbe39`、边界修复 `7cb33b8c1afd5a0f846fc3e2e0f7d92ea354a290`、默认生产策略修复 `4013fc8dc8e0583528d14211afd3ed50ec8e7a0b` 均直接建立在约定链上并包含已验收基线 `78f2ae65de09d13a22e7d4cef4bbcee6b3734ab7`。主控以 `--ff-only` 将阶段分支快进集成到 `main`，无冲突、无额外代码变化，合并前后 tree 完全一致。
+- 独立验收环境：对精确 `4013fc8` 使用 `git archive` 建立仓库外副本和全新 Python 3.13.5 虚拟环境，重新安装 `backend[dev]`；`pip check`、Ruff、strict mypy 均退出 0，mypy 检查 89 个源文件，Alembic 保持唯一 `20260722_0006 (head)`。
+- 自动化结果：M0-5B 聚焦 `41 passed`；指定 PlanConstraints、地点匹配、MapProvider 与 PlaceTarget 相关回归 `204 passed`；Core `118 passed`；迁移 `21 passed`；非真实全集 `1359 passed / 2 deselected`；默认全集 `1359 passed / 2 skipped`；封锁 socket connect/connect_ex/create_connection 与 DNS 后非真实全集再次 `1359 passed / 2 deselected`，全部退出 0。
+- 缺陷关闭：临时约束过期门禁、Event 到达期限、旧分店位置污染和生产默认 `75/12/35` 策略下的单个 `NEEDS_CONTEXT + candidates` 路径均已复验关闭。独立探针确认品牌名称分数为默认候选阈值 35 时，会复用现有候选进入动态硬约束并解析到具体分店；空候选仍返回证据不足，旧收藏位置不产生错误行政区或用户排除原因。
+- 异常、边界、幂等与安全：覆盖过期和非法 `now` 的零 I/O、Repository/Provider 失败、取消透传、Event 等号边界、其他城市/城市待确认、待选择/待补充、预算 null/未知/超限、路线/天气/营业未知和冲突、任意分店无结果/证据不足/硬约束失败、exact/any_branch 同 POI 去重、跨用户隔离、输入不变及重复调用确定性。公开结果和错误不包含精确 origin、密钥、完整 Provider 响应或底层异常。
+- 范围与冗余：没有 Plan、PlanItem、草案、主/备方案、外部高德补充、Approval、迁移、依赖、API、前端、SSE、Worker、自动重试或 M0-5C/D 代码；`StructuredCollectionRetrievalService`、`PlaceMatchingService`、地点评分/分类、MapProvider、CollectionRepository、AgentRunner 和 ToolRegistry 均保持唯一，没有为测试增加平行规则或重复公共模块。
+- 合并后检查：在 `main` 再次执行 Ruff、strict mypy 和正式非真实全集，结果分别为退出 0、89 个源文件无问题、`1359 passed / 2 deselected`。没有未关闭 P0/P1；本轮未读取或打印 `.env`，真实模型、高德、路线、天气、网页、对象存储、消息及其他真实/付费 API 调用均为 0。
+- 已知边界与下一步：当前验证限于 macOS、Python 3.13.5、SQLite、Fake/Stub/固定事实，未验证真实路线/天气延迟和 PostgreSQL；这些留待既定后续阶段，不阻塞 M0-5B。M0-5C 前置条件已满足，是下一唯一允许阶段；从本记录提交后的最新 `main` 开始，只实现草案生成与确定性复核，M0-5D 继续未开始。
