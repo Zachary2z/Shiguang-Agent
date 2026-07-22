@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from PIL import Image
@@ -579,6 +579,149 @@ async def test_stream_failure_is_safe_and_has_no_exception_chain(tmp_path: Path)
     assert error.__context__ is None
     assert error.__cause__ is None
     assert private_detail not in repr(error)
+    assert provider.calls == []
+    _assert_no_storage_residue(root)
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ["validate", "prepare", "clock", "require_aware_utc"],
+)
+@pytest.mark.asyncio
+async def test_unexpected_pre_storage_failure_is_fixed_and_private(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    stage: str,
+) -> None:
+    provider = FakeProvider([])
+    service, storage, root = _service(tmp_path, provider)
+    private_detail = (
+        f"preparation-secret {FAKE_FILENAME} {root} "
+        f"{base64_marker(PNG_SCREENSHOT)}"
+    )
+    failure = RuntimeError(private_detail)
+    if stage == "validate":
+        monkeypatch.setattr(service, "_validate_image", Mock(side_effect=failure))
+    elif stage == "prepare":
+        monkeypatch.setattr(
+            service,
+            "_prepare_inference_image",
+            Mock(side_effect=failure),
+        )
+    elif stage == "clock":
+        monkeypatch.setattr(service, "_clock", Mock(side_effect=failure))
+    else:
+        monkeypatch.setattr(
+            image_recognition_module,
+            "require_aware_utc",
+            Mock(side_effect=failure),
+        )
+    put_private = AsyncMock()
+    delete = AsyncMock()
+    monkeypatch.setattr(storage, "put_private", put_private)
+    monkeypatch.setattr(storage, "delete", delete)
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(ImageRecognitionError) as exc_info:
+        await service.recognize(
+            _stream(PNG_SCREENSHOT),
+            content_type="image/png",
+            original_filename=FAKE_FILENAME,
+        )
+
+    error = exc_info.value
+    assert error.code is ImageRecognitionErrorCode.PROCESSING_FAILED
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = f"{error!s}{error!r}{error.to_public_dict()!r}{caplog.text}"
+    for private_value in (
+        private_detail,
+        FAKE_FILENAME,
+        str(root),
+        base64_marker(PNG_SCREENSHOT),
+    ):
+        assert private_value not in rendered
+    put_private.assert_not_awaited()
+    delete.assert_not_awaited()
+    assert provider.calls == []
+    _assert_no_storage_residue(root)
+
+
+@pytest.mark.asyncio
+async def test_known_pre_storage_image_error_keeps_identity_and_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = FakeProvider([])
+    service, storage, root = _service(tmp_path, provider)
+    known_error = ImageRecognitionError(
+        code=ImageRecognitionErrorCode.MODEL_DIMENSIONS_UNSUPPORTED
+    )
+    monkeypatch.setattr(
+        service,
+        "_validate_image",
+        Mock(side_effect=known_error),
+    )
+    put_private = AsyncMock()
+    delete = AsyncMock()
+    monkeypatch.setattr(storage, "put_private", put_private)
+    monkeypatch.setattr(storage, "delete", delete)
+
+    with pytest.raises(ImageRecognitionError) as exc_info:
+        await service.recognize(_stream(PNG_SCREENSHOT), content_type="image/png")
+
+    assert exc_info.value is known_error
+    assert exc_info.value.code is ImageRecognitionErrorCode.MODEL_DIMENSIONS_UNSUPPORTED
+    put_private.assert_not_awaited()
+    delete.assert_not_awaited()
+    assert provider.calls == []
+    _assert_no_storage_residue(root)
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ["validate", "prepare", "clock", "require_aware_utc"],
+)
+@pytest.mark.asyncio
+async def test_pre_storage_cancellation_propagates_same_object(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    provider = FakeProvider([])
+    service, storage, root = _service(tmp_path, provider)
+    cancellation = asyncio.CancelledError(f"cancel-{stage}")
+    if stage == "validate":
+        monkeypatch.setattr(
+            service,
+            "_validate_image",
+            Mock(side_effect=cancellation),
+        )
+    elif stage == "prepare":
+        monkeypatch.setattr(
+            service,
+            "_prepare_inference_image",
+            Mock(side_effect=cancellation),
+        )
+    elif stage == "clock":
+        monkeypatch.setattr(service, "_clock", Mock(side_effect=cancellation))
+    else:
+        monkeypatch.setattr(
+            image_recognition_module,
+            "require_aware_utc",
+            Mock(side_effect=cancellation),
+        )
+    put_private = AsyncMock()
+    delete = AsyncMock()
+    monkeypatch.setattr(storage, "put_private", put_private)
+    monkeypatch.setattr(storage, "delete", delete)
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await service.recognize(_stream(PNG_SCREENSHOT), content_type="image/png")
+
+    assert exc_info.value is cancellation
+    put_private.assert_not_awaited()
+    delete.assert_not_awaited()
     assert provider.calls == []
     _assert_no_storage_residue(root)
 

@@ -203,15 +203,40 @@ class ImageRecognitionService:
 
         self._validate_content_type(content_type)
         image_bytes = await self._read_bounded(file)
-        dimensions = self._validate_image(image_bytes, content_type=content_type)
-        inference_bytes, inference_content_type = self._prepare_inference_image(
-            image_bytes,
-            content_type=content_type,
-            dimensions=dimensions,
-        )
-        expires_at = require_aware_utc(self._clock()) + timedelta(
-            days=ORIGINAL_SCREENSHOT_RETENTION_DAYS
-        )
+        preparation_error: ImageRecognitionError | None = None
+        preparation_cancellation: asyncio.CancelledError | None = None
+        unexpected_preparation_failure = False
+        inference_bytes: bytes | None = None
+        inference_content_type: str | None = None
+        expires_at: datetime | None = None
+        try:
+            dimensions = self._validate_image(image_bytes, content_type=content_type)
+            inference_bytes, inference_content_type = self._prepare_inference_image(
+                image_bytes,
+                content_type=content_type,
+                dimensions=dimensions,
+            )
+            expires_at = require_aware_utc(self._clock()) + timedelta(
+                days=ORIGINAL_SCREENSHOT_RETENTION_DAYS
+            )
+        except asyncio.CancelledError as error:
+            preparation_cancellation = error
+        except ImageRecognitionError as error:
+            preparation_error = error
+        except Exception:
+            unexpected_preparation_failure = True
+
+        if preparation_cancellation is not None:
+            raise preparation_cancellation
+        if preparation_error is not None:
+            raise preparation_error
+        if unexpected_preparation_failure:
+            raise ImageRecognitionError(
+                code=ImageRecognitionErrorCode.PROCESSING_FAILED
+            )
+        assert inference_bytes is not None
+        assert inference_content_type is not None
+        assert expires_at is not None
         stored_file: PrivateFileMetadata | None = None
         public_error: ProviderError | StorageProviderError | ImageRecognitionError | None = None
         cancellation: asyncio.CancelledError | None = None
