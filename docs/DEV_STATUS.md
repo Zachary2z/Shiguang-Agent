@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-3D 连锁品牌与任意分店目标 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-3d-place-targets |
+| 当前子阶段 | M0-4A 私有文件存储 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-22 |
-| 阻塞项 | 无；等待 M0-3D 主控验收，当前允许阶段仍为 M0-3D |
+| 阻塞项 | 无；M0-3D 已通过主控验收，M0-4A 前置条件已满足 |
 
 ## 当前任务
 
-M0-3D 已完成开发并待主控验收：唯一 PlaceTarget 已最小集成现有 CollectionItem，支持 `pending_selection`、`active + exact`、显式 `active + any_branch` 和“以上都不是”回到 `pending_details`；正式 POI、稳定品牌身份、最多 3 项候选快照、确认信息、并发幂等、多选事务、Source/Undo 关联和规划解析边界均已离线验证。当前不得开始 M0-4A 或 M0-5。
+M0-3D 已通过主控验收并纯快进集成到 `main`：唯一 PlaceTarget 已最小集成现有 CollectionItem，支持 `pending_selection`、`active + exact`、显式 `active + any_branch` 和“以上都不是”回到 `pending_details`；正式 POI、稳定品牌身份、最多 3 项候选快照、确认信息、并发幂等、多选事务、Source/Undo 关联和规划解析边界均已离线验证。当前允许开始 M0-4A 私有文件存储；M0-4B 及以后仍不得提前开始。
 
 ## M0 状态
 
@@ -22,8 +22,8 @@ M0-3D 已完成开发并待主控验收：唯一 PlaceTarget 已最小集成现�
 | M0-0C Nanobot 核心迁移 | 已完成 | 主控验收通过，阶段提交 `5c4a8fb` 已集成到 `main` |
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
-| M0-3 地点匹配 | 待验收 | M0-3A、M0-3B、M0-3C 已完成；M0-3D 待主控验收 |
-| M0-4 URL 与截图 | 未开始 | 依赖 M0-3 |
+| M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
+| M0-4 URL 与截图 | 未开始 | M0-4A 私有文件存储允许开始；M0-4B 及以后依赖前序子阶段 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
@@ -48,10 +48,11 @@ M0-3D 已完成开发并待主控验收：唯一 PlaceTarget 已最小集成现�
 - M0-3A 已完成：供应商无关 MapProvider、严格内部地点契约、深圳/广州离线 Stub、城市隔离和安全导航 URI 已通过主控验收。
 - M0-3B 已完成：唯一服务端高德 Web 服务适配、严格配置与响应边界、错误/重试/取消映射、真实响应空数组兼容及 5 次零重试只读真实验收已通过主控验收。
 - M0-3C 已完成：供应商无关的确定性匹配评分、可靠候选过滤、城市与分店硬冲突、四种结果和显式用户选择契约已通过主控验收。
+- M0-3D 已完成：统一 PlaceTarget、具体地点与任意分店目标、持久化候选快照、正式 POI/品牌幂等、多选事务、规划解析边界和异常链安全均已通过主控验收。
 
 ## 下一步
 
-由主控复验并验收 `codex/m0-3d-place-targets`。验收前当前允许阶段仍为 M0-3D；M0-4A、M0-5、真实 Provider 调用、合并和推送均不得开始。
+从最新 `main` 创建 `codex/m0-4-url-image`，只实施 M0-4A 私有文件存储：建立唯一 StorageProvider、本地私有目录实现、随机不透明 file_key、类型/大小限制、生命周期信息和自动清理测试。不得提前实现 URL 抓取、截图识别、统一输入流水线或 M0-5；未经新授权不得调用任何真实或付费 Provider。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -685,3 +686,15 @@ M0-3D 已完成开发并待主控验收：唯一 PlaceTarget 已最小集成现�
 - 最终验证：macOS、仓库受忽略 `.venv`、Python 3.13.5；editable install、`pip check`、Ruff 和 strict mypy（73 个源文件）全部退出 0；地点领域 `6 passed`、地点应用 `42 passed`、迁移 `21 passed`、core `118 passed`、正式非真实全集 `910 passed / 2 deselected`、默认全集 `910 passed / 2 skipped`，全部退出 0
 - 迁移、范围与真实调用：未修改 `0001`–`0006`、ORM、依赖、`nanobot_core` 或 Amap Provider；迁移 fresh upgrade、downgrade、re-upgrade 与 Alembic check 继续由 21 项迁移测试覆盖并全部通过。未读取、打印或修改 `.env`，未启用或运行真实 Provider marker，百炼、高德及其他外部/真实/付费 API 调用均为 0；未实现 M0-4/M0-5、业务 API、前端、路线、规划、重试或第二套 Repository/错误/JSON DTO
 - 阶段状态：M0-3D 继续待 QA，不提前标记完成；修复提交完整 SHA 见本窗口最终交接，M0-4/M0-5 仍未开始
+
+#### 2026-07-22｜M0-3D｜已完成（主控验收）
+
+- 提交与集成：初始阶段提交 `85da862fcf3c1889daaec5c03a9800548c7ed31c`、行为/并发/一致性修复 `99d97615737b275b804c87d1dc13079aebcc6fa2`、异常链安全修复 `f9f0d62583044a7dedb47e267dbc85bb2f9f4bbd` 均包含指定基线 `3dd8139a5caeb83e34a19a0e4a372ea6b12ae928`。主控以 `git merge --ff-only` 将 `codex/m0-3d-place-targets` 纯快进集成到 `main`，无冲突、无额外代码变化，合并前后树哈希均为 `1051cb32fd023afa697023b933426487a9d10bf2`
+- 验收环境与静态检查：对最终阶段 HEAD 使用仓库外 `git archive` 和全新 Python 3.13.5 虚拟环境；`pip install -e "./backend[dev]"`、`pip check`、Ruff 均通过，strict mypy 对 73 个源文件无问题
+- 自动化结果：地点领域 `6 passed`、地点应用/持久化 `42 passed`、迁移 `21 passed`、core `118 passed`；正式非真实 marker 全集 `910 passed / 2 deselected`，默认全集 `910 passed / 2 skipped`。临时插件同时封锁 socket connect/connect_ex/create_connection 和 DNS 后，非真实全集再次 `910 passed / 2 deselected`
+- 独立对抗复验：仓库外 15 项 QA 探针全部通过，覆盖唯一高置信匹配自动形成 `active + exact`、伪造未展示 POI 拒绝、扁平 POI 身份矛盾拒绝、地点目标与候选快照两类损坏 JSON 的异常链/伪 secret 脱敏，以及 10 轮两个真实数据库 Session 同键并发收敛；原验收发现的唯一匹配、持久化快照权威、并发幂等、JSON/扁平列一致性和异常链泄漏缺陷均已关闭
+- 迁移：唯一 Alembic head 为 `20260722_0006`；仓库外临时 SQLite 完成 fresh `upgrade head`、`alembic check`、`downgrade 20260721_0005`、再次 `upgrade head`、再次 `alembic check` 和 `current`，最终仍为 `20260722_0006 (head)`；历史 `0001`–`0005` 未修改
+- 范围、冗余与安全：M0-3D 只扩展现有 CollectionItem、地点领域、应用服务、Repository、API Schema 和必要 `0006` 迁移；未修改 `nanobot_core`、高德 HTTP 适配或依赖，未提前实现 M0-4/M0-5、URL、截图、文件存储、路线、前端或 Worker。AgentRunner、ToolRegistry、MapProvider、PlaceMatchingService、PlaceTarget、PlaceTargetSelectionService、CollectionItem 和 Collection Repository 均保持唯一，没有品牌专用收藏/Repository、BranchCandidate、第二套 Provider、匹配或规划流程
+- 网络与密钥：主控未读取、打印或修改本机 `.env`，Git 未跟踪 `.env`、数据库、虚拟环境、缓存或响应快照；未运行 `real_provider` 或 `real_map_provider`，百炼、高德、DNS、HTTP、外部消息及其他真实/付费 API 调用均为 0
+- 合并后检查：在 `main` 再次执行 Ruff、strict mypy 和正式非真实全集，结果分别为通过、73 个源文件无问题、`910 passed / 2 deselected`；当前没有未关闭的 P0/P1
+- 验收结论与下一步：M0-3D 的范围、状态、错误/边界、幂等、并发、事务、迁移、安全和冗余要求全部满足，M0-3 地点匹配阶段完成。M0-4A 前置条件已满足；从本记录提交后的最新 `main` 创建 `codex/m0-4-url-image`，只实现私有文件存储，不提前实现 M0-4B/C/D 或 M0-5
