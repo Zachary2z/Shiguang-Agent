@@ -7,11 +7,11 @@
 | 状态 | 待验收 |
 | 当前分支 | codex/m0-3b-amap-provider |
 | 最近更新 | 2026-07-22 |
-| 阻塞项 | M0-3B 主控 P1 修复与离线验证已完成，等待主控复验；真实验收仍需本机高德 Web 服务 Key 和用户单独授权 |
+| 阻塞项 | M0-3B 真实响应兼容性 P1 修复与离线验证已完成，等待主控复验；真实复测必须重新取得用户授权 |
 
 ## 当前任务
 
-M0-3B 已在阶段分支完成主控 P1 修复：高德 HTTP origin 固定为官方入口，公开 Provider 异常链彻底断开，指定官方 infocode 分类与有限 attempts 已补齐，唯一 `Poi` 增加受限 `provider=amap` 身份并与 `poi_id` 组成稳定供应商身份。当前等待主控离线复验；真实 marker 未获授权且未运行。M0-3C 匹配评分、M0-3D 分店策略及正式 POI 写入仍不得提前开发。
+M0-3B 已在阶段分支完成真实响应兼容性 P1 修复：唯一可选文本入口严格兼容高德以精确空数组 `[]` 表示缺失的 `business_area`/`tel`，其他异常类型与全部必填字段继续严格拒绝。当前等待主控离线复验；本开发窗口没有真实调用授权且未运行真实 marker。M0-3C 匹配评分、M0-3D 分店策略及正式 POI 写入仍不得提前开发。
 
 ## M0 状态
 
@@ -49,7 +49,7 @@ M0-3B 已在阶段分支完成主控 P1 修复：高德 HTTP origin 固定为官
 
 ## 下一步
 
-主控从 M0-3B 阶段提交独立复核配置、城市归属、供应商字段隔离、HTTP 尝试上限、取消、日志脱敏、默认禁网和全部离线测试。离线 QA 通过后，仍需用户在本机配置高德 Web 服务 Key 并对一次真实验收单独授权；未授权前不得运行 `real_map_provider`。M0-3C 评分/候选、M0-3D 分店策略或正式 POI 写入继续不得开始。
+主控从最新 M0-3B 修复提交独立复核精确空数组兼容、必填字段严格性、配置/HTTP/异常/infocode/provider identity 回归、默认禁网和全部离线测试。离线 QA 通过后，必须重新取得用户授权才能运行受限真实验收；此前授权不延续。M0-3C 评分/候选、M0-3D 分店策略或正式 POI 写入继续不得开始。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -589,3 +589,12 @@ M0-3B 已在阶段分支完成主控 P1 修复：高德 HTTP origin 固定为官
 - 最终验证：macOS、仓库受忽略 `.venv`、Python 3.13.5；显式使用 `../.venv/bin/python` 后 `pip check`、Ruff 与 strict mypy（67 个源文件）均退出 0；指定聚焦 `268 passed/1 skipped`，其中 skip 是未授权真实高德入口；非真实全集 `724 passed/2 deselected`；core `118 passed`；migrations `15 passed`；默认全集 `724 passed/2 skipped`。macOS `sandbox-exec` 系统级拒绝全部网络后，非真实全集再次 `724 passed/2 deselected`
 - 环境诊断说明：当前未激活 shell 的裸 `python` 指向 `/opt/anaconda3`，首次全量 mypy 在相对阶段基线未修改的 Collection Repository 报 3 个 `redundant-cast`，首次聚焦测试也因尝试仅覆盖 PATH 被登录 shell 重置而使用该解释器，出现 3 个 `tests.fixtures` 收集错误；两次均未运行或失败于本轮测试行为。改为显式仓库 `.venv/bin/python` 后所有规定命令按上条结果通过，本轮没有越界修改基线文件来掩盖环境差异
 - 网络、安全、范围与风险：所有最终 pytest 命令均移除真实测试开关并设置 `APP_ENV=test`；未读取、打印或修改本机 `.env`，未运行 `real_map_provider`，高德、百炼、其他网络及真实/付费 API 调用均为 0。相对 `e241239...` 只修改 Amap 配置、两份直接相关离线测试和本记录；未修改 Provider 请求/映射、`nanobot_core`、依赖、数据库或迁移，没有实现 M0-3C 评分/候选/用户选择，也没有实现 M0-3D exact/any_branch/分店策略。已知风险仍是未获授权的真实 Key、配额、线上响应与字段兼容性；主控离线复验通过后，仍需用户配置 Key 并单独授权受限真实验收，本分支不合并、不推送
+
+#### 2026-07-22｜M0-3B 真实响应兼容性 P1 修复｜待主控复验
+
+- 分支与提交关系：修复在 `codex/m0-3b-amap-provider` 上直接基于待修复提交 `1d2da50d5a6948193b9c7928767cc0b4aeaea8cd` 追加，不 amend；开始门禁确认工作区干净，分支与 HEAD 精确一致，`main`、`origin/main` 与 merge-base 均为阶段基线 `33421205241461b94482a2390e3ca9b5f716bdcc`。修复提交随本记录创建，完整 SHA 见开发窗口最终交接报告
+- 真实兼容边界：唯一 `_optional_text()` 现在把字段不存在、空字符串、纯空白字符串和精确空数组 `[]` 统一映射为 `None`，非空字符串继续按既有空白规范化返回；非空 list、dict、tuple、数字、bool、显式 `None` 及其他非字符串类型仍抛内部安全哨兵并公开收敛为 `MAP_PROVIDER_INVALID_RESPONSE`。没有把 list 拼接为文本，也没有为 `business_area` 和 `tel` 复制转换逻辑
+- 必填与契约保持：`_required_text()` 未修改，`id`、`name`、`address`、`location`、省市区、`citycode`、`typecode` 继续不接受空数组或其他非字符串值；Amap 搜索仍输出 `provider=amap`、稳定 `poi_id`、正式 `city_code` 和 GCJ-02。唯一 Provider、HTTP Client、MapProvider、Poi、POI mapper 和响应错误体系均保持不变
+- 离线 Fixture 与覆盖：只使用手写合成 POI Fixture，不包含真实响应或快照；覆盖搜索与详情中的 `business_area=[]`、`tel=[]`、两者同时为空数组、字符串/空数组混合批次、字段缺失、空/空白字符串、非空 list、dict、数字、bool、显式 `None`、必填 `address=[]`、输入对象不变，以及同一 Provider 12 路重复并发调用无状态污染。原配置硬边界、官方域名锁定、异常链脱敏、官方 infocode 分类、provider identity 和最多两次 HTTP 尝试测试全部随聚焦与全集回归通过
+- 最终验证：macOS、仓库受忽略 `.venv`、Python 3.13.5；`pip check`、Ruff 与 strict mypy（67 个源文件）全部退出 0；指定聚焦 `287 passed/1 skipped`，其中 skip 是未获本窗口授权的真实高德入口；非真实全集 `743 passed/2 deselected`；core `118 passed`；migrations `15 passed`；默认全集 `743 passed/2 skipped`。macOS `sandbox-exec` 系统级拒绝全部网络后，非真实全集再次 `743 passed/2 deselected`
+- 安全、范围与风险：所有 pytest 命令均显式移除真实测试开关并设置 `APP_ENV=test`；本窗口未读取、打印或修改 `.env`，未运行 `real_map_provider`，高德、百炼、网络及真实/付费 API 调用均为 0；主控此前为发现本缺陷使用的 3 次请求授权未被复用。相对 `1d2da50...` 只修改 Amap Provider 的唯一可选文本入口、直接相关离线测试和本记录；未修改配置、DTO、`nanobot_core`、依赖、数据库或迁移，未实现 M0-3C/M0-3D。已知风险只剩修复尚未通过新授权的真实响应复测；主控必须重新取得用户授权后再运行受限真实验收，本分支不合并、不推送

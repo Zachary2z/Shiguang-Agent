@@ -562,6 +562,8 @@ def _optional_text(container: Mapping[str, object], key: str) -> str | None:
     if key not in container:
         return None
     value = container[key]
+    if isinstance(value, list) and not value:
+        return None
     if not isinstance(value, str):
         raise _InvalidAmapResponse
     normalized = " ".join(value.split())

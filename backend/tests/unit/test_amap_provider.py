@@ -340,6 +340,174 @@ async def test_search_preserves_empty_unique_and_multiple_results(
 
 
 @pytest.mark.parametrize(
+    ("business_area", "tel", "expected_business_area", "expected_phone"),
+    [
+        ([], "0755-12345678", None, "0755-12345678"),
+        ("市民中心", [], "市民中心", None),
+        ([], [], None, None),
+    ],
+)
+@pytest.mark.asyncio
+async def test_optional_poi_text_accepts_only_empty_arrays_as_missing(
+    business_area: object,
+    tel: object,
+    expected_business_area: str | None,
+    expected_phone: str | None,
+) -> None:
+    poi = raw_poi()
+    poi["business_area"] = business_area
+    poi["tel"] = tel
+    snapshot = deepcopy(poi)
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(
+            lambda request: httpx.Response(200, json=envelope(pois=[poi]))
+        ),
+    )
+
+    mapped = (
+        await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
+    ).pois[0]
+
+    assert mapped.business_area == expected_business_area
+    assert mapped.phone == expected_phone
+    assert (mapped.provider, mapped.poi_id, mapped.city_code) == (
+        PoiProvider.AMAP,
+        "B0SZ000001",
+        "shenzhen",
+    )
+    assert mapped.coordinate.coordinate_system is CoordinateSystem.GCJ_02
+    assert poi == snapshot
+    await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_get_poi_maps_empty_optional_arrays_without_losing_identity() -> None:
+    poi = raw_poi()
+    poi["business_area"] = []
+    poi["tel"] = []
+    snapshot = deepcopy(poi)
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(
+            lambda request: httpx.Response(200, json=envelope(pois=[poi]))
+        ),
+    )
+
+    mapped = (await provider.get_poi(GetPoiRequest(poi_id="B0SZ000001", city=SHENZHEN))).poi
+
+    assert mapped.business_area is None
+    assert mapped.phone is None
+    assert (mapped.provider, mapped.poi_id, mapped.city_code) == (
+        PoiProvider.AMAP,
+        "B0SZ000001",
+        "shenzhen",
+    )
+    assert mapped.coordinate.coordinate_system is CoordinateSystem.GCJ_02
+    assert poi == snapshot
+    await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_mixed_optional_text_shapes_map_repeatedly_and_concurrently() -> None:
+    pois = [
+        raw_poi(poi_id="B0SZ000001", name="字符串可选字段"),
+        raw_poi(poi_id="B0SZ000002", name="商圈缺失"),
+        raw_poi(poi_id="B0SZ000003", name="电话缺失"),
+        raw_poi(poi_id="B0SZ000004", name="两个字段缺失"),
+    ]
+    pois[1]["business_area"] = []
+    pois[2]["tel"] = []
+    pois[3]["business_area"] = []
+    pois[3]["tel"] = []
+    payload = envelope(pois=pois)
+    snapshot = deepcopy(payload)
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(lambda request: httpx.Response(200, json=payload)),
+    )
+    request = SearchPoiRequest(query="地点", city=SHENZHEN)
+
+    results = await asyncio.gather(*(provider.search_poi(request) for _ in range(12)))
+
+    expected_optional_fields = (
+        ("市民中心", "0755-12345678"),
+        (None, "0755-12345678"),
+        ("市民中心", None),
+        (None, None),
+    )
+    for result in results:
+        assert tuple((poi.business_area, poi.phone) for poi in result.pois) == (
+            expected_optional_fields
+        )
+        assert all(poi.provider is PoiProvider.AMAP for poi in result.pois)
+        assert all(poi.city_code == "shenzhen" for poi in result.pois)
+        assert all(
+            poi.coordinate.coordinate_system is CoordinateSystem.GCJ_02
+            for poi in result.pois
+        )
+    assert payload == snapshot
+    await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_empty_and_blank_optional_text_all_map_to_none() -> None:
+    missing = raw_poi(poi_id="B0SZ000001", name="字段不存在")
+    missing.pop("business_area")
+    missing.pop("tel")
+    empty = raw_poi(poi_id="B0SZ000002", name="空字符串")
+    empty["business_area"] = ""
+    empty["tel"] = ""
+    blank = raw_poi(poi_id="B0SZ000003", name="空白字符串")
+    blank["business_area"] = " \t\n "
+    blank["tel"] = " \t\n "
+    pois = [missing, empty, blank]
+    snapshot = deepcopy(pois)
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(
+            lambda request: httpx.Response(200, json=envelope(pois=pois))
+        ),
+    )
+
+    result = await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
+
+    assert all(poi.business_area is None and poi.phone is None for poi in result.pois)
+    assert pois == snapshot
+    await provider.close()
+
+
+@pytest.mark.parametrize("field", ["business_area", "tel"])
+@pytest.mark.parametrize(
+    "invalid_value",
+    [["not", "empty"], {"unexpected": "mapping"}, ("unexpected",), 1, True, None],
+)
+@pytest.mark.asyncio
+async def test_optional_poi_text_rejects_nonempty_lists_and_other_non_strings(
+    field: str,
+    invalid_value: object,
+) -> None:
+    poi = raw_poi()
+    poi[field] = invalid_value
+    snapshot = deepcopy(poi)
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(
+            lambda request: httpx.Response(200, json=envelope(pois=[poi]))
+        ),
+    )
+
+    with pytest.raises(MapProviderError) as exc_info:
+        await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
+
+    assert exc_info.value.code is MapProviderErrorCode.INVALID_RESPONSE
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    assert poi == snapshot
+    await provider.close()
+
+
+@pytest.mark.parametrize(
     "pois",
     [
         [raw_poi(), raw_poi()],
@@ -890,6 +1058,7 @@ async def test_non_json_empty_json_and_wrong_field_types_are_invalid(
         lambda poi: poi.pop("id"),
         lambda poi: poi.update(name=[]),
         lambda poi: poi.update(address=""),
+        lambda poi: poi.update(address=[]),
         lambda poi: poi.update(location="22.54,114.05,extra"),
         lambda poi: poi.update(location="NaN,22.54"),
         lambda poi: poi.update(location="181,22.54"),
