@@ -6,13 +6,14 @@ import builtins
 import json
 import logging
 import socket
+from collections.abc import Callable
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
 import pytest
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
 from app.domain.collections import PlanCity
 from app.domain.places import Coordinate, CoordinateSystem, TransportMode
@@ -21,8 +22,13 @@ from app.domain.plans import (
     MissingPlanConstraint,
     MissingPlanConstraintInfo,
     PlanConstraintInput,
+    PlanConstraintParseError,
     PlanConstraints,
     PlanPace,
+    parse_plan_constraint_input,
+    parse_plan_constraint_input_json,
+    parse_plan_constraints,
+    parse_plan_constraints_json,
     resolve_plan_constraints,
 )
 
@@ -138,7 +144,7 @@ def test_exactly_24_hours_is_allowed_and_more_is_rejected() -> None:
 
 
 def test_area_or_origin_is_required_and_each_is_sufficient_alone() -> None:
-    with pytest.raises(ValidationError, match="activity range"):
+    with pytest.raises(ValidationError, match="activity area or origin"):
         complete(area=None, origin=None)
 
     assert complete(area=AREA, origin=None).area == AREA
@@ -320,7 +326,7 @@ def test_models_are_frozen_extra_forbidden_and_do_not_mutate_input() -> None:
         PlanConstraints(**input_values(unexpected="value"))
 
 
-def test_origin_is_absent_from_repr_errors_public_dumps_and_logs(
+def test_origin_is_absent_from_repr_public_dumps_and_logs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     constraints = complete(
@@ -349,11 +355,6 @@ def test_origin_is_absent_from_repr_errors_public_dumps_and_logs(
     assert all(value not in rendered for value in sensitive_values)
     assert all(value not in caplog.text for value in sensitive_values)
 
-    with pytest.raises(ValidationError) as exc_info:
-        complete(area=None, origin=ORIGIN, end_at=START_AT)
-    assert all(value not in str(exc_info.value) for value in sensitive_values)
-
-
 PRIVATE_AREA = "PRIVATE_AREA_SENTINEL"
 PRIVATE_REQUIREMENT = "PRIVATE_REQUIREMENT_SENTINEL"
 PRIVATE_EXCLUSION = "PRIVATE_EXCLUSION_SENTINEL"
@@ -372,7 +373,6 @@ PRIVATE_VALUES = (
     PRIVATE_LATITUDE,
     PRIVATE_LONGITUDE,
 )
-PLAN_CONSTRAINTS_ADAPTER = TypeAdapter(PlanConstraints)
 
 
 def private_python_values(**changes: object) -> dict[str, Any]:
@@ -410,14 +410,25 @@ def private_json_values(**changes: object) -> dict[str, Any]:
     return values
 
 
-def assert_validation_error_is_safe(
-    error: ValidationError,
+def assert_safe_parse_failure(
+    action: Callable[[], object],
     caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Exercise every application-observable Pydantic error representation."""
+    *,
+    original_input: object,
+) -> tuple[object, ...]:
+    """Exercise every application-observable safe parse-error representation."""
 
-    structured = error.errors(include_url=False)
-    outputs = (str(error), repr(error), repr(structured), error.json(include_url=False))
+    with pytest.raises(PlanConstraintParseError) as exc_info:
+        action()
+    error = exc_info.value
+    public = error.to_dict()
+    outputs = (
+        str(error),
+        repr(error),
+        repr(error.args),
+        repr(vars(error)),
+        repr(public),
+    )
     with caplog.at_level(logging.INFO, logger="plan-validation-test"):
         logger = logging.getLogger("plan-validation-test")
         logger.info("%s", error)
@@ -425,55 +436,71 @@ def assert_validation_error_is_safe(
 
     assert all(value not in output for value in PRIVATE_VALUES for output in outputs)
     assert all(value not in caplog.text for value in PRIVATE_VALUES)
-    assert all(item["input"] is None for item in structured)
+    original_representations: tuple[str, ...] = (repr(original_input),)
+    if isinstance(original_input, str):
+        original_representations += (original_input,)
     assert all(
-        set(item.get("ctx", {})) == {"error"}
-        and isinstance(item["ctx"]["error"], ValueError)
-        for item in structured
+        original not in output
+        for original in original_representations
+        for output in outputs
     )
+    assert all(original not in caplog.text for original in original_representations)
+    assert all(
+        marker not in output
+        for marker in ("input", "ctx", "errors.pydantic.dev", "ValidationError")
+        for output in outputs
+    )
+    assert error.code == "INVALID_PLAN_CONSTRAINTS"
+    assert error.summary == "Plan constraints are invalid."
+    assert error.args == (error.summary,)
+    assert vars(error) == {}
+    assert public == {"code": error.code, "summary": error.summary}
     assert error.__cause__ is None
     assert error.__context__ is None
+    with pytest.raises(AttributeError, match="frozen"):
+        error.args = (PRIVATE_REQUIREMENT,)
+    return (*outputs, caplog.text)
 
 
 @pytest.mark.parametrize(
     "changes",
     [
         {"end_at": START_AT},
+        {"end_at": START_AT + timedelta(hours=24, microseconds=1)},
         {"expires_at": CREATED_AT},
         {
             "include": (PRIVATE_REQUIREMENT,),
             "exclude": (PRIVATE_REQUIREMENT,),
         },
+        {"area": None, "origin": None},
+        {"budget": PRIVATE_REQUIREMENT},
+        {"unexpected": PRIVATE_EXCLUSION},
     ],
-    ids=("invalid-time-window", "invalid-temporary-lifetime", "private-conflict"),
+    ids=(
+        "invalid-time-window",
+        "over-24-hours",
+        "invalid-temporary-lifetime",
+        "private-conflict",
+        "missing-activity-range",
+        "wrong-python-type",
+        "extra-field",
+    ),
 )
-@pytest.mark.parametrize(
-    "validation_path",
-    ["constructor", "model_validate", "type_adapter"],
-)
-def test_validation_error_boundary_redacts_every_python_path(
+def test_safe_python_parser_returns_only_fixed_failure(
     changes: dict[str, object],
-    validation_path: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     raw = private_python_values(**changes)
     original = deepcopy(raw)
 
-    results: list[tuple[object, str]] = []
+    results: list[tuple[object, ...]] = []
     for _ in range(2):
         caplog.clear()
-        with pytest.raises(ValidationError) as exc_info:
-            if validation_path == "constructor":
-                PlanConstraints(**raw)
-            elif validation_path == "model_validate":
-                PlanConstraints.model_validate(raw)
-            else:
-                PLAN_CONSTRAINTS_ADAPTER.validate_python(raw)
-        assert_validation_error_is_safe(exc_info.value, caplog)
         results.append(
-            (
-                exc_info.value.errors(include_context=False, include_url=False),
-                exc_info.value.json(include_url=False),
+            assert_safe_parse_failure(
+                lambda: parse_plan_constraints(raw),
+                caplog,
+                original_input=raw,
             )
         )
 
@@ -485,93 +512,109 @@ def test_validation_error_boundary_redacts_every_python_path(
     "changes",
     [
         pytest.param(
-            {"end_at": START_AT.isoformat()},
-            id="invalid-time-window",
+            {"origin": {"latitude": 91, "longitude": 181}},
+            id="invalid-nested-coordinate",
         ),
         pytest.param(
-            {"expires_at": CREATED_AT.isoformat()},
-            id="invalid-temporary-lifetime",
-        ),
-        pytest.param(
-            {
-                "include": [PRIVATE_REQUIREMENT],
-                "exclude": [PRIVATE_REQUIREMENT],
-            },
-            id="private-conflict",
+            {"unexpected": PRIVATE_EXCLUSION},
+            id="extra-field",
         ),
     ],
 )
-@pytest.mark.parametrize("validation_path", ["model_validate_json", "type_adapter"])
-def test_validation_error_boundary_redacts_every_json_path(
+def test_safe_json_parser_returns_only_fixed_failure(
     changes: dict[str, object],
-    validation_path: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     payload = json.dumps(private_json_values(**changes))
     original = payload
 
-    rendered: list[str] = []
+    results: list[tuple[object, ...]] = []
     for _ in range(2):
         caplog.clear()
-        with pytest.raises(ValidationError) as exc_info:
-            if validation_path == "model_validate_json":
-                PlanConstraints.model_validate_json(payload)
-            else:
-                PLAN_CONSTRAINTS_ADAPTER.validate_json(payload)
-        assert_validation_error_is_safe(exc_info.value, caplog)
-        rendered.append(exc_info.value.json(include_url=False))
+        results.append(
+            assert_safe_parse_failure(
+                lambda: parse_plan_constraints_json(payload),
+                caplog,
+                original_input=payload,
+            )
+        )
 
-    assert rendered[0] == rendered[1]
+    assert results[0] == results[1]
     assert payload == original
 
 
-@pytest.mark.parametrize("validation_path", ["model_validate_json", "type_adapter"])
-def test_malformed_json_is_redacted_at_every_json_path(
-    validation_path: str,
+def test_safe_json_parser_redacts_malformed_json(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     payload = json.dumps(private_json_values())[:-1]
+    original = payload
 
-    rendered: list[str] = []
+    results: list[tuple[object, ...]] = []
     for _ in range(2):
         caplog.clear()
-        with pytest.raises(ValidationError) as exc_info:
-            if validation_path == "model_validate_json":
-                PlanConstraints.model_validate_json(payload)
-            else:
-                PLAN_CONSTRAINTS_ADAPTER.validate_json(payload)
-        assert_validation_error_is_safe(exc_info.value, caplog)
-        rendered.append(exc_info.value.json(include_url=False))
+        results.append(
+            assert_safe_parse_failure(
+                lambda: parse_plan_constraints_json(payload),
+                caplog,
+                original_input=payload,
+            )
+        )
 
-    assert rendered[0] == rendered[1]
+    assert results[0] == results[1]
+    assert payload == original
 
 
-def test_type_adapter_python_validation_remains_strict_and_redacted(
+def test_safe_input_parser_stays_safe_after_repeated_model_rebuild(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    raw = private_json_values()
+    raw = private_python_values(expires_at=CREATED_AT)
     original = deepcopy(raw)
 
-    with pytest.raises(ValidationError) as exc_info:
-        PLAN_CONSTRAINTS_ADAPTER.validate_python(raw)
+    results: list[tuple[object, ...]] = []
+    for _ in range(2):
+        assert PlanConstraintInput.model_rebuild(force=True)
+        caplog.clear()
+        results.append(
+            assert_safe_parse_failure(
+                lambda: parse_plan_constraint_input(raw),
+                caplog,
+                original_input=raw,
+            )
+        )
 
-    assert_validation_error_is_safe(exc_info.value, caplog)
+    assert results[0] == results[1]
     assert raw == original
 
 
-def test_successful_python_and_json_public_dumps_exclude_precise_origin() -> None:
-    constraints = complete(origin=PRIVATE_ORIGIN)
+def test_safe_parsers_accept_python_and_json_without_mutating_input() -> None:
+    python_values = private_python_values()
+    python_original = deepcopy(python_values)
     payload = json.dumps(private_json_values())
-    model_json_constraints = PlanConstraints.model_validate_json(payload)
-    adapter_json_constraints = PLAN_CONSTRAINTS_ADAPTER.validate_json(payload)
+    json_original = payload
 
-    for value in (constraints, model_json_constraints, adapter_json_constraints):
+    python_results = tuple(parse_plan_constraints(python_values) for _ in range(2))
+    python_inputs = tuple(parse_plan_constraint_input(python_values) for _ in range(2))
+    json_results = tuple(parse_plan_constraints_json(payload) for _ in range(2))
+    json_inputs = tuple(parse_plan_constraint_input_json(payload) for _ in range(2))
+
+    assert python_results[0] == python_results[1]
+    assert python_inputs[0] == python_inputs[1]
+    assert json_results[0] == json_results[1]
+    assert json_inputs[0] == json_inputs[1]
+    assert python_values == python_original
+    assert payload == json_original
+
+    for value in (*python_results, *python_inputs, *json_results, *json_inputs):
         dumped = value.model_dump()
         serialized = value.model_dump_json()
         assert "origin" not in dumped
         assert all(item not in serialized for item in ("origin", *PRIVATE_VALUES[-2:]))
 
-    for value in (model_json_constraints, adapter_json_constraints):
+    parsed_json_values: tuple[PlanConstraints | PlanConstraintInput, ...] = (
+        *json_results,
+        *json_inputs,
+    )
+    for value in parsed_json_values:
         assert value.start_at == START_AT
         assert value.end_at == END_AT
         assert value.budget == Decimal("12.34")

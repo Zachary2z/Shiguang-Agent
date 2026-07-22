@@ -2,21 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Self, cast
+from typing import ClassVar, Self, TypeVar
 from unicodedata import category
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    ValidationError,
-    field_validator,
-    model_validator,
-)
-from pydantic_core import ErrorDetails, InitErrorDetails
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.domain.collections import PlanCity
 from app.domain.places import CityScope, Coordinate, TransportMode
@@ -26,131 +19,10 @@ _MAX_PLAN_DURATION = timedelta(hours=24)
 _MAX_BUDGET = Decimal("1000000.00")
 _MAX_AREA_VALUES = 8
 _MAX_REQUIREMENTS = 16
-_SENSITIVE_ERROR_LOCATIONS = frozenset({"area", "origin", "include", "exclude"})
-_PUBLIC_ERROR_LOCATIONS = frozenset(
-    {
-        "budget",
-        "city_code",
-        "collection_only",
-        "coordinate_system",
-        "created_at",
-        "districts",
-        "end_at",
-        "expires_at",
-        "field",
-        "labels",
-        "latitude",
-        "longitude",
-        "pace",
-        "start_at",
-        "transport_modes",
-    }
-)
-_SAFE_CUSTOM_VALIDATION_MESSAGES = frozenset(
-    {
-        "application timestamps must be timezone-aware",
-        "end_at must be later than start_at",
-        "plan duration must not exceed 24 hours",
-        "expires_at must be later than created_at",
-        "activity area requires a district or label",
-        "transport_modes must be unique",
-        "include and exclude must not conflict",
-        *(
-            f"{field_name} {suffix}"
-            for field_name in ("districts", "area labels", "include", "exclude")
-            for suffix in (
-                "must not be blank",
-                "is too long",
-                "contains unsupported characters",
-                "contains too many values",
-                "values must be unique",
-            )
-        ),
-    }
-)
-_SAFE_MESSAGE_REPLACEMENTS = {
-    "activity area or origin is required": "activity range is required",
-}
-
-
-def _safe_validation_message(error: ErrorDetails) -> str:
-    message = error["msg"]
-    prefix = "Value error, "
-    if not message.startswith(prefix):
-        return "plan constraint value is invalid"
-    detail = message.removeprefix(prefix)
-    if detail in _SAFE_MESSAGE_REPLACEMENTS:
-        return _SAFE_MESSAGE_REPLACEMENTS[detail]
-    if detail in _SAFE_CUSTOM_VALIDATION_MESSAGES:
-        return detail
-    return "plan constraint value is invalid"
-
-
-def _safe_validation_location(error: ErrorDetails) -> tuple[str | int, ...]:
-    location = tuple(error["loc"])
-    if any(part in _SENSITIVE_ERROR_LOCATIONS for part in location):
-        return ("sensitive_constraint",)
-    return tuple(
-        part
-        for part in location
-        if isinstance(part, int) or part in _PUBLIC_ERROR_LOCATIONS
-    ) or ("plan_constraints",)
-
-
-def _sanitize_validation_error(error: ValidationError) -> ValidationError:
-    """Rebuild a Pydantic error without any caller-provided values or exception chain."""
-
-    line_errors = [
-        InitErrorDetails(
-            type="value_error",
-            loc=_safe_validation_location(item),
-            input=None,
-            ctx={"error": ValueError(_safe_validation_message(item))},
-        )
-        for item in error.errors(include_url=False)
-    ]
-    return ValidationError.from_exception_data(
-        error.title,
-        line_errors,
-        hide_input=True,
-    )
-
-
-class _RedactingSchemaValidator:
-    """Delegate to one compiled Pydantic validator and sanitize every failure."""
-
-    def __init__(self, validator: Any) -> None:
-        self._validator = validator
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._validator, name)
-
-    def _validate(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
-        safe_error: ValidationError | None = None
-        try:
-            method = getattr(self._validator, method_name)
-            return method(*args, **kwargs)
-        except ValidationError as error:
-            safe_error = _sanitize_validation_error(error)
-        if safe_error is not None:
-            raise safe_error from None
-        raise AssertionError("schema validation boundary did not return or raise")
-
-    def validate_python(self, *args: Any, **kwargs: Any) -> Any:
-        return self._validate("validate_python", *args, **kwargs)
-
-    def validate_json(self, *args: Any, **kwargs: Any) -> Any:
-        return self._validate("validate_json", *args, **kwargs)
-
-    def validate_strings(self, *args: Any, **kwargs: Any) -> Any:
-        return self._validate("validate_strings", *args, **kwargs)
-
-    def validate_assignment(self, *args: Any, **kwargs: Any) -> Any:
-        return self._validate("validate_assignment", *args, **kwargs)
 
 
 class PlanContract(BaseModel):
-    """Shared safety configuration for public planning contracts."""
+    """Shared strict configuration for native planning contracts."""
 
     model_config = ConfigDict(
         allow_inf_nan=False,
@@ -160,17 +32,22 @@ class PlanContract(BaseModel):
         strict=True,
     )
 
-    @classmethod
-    def __pydantic_on_complete__(cls) -> None:
-        """Install one safety boundary around the compiled core validator."""
 
-        super().__pydantic_on_complete__()
-        validator = cls.__pydantic_validator__
-        if not isinstance(validator, _RedactingSchemaValidator):
-            cls.__pydantic_validator__ = cast(
-                Any,
-                _RedactingSchemaValidator(validator),
-            )
+class PlanConstraintParseError(ValueError):
+    """Fixed public failure for untrusted plan-constraint parsing."""
+
+    __slots__ = ()
+    code: ClassVar[str] = "INVALID_PLAN_CONSTRAINTS"
+    summary: ClassVar[str] = "Plan constraints are invalid."
+
+    def __init__(self) -> None:
+        super().__init__(self.summary)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        raise AttributeError("PlanConstraintParseError is frozen")
+
+    def to_dict(self) -> dict[str, str]:
+        return {"code": self.code, "summary": self.summary}
 
 
 class PlanPace(StrEnum):
@@ -380,6 +257,52 @@ class PlanConstraints(_PlanConstraintValues):
     @property
     def duration(self) -> timedelta:
         return self.end_at - self.start_at
+
+
+_PlanContractT = TypeVar("_PlanContractT", bound=PlanContract)
+
+
+def _parse_untrusted_plan_contract(
+    parser: Callable[[], _PlanContractT],
+) -> _PlanContractT:
+    """Map native Pydantic failures to the sole public safe parse error."""
+
+    invalid = False
+    try:
+        return parser()
+    except (ValidationError, TypeError):
+        invalid = True
+    if invalid:
+        raise PlanConstraintParseError() from None
+    raise AssertionError("plan constraint parser did not return or fail")
+
+
+def parse_plan_constraint_input(value: object) -> PlanConstraintInput:
+    """Parse untrusted Python input without exposing native validation errors."""
+
+    return _parse_untrusted_plan_contract(lambda: PlanConstraintInput.model_validate(value))
+
+
+def parse_plan_constraint_input_json(
+    value: str | bytes | bytearray,
+) -> PlanConstraintInput:
+    """Parse untrusted JSON input without exposing native validation errors."""
+
+    return _parse_untrusted_plan_contract(
+        lambda: PlanConstraintInput.model_validate_json(value)
+    )
+
+
+def parse_plan_constraints(value: object) -> PlanConstraints:
+    """Parse complete untrusted Python constraints through the safe boundary."""
+
+    return _parse_untrusted_plan_contract(lambda: PlanConstraints.model_validate(value))
+
+
+def parse_plan_constraints_json(value: str | bytes | bytearray) -> PlanConstraints:
+    """Parse complete untrusted JSON constraints through the safe boundary."""
+
+    return _parse_untrusted_plan_contract(lambda: PlanConstraints.model_validate_json(value))
 
 
 PlanConstraintResolution = PlanConstraints | MissingPlanConstraintInfo
