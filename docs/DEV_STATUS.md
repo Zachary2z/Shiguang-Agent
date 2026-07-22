@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-4C 截图识别 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-4c-image-recognition |
 | 最近更新 | 2026-07-22 |
-| 阻塞项 | 无；M0-4C 前置条件已满足 |
+| 阻塞项 | 无；等待主控离线验收，真实视觉调用未授权且不属于本轮完成条件 |
 
 ## 当前任务
 
-M0-4A 与 M0-4B 均已通过主控验收并纯快进集成到 `main`。网页内容契约、集中 URL/SSRF 策略、DNS 校验后连接绑定、显式安全重定向、有界 HTML/文本解析和可恢复失败结果现已形成完整离线边界。当前允许阶段为 M0-4C 截图识别；M0-4C 尚未开始，M0-4D 统一输入和 M0-5 仍未开始。
+M0-4A 与 M0-4B 均已通过主控验收并纯快进集成到 `main`。M0-4C 已在指定分支完成私有截图接收、Pillow 安全验证、现有 ModelProvider 多模态链路、统一候选映射、失败清理和完整离线测试，开发提交为 `e7f153dd53765c87393687a307fb93cd1dd019d0`，当前等待主控验收。当前允许阶段仍为 M0-4C；M0-4D 统一输入和 M0-5 仍未开始且不允许提前开发。
 
 ## M0 状态
 
@@ -23,7 +23,7 @@ M0-4A 与 M0-4B 均已通过主控验收并纯快进集成到 `main`。网页内
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
-| M0-4 URL 与截图 | 进行中 | M0-4A 私有文件存储、M0-4B 网页解析已完成；M0-4C 允许开始；M0-4D 未开始 |
+| M0-4 URL 与截图 | 进行中 | M0-4A、M0-4B 已完成；M0-4C 开发完成、待主控验收；M0-4D 未开始 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
@@ -54,7 +54,7 @@ M0-4A 与 M0-4B 均已通过主控验收并纯快进集成到 `main`。网页内
 
 ## 下一步
 
-从本次状态提交后的最新 `main` 创建 `codex/m0-4c-image-recognition`，只实现 M0-4C 图片上传、多模态抽取、OCR/视觉字段进入现有候选 Schema，以及低置信字段标记。复用 M0-4A 的唯一 StorageProvider、M0-1 的唯一 ModelProvider/Runner 和 M0-2B 的候选契约；不得提前实现 M0-4D 统一输入流水线、Source/Collection 编排、M0-5、前端或真实外部调用。真实多模态模型调用必须在新的当前任务中单独取得明确授权。
+主控从开发提交 `e7f153dd53765c87393687a307fb93cd1dd019d0` 独立复核 M0-4C 范围、安全、文件生命周期、多模态请求和全部离线命令。验收通过前当前允许阶段仍为 M0-4C；不得开始 M0-4D 统一输入流水线、Source/Collection/AgentRun 编排、M0-5、前端或真实外部调用。真实多模态模型调用仍需在新的当前任务中单独取得明确授权。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -772,3 +772,41 @@ M0-4A 与 M0-4B 均已通过主控验收并纯快进集成到 `main`。网页内
 - 范围、安全与冗余：WebContentProvider、HttpxWebContentProvider、URL/SSRF 策略、BeautifulSoup 抽取器、StorageProvider、AgentRunner、ToolRegistry、ModelProvider 和 MapProvider 均保持唯一；高德与网页适配器只共享一处 HTTP 日志安全边界，没有第二套客户端构造、解析器或响应 DTO。没有截图识别、图片上传、统一输入、Source/Collection 写入、路由、自动重试、缓存、Worker、前端或 M0-5；Git 未跟踪 `.env`、数据库、HTML 响应、Cookie、缓存或临时文件，当前没有未关闭 P0/P1
 - 迁移、外部调用与合并后检查：M0-4B 没有数据库变化；临时 SQLite 完成 fresh upgrade、check、downgrade `20260721_0005`、re-upgrade、check 和 current，最终仍为唯一 `20260722_0006 (head)`。未读取本机 `.env`，未运行真实 marker，真实 DNS、网页、百炼、高德、对象存储、消息及其他真实/付费 API 调用均为 0。纯快进合并后 Ruff、82 文件 mypy 和非真实全集再次通过（`1188 passed / 2 deselected`）
 - 验收结论与下一步：M0-4B 的范围、依赖、SSRF、逐跳重定向、大小/解压/charset、异常、取消、幂等、并发、日志脱敏与 Cookie 隔离要求满足。M0-4C 前置条件已满足；从本次状态提交后的最新 `main` 创建 `codex/m0-4c-image-recognition`，复用唯一 StorageProvider、ModelProvider/Runner 和候选 Schema，只实现私有图片输入与多模态字段抽取，不提前实现 M0-4D 或真实调用
+
+#### 2026-07-22｜M0-4C 截图识别｜待主控验收
+
+- 分支、基线与提交：开发分支 `codex/m0-4c-image-recognition` 从唯一允许基线 `2cd2036a88da1a2858756c3b88c3227f3db579d7` 创建；开始时 `HEAD`、`main`、`origin/main` 均严格等于该 SHA，工作区干净，最终功能提交 `e7f153dd53765c87393687a307fb93cd1dd019d0` 的直接父提交及 merge-base 均为该 SHA。开发期间另一个窗口将 `main`/`origin/main` 推进至 `2c425817cceabeaf11ea943d4d50b19d52ef86e3`，共享工作树因此一度令未集成的功能提交串入该文档提交；交付前已将本分支自身提交无冲突重放回指定基线并排除外部提交，未修改、合并或推送 `main`
+- 开始门禁与基线：完整读取 AGENTS、阶段/状态文档、PRD 内容输入/截图/置信度/降级、核心收藏流程、技术方案内容导入/错误/安全/M0-4，以及现有 StorageProvider、LocalPrivateStorageProvider、ModelProvider、OpenAICompatibleProvider、TextExtractionService 和 ExtractionResult。确认 M0-4A/B 已完成、M0-4C 唯一允许、Alembic 只有 `20260722_0006 (head)`，且 Storage、ModelProvider、OpenAI-compatible Provider、AgentRunner、ToolRegistry、Place/Event 候选和 ExtractionResult 均保持唯一。项目 `.venv` 基线安装、`pip check`、Ruff、82 文件 strict mypy 全部退出 0，非真实基线 `1188 passed / 2 deselected`
+- 环境说明：首次按未激活 shell 的系统 Anaconda `python` 运行基线时，环境中旧 mypy/SQLAlchemy typing 组合报告 4 个既有 redundant-cast，且已安装的顶层 `tests` 包遮蔽仓库测试包导致收集前 16 个 ImportError；该次没有运行项目测试、没有代码改动或外部 API 调用。随后按仓库历史标准使用受忽略的项目 `.venv` 从安装开始完整重跑并通过，后续所有正式结果均来自该隔离解释器
+- 私有接收与生命周期：新增唯一应用层 `ImageRecognitionService`，接收受限异步字节流并复用 `StorageProvider.put_private`；使用现有 JPEG/PNG/WebP MIME、签名及注入的 StorageProviderSettings 大小边界，使用 `ORIGINAL_SCREENSHOT` 和明确 30 天 expires_at。成功只返回既有 `PrivateFileMetadata + ExtractionResult` 元组，不返回本地路径、`file://`、公开 URL、原始文件名、Base64 或第二套响应 DTO；没有扩展 StorageProvider，因为最多 20 MB 的受限输入可在应用层一次安全缓冲、验证后将同一不可变字节交给存储和模型，无需绕过 Provider 读取私有路径
+- 图片安全：唯一新增正式依赖为 `Pillow>=11,<13`，最终环境为 Pillow 12.3.0；标准库没有 JPEG/PNG/WebP 完整解码器，无法可靠检查损坏、截断、格式伪装、解码完整性、动画、尺寸及像素炸弹。服务在保存与模型调用前执行签名、Pillow verify+完整 load、声明 MIME/实际格式一致、静态单帧、宽高各不超过 12000、总像素不超过 4000 万；不读取 EXIF 位置。空文件、非法 chunk、非图片、MIME/签名不符、损坏、截断、超限、异常尺寸和像素输入均使存储与模型调用为 0
+- 多模态与共享抽取：复用唯一供应商无关 `Message` 字典、ModelProvider 与 OpenAICompatibleProvider，通过 text + image_url content parts 发送内存 data URL；未修改 `nanobot_core`，未新增 VisionProvider、Runner 或模型配置。SDK 继续 `stream=false`、`enable_thinking=false`、`max_retries=0`；MockTransport 直接确认多模态成功请求只有 1 次，503 也只有 1 次且无 SDK 重试。将文字抽取原有 JSON 长度、Tool Call 拒绝、Schema 校验、安全错误路径、修复消息和 canonicalization 小型收敛到 `extraction_output.py`，文字 80 项行为回归保持通过；图片结构错误同样最多修复 1 次，两次无效返回现有 `MODEL_INVALID_OUTPUT`
+- 候选与不确定性：OCR/视觉信息只进入现有 PlaceCandidate、EventCandidate、CandidateField、Uncertainty 和 ExtractionResult；清晰地点/活动形成候选，只有店名时保留标题并显式标记所有缺失字段，多个地点保持分离，模糊图返回信息不足。应用层不信任模型的确认标记，对截图中所有存在的价格、city_hint、行政区、地址、商圈、地标和地铁线索强制增加 uncertainty；候选 Schema 不含正式 city_code、POI、坐标或营业时间，Prompt 也禁止把营业时间写成 Event 时间或读取 EXIF 作为地点
+- 失败、清理、幂等与并发：输入校验和存储失败零模型调用；五类既有 ProviderError 语义原样传播，`asyncio.CancelledError` 原对象传播。存储成功后的 ProviderError、修复阶段错误、意外异常和取消都调用唯一 StorageProvider 删除本次 file_key；测试确认 objects/metadata/tmp/reservation 无残留、既有文件不被删除。顺序重复得到独立 key 和相同候选，12 路并发无共享状态；输入 chunks 不变。意外流/模型异常退出 except 后才生成固定 ImageRecognitionError，`__context__`/`__cause__` 为空；Fake 请求快照字段 `repr=False`，原图、Base64、伪 secret、文件名和路径不进入公开结果、异常、repr 或日志
+- 实际文件：`backend/app/application/image_recognition.py`、`backend/app/application/extraction_output.py`、`backend/app/application/text_extraction.py`、`backend/pyproject.toml`、`backend/tests/fixtures/images.py`、`backend/tests/unit/test_image_recognition_service.py`、`backend/tests/unit/test_openai_compatible_provider.py`、`backend/tests/core/fakes.py`、`README.md`、`backend/README.md`、`docs/DEV_STATUS.md`
+- 最终环境与静态验证：macOS、项目 `.venv`、Python 3.13.5、Pillow 12.3.0；`python -m pip install -e ".[dev]"`、`python -m pip check`、`python -m ruff check .`、`python -m mypy app migrations nanobot_core` 全部退出 0，strict mypy 检查 84 个源文件
+- 最终测试数量：精确命令 `python -m pytest -q tests/unit/test_image_recognition_service.py tests/unit/test_openai_compatible_provider.py tests/unit/test_text_extraction_service.py` 退出 0，`120 passed`；此前交接误记的 `148 passed` 实际包含额外文件，现按 README 规定的三个文件更正。M0-4A 存储契约/集成退出 0，`71 passed`；core 退出 0，`118 passed`；`tests/integration/test_migrations.py` 退出 0，`21 passed`；正式非真实全集退出 0，`1223 passed / 2 deselected`；默认全集退出 0，`1223 passed / 2 skipped`。仓库外临时 pytest 插件封锁 socket connect/connect_ex/create_connection 与 DNS getaddrinfo 后，非真实全集再次退出 0，`1223 passed / 2 deselected`
+- 迁移、配置与范围：没有新增或修改数据库、ORM、Repository、配置变量或 `0001`–`0006`；Alembic 仍只有 `20260722_0006 (head)`。没有上传 HTTP 路由、TextInput/UrlInput/ImageInput、统一 Source/Collection/AgentRun/ToolRun 编排、POI 搜索/正式城市/坐标、M0-4D、M0-5、SSE、前端、Worker、OCR SDK、外部 OCR 服务、自动重试/退避/断路器/队列或真实视觉测试入口
+- 安全、真实调用与冗余：未读取、打印或修改本机 `.env`，未设置真实测试开关，未运行 `real_provider`/`real_map_provider`，也未创建或运行 `real_vision_provider`；百炼、高德、网页、DNS、对象存储、消息及任何真实/付费 API 调用均为 0。扫描确认 StorageProvider、LocalPrivateStorageProvider、ModelProvider、OpenAICompatibleProvider、AgentRunner、ToolRegistry、TextExtractionService、ImageRecognitionService、PlaceCandidate、EventCandidate 和 ExtractionResult 各只有一套正式定义；Git 不含 `.env`、数据库、上传原图、Base64、缓存或响应快照，当前无已知未关闭 P0/P1
+- 已知风险与主控复测：当前只在 macOS/Python 3.13.5/Pillow 12.3.0、固定小图、Fake Provider 和 MockTransport 上验证，未在 Python 3.11/3.12、Windows/Linux 或真实多模态供应商响应上复测。图片在内存中受现有最大 20 MB 硬上限约束，M1 如转后台任务仍应复用同一服务而不是新增图片 Provider。主控应在仓库外干净 Python 3.11+ 环境重跑全部命令，重点复核 Pillow 解码炸弹/截断、exact size、价格/位置 uncertainty、工具响应拒绝、1/2 次调用、ProviderError/取消清理、既有文件保护、异常链/Base64/路径脱敏、OpenAI MockTransport 零重试、无迁移/配置/后续阶段越界及唯一实现扫描
+- 下一步：等待主控独立验收；通过前 M0-4C 保持待验收且仍为唯一允许阶段，M0-4D/M0-5 保持未开始。本分支不合并 `main`、不推送、不执行真实视觉或其他外部调用
+
+#### 2026-07-22｜M0-4C 验收阻断修复｜待复验
+
+- 分支与提交关系：继续使用 `codex/m0-4c-image-recognition`，开始时工作区干净且 HEAD 精确为交接提交 `6ab9405d7192d94fbc8045cef4aa6c51fafdb803`；原功能提交仍为 `e7f153dd53765c87393687a307fb93cd1dd019d0`，原阶段基线仍为 `2cd2036a88da1a2858756c3b88c3227f3db579d7`。`main` 与 `origin/main` 全程保持 `2c425817cceabeaf11ea943d4d50b19d52ef86e3`，未合并、变基或修改；独立修复提交随本记录创建，完整 SHA 见最终交接
+- 模型载荷边界：非法 MIME 在消费 AsyncIterable 前固定拒绝，因此 chunk、存储和模型调用均为 0。原图继续按配置上限完成签名、Pillow verify/load、单帧和 12000×12000/4000 万像素安全验证；模型侧进一步要求宽高均至少 11、比例不超过 200:1。普通合规小图直接使用已验证字节；超过模型侧 4096 最长边、400 万像素或 data URL 上限的合法图片，只在内存中转换为无 EXIF 使用的确定性 RGB JPEG 推理副本，按固定质量和最多 6 轮有界缩放收敛；完整 ASCII data URL 在 Provider 调用前计算并断言严格小于 10,000,000 字符，已知不合规请求不会到达真实 Provider
+- 原图与推理副本生命周期：约 8.7 MB 的不可高度压缩合法 PNG 测试确认原 PNG 是唯一写入现有 StorageProvider 的对象，返回 metadata 的 MIME、原始 byte_size、摘要、`ORIGINAL_SCREENSHOT` 和 30 天 expires_at 均对应原图；模型只收到小于限制的内存 JPEG，推理副本不保存、不返回、不写日志。没有扩展 StorageProvider，没有第二份存储实现、VisionProvider、ModelProvider、图片候选、OCR DTO 或重复校验流程
+- 取消与清理脱敏：识别主流程先捕获 Provider/取消/固定业务错误，退出原异常上下文后仅用本次 `file_key` 清理。ProviderError 后 delete 新发生 CancelledError 时传播该取消；Provider 原始 CancelledError 在清理成功或固定 StorageProviderError 后仍传播原对象，不转换成业务错误。delete 的其他意外异常只产生固定 `IMAGE_PROCESSING_FAILED`，其 str、repr、公开字典、日志、cause 和 context 均不保留异常文本、伪 secret、原图、文件名或路径；清理始终不触碰预先存在文件
+- 离线覆盖：新增确定性内存用例覆盖约 8.7 MB 不可压缩 PNG 推理副本、模型 data URL 精确阈值和多一原始字节、10×10/短边等于 10/比例超过 200:1 拒绝及精确 200:1 接受、JPEG/PNG/WebP 正常、原图唯一存储与 30 天 metadata、非法 MIME 零 chunk、已知非法载荷零 Provider、ProviderError 后清理取消、原 Provider 取消、带伪 secret 的 RuntimeError 清理失败、既有文件保护、一次成功/最多两次结构修复、输入不变、重复与 12 路并发、Base64/文件名/路径/伪密钥脱敏，以及文字抽取共享逻辑完整回归。修复前 README 三文件精确聚焦命令实测为 `120 passed`，已更正原交接误记的 `148 passed`
+- 全新环境与规定命令：使用仓库外 `/tmp/shiguang-m04c-fix-qa.LvnBC6/venv`、Python 3.13.5、Pillow 12.3.0；`python -m pip install -e ".[dev]"`、`python -m pip check`、`python -m ruff check .`、`python -m mypy app migrations nanobot_core` 均退出 0，mypy 检查 84 个源文件。修复后三文件聚焦退出 0，`130 passed`；存储契约/集成退出 0，`71 passed`；core 退出 0，`118 passed`；迁移退出 0，`21 passed`；正式非真实全集退出 0，`1233 passed / 2 deselected`；默认全集退出 0，`1233 passed / 2 skipped`
+- 禁网、安全与范围：`/tmp` pytest 插件封锁 socket connect/connect_ex/create_connection 和 DNS getaddrinfo 后，正式非真实全集再次退出 0，`1233 passed / 2 deselected`。未读取、打印或修改本机 `.env`，未设置或运行任何真实 marker；真实模型、地图、网页、DNS、对象存储、消息和其他付费/外部 API 调用均为 0。Git/敏感文件/范围/重复定义扫描通过，Alembic 仍只有 `20260722_0006 (head)`；没有迁移、配置密钥、上传路由、Source/Collection/AgentRun 编排、M0-4D、M0-5、前端、OCR SDK、缓存、数据库、原图、Base64 或响应快照
+- 已知风险与下一步：推理副本为保证供应商载荷上限可能对超大高熵截图执行 JPEG 转换或缩放，真实截图 OCR 质量和百炼响应仍因本轮禁止真实调用而未验证；边界与失败语义已由 Fake Provider、MockTransport 和 Pillow 固定图片完整离线覆盖。当前仍为 M0-4C 待主控复验，不合并、不推送、不开始 M0-4D 或 M0-5
+
+#### 2026-07-22｜M0-4C 存储前处理异常边界修复｜待复验
+
+- 分支与提交关系：继续使用 `codex/m0-4c-image-recognition`，开始时工作区干净且 HEAD 精确为待修复提交 `c08fe0de975fc4200876171fbcf9089c599ecc30`；原阶段基线仍为 `2cd2036a88da1a2858756c3b88c3227f3db579d7`。`main` 与 `origin/main` 全程保持 `2c425817cceabeaf11ea943d4d50b19d52ef86e3`，未修改、合并、变基或推送；本轮独立修复提交随本记录创建，完整 SHA 见最终交接
+- 缺陷与修复：`ImageRecognitionService.recognize()` 现将图片完整校验、推理副本准备、注入时钟调用、UTC aware 校验及 30 天 `expires_at` 计算全部纳入同一存储前安全边界。既有 `ImageRecognitionError` 保留原对象、错误码和语义，`asyncio.CancelledError` 保留原对象传播；其他未预期 `Exception` 在退出原异常上下文后统一转换为固定 `IMAGE_PROCESSING_FAILED`，公开异常的 cause/context 均为空，不携带原异常文本、伪 secret、文件名、图片/Base64 或私有路径
+- 零副作用与覆盖：正式参数化用例分别注入 `_validate_image`、`_prepare_inference_image`、clock 和 `require_aware_utc` 的私密 RuntimeError 与取消，并单独验证已知图片错误；所有存储前失败均断言 `put_private=0`、`delete=0`、模型调用为 0，且 objects、metadata、临时和 reservation 目录无残留。原有 ProviderError、Provider/清理取消、清理 RuntimeError、既有文件保护、大图载荷压缩、真实素材离线预处理、JPEG/PNG/WebP、30 天原图保存和文字抽取共享逻辑测试继续通过
+- 策略与范围：本轮未改变现有图片 MIME、签名、尺寸、比例、像素、data URL 上限、确定性 JPEG 推理副本或原图 30 天保存策略；未修改 `nanobot_core`、ModelProvider、OpenAICompatibleProvider、StorageProvider 契约、候选 Schema、文字抽取、配置、数据库或迁移。未新增 Provider、Storage 实现、DTO、上传路由或统一输入编排，未实现 M0-4D/M0-5
+- 验证结果：项目 `.venv` 的 `python -m pip check`、`python -m ruff check .`、`python -m mypy app migrations nanobot_core` 均退出 0，mypy 检查 84 个源文件；三文件聚焦回归退出 0，`139 passed`；存储契约/本地集成退出 0，`71 passed`；core 退出 0，`118 passed`；迁移退出 0，`21 passed`；正式非真实全集退出 0，`1242 passed / 2 deselected`；默认全集退出 0，`1242 passed / 2 skipped`
+- 禁网与安全：仓库外 `/tmp` 临时 pytest 插件同时封锁 socket connect/connect_ex/create_connection 与 DNS getaddrinfo 后，正式非真实全集再次退出 0，`1242 passed / 2 deselected`。未读取本机 `.env`，未启用真实 marker，真实模型、高德、网页、DNS、对象存储、消息及其他真实/付费 API 调用均为 0；Git 敏感文件、范围和重复定义扫描通过。本阶段仍待主控复验，不合并、不推送、不开始 M0-4D

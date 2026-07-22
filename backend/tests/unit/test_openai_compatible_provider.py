@@ -169,6 +169,67 @@ async def test_maps_text_response_and_all_metadata(
 
 
 @pytest.mark.asyncio
+async def test_multimodal_message_uses_one_non_streaming_mock_request(
+    provider_factory: OfflineProviderFactory,
+) -> None:
+    provider, requests = provider_factory.build([_response(_completion())])
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Analyze this screenshot."},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/png;base64,ZmFrZS1pbWFnZQ==",
+                        "detail": "high",
+                    },
+                },
+            ],
+        }
+    ]
+    original_messages = deepcopy(messages)
+
+    await provider.chat(messages=messages, tools=None)
+
+    assert messages == original_messages
+    assert len(requests) == 1
+    body = json.loads(requests[0].content)
+    assert body["messages"] == original_messages
+    assert body["stream"] is False
+    assert body["enable_thinking"] is False
+    assert "tools" not in body
+
+
+@pytest.mark.asyncio
+async def test_multimodal_http_failure_has_zero_sdk_retries(
+    provider_factory: OfflineProviderFactory,
+) -> None:
+    provider, requests = provider_factory.build([_response(status_code=503)])
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Analyze."},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/webp;base64,ZmFrZQ==",
+                        "detail": "high",
+                    },
+                },
+            ],
+        }
+    ]
+
+    with pytest.raises(ProviderError) as exc_info:
+        await provider.chat(messages=messages, tools=None)
+
+    assert exc_info.value.code is ProviderErrorCode.PROVIDER_ERROR
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_maps_multiple_function_tool_calls_in_order_and_preserves_json(
     provider_factory: OfflineProviderFactory,
 ) -> None:

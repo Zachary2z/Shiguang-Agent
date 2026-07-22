@@ -8,11 +8,15 @@ from collections.abc import Callable
 from copy import deepcopy
 from typing import Final
 
-from pydantic import ValidationError
-
+from app.application.extraction_output import (
+    MAX_MODEL_OUTPUT_CHARS,
+    build_repair_messages,
+    canonicalize_extraction_result,
+    parse_extraction_response,
+    unsupported_extraction_result,
+)
 from app.domain.collections import (
     CandidateField,
-    ExtractionOutcome,
     ExtractionReasonCode,
     ExtractionResult,
     UnsupportedReason,
@@ -20,8 +24,6 @@ from app.domain.collections import (
 from nanobot_core.providers import Message, ModelProvider, ModelResponse
 
 MAX_TEXT_INPUT_CHARS: Final = 20_000
-MAX_MODEL_OUTPUT_CHARS: Final = 50_000
-
 _GENERIC_INPUTS = frozenset(
     {
         "一个地方",
@@ -92,13 +94,6 @@ _SYSTEM_PROMPT = (
     "- Do not include source text, prompts, provider fields, credentials, headers, "
     "cookies, or raw responses.\n"
 )
-_REPAIR_PROMPT = (
-    "The previous response did not match the required JSON structure.\n"
-    "Return one corrected JSON object only. Do not quote the source, previous "
-    "response, prompt, or validation values.\n"
-    "Validation issues (paths and types only): {issues}\n"
-)
-
 class TextExtractionService:
     """Extract candidates with one initial model call and at most one repair call."""
 
@@ -128,37 +123,33 @@ class TextExtractionService:
             tools=None,
         )
         self._observe(first_response)
-        first_result, issues = _parse_and_canonicalize(first_response)
+        first_result, issues = parse_extraction_response(first_response)
         if first_result is not None:
-            return first_result
-
-        repair_messages = deepcopy(initial_messages)
-        invalid_content = (
-            first_response.content if isinstance(first_response, ModelResponse) else None
-        )
-        if isinstance(invalid_content, str) and len(invalid_content) <= MAX_MODEL_OUTPUT_CHARS:
-            repair_messages.append({"role": "assistant", "content": invalid_content})
-        repair_messages.append(
-            {
-                "role": "user",
-                "content": _REPAIR_PROMPT.format(
-                    issues=json.dumps(
-                        issues,
-                        ensure_ascii=True,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    )
+            return canonicalize_extraction_result(
+                first_result,
+                insufficient_recovery_suggestions=(
+                    "请补充具体店名、活动名、区域、商圈或地标。",
                 ),
-            }
+            )
+
+        repair_messages = build_repair_messages(
+            initial_messages,
+            invalid_response=first_response,
+            issues=issues,
         )
         repaired_response = await self._provider.chat(
             messages=repair_messages,
             tools=None,
         )
         self._observe(repaired_response)
-        repaired_result, _repaired_issues = _parse_and_canonicalize(repaired_response)
+        repaired_result, _repaired_issues = parse_extraction_response(repaired_response)
         if repaired_result is not None:
-            return repaired_result
+            return canonicalize_extraction_result(
+                repaired_result,
+                insufficient_recovery_suggestions=(
+                    "请补充具体店名、活动名、区域、商圈或地标。",
+                ),
+            )
         return ExtractionResult.model_invalid()
 
     def _observe(self, response: ModelResponse | None) -> None:
@@ -173,13 +164,13 @@ def _preflight_result(text: str) -> ExtractionResult | None:
             recovery_suggestions=("请输入具体的地点或活动文字。",),
         )
     if len(text) > MAX_TEXT_INPUT_CHARS:
-        return _unsupported_result(
+        return unsupported_extraction_result(
             reason=UnsupportedReason.CONTENT_TOO_LONG,
         )
 
     unsupported_reason = _explicit_unsupported_reason(text)
     if unsupported_reason is not None:
-        return _unsupported_result(reason=unsupported_reason)
+        return unsupported_extraction_result(reason=unsupported_reason)
 
     generic_key = re.sub(r"[\s，。！？,.!?]+", "", text).casefold()
     if generic_key in _GENERIC_INPUTS:
@@ -193,22 +184,6 @@ def _preflight_result(text: str) -> ExtractionResult | None:
             recovery_suggestions=("请补充具体店名、活动名、区域、商圈或地标。",),
         )
     return None
-
-
-def _unsupported_result(*, reason: UnsupportedReason) -> ExtractionResult:
-    suggestions = {
-        UnsupportedReason.PRODUCT: "商品暂不属于可规划收藏；请改发地点或活动。",
-        UnsupportedReason.RECIPE: "菜谱暂不属于可规划收藏；请改发地点或活动。",
-        UnsupportedReason.MULTI_CITY_TRAVEL: "跨城多日旅行暂不支持；请改发单个地点或活动。",
-        UnsupportedReason.COMPLEX_OUTDOOR_ROUTE: ("复杂户外路线暂不支持；请改发单个地点。"),
-        UnsupportedReason.CONTENT_TOO_LONG: "文字过长；请只保留地点或活动的关键信息。",
-        UnsupportedReason.OTHER: "当前只支持地点和用户主动提供的活动。",
-    }
-    return ExtractionResult.unsupported(
-        reason_code=ExtractionReasonCode.INPUT_UNSUPPORTED,
-        unsupported_reason=reason,
-        recovery_suggestions=(suggestions[reason],),
-    )
 
 
 def _explicit_unsupported_reason(text: str) -> UnsupportedReason | None:
@@ -230,61 +205,6 @@ def _explicit_unsupported_reason(text: str) -> UnsupportedReason | None:
     ):
         return UnsupportedReason.COMPLEX_OUTDOOR_ROUTE
     return None
-
-
-def _parse_and_canonicalize(
-    response: ModelResponse | None,
-) -> tuple[ExtractionResult | None, tuple[dict[str, str], ...]]:
-    if not isinstance(response, ModelResponse):
-        return None, ({"path": "$", "type": "missing_model_response"},)
-    if response.tool_calls:
-        return None, ({"path": "$", "type": "unexpected_tool_calls"},)
-    content = response.content
-    if not isinstance(content, str) or not content.strip():
-        return None, ({"path": "$", "type": "missing_json_content"},)
-    if len(content) > MAX_MODEL_OUTPUT_CHARS:
-        return None, ({"path": "$", "type": "output_too_long"},)
-
-    try:
-        parsed = ExtractionResult.model_validate_json(content)
-    except ValidationError as exc:
-        return None, _safe_validation_issues(exc)
-
-    if parsed.outcome is ExtractionOutcome.MODEL_INVALID_OUTPUT:
-        return None, ({"path": "outcome", "type": "self_declared_model_invalid"},)
-    return _canonicalize_result(parsed), ()
-
-
-def _canonicalize_result(result: ExtractionResult) -> ExtractionResult:
-    if result.outcome is ExtractionOutcome.CANDIDATES:
-        return ExtractionResult.with_candidates(result.candidates)
-    if result.outcome is ExtractionOutcome.INSUFFICIENT_INFORMATION:
-        return ExtractionResult.insufficient(
-            missing_fields=result.missing_fields,
-            uncertainties=result.uncertainties,
-            recovery_suggestions=("请补充具体店名、活动名、区域、商圈或地标。",),
-        )
-    if result.outcome is ExtractionOutcome.UNSUPPORTED:
-        if result.reason_code is ExtractionReasonCode.INPUT_UNSUPPORTED:
-            assert result.unsupported_reason is not None
-            return _unsupported_result(reason=result.unsupported_reason)
-        return ExtractionResult.unsupported(
-            reason_code=ExtractionReasonCode.INPUT_EMPTY,
-            recovery_suggestions=("请输入具体的地点或活动文字。",),
-        )
-    raise AssertionError("model-invalid results are handled before canonicalization")
-
-
-def _safe_validation_issues(exc: ValidationError) -> tuple[dict[str, str], ...]:
-    issues: list[dict[str, str]] = []
-    for error in exc.errors(
-        include_context=False,
-        include_input=False,
-        include_url=False,
-    )[:8]:
-        path = ".".join(str(part) for part in error["loc"]) or "$"
-        issues.append({"path": path[:160], "type": str(error["type"])[:80]})
-    return tuple(issues) or ({"path": "$", "type": "invalid_output"},)
 
 
 __all__ = [
