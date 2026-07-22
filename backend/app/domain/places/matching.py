@@ -185,6 +185,8 @@ class PlaceMatchRequest(PlaceMatchingContract):
 
     candidate: PlaceCandidate | EventCandidate = Field(repr=False)
     city: CityScope
+    search_district: str | None = Field(default=None, max_length=100, repr=False)
+    search_location: Coordinate | None = Field(default=None, repr=False)
     source_context: SecretStr | None = Field(default=None, repr=False)
 
     @field_validator("source_context", mode="before")

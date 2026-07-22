@@ -1,0 +1,553 @@
+"""The single read-only M0-5B structured collection retrieval workflow."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Iterable
+from typing import Final
+from unicodedata import normalize
+
+from app.application.place_matching import PlaceMatchingService
+from app.domain.collections import (
+    CandidateField,
+    CollectionItem,
+    CollectionKind,
+    CollectionRepository,
+    CollectionStatus,
+    PlaceCandidate,
+)
+from app.domain.places import (
+    MatchStatus,
+    PlaceMatchCandidate,
+    PlaceMatchRequest,
+    Poi,
+    PoiProvider,
+    ResolvedPlaceTargetKind,
+    resolve_place_target,
+)
+from app.domain.plans import PlanConstraints
+from app.domain.plans.retrieval import (
+    REASON_SUMMARIES,
+    AvailabilityAssessment,
+    CandidateFactValues,
+    CandidateOutcome,
+    CandidateReasonCode,
+    CollectionCandidateDecision,
+    CollectionPlanningFacts,
+    PlanningFactSnapshot,
+    PoiPlanningFacts,
+    RouteAssessment,
+    StructuredCollectionResult,
+    WeatherAssessment,
+    outcome_for_reasons,
+)
+from app.providers.map import MapProviderError
+
+_CNY: Final[str] = "CNY"
+
+
+class StructuredCollectionRetrievalError(RuntimeError):
+    """Fixed safe failure for repository or ownership boundary violations."""
+
+    __slots__ = ()
+    code: Final[str] = "COLLECTION_RETRIEVAL_FAILED"
+    summary: Final[str] = "Collection retrieval failed."
+
+    def __init__(self) -> None:
+        super().__init__(self.summary)
+
+    def to_dict(self) -> dict[str, str]:
+        return {"code": self.code, "summary": self.summary}
+
+
+def _text_identity(value: str) -> str:
+    return "".join(normalize("NFKC", value).casefold().split())
+
+
+def _searchable_values(item: CollectionItem, poi: Poi | None) -> tuple[str, ...]:
+    values: list[str] = [item.title, *item.tags]
+    values.extend(
+        value
+        for value in (
+            item.district,
+            item.address,
+            item.business_district,
+            item.landmark,
+            item.metro_station,
+        )
+        if value is not None
+    )
+    if poi is not None:
+        values.extend(
+            value
+            for value in (
+                poi.name,
+                poi.branch_name,
+                poi.district,
+                poi.business_area,
+                poi.address,
+                poi.poi_type.value,
+            )
+            if value is not None
+        )
+    return tuple(_text_identity(value) for value in values)
+
+
+def _matches_term(term: str, values: tuple[str, ...]) -> bool:
+    needle = _text_identity(term)
+    return any(needle in value for value in values)
+
+
+def _ordered_reasons(
+    reasons: Iterable[CandidateReasonCode],
+) -> tuple[CandidateReasonCode, ...]:
+    selected = set(reasons)
+    return tuple(code for code in CandidateReasonCode if code in selected)
+
+
+def _dynamic_reasons(
+    facts: CandidateFactValues,
+    *,
+    is_place: bool,
+) -> set[CandidateReasonCode]:
+    reasons: set[CandidateReasonCode] = set()
+    if facts.route is RouteAssessment.UNREACHABLE:
+        reasons.add(CandidateReasonCode.ROUTE_UNREACHABLE)
+    elif facts.route is RouteAssessment.UNKNOWN:
+        reasons.add(CandidateReasonCode.ROUTE_UNKNOWN)
+    elif facts.route is RouteAssessment.PROVIDER_FAILED:
+        reasons.add(CandidateReasonCode.ROUTE_PROVIDER_FAILED)
+
+    if facts.weather is WeatherAssessment.CONFLICT:
+        reasons.add(CandidateReasonCode.WEATHER_CONFLICT)
+    elif facts.weather is WeatherAssessment.UNKNOWN:
+        reasons.add(CandidateReasonCode.WEATHER_UNKNOWN)
+    elif facts.weather is WeatherAssessment.PROVIDER_FAILED:
+        reasons.add(CandidateReasonCode.WEATHER_PROVIDER_FAILED)
+
+    if is_place:
+        if facts.availability is AvailabilityAssessment.UNAVAILABLE:
+            reasons.add(CandidateReasonCode.PLACE_UNAVAILABLE)
+        elif facts.availability is AvailabilityAssessment.UNKNOWN:
+            reasons.add(CandidateReasonCode.AVAILABILITY_UNKNOWN)
+        elif facts.availability is AvailabilityAssessment.PROVIDER_FAILED:
+            reasons.add(CandidateReasonCode.AVAILABILITY_PROVIDER_FAILED)
+    return reasons
+
+
+def _candidate_decision(
+    *,
+    item: CollectionItem,
+    constraints: PlanConstraints,
+    formal_city_code: str | None,
+    location_confirmed: bool,
+    poi: Poi | None,
+    facts: CandidateFactValues,
+    additional_reasons: Iterable[CandidateReasonCode] = (),
+    apply_dynamic_facts: bool = True,
+    resolved_from_any_branch: bool = False,
+) -> CollectionCandidateDecision:
+    reasons = set(additional_reasons)
+    if item.status is not CollectionStatus.ACTIVE:
+        reasons.add(CandidateReasonCode.STATUS_NOT_ACTIVE)
+    if not location_confirmed:
+        reasons.add(CandidateReasonCode.LOCATION_UNCONFIRMED)
+    if formal_city_code is None:
+        reasons.add(CandidateReasonCode.CITY_UNCONFIRMED)
+    elif formal_city_code != constraints.city_code.value:
+        reasons.add(CandidateReasonCode.CITY_MISMATCH)
+
+    if item.kind is CollectionKind.EVENT:
+        if item.event_start_at is None or item.event_end_at is None:
+            reasons.add(CandidateReasonCode.EVENT_TIME_UNKNOWN)
+        else:
+            if item.event_end_at <= constraints.start_at:
+                reasons.add(CandidateReasonCode.EVENT_ENDED)
+            elif (
+                item.event_start_at >= constraints.end_at
+                or item.event_end_at <= constraints.start_at
+            ):
+                reasons.add(CandidateReasonCode.TIME_WINDOW_CONFLICT)
+
+    if constraints.area is not None:
+        if constraints.area.districts:
+            district = poi.district if poi is not None else item.district
+            allowed = {_text_identity(value) for value in constraints.area.districts}
+            if district is None:
+                reasons.add(CandidateReasonCode.DISTRICT_UNKNOWN)
+            elif _text_identity(district) not in allowed:
+                reasons.add(CandidateReasonCode.DISTRICT_MISMATCH)
+        if constraints.area.labels:
+            values = _searchable_values(item, poi)
+            if not any(_matches_term(label, values) for label in constraints.area.labels):
+                reasons.add(CandidateReasonCode.AREA_MISMATCH)
+
+    searchable = _searchable_values(item, poi)
+    if any(not _matches_term(term, searchable) for term in constraints.include):
+        reasons.add(CandidateReasonCode.INCLUDE_NOT_MATCHED)
+    if any(_matches_term(term, searchable) for term in constraints.exclude):
+        reasons.add(CandidateReasonCode.EXCLUDED_BY_USER)
+
+    if item.price_amount is None or item.price_currency is None:
+        reasons.add(CandidateReasonCode.PRICE_UNKNOWN)
+    elif constraints.budget is not None and (
+        item.price_currency != _CNY or item.price_amount > constraints.budget
+    ):
+        if item.price_currency == _CNY:
+            reasons.add(CandidateReasonCode.BUDGET_EXCEEDED)
+        else:
+            reasons.add(CandidateReasonCode.PRICE_UNKNOWN)
+
+    if apply_dynamic_facts:
+        reasons.update(_dynamic_reasons(facts, is_place=item.kind is CollectionKind.PLACE))
+        if (
+            facts.route is RouteAssessment.REACHABLE
+            and facts.route_duration_seconds is not None
+            and facts.route_duration_seconds >= constraints.duration.total_seconds()
+        ):
+            reasons.add(CandidateReasonCode.ROUTE_EXCEEDS_TIME_WINDOW)
+    ordered = _ordered_reasons(reasons)
+    return CollectionCandidateDecision(
+        outcome=outcome_for_reasons(ordered),
+        reason_codes=ordered,
+        summaries=tuple(REASON_SUMMARIES[reason] for reason in ordered),
+        collection_item_ids=(item.id,),
+        kind=item.kind,
+        title=item.title,
+        poi=None if poi is None else poi.model_copy(deep=True),
+        price_amount=item.price_amount,
+        price_currency=item.price_currency,
+        route_duration_seconds=facts.route_duration_seconds,
+        route_distance_meters=facts.route_distance_meters,
+        any_branch_collection_item_ids=(item.id,) if resolved_from_any_branch else (),
+    )
+
+
+def _missing_candidate_fields(item: CollectionItem) -> tuple[CandidateField, ...]:
+    values = {
+        CandidateField.CITY_HINT: None,
+        CandidateField.DISTRICT: item.district,
+        CandidateField.ADDRESS: item.address,
+        CandidateField.BUSINESS_DISTRICT: item.business_district,
+        CandidateField.LANDMARK: item.landmark,
+        CandidateField.METRO_STATION: item.metro_station,
+        CandidateField.PRICE: item.price_amount,
+        CandidateField.TAGS: item.tags or None,
+    }
+    return tuple(field for field in CandidateField if field in values and values[field] is None)
+
+
+def _branch_candidate(item: CollectionItem, brand_name: str) -> PlaceCandidate:
+    return PlaceCandidate(
+        title=brand_name,
+        city_hint=None,
+        district=item.district,
+        address=item.address,
+        business_district=item.business_district,
+        landmark=item.landmark,
+        metro_station=item.metro_station,
+        price_amount=item.price_amount,
+        price_currency=item.price_currency,
+        tags=item.tags,
+        missing_fields=_missing_candidate_fields(item),
+    )
+
+
+def _poi_from_match(candidate: PlaceMatchCandidate) -> Poi:
+    return Poi(
+        provider=candidate.provider,
+        poi_id=candidate.poi_id,
+        name=candidate.name,
+        branch_name=candidate.branch_name,
+        city_code=candidate.city_code,
+        district=candidate.district,
+        business_area=candidate.business_area,
+        address=candidate.address,
+        coordinate=candidate.coordinate.model_copy(deep=True),
+        poi_type=candidate.poi_type,
+    )
+
+
+def _merge_duplicate_pois(
+    decisions: Iterable[CollectionCandidateDecision],
+) -> tuple[CollectionCandidateDecision, ...]:
+    merged: list[CollectionCandidateDecision] = []
+    poi_indexes: dict[tuple[PoiProvider, str], int] = {}
+    for decision in decisions:
+        identity = decision.poi_identity
+        if identity is None or decision.outcome is not CandidateOutcome.INCLUDED:
+            merged.append(decision)
+            continue
+        previous_index = poi_indexes.get(identity)
+        if previous_index is None:
+            poi_indexes[identity] = len(merged)
+            merged.append(decision)
+            continue
+        previous = merged[previous_index]
+        source_ids = tuple(sorted((*previous.collection_item_ids, *decision.collection_item_ids)))
+        branch_source_ids = tuple(
+            sorted(
+                (
+                    *previous.any_branch_collection_item_ids,
+                    *decision.any_branch_collection_item_ids,
+                )
+            )
+        )
+        preferred = min(
+            (previous, decision),
+            key=lambda item: (
+                bool(item.any_branch_collection_item_ids),
+                item.collection_item_ids,
+            ),
+        )
+        merged[previous_index] = preferred.model_copy(
+            update={
+                "collection_item_ids": source_ids,
+                "any_branch_collection_item_ids": branch_source_ids,
+            },
+            deep=True,
+        )
+    return tuple(merged)
+
+
+class StructuredCollectionRetrievalService:
+    """Retrieve one user's collections and apply the sole M0-5B rule path."""
+
+    def __init__(
+        self,
+        *,
+        repository: CollectionRepository,
+        place_matching: PlaceMatchingService,
+    ) -> None:
+        self._repository = repository
+        self._place_matching = place_matching
+
+    async def retrieve(
+        self,
+        *,
+        user_id: str,
+        constraints: PlanConstraints,
+        facts: PlanningFactSnapshot,
+    ) -> StructuredCollectionResult:
+        retrieval_failed = False
+        try:
+            items = await self._repository.list_collection_items(
+                user_id=user_id,
+                include_inactive=True,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            retrieval_failed = True
+            items = []
+        if retrieval_failed:
+            raise StructuredCollectionRetrievalError() from None
+        if any(item.user_id != user_id for item in items):
+            raise StructuredCollectionRetrievalError() from None
+
+        collection_facts = {item.collection_item_id: item for item in facts.collections}
+        poi_facts = {item.identity: item for item in facts.pois}
+        decisions: list[CollectionCandidateDecision] = []
+        for item in items:
+            resolved = resolve_place_target(
+                item.place_target,
+                collection_status=item.status.value,
+            )
+            if item.kind is CollectionKind.EVENT:
+                event_facts = collection_facts.get(
+                    item.id,
+                    CollectionPlanningFacts(collection_item_id=item.id),
+                )
+                decisions.append(
+                    _candidate_decision(
+                        item=item,
+                        constraints=constraints,
+                        formal_city_code=(
+                            None
+                            if event_facts.formal_city is None
+                            else event_facts.formal_city.city_code
+                        ),
+                        location_confirmed=event_facts.location_confirmed,
+                        poi=None,
+                        facts=event_facts,
+                    )
+                )
+            elif resolved.kind is ResolvedPlaceTargetKind.EXACT:
+                assert resolved.poi is not None
+                poi = resolved.poi
+                dynamic = poi_facts.get(
+                    (poi.provider, poi.poi_id),
+                    PoiPlanningFacts(provider=poi.provider, poi_id=poi.poi_id),
+                )
+                decisions.append(
+                    _candidate_decision(
+                        item=item,
+                        constraints=constraints,
+                        formal_city_code=poi.city_code,
+                        location_confirmed=True,
+                        poi=poi,
+                        facts=dynamic,
+                    )
+                )
+            elif resolved.kind is ResolvedPlaceTargetKind.ANY_BRANCH:
+                decisions.append(
+                    await self._resolve_any_branch(
+                        item=item,
+                        constraints=constraints,
+                        poi_facts=poi_facts,
+                    )
+                )
+            else:
+                decisions.append(
+                    _candidate_decision(
+                        item=item,
+                        constraints=constraints,
+                        formal_city_code=None,
+                        location_confirmed=False,
+                        poi=None,
+                        facts=CandidateFactValues(),
+                    )
+                )
+
+        deduplicated = _merge_duplicate_pois(decisions)
+        ordered = tuple(
+            sorted(
+                deduplicated,
+                key=lambda item: (
+                    list(CandidateOutcome).index(item.outcome),
+                    _text_identity(item.title),
+                    item.collection_item_ids,
+                ),
+            )
+        )
+        return StructuredCollectionResult(decisions=ordered)
+
+    async def _resolve_any_branch(
+        self,
+        *,
+        item: CollectionItem,
+        constraints: PlanConstraints,
+        poi_facts: dict[tuple[PoiProvider, str], PoiPlanningFacts],
+    ) -> CollectionCandidateDecision:
+        resolved = resolve_place_target(item.place_target, collection_status=item.status.value)
+        assert resolved.brand_identity is not None
+        try:
+            result = await self._place_matching.match(
+                PlaceMatchRequest(
+                    candidate=_branch_candidate(item, resolved.brand_identity.display_name),
+                    city=constraints.city_scope,
+                    search_district=(
+                        constraints.area.districts[0]
+                        if constraints.area is not None
+                        and len(constraints.area.districts) == 1
+                        else None
+                    ),
+                    search_location=constraints.origin,
+                )
+            )
+        except asyncio.CancelledError:
+            raise
+        except MapProviderError:
+            return _candidate_decision(
+                item=item,
+                constraints=constraints,
+                formal_city_code=None,
+                location_confirmed=False,
+                poi=None,
+                facts=CandidateFactValues(),
+                additional_reasons=(CandidateReasonCode.BRANCH_PROVIDER_FAILED,),
+                apply_dynamic_facts=False,
+                resolved_from_any_branch=True,
+            )
+
+        if result.status is MatchStatus.NOT_FOUND:
+            return _candidate_decision(
+                item=item,
+                constraints=constraints,
+                formal_city_code=None,
+                location_confirmed=False,
+                poi=None,
+                facts=CandidateFactValues(),
+                additional_reasons=(CandidateReasonCode.BRANCH_NOT_FOUND,),
+                apply_dynamic_facts=False,
+                resolved_from_any_branch=True,
+            )
+        if result.status is MatchStatus.NEEDS_CONTEXT:
+            return _candidate_decision(
+                item=item,
+                constraints=constraints,
+                formal_city_code=None,
+                location_confirmed=False,
+                poi=None,
+                facts=CandidateFactValues(),
+                additional_reasons=(CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT,),
+                apply_dynamic_facts=False,
+                resolved_from_any_branch=True,
+            )
+
+        branch_decisions: list[CollectionCandidateDecision] = []
+        for candidate in result.candidates:
+            poi = _poi_from_match(candidate)
+            dynamic = poi_facts.get(
+                (poi.provider, poi.poi_id),
+                PoiPlanningFacts(provider=poi.provider, poi_id=poi.poi_id),
+            )
+            branch_decisions.append(
+                _candidate_decision(
+                    item=item,
+                    constraints=constraints,
+                    formal_city_code=poi.city_code,
+                    location_confirmed=True,
+                    poi=poi,
+                    facts=dynamic,
+                    resolved_from_any_branch=True,
+                )
+            )
+        included = [
+            decision
+            for decision in branch_decisions
+            if decision.outcome is CandidateOutcome.INCLUDED
+        ]
+        if included:
+            return min(
+                included,
+                key=lambda decision: (
+                    decision.route_duration_seconds
+                    if decision.route_duration_seconds is not None
+                    else 2**63,
+                    decision.route_distance_meters
+                    if decision.route_distance_meters is not None
+                    else 2**63,
+                    decision.poi_identity,
+                ),
+            )
+        pending_reasons = {
+            reason
+            for decision in branch_decisions
+            if decision.outcome is CandidateOutcome.VERIFICATION_REQUIRED
+            for reason in decision.reason_codes
+        }
+        if pending_reasons:
+            pending_reasons.add(CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT)
+            return _candidate_decision(
+                item=item,
+                constraints=constraints,
+                formal_city_code=None,
+                location_confirmed=False,
+                poi=None,
+                facts=CandidateFactValues(),
+                additional_reasons=pending_reasons,
+                apply_dynamic_facts=False,
+                resolved_from_any_branch=True,
+            )
+        return _candidate_decision(
+            item=item,
+            constraints=constraints,
+            formal_city_code=None,
+            location_confirmed=False,
+            poi=None,
+            facts=CandidateFactValues(),
+            additional_reasons=(CandidateReasonCode.BRANCH_NO_HARD_CONSTRAINT_MATCH,),
+            apply_dynamic_facts=False,
+            resolved_from_any_branch=True,
+        )

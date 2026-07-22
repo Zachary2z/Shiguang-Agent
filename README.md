@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。M0-2A 至 M0-2D、M0-3A 至 M0-3D、M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收。当前允许开始 M0-5B 结构化检索和规则；M0-5C 及后续阶段仍未开始。
+项目处于 **M0 技术验证**。M0-2A 至 M0-2D、M0-3A 至 M0-3D、M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收。M0-5B 结构化检索和规则已实现并处于待主控验收状态；M0-5C/D 及后续阶段仍未开始。
 
 普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。此前真实模型和高德的单次授权均不延续到 M0-5B；真实模型、高德、网页、对象存储及其他外部/付费调用默认未授权。M0-5B 只实现结构化检索、硬约束过滤、明确排除原因和规划时分店解析，不实现 M0-5C/D、SSE、Worker 或前端。
 
@@ -60,6 +60,7 @@ python -m pytest -q tests/contract/test_web_content_provider_contract.py tests/u
 python -m pytest -q tests/unit/test_image_recognition_service.py tests/unit/test_openai_compatible_provider.py tests/unit/test_text_extraction_service.py
 python -m pytest -q tests/contract/test_m0_4d_unified_input.py
 python -m pytest -q tests/unit/test_plan_constraints.py
+python -m pytest -q tests/application/test_structured_collection_retrieval.py
 ```
 
 测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
@@ -72,6 +73,16 @@ python -m pytest -q tests/unit/test_plan_constraints.py
 
 `PlanConstraints` 和 `PlanConstraintInput` 保持原生 Pydantic 契约；其原始 `ValidationError` 只属于内部实现，不得由 Application、API 或日志直接记录、返回。不可信 Python/JSON 输入必须使用 `app.domain.plans` 导出的 `parse_plan_constraint_input*` 或 `parse_plan_constraints*`，这些入口共用唯一内部捕获映射，只返回合法领域对象，失败时只抛出固定 `PlanConstraintParseError(code="INVALID_PLAN_CONSTRAINTS")`，不携带原始 input、JSON、Pydantic 消息/context/URL 或异常链。未来模型结构输出和 API 输入必须复用该边界，不得直接公开底层 Pydantic 错误。成功对象的精确 `origin` 仍不进入 repr、日志、`model_dump()` 或 `model_dump_json()`。聚焦回归入口为 `APP_ENV=test RUN_REAL_MODEL_TESTS=0 RUN_REAL_MAP_TESTS=0 python -m pytest -q tests/unit/test_plan_constraints.py`。
 
+### M0-5B 结构化收藏检索和规则
+
+`StructuredCollectionRetrievalService` 是唯一正式检索入口：它用显式 `user_id` 从既有 `CollectionRepository` 只读加载收藏，并复用 M0-5A `PlanConstraints`、既有 `PlaceTarget`、`PlaceMatchingService` 和 `MapProvider`。正式城市只来自已确认 POI 或请求级的已核验 Event 位置事实；`city_hint` 不参与计划城市判断。非 active、已删除、待选择、待补充、位置/城市未确认、已结束 Event 及违反行政区、活动范围、时间、预算、include/exclude、路线、天气或营业硬条件的条目会得到稳定原因码，不会仅降低分数。
+
+路线、天气、营业和 Event 正式位置通过冻结的 `PlanningFactSnapshot` 注入；未知、离线失败和明确冲突分别保留不同结论，不把未知价格、路线、天气或营业状态伪造成零或通过。结果只有 `included`、`excluded` 和 `verification_required` 三种稳定结论，并携带固定安全摘要。预算为 `None` 时不按已知价格过滤；价格未知仍标记待确认。
+
+`any_branch` 在本次请求中按计划城市、单一行政区/精确 origin 和路线事实调用既有地点匹配入口；不创建分店收藏、不改绑品牌收藏、不写数据库。无候选、证据不足、Provider 失败和没有满足硬约束的分店均有独立原因码。品牌收藏与精确收藏解析到同一 `provider + poi_id` 时合并为一个候选，同时保留全部 `collection_item_ids` 和任意分店来源 ID，供后续 M0-5C 解释；本阶段没有 Plan、PlanItem 或草案代码。
+
+聚焦回归入口为 `APP_ENV=test RUN_REAL_MODEL_TESTS=0 RUN_REAL_MAP_TESTS=0 python -m pytest -q tests/application/test_structured_collection_retrieval.py`。
+
 ### 数据库迁移
 
 默认数据库是 `backend/data/shiguang.db`，目录和数据库文件均被 Git 忽略。从 `backend` 目录运行：
@@ -82,7 +93,7 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前 HEAD revision 是 `20260722_0006`。M0-4D 与 M0-5A 均未新增迁移；现有 Message、Source、AgentRun/ToolRun、收藏、地点目标和幂等表继续作为后续检索的唯一数据来源。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+当前 HEAD revision 是 `20260722_0006`。M0-4D、M0-5A 与 M0-5B 均未新增迁移；现有 Message、Source、AgentRun/ToolRun、收藏、地点目标和幂等表继续作为检索的唯一持久数据来源。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
 
 ### 启动 API
 

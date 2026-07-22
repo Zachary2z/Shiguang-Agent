@@ -37,7 +37,12 @@ class PlaceMatchingService:
             SearchPoiRequest(
                 query=request.candidate.title,
                 city=request.city.model_copy(deep=True),
-                district=request.candidate.district,
+                district=request.search_district or request.candidate.district,
+                location=(
+                    None
+                    if request.search_location is None
+                    else request.search_location.model_copy(deep=True)
+                ),
             )
         )
         search_result = self._validated_provider_result(

@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-5B 结构化检索和规则 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-5-planning |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 无；M0-5B 前置条件已满足 |
+| 阻塞项 | 无；M0-5B 已实现，等待主控验收 |
 
 ## 当前任务
 
-M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收并集成到 `main`，计划约束契约和安全解析边界已经闭合。当前只允许开始 M0-5B 结构化检索和规则；M0-5C 草案生成、M0-5D 外部地点补充以及后续阶段仍未开始且不得提前开发。
+M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收并集成到 `main`，计划约束契约和安全解析边界已经闭合。M0-5B 结构化检索和规则已在 `codex/m0-5-planning` 实现并标记为待主控验收；M0-5C 草案生成、M0-5D 外部地点补充以及后续阶段仍未开始且不得提前开发。
 
 ## M0 状态
 
@@ -24,7 +24,7 @@ M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收并集成到 `main`，计�
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
 | M0-4 URL 与截图 | 已完成 | M0-4A、M0-4B、M0-4C、M0-4D 均已通过主控验收 |
-| M0-5 计划技术验证 | 进行中 | M0-5A 已完成；M0-5B 允许开始；M0-5C/D 未开始 |
+| M0-5 计划技术验证 | 进行中 | M0-5A 已完成；M0-5B 待主控验收；M0-5C/D 未开始 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
 状态只允许使用：未开始、进行中、待验收、已完成、阻塞。
@@ -56,7 +56,7 @@ M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收并集成到 `main`，计�
 
 ## 下一步
 
-从最新 `main` 开始 M0-5B，只实现结构化收藏检索、硬约束过滤、明确排除原因、同 POI 去重和任意分店的规划时解析。必须复用 M0-5A 的 `PlanConstraints`、既有 Collection Repository、`PlaceTarget`、MapProvider 与地点匹配结果；不得新增第二套检索/地点/分店模型，不开始 M0-5C/D，也不调用真实模型、高德、路线、天气、网页或其他外部/付费 API。
+主控从精确 `main` 基线 `78f2ae65de09d13a22e7d4cef4bbcee6b3734ab7` 复核 M0-5B 提交、唯一检索入口、规则边界、只读用户隔离、任意分店解析、同 POI 去重、测试结果和无迁移结论。验收前不得开始 M0-5C/D，也不得调用真实模型、高德、路线、天气、网页或其他外部/付费 API。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -923,3 +923,17 @@ M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收并集成到 `main`，计�
 - 独立安全探针：仓库外脚本验证合法 Python/JSON、重复解析不修改输入、连续两次重建 `PlanConstraints` 和 `PlanConstraintInput` 后安全入口仍有效，以及非法 Python、畸形 JSON、非法 UTF-8、异常 `str/repr/args/vars/to_dict`、标准 traceback 日志和 cause/context 均不泄露私人哨兵或底层 Pydantic 信息。
 - 合并后检查：在 `main` 使用项目 `.venv` 再次执行 Ruff、strict mypy、M0-5A 聚焦和非真实全集，分别为退出 0、退出 0、`57 passed`、`1318 passed / 2 deselected`。没有未关闭 P0/P1。
 - 范围、安全与下一步：未新增迁移、ORM、Repository、API、Provider、依赖、配置、前端或 M0-5B/C/D 功能；Git 不含 `.env`、数据库、缓存、虚拟环境或响应快照。未读取、打印或修改本机 `.env`，真实模型、高德、路线、天气、网页、对象存储、消息及任何外部/付费 API 调用均为 0。M0-5A 已完成，M0-5B 前置条件满足且是下一唯一允许阶段，M0-5C/D 保持未开始。
+
+#### 2026-07-23｜M0-5B 结构化检索和规则｜待主控验收
+
+- 分支与基线：`codex/m0-5-planning` 按任务要求从干净工作区切换，经 `git merge --ff-only main` 快进到精确基线 `78f2ae65de09d13a22e7d4cef4bbcee6b3734ab7`；开始时 `main` 与 `origin/main` 均精确等于该 SHA，M0-5A 已完成且 M0-5B 是唯一允许阶段。未 reset、rebase、amend、合并或拣选其他分支
+- 唯一入口与规则：新增唯一 `StructuredCollectionRetrievalService`，显式 `user_id` 调用既有 `CollectionRepository.list_collection_items(include_inactive=True)`，复用 M0-5A `PlanConstraints`、既有 `PlaceTarget`、`PlaceMatchingService` 与 `MapProvider`。规则集中判断 active/删除/待选择/待补充、正式城市、位置、Place/Event、Event 时间、行政区、活动范围、标签/关键词、include/exclude、预算、路线、天气与营业；硬冲突直接排除，未知和离线失败进入待核验，预算为 null 不过滤已知价格，未知价格保持 `None` 与 `PRICE_UNKNOWN`
+- 正式城市与动态事实：精确 Place 的正式城市只来自已确认 POI；Event 通过请求级 `CollectionPlanningFacts.formal_city: CityScope` 携带已核验正式城市和位置状态；`city_hint` 不参与计划资格。冻结的 `PlanningFactSnapshot` 为路线、天气、营业和 Event 位置提供供应商无关事实，缺失默认 unknown，不读取环境或调用外部服务
+- 任意分店与去重：`any_branch` 只在本次请求按 `PlanConstraints.city_scope`、单一行政区、敏感 origin 和路线事实调用既有地点匹配入口；不创建分店收藏、不改绑品牌收藏、不写数据库。无候选、证据不足、Provider 失败和没有满足已知硬约束的分店均有稳定原因。品牌与精确收藏解析到同一 `provider + poi_id` 时合并为一个候选，保留全部来源收藏 ID 和任意分店来源 ID
+- 结果与安全：公开结果只有 `included / excluded / verification_required` 三种结论；原因码按固定枚举顺序输出并映射固定安全摘要。Repository 异常和防御性跨用户返回统一映射为无 cause/context 的 `COLLECTION_RETRIEVAL_FAILED`；结果不包含精确 origin、密钥、完整 Provider 响应或其他用户数据。输入契约、事实快照、Repository 返回和原收藏均不被修改，重复调用结果一致
+- 主要文件：`backend/app/domain/plans/retrieval.py`、`backend/app/application/structured_collection_retrieval.py`、既有 `place_matching.py` 的请求级范围扩展、`backend/tests/application/test_structured_collection_retrieval.py`、`README.md`、`docs/DEV_STATUS.md`。另增加 `backend/tests/__init__.py`，防止第三方顶层 `tests` 包遮蔽 Core 测试；不改变产品行为
+- 测试环境与结果：macOS、项目 `.venv`、Python 3.13.5；所有 pytest 使用 `APP_ENV=test RUN_REAL_MODEL_TESTS=0 RUN_REAL_MAP_TESTS=0`。editable 安装、`pip check`、Ruff、strict mypy（89 个源文件）均退出 0；M0-5A `57 passed`、M0-5B 聚焦 `24 passed`、Core `118 passed`、迁移 `21 passed`、非真实全集 `1342 passed / 2 deselected`、默认全集 `1342 passed / 2 skipped`，全部退出 0 且无 warning
+- 覆盖范围：当前/其他用户隔离、深圳/其他城市/城市待确认与 city_hint、active/inactive/deleted/pending 状态、Place/有效与结束 Event、时间边界、district/area/origin、标签/关键词/include/exclude、预算 null/超限/未知、路线可达/不可达/未知/离线失败、天气适配/冲突/未知/失败、营业可用/冲突/未知、任意分店成功/空结果/证据不足/Provider 失败/无硬约束候选、同 POI 去重、输入与数据库不变、重复调用确定性、网络封锁和安全错误
+- 迁移、依赖与范围：未新增或修改 ORM、表、迁移、依赖、配置、API、前端、SSE、Worker、队列、AgentRunner、ToolRegistry、Collection Repository、PlaceTarget、MapProvider 或地点匹配算法；Alembic 唯一 head 保持 `20260722_0006`。没有 Plan、PlanItem、草案、主/备方案、时间组合、交通缓冲、结束留白、外部高德补充、Approval、Prompt、Tool Calling、向量/Embedding、自动重试/退避/断路器或 M0-5C/D 代码
+- 真实调用与风险：未读取、打印或修改本机 `.env`；真实模型、高德、路线、天气、网页、DNS、对象存储、消息及其他外部/付费 API 调用均为 0。当前验证限于 SQLite、Fake/Stub/Fixture 和请求级动态事实；真实路线/天气事实采集与完整 Provider 延迟不属于本阶段且未验证
+- 主控复测重点：确认 Event 正式城市来自显式已核验事实而非 city_hint；所有 included 候选已知硬约束均满足；unknown 不会变成 included；任意分店只做请求级解析且同 POI 来源合并；Repository 实际只读且用户隔离；稳定原因/摘要无敏感泄漏；净复杂度没有第二套规则或测试特例。验收前 M0-5B 保持待验收，M0-5C/D 未开始，不合并 main、不推送

@@ -15,6 +15,19 @@ from app.domain.plans.contracts import (
     parse_plan_constraints_json,
     resolve_plan_constraints,
 )
+from app.domain.plans.retrieval import (
+    AvailabilityAssessment,
+    CandidateFactValues,
+    CandidateOutcome,
+    CandidateReasonCode,
+    CollectionCandidateDecision,
+    CollectionPlanningFacts,
+    PlanningFactSnapshot,
+    PoiPlanningFacts,
+    RouteAssessment,
+    StructuredCollectionResult,
+    WeatherAssessment,
+)
 
 __all__ = [
     "ActivityArea",
@@ -30,4 +43,15 @@ __all__ = [
     "parse_plan_constraints",
     "parse_plan_constraints_json",
     "resolve_plan_constraints",
+    "AvailabilityAssessment",
+    "CandidateFactValues",
+    "CandidateOutcome",
+    "CandidateReasonCode",
+    "CollectionCandidateDecision",
+    "CollectionPlanningFacts",
+    "PlanningFactSnapshot",
+    "PoiPlanningFacts",
+    "RouteAssessment",
+    "StructuredCollectionResult",
+    "WeatherAssessment",
 ]
