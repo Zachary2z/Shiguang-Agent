@@ -11,6 +11,8 @@ from app.application.demo_sessions import DEMO_USER_ID
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.text_collection_workflow import IdempotencyLockRegistry
 from app.config import Settings
+from app.providers.storage import StorageProvider
+from app.providers.web import WebContentProvider
 from nanobot_core.providers import ModelProvider
 
 
@@ -33,6 +35,16 @@ def get_text_provider(request: Request) -> ModelProvider:
     provider: ModelProvider | None = request.app.state.text_provider
     if provider is None:
         raise ProviderNotConfiguredError
+    return provider
+
+
+def get_web_provider(request: Request) -> WebContentProvider | None:
+    provider: WebContentProvider | None = request.app.state.web_provider
+    return provider
+
+
+def get_storage_provider(request: Request) -> StorageProvider | None:
+    provider: StorageProvider | None = request.app.state.storage_provider
     return provider
 
 

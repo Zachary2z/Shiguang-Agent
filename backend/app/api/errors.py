@@ -105,14 +105,15 @@ async def _provider_error(request: Request, exc: Exception) -> JSONResponse:
     return _error(
         502,
         exc.error_code,
-        "The text provider could not complete the request.",
+        "The input provider could not complete the request.",
         trace_id=exc.trace_id,
+        recovery_actions=("retry_later", "supply_text"),
     )
 
 
 async def _provider_not_configured(request: Request, exc: Exception) -> JSONResponse:
     del request, exc
-    return _error(503, "PROVIDER_NOT_CONFIGURED", "Text collection is unavailable.")
+    return _error(503, "PROVIDER_NOT_CONFIGURED", "Collection input is unavailable.")
 
 
 async def _workflow_timeout(request: Request, exc: Exception) -> JSONResponse:
@@ -121,8 +122,9 @@ async def _workflow_timeout(request: Request, exc: Exception) -> JSONResponse:
     return _error(
         504,
         "RUN_TIMEOUT",
-        "The text collection request timed out.",
+        "The collection input request timed out.",
         trace_id=exc.trace_id,
+        recovery_actions=("retry_later",),
     )
 
 
@@ -132,8 +134,13 @@ async def _workflow_error(request: Request, exc: Exception) -> JSONResponse:
     return _error(
         500,
         exc.error_code,
-        "The text collection request failed.",
+        "The collection input request failed.",
         trace_id=exc.trace_id,
+        recovery_actions=(
+            ("reupload_image", "supply_text")
+            if exc.error_code.startswith(("IMAGE_", "STORAGE_"))
+            else ("retry_later",)
+        ),
     )
 
 
@@ -144,10 +151,13 @@ def _error(
     *,
     trace_id: str | None = None,
     issues: tuple[dict[str, str], ...] = (),
+    recovery_actions: tuple[str, ...] = (),
 ) -> JSONResponse:
     content: dict[str, object] = {"error_code": error_code, "message": message}
     if trace_id is not None:
         content["trace_id"] = trace_id
     if issues:
         content["issues"] = issues
+    if recovery_actions:
+        content["recovery_actions"] = recovery_actions
     return JSONResponse(status_code=status_code, content=content)

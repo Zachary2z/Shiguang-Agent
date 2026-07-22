@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+import json
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, Path, Query
+from fastapi import APIRouter, Body, Depends, Path, Query, Request
+from fastapi.exceptions import RequestValidationError
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import (
@@ -13,7 +16,9 @@ from app.api.dependencies import (
     get_db_session,
     get_idempotency_locks,
     get_pricing,
+    get_storage_provider,
     get_text_provider,
+    get_web_provider,
 )
 from app.api.errors import UndoNotAvailableError
 from app.application.collection_queries import (
@@ -23,18 +28,22 @@ from app.application.collection_queries import (
 )
 from app.application.collection_writes import CollectionWriteService
 from app.application.demo_sessions import DemoSessionService
+from app.application.input_contracts import ImageInput, TextInput, UrlInput
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.run_tracking import AgentRunService
 from app.application.text_collection_workflow import (
     IdempotencyLockRegistry,
     TextCollectionWorkflow,
 )
+from app.config import Settings
 from app.domain.collections import (
     CollectionKind,
     CollectionStatus,
     ResourceNotFoundError,
     UndoOutcome,
 )
+from app.providers.storage import StorageProvider
+from app.providers.web import WebContentProvider
 from app.schemas.api import (
     AgentRunResponse,
     CollectionDetailResponse,
@@ -44,6 +53,7 @@ from app.schemas.api import (
     DemoSessionCreateRequest,
     DemoSessionResponse,
     ExtractionSummaryResponse,
+    JsonMessageCreateRequest,
     MessageCreateRequest,
     MessageCreateResponse,
     PublicModelCallResponse,
@@ -66,6 +76,62 @@ TextProvider = Annotated[ModelProvider, Depends(get_text_provider)]
 Pricing = Annotated[ConfiguredPricingPolicy, Depends(get_pricing)]
 Locks = Annotated[IdempotencyLockRegistry, Depends(get_idempotency_locks)]
 AgentTimeout = Annotated[float, Depends(get_agent_timeout_seconds)]
+WebProvider = Annotated[WebContentProvider | None, Depends(get_web_provider)]
+PrivateStorage = Annotated[StorageProvider | None, Depends(get_storage_provider)]
+
+_JSON_MESSAGE_ADAPTER: TypeAdapter[JsonMessageCreateRequest] = TypeAdapter(
+    JsonMessageCreateRequest
+)
+_MAX_JSON_MESSAGE_BYTES = 24_000
+_IDEMPOTENCY_SCHEMA = {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 128,
+    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+}
+_MESSAGE_REQUEST_BODY = {
+    "required": True,
+    "content": {
+        "application/json": {
+            "schema": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["idempotency_key", "content"],
+                        "properties": {
+                            "idempotency_key": _IDEMPOTENCY_SCHEMA,
+                            "content": {"type": "string", "minLength": 1, "maxLength": 20000},
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["type", "idempotency_key", "text"],
+                        "properties": {
+                            "type": {"const": "text"},
+                            "idempotency_key": _IDEMPOTENCY_SCHEMA,
+                            "text": {"type": "string", "minLength": 1, "maxLength": 20000},
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["type", "idempotency_key", "url"],
+                        "properties": {
+                            "type": {"const": "url"},
+                            "idempotency_key": _IDEMPOTENCY_SCHEMA,
+                            "url": {"type": "string", "minLength": 1, "maxLength": 2048},
+                        },
+                    },
+                ]
+            }
+        },
+        "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
+        "image/png": {"schema": {"type": "string", "format": "binary"}},
+        "image/webp": {"schema": {"type": "string", "format": "binary"}},
+    },
+}
 
 
 @api_router.post(
@@ -90,28 +156,47 @@ async def create_demo_session(
 @api_router.post(
     "/sessions/{session_id}/messages",
     response_model=MessageCreateResponse,
+    openapi_extra={
+        "requestBody": _MESSAGE_REQUEST_BODY,
+        "parameters": [
+            {
+                "name": "Idempotency-Key",
+                "in": "header",
+                "required": False,
+                "description": "Required for raw image requests; JSON carries the key in-body.",
+                "schema": _IDEMPOTENCY_SCHEMA,
+            }
+        ],
+    },
 )
 async def create_message(
     session_id: Annotated[str, Path(pattern=_SESSION_PATH)],
-    request: MessageCreateRequest,
+    request: Request,
     session: DbSession,
     user_id: CurrentUserId,
     provider: TextProvider,
+    web_provider: WebProvider,
+    storage: PrivateStorage,
     pricing: Pricing,
     locks: Locks,
     timeout_seconds: AgentTimeout,
 ) -> MessageCreateResponse:
+    idempotency_key, collection_input = await _parse_collection_input(request)
+    settings: Settings = request.app.state.settings
     result = await TextCollectionWorkflow(
         session=session,
         provider=provider,
         pricing=pricing,
         locks=locks,
         timeout_seconds=timeout_seconds,
-    ).submit(
+        web_provider=web_provider,
+        storage=storage,
+        storage_config=settings.storage_provider_settings(),
+    ).submit_input(
         user_id=user_id,
         session_id=session_id,
-        idempotency_key=request.idempotency_key,
-        text=request.content,
+        idempotency_key=idempotency_key,
+        input=collection_input,
     )
     extraction = result.extraction_result
     saved = result.auto_save_result
@@ -121,6 +206,7 @@ async def create_message(
     return MessageCreateResponse(
         message_id=result.message.id,
         trace_id=result.trace_id,
+        input_type=result.message.content_type,
         run_status=result.run_status,
         extraction=(
             None
@@ -138,9 +224,85 @@ async def create_message(
             if saved is None
             else tuple(CollectionItemResponse.from_domain(item) for item in saved.items)
         ),
+        source_id=None if result.source is None else result.source.id,
+        source_type=None if result.source is None else result.source.type,
+        source_parse_status=(
+            None if result.source is None else result.source.parse_status
+        ),
+        recovery_actions=result.recovery_actions,
+        error_code=result.error_code,
         undo_token=plaintext_token,
         undo_expires_at=None if saved is None else saved.undo_expires_at,
         replayed=result.replayed,
+    )
+
+
+async def _parse_collection_input(
+    request: Request,
+) -> tuple[str, TextInput | UrlInput | ImageInput]:
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type == "application/json":
+        raw = await _read_limited_body(request, limit=_MAX_JSON_MESSAGE_BYTES)
+        try:
+            decoded: Any = json.loads(raw)
+            if isinstance(decoded, dict) and set(decoded) <= {"idempotency_key", "content"}:
+                legacy = MessageCreateRequest.model_validate(decoded)
+                return legacy.idempotency_key, TextInput(text=legacy.content)
+            parsed = _JSON_MESSAGE_ADAPTER.validate_python(decoded)
+            if parsed.type == "text":
+                return parsed.idempotency_key, TextInput(text=parsed.text)
+            return parsed.idempotency_key, UrlInput(url=parsed.url)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, TypeError):
+            raise _safe_request_validation_error() from None
+
+    if media_type in {"image/jpeg", "image/png", "image/webp"}:
+        key = request.headers.get("idempotency-key", "")
+        try:
+            validated_key = MessageCreateRequest(
+                idempotency_key=key,
+                content="image",
+            ).idempotency_key
+            settings: Settings = request.app.state.settings
+            payload = await _read_limited_body(
+                request,
+                limit=settings.storage_max_file_size_bytes,
+            )
+            return validated_key, ImageInput.from_bytes(payload, content_type=media_type)
+        except ValidationError:
+            raise _safe_request_validation_error() from None
+
+    raise _safe_request_validation_error()
+
+
+async def _read_limited_body(request: Request, *, limit: int) -> bytes:
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > limit:
+                raise _safe_request_validation_error()
+        except ValueError:
+            raise _safe_request_validation_error() from None
+    payload = bytearray()
+    async for chunk in request.stream():
+        if len(payload) + len(chunk) > limit:
+            raise _safe_request_validation_error()
+        payload.extend(chunk)
+    if not payload:
+        raise _safe_request_validation_error()
+    return bytes(payload)
+
+
+def _safe_request_validation_error() -> RequestValidationError:
+    return RequestValidationError(
+        [
+            {
+                "type": "value_error",
+                "loc": ("body",),
+                "msg": "Invalid collection input.",
+                "input": None,
+                "ctx": {"error": "invalid collection input"},
+            }
+        ]
     )
 
 

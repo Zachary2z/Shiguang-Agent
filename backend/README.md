@@ -385,3 +385,45 @@ Offline focus suite:
 ```bash
 python -m pytest -q tests/unit/test_image_recognition_service.py tests/unit/test_openai_compatible_provider.py tests/unit/test_text_extraction_service.py
 ```
+
+## M0-4D unified input pipeline
+
+The existing `TextCollectionWorkflow` is now the sole collection-input orchestrator. Frozen,
+strict `TextInput`, `UrlInput`, and `ImageInput` contracts all create the user Message and one
+AgentRun, build one existing Source, reuse the existing extraction result, and delegate every
+candidate write and state mapping to `CollectionWriteService`. The legacy text JSON body remains
+accepted. New text/URL JSON uses an explicit discriminator; JPEG/PNG/WebP is sent as a bounded raw
+body with `Idempotency-Key`, never as Base64 and never as a client-visible `file_key` or path.
+
+URL processing invokes the existing `WebContentProvider` exactly once. A safe successful page is
+bounded to the text extractor limit and sent to `TextExtractionService`; a fetch, SSRF, redirect,
+size, or readability failure stores a failed URL Source, makes zero model calls, finalizes the Run
+as `partially_succeeded`, and returns `supply_text` plus `send_screenshot`. Original and final URL,
+fetch time, status, redirects, media type, size, and truncation stay in the allowlisted Source
+representation; raw HTML, body, headers, cookies, and exceptions do not.
+
+Image processing fingerprints immutable bytes with SHA-256 before side effects, invokes the
+existing `ImageRecognitionService` exactly once, and persists only its opaque private key plus
+MIME, byte count, and digest. The existing 30-day original-image policy remains authoritative.
+After recognition, a collection/database failure, timeout, or cancellation deletes only that
+newly created object; a replay never deletes or stores it again. Uncertain screenshot fields
+continue through the shared extraction contracts and are never promoted to confirmed location or
+price fields.
+
+The application-run observer was minimally extended to record these actual web/image steps as
+ToolRuns using fixed structural summaries and SHA-256 argument fingerprints. Model responses
+continue through the existing safe model-call summary. URL and image workflows cap the outer
+AgentRun budget at 20 seconds even when the general Agent limit is higher.
+
+Message, Source, and trace identifiers include user, Session, and key. Same-Session retries are
+serialized and replayed; normalized-equivalent URLs and identical image bytes reuse the first
+result; changed type, text, URL, or image digest conflicts. A shared external key in another
+Session is isolated and uses the existing write-operation table without linking the requests. No
+new table, Alembic revision, dependency, environment variable, Runner, Provider, Repository,
+state machine, or response DTO was added; the migration head remains `20260722_0006`.
+
+Offline focus suite:
+
+```bash
+python -m pytest -q tests/contract/test_m0_4d_unified_input.py
+```

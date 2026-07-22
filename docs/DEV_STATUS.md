@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-4D 统一输入流水线 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-4d-unified-input |
 | 最近更新 | 2026-07-22 |
 | 阻塞项 | 无；M0-4D 前置条件已满足 |
 
 ## 当前任务
 
-M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4C 已完成私有截图接收、Pillow 安全验证、现有 ModelProvider 多模态抽取、统一候选映射、供应商载荷约束、失败清理和存储前异常脱敏。当前唯一允许开始的阶段为 M0-4D 统一输入流水线；M0-5 仍未开始且不允许提前开发。
+M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4D 已在 `codex/m0-4d-unified-input` 完成统一文字、URL、图片到现有 Message、Source、AgentRun/ToolRun、ExtractionResult 和 CollectionWriteService 的离线实现，当前等待主控独立验收。M0-5 仍未开始且不允许提前开发。
 
 ## M0 状态
 
@@ -23,7 +23,7 @@ M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4C 已�
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
-| M0-4 URL 与截图 | 进行中 | M0-4A、M0-4B、M0-4C 已完成；M0-4D 未开始 |
+| M0-4 URL 与截图 | 进行中 | M0-4A、M0-4B、M0-4C 已完成；M0-4D 待验收 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
@@ -55,7 +55,7 @@ M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4C 已�
 
 ## 下一步
 
-从本次状态提交后的最新 `main` 创建 `codex/m0-4d-unified-input`，只实现 TextInput、UrlInput、ImageInput 到现有 Source、Collection 状态、AgentRun/ToolRun 和幂等收藏流程的统一编排。必须复用 M0-2、M0-4A、M0-4B、M0-4C 的唯一服务与契约，不得提前实现 M0-5、前端、Worker、自动外部检索或未经授权的真实调用。
+主控窗口从指定基线独立复核 `codex/m0-4d-unified-input` 的范围、统一实现、幂等、20 秒预算、失败清理、脱敏和全部离线测试；验收通过后再决定是否集成。开发窗口停止在 M0-4D，不合并 `main`、不推送、不开始 M0-5，也不执行未经授权的真实调用。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -822,3 +822,21 @@ M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4C 已�
 - 合并后验证：在合并后的 `main` 使用 Python 3.13.5 重新安装 editable 包；`pip check`、Ruff、84 文件 mypy、139 项聚焦测试和正式非真实全集 `1242 passed / 2 deselected` 再次通过。合并没有冲突，代码树没有额外变化。
 - 真实调用与剩余验证：本轮未读取 `.env`，真实视觉、百炼、高德、网页、DNS、对象存储、消息和其他外部/付费调用均为 0。真实截图内容识别质量、P50/P95、成本与超时校准按既定要求留到 M0-Gate，在对应当前任务中逐项取得授权后执行，不阻塞 M0-4C 完成。
 - 验收结论与下一步：没有未关闭的 P0/P1；M0-4C 已完成，M0-4D 前置条件已满足。下一阶段只统一三种输入与现有 Source、Collection 状态、AgentRun/ToolRun 和幂等流程，不复制 M0-2/M0-4 服务，不提前实现 M0-5 或真实外部调用。
+
+#### 2026-07-22｜M0-4D 统一输入流水线｜待主控验收
+
+- 分支与基线：`codex/m0-4d-unified-input` 从指定 `main` 基线 `c6d8ac570983c5bd9fd6d73e672030ba65644b7b` 创建；开始时 `HEAD`、`main`、`origin/main` 均精确等于该 SHA，工作区干净，M0-4A/B/C 已完成，M0-4D 是唯一允许阶段。开始门禁确认 Source、CollectionWriteService、TextCollectionWorkflow、AgentRunService、WebContentProvider、ImageRecognitionService、TextExtractionService 各只有一套正式实现
+- 统一契约与编排：新增严格冻结、互斥的 `TextInput`、`UrlInput`、`ImageInput`；现有 `TextCollectionWorkflow` 原位演进为唯一三类输入流水线，兼容原 M0-2D 文字 `submit()` 和 JSON API。三类输入统一创建用户 Message、AgentRun、Source，复用唯一 TextExtractionService/ExtractionResult、CollectionWriteService、Repository、收藏状态映射和 Undo；没有新增第二套 Runner、Registry、Provider、Source、CollectionItem、工作流或响应 DTO
+- URL：扩展现有消息路由接收判别 URL JSON；单次只调用一次现有 WebContentProvider，成功时只把最多 20,000 字符的有界清理正文交给 TextExtractionService；Source 保存首次原始 URL、最终 URL、解析状态、抓取时间、允许的 HTTP/MIME/大小/重定向/截断元数据。读取、SSRF、重定向、大小或可读性失败时模型调用为 0，保存 failed Source，AgentRun 终结为 `partially_succeeded`，固定返回补充文字或截图；不自动重试或空转
+- 图片：消息路由接收带 `Idempotency-Key` 的有界 JPEG/PNG/WebP 原始请求体，不接收或返回 Base64、公开 file_key 或路径。输入按内容 SHA-256 指纹，只调用一次现有 ImageRecognitionService；原图继续使用唯一私有 StorageProvider 和 30 天策略，Source 只保存不透明 file_key、MIME、大小与 SHA-256。图片不确定字段继续沿现有候选 uncertainty；信息不足不创建收藏并返回补充文字/重传动作
+- AgentRun、ToolRun 与预算：最小扩展既有应用 Run observer，使真实网页获取和图片识别步骤写入现有 ToolRun，输入/输出只保存固定结构摘要与 SHA-256 指纹；模型调用继续复用既有安全摘要、Token、费用和耗时。URL/图片外层 Run 逻辑预算固定取现有设置与 20 秒较小值；超时、外部取消、Provider 失败、业务失败和重放均终结或复用同一 AgentRun，取消原对象传播
+- 幂等与隔离：Message、Source、trace 由 `user_id + session_id + idempotency_key` 稳定派生；同用户同 key 在统一锁中串行，同 Session 顺序/并发重放不重复消息、来源、收藏、Run、网页、模型或文件。URL 使用安全规范化值比较，图片使用内容摘要而非文件名；同 key 不同类型/正文/URL/图片摘要稳定 409。不同用户沿既有 Repository 强制隔离，不同 Session 的相同外部 key 生成独立 ID、trace 和写入作用域，不会错误串联
+- 生命周期与失败：ImageRecognitionService 内部失败继续只清理自己的新文件；识别已返回后若收藏/数据库写入失败、超时或取消，统一工作流再删除本次新文件，重放不重新存储也不删除既有对象。URL 失败保留可恢复 Source；数据库 Integrity/SQLAlchemy 异常对外收敛为固定码。新增覆盖非法图片、信息不足、结构修复既有回归、Provider/存储错误既有回归、URL 总超时、取消、数据库回滚和文件清理；清理失败使用固定 `IMAGE_CLEANUP_FAILED`
+- 安全：Source 的 URL 与 file_key、输入 URL、图片 payload、消息正文继续 `repr=False`；API/Run/Tool 摘要不包含 URL query、网页正文、图片、Base64、Prompt、模型响应、Cookie、Authorization、密钥、私有路径或原异常文本。请求日志仍只记录方法和 path；URL query 在 JSON body 中，不进入普通日志。数据库安全测试确认原始网页标记和图片字节不落库；图片 API 响应不公开 file_key
+- API：原 `/api/v1/sessions/{session_id}/messages` 是唯一入口；保留 `{"idempotency_key","content"}` 文字兼容，新增 `text`/`url` 判别 JSON 与三类 raw image media type。统一响应增加输入类型、Source 安全摘要、恢复动作与稳定错误码；OpenAPI 明确 JSON 与 binary 请求体，不新增平行业务路由、SSE、Worker、队列或前端
+- 迁移、依赖与配置：没有新增 Alembic revision、依赖或配置；head 仍为 `20260722_0006`。现有 Source 列与受限 JSON 元数据足以表达原始/最终 URL、失败码、抓取/HTTP 信息及图片 MIME/大小/摘要；现有 Message、AgentRun/ToolRun 和幂等表可直接复用，因此无需创建 `0007`、重复索引或第二套表
+- 主要文件：`backend/app/application/input_contracts.py`、`text_collection_workflow.py`、`run_tracking.py`、`backend/app/api/{router,dependencies,errors}.py`、`backend/app/domain/collections/entities.py`、`backend/app/schemas/api.py`、`backend/app/main.py`、`backend/tests/contract/test_m0_4d_unified_input.py`、两份 README 与本状态文档
+- 基线环境：macOS、仓库受忽略 `.venv`、Python 3.13.5。首次按附件原样使用系统 Anaconda Python 安装、pip check 与 Ruff 通过，但其旧 mypy/SQLAlchemy typing 组合复现状态文档已记录的 4 个既有 `redundant-cast`；尚未执行测试链即切换到项目 `.venv` 并从安装命令完整重跑。未为环境假阳性修改生产代码或放宽检查
+- 验证结果：项目 `.venv` 的 editable 安装、`pip check`、Ruff 与 strict mypy（85 个源文件）均退出 0；core `118 passed`，迁移 `21 passed`，M0-4D 新增契约 `10 passed`，完整非真实 `1252 passed / 2 deselected`，默认全集 `1252 passed / 2 skipped`。仓库外 pytest 插件封锁 socket connect/connect_ex/create_connection 与 DNS getaddrinfo 后，完整非真实再次 `1252 passed / 2 deselected`
+- 真实调用、范围与风险：未读取、打印或修改本机 `.env`，未设置真实 marker，真实模型、高德、网页、DNS、对象存储、消息及任何外部/付费调用均为 0。没有 M0-5 计划/路线/天气/评分、真实外部地点补充、前端、SSE、Worker、Redis、Celery、COS、OCR SDK、浏览器自动化、自动重试/退避/熔断或后台任务。当前验证限于 macOS/Python 3.13.5、SQLite、Fake/Stub/Fixture；多进程跨进程锁与真实链路延迟留待后续对应阶段，当前无已知未关闭 P0/P1
+- 下一步：主控在独立干净 Python 3.11+ 环境复核提交范围和完整离线命令，重点复核三类统一状态映射、URL 零额外请求、图片零重复存储/失败清理、成功/失败/取消/超时重放、跨用户/Session 隔离、Source 元数据、20 秒预算、ToolRun 真实性、API/OpenAPI 脱敏、无迁移依据、唯一实现和反向依赖；通过前本分支不合并、不推送、不进入 M0-5

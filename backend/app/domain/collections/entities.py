@@ -95,6 +95,14 @@ class SourceMetadata(DomainModel):
     byte_size: int | None = Field(default=None, ge=0, le=20_000_000)
     content_sha256: str | None = None
     http_status: int | None = Field(default=None, ge=100, le=599)
+    final_url: str | None = Field(default=None, max_length=2048, repr=False)
+    failure_code: str | None = Field(
+        default=None,
+        max_length=64,
+        pattern=r"^[A-Z][A-Z0-9_]{1,63}$",
+    )
+    redirect_count: int | None = Field(default=None, ge=0, le=5)
+    text_truncated: bool | None = None
 
     @field_validator("media_type")
     @classmethod
@@ -108,6 +116,21 @@ class SourceMetadata(DomainModel):
     def validate_hash(cls, value: str | None) -> str | None:
         if value is not None and _SHA256.fullmatch(value) is None:
             raise ValueError("content_sha256 must be 64 lowercase hexadecimal characters")
+        return value
+
+    @field_validator("final_url")
+    @classmethod
+    def validate_final_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parts = urlsplit(value)
+        if (
+            parts.scheme not in {"http", "https"}
+            or not parts.hostname
+            or parts.username is not None
+            or parts.password is not None
+        ):
+            raise ValueError("final_url must be an HTTP(S) URL without credentials")
         return value
 
 
@@ -208,8 +231,8 @@ class Source(DomainModel):
     id: str = Field(default_factory=generate_source_id)
     user_id: str
     type: SourceType
-    url: str | None = Field(default=None, max_length=2048)
-    file_key: str | None = Field(default=None, max_length=128)
+    url: str | None = Field(default=None, max_length=2048, repr=False)
+    file_key: str | None = Field(default=None, max_length=128, repr=False)
     platform: str | None = Field(default=None, max_length=64)
     parse_status: SourceParseStatus = SourceParseStatus.PENDING
     fetched_at: datetime | None = None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
@@ -15,6 +16,7 @@ from app.domain.collections import (
     CollectionStatus,
     ExtractionOutcome,
     ExtractionReasonCode,
+    MessageContentType,
     Source,
     SourceParseStatus,
     SourceType,
@@ -56,6 +58,39 @@ class MessageCreateRequest(ApiModel):
         if not value.strip():
             raise ValueError("content cannot be blank")
         return value
+
+
+class TextMessageCreateRequest(ApiModel):
+    type: Literal["text"]
+    idempotency_key: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    )
+    text: str = Field(min_length=1, max_length=20_000, repr=False)
+
+    @field_validator("text")
+    @classmethod
+    def reject_blank_text(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("text cannot be blank")
+        return value
+
+
+class UrlMessageCreateRequest(ApiModel):
+    type: Literal["url"]
+    idempotency_key: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    )
+    url: str = Field(min_length=1, max_length=2048, repr=False)
+
+
+JsonMessageCreateRequest = Annotated[
+    TextMessageCreateRequest | UrlMessageCreateRequest,
+    Field(discriminator="type"),
+]
 
 
 class ExtractionSummaryResponse(ApiModel):
@@ -127,9 +162,15 @@ class CollectionItemResponse(ApiModel):
 class MessageCreateResponse(ApiModel):
     message_id: str
     trace_id: str
+    input_type: MessageContentType
     run_status: AgentRunStatus
     extraction: ExtractionSummaryResponse | None
     collections: tuple[CollectionItemResponse, ...]
+    source_id: str | None = None
+    source_type: SourceType | None = None
+    source_parse_status: SourceParseStatus | None = None
+    recovery_actions: tuple[str, ...] = ()
+    error_code: str | None = None
     undo_token: str | None = Field(default=None, repr=False)
     undo_expires_at: datetime | None = None
     replayed: bool
@@ -230,3 +271,4 @@ class ErrorResponse(ApiModel):
     message: str
     trace_id: str | None = None
     issues: tuple[dict[str, str], ...] = ()
+    recovery_actions: tuple[str, ...] = ()

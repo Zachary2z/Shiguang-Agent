@@ -46,11 +46,22 @@ from nanobot_core.agent import (
 from nanobot_core.providers import Message, ModelResponse, ProviderError, TokenUsage
 
 T = TypeVar("T")
+U = TypeVar("U")
 ModelResponseObserver = Callable[[ModelResponse], None]
 
 
 class ApplicationRunTimeoutError(TimeoutError):
     """A synchronous application workflow exhausted the shared run deadline."""
+
+
+class ApplicationRunFailureError(RuntimeError):
+    """A stable application failure that may safely terminate an AgentRun."""
+
+    def __init__(self, *, error_code: str) -> None:
+        if not isinstance(error_code, str) or not error_code:
+            raise ValueError("error_code must be non-empty")
+        super().__init__("application workflow failed")
+        self.error_code = error_code
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +78,93 @@ class TrackedApplicationExecution(Generic[T]):
 
     trace_id: str
     result: T
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ApplicationToolOutcome:
+    """Safe summary of one real application tool result."""
+
+    succeeded: bool
+    output_summary: str | None
+    error_code: str | None = None
+
+
+class ApplicationRunObserver:
+    """Record model calls and actual application tools in the existing run contract."""
+
+    def __init__(
+        self,
+        collector: _RunEventCollector,
+        *,
+        clock: Callable[[], float],
+    ) -> None:
+        self._collector = collector
+        self._clock = clock
+
+    def record_model_response(self, response: ModelResponse) -> None:
+        self._collector.record_model_response(response)
+
+    async def run_tool(
+        self,
+        *,
+        tool_name: str,
+        arguments_fingerprint: str,
+        input_summary: str,
+        operation: Callable[[], Awaitable[U]],
+        summarize: Callable[[U], ApplicationToolOutcome],
+    ) -> U:
+        sequence = self._collector.start_application_tool(
+            tool_name=tool_name,
+            arguments_fingerprint=arguments_fingerprint,
+            input_summary=input_summary,
+        )
+        started = self._clock()
+        try:
+            result = await operation()
+        except asyncio.CancelledError:
+            self._collector.finish_application_tool(
+                sequence=sequence,
+                status=ToolRunStatus.CANCELLED,
+                output_summary=None,
+                latency_ms=self._elapsed_ms(started),
+                error_code=RunErrorCode.CANCELLED.value,
+            )
+            raise
+        except ProviderError as exc:
+            self._collector.finish_application_tool(
+                sequence=sequence,
+                status=ToolRunStatus.FAILED,
+                output_summary=None,
+                latency_ms=self._elapsed_ms(started),
+                error_code=exc.code.value,
+            )
+            raise
+        except Exception as exc:
+            code = getattr(getattr(exc, "code", None), "value", None)
+            self._collector.finish_application_tool(
+                sequence=sequence,
+                status=ToolRunStatus.FAILED,
+                output_summary=None,
+                latency_ms=self._elapsed_ms(started),
+                error_code=(
+                    code if isinstance(code, str) else RunErrorCode.INTERNAL_ERROR.value
+                ),
+            )
+            raise
+        outcome = summarize(result)
+        self._collector.finish_application_tool(
+            sequence=sequence,
+            status=(
+                ToolRunStatus.SUCCEEDED if outcome.succeeded else ToolRunStatus.FAILED
+            ),
+            output_summary=outcome.output_summary,
+            latency_ms=self._elapsed_ms(started),
+            error_code=outcome.error_code,
+        )
+        return result
+
+    def _elapsed_ms(self, started_at: float) -> int:
+        return max(0, int((self._clock() - started_at) * 1000))
 
 
 @dataclass(slots=True, kw_only=True)
@@ -208,6 +306,47 @@ class _RunEventCollector:
                 cost_unknown_reason=estimate.unknown_reason,
             )
         )
+
+    def start_application_tool(
+        self,
+        *,
+        tool_name: str,
+        arguments_fingerprint: str,
+        input_summary: str,
+    ) -> int:
+        sequence = len(self.tools) + 1
+        event_time = self._now()
+        self.tools[sequence] = _ToolDraft(
+            sequence=sequence,
+            tool_call_id=f"application-tool-{sequence}",
+            tool_name=tool_name,
+            arguments_fingerprint=arguments_fingerprint,
+            input_summary=input_summary[:512],
+            status=ToolRunStatus.RUNNING,
+            output_summary=None,
+            latency_ms=None,
+            error_code=None,
+            started_at=event_time,
+            finished_at=None,
+            created_at=event_time,
+        )
+        return sequence
+
+    def finish_application_tool(
+        self,
+        *,
+        sequence: int,
+        status: ToolRunStatus,
+        output_summary: str | None,
+        latency_ms: int,
+        error_code: str | None,
+    ) -> None:
+        draft = self._require_tool(sequence)
+        draft.status = status
+        draft.output_summary = None if output_summary is None else output_summary[:512]
+        draft.latency_ms = max(0, latency_ms)
+        draft.error_code = error_code
+        draft.finished_at = self._now()
 
     def finalization(
         self,
@@ -460,7 +599,9 @@ class AgentRunService:
     async def execute_application(
         self,
         request: AgentRunCreate,
-        operation: Callable[[ModelResponseObserver], Awaitable[T]],
+        operation: Callable[[ApplicationRunObserver], Awaitable[T]],
+        *,
+        outcome: Callable[[T], tuple[AgentRunStatus, str | None]] | None = None,
     ) -> TrackedApplicationExecution[T]:
         """Track one synchronous application workflow without a second AgentRunner."""
 
@@ -475,10 +616,11 @@ class AgentRunService:
         trace_id = row.trace_id
 
         collector = _RunEventCollector(self._pricing, now=self._now)
+        observer = ApplicationRunObserver(collector, clock=self._clock)
         execution_started = self._clock()
         try:
             result = await asyncio.wait_for(
-                operation(collector.record_model_response),
+                operation(observer),
                 timeout=self._timeout_seconds,
             )
         except TimeoutError:
@@ -508,6 +650,15 @@ class AgentRunService:
                 duration_ms=self._elapsed_ms(execution_started),
             )
             raise
+        except ApplicationRunFailureError as exc:
+            await self._persist_final(
+                run_id,
+                collector,
+                status=AgentRunStatus.FAILED,
+                error_code=exc.error_code,
+                duration_ms=self._elapsed_ms(execution_started),
+            )
+            raise
         except Exception:
             await self._persist_final(
                 run_id,
@@ -518,11 +669,16 @@ class AgentRunService:
             )
             raise
 
+        status, error_code = (
+            (AgentRunStatus.SUCCEEDED, None)
+            if outcome is None
+            else outcome(result)
+        )
         await self._persist_final(
             run_id,
             collector,
-            status=AgentRunStatus.SUCCEEDED,
-            error_code=None,
+            status=status,
+            error_code=error_code,
             duration_ms=self._elapsed_ms(execution_started),
         )
         return TrackedApplicationExecution(trace_id=trace_id, result=result)

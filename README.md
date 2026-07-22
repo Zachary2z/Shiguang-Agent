@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。M0-2A 至 M0-2D 已全部通过主控验收，文字输入到结构化收藏、可逆写入和最小 HTTP API 的离线闭环已经完成；M0-3A 至 M0-3D 也已全部通过主控验收，MapProvider、高德适配、确定性地点匹配、统一 PlaceTarget、具体分店与“任意分店”目标现已形成完整的离线地点闭环。M0-4A 私有文件存储与 M0-4B 安全网页解析均已通过主控验收；M0-4C 截图识别已完成开发并待主控验收，当前允许阶段仍为 M0-4C。
+项目处于 **M0 技术验证**。M0-2A 至 M0-2D、M0-3A 至 M0-3D、M0-4A 至 M0-4C 均已通过主控验收。当前分支只实施 M0-4D：文字、URL 与图片进入同一个消息、Source、AgentRun/ToolRun、结构抽取和收藏写入流水线；阶段状态为待验收，M0-5 尚未开始。
 
-普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。M0-3B 已在一次单独授权下完成 5 次零重试、只读真实高德验收；该授权不延续到后续任务。M0-4A 只实现本地私有目录；M0-4B 只通过 MockTransport、Stub DNS 和固定 HTML 验证公开 HTTP(S) 获取、SSRF 防护与正文抽取，没有访问真实网页。M0-4C 只使用固定图片、Fake Provider 和 MockTransport 验证私有图片输入与多模态抽取，没有真实视觉调用；M0-4D 统一输入、计划、SSE 和前端仍未开始。
+普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。M0-3B 的单次真实高德授权不延续到本阶段。M0-4D 只使用 Fake Provider、Stub WebContentProvider、固定图片与临时私有目录；真实模型、高德、网页、对象存储及其他外部/付费调用均未授权。计划、SSE、Worker、前端和 M0-5 不在本阶段范围内。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -58,6 +58,7 @@ python -m pytest -q tests/unit/test_amap_provider.py tests/test_config.py
 python -m pytest -q tests/contract/test_storage_provider_contract.py tests/integration/test_local_private_storage.py
 python -m pytest -q tests/contract/test_web_content_provider_contract.py tests/unit/test_web_url_security.py tests/unit/test_httpx_web_content_provider.py
 python -m pytest -q tests/unit/test_image_recognition_service.py tests/unit/test_openai_compatible_provider.py tests/unit/test_text_extraction_service.py
+python -m pytest -q tests/contract/test_m0_4d_unified_input.py
 ```
 
 测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
@@ -72,7 +73,7 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前 HEAD revision 是 `20260722_0006`。`0006` 只扩展现有收藏的统一地点目标和选择幂等边界；M0-4A 复用现有 `Source.file_key`，M0-4B 只增加网页 Provider、领域契约和安全策略，M0-4C 只增加应用服务、共享抽取解析与图片安全依赖，三个子阶段都没有新增或修改数据库迁移。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+当前 HEAD revision 是 `20260722_0006`。M0-4D 没有新增迁移：现有 `sources` 已有原始 URL、私有 `file_key`、解析状态、抓取时间和受限 JSON 元数据，足以保存最终 URL、网页失败码、MIME、大小及 SHA-256；现有 Message、AgentRun/ToolRun 与收藏幂等表也可直接复用。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
 
 ### 启动 API
 
@@ -156,14 +157,14 @@ Runner 在同一执行循环中保证：最多执行 8 次绝对 Tool Call；第
 接口前缀统一为 `/api/v1`，OpenAPI 由 FastAPI 在 `/openapi.json` 提供：
 
 - `POST /demo/sessions`：确保服务端固定 Demo User，并创建新的 Demo Session；请求体为空且不接受客户端 `user_id`。
-- `POST /sessions/{session_id}/messages`：同步提交纯文字与必填 `idempotency_key`，返回真实终态、`trace_id`、结构化收藏和首次创建时的一次性 Undo Token；无 Provider 注入时返回稳定的 `PROVIDER_NOT_CONFIGURED`，不会隐式构造真实 Provider。
+- `POST /sessions/{session_id}/messages`：同步提交兼容旧格式的纯文字 JSON、新的 `text`/`url` 判别 JSON，或带 `Idempotency-Key` 的有界 JPEG/PNG/WebP 原始请求体；返回统一终态、来源摘要、恢复动作、`trace_id`、结构化收藏和首次创建时的一次性 Undo Token。响应不公开 URL、`file_key`、路径或图片字节。
 - `GET /agent-runs/{trace_id}`：按服务端身份读取安全运行摘要，不返回用户 ID、Prompt、消息正文、完整模型响应、原始工具参数或参数指纹。
 - `GET /collections` 与 `GET /collections/{item_id}`：支持城市线索/城市待确认、区域、类型、状态、标签、显式 inactive、稳定排序与分页；详情只返回必要来源摘要。
 - `PATCH /collections/{item_id}`：请求体为 `{"expected_version": 1, "changes": {...}}`，`changes` 直接复用唯一 `CollectionItemPatch`。
 - `DELETE /collections/{item_id}`：可选 `expected_version` 查询参数，只执行既有逻辑删除。
 - `POST /collections/{item_id}/undo`：请求体携带 `undo_token`；服务在原子认领前先确认 Token 操作组包含路径条目。
 
-M0 使用服务端固定 Demo User；所有 Repository 调用仍显式携带该 `user_id`。消息 ID、Source ID 和 trace ID 由 `user_id + idempotency_key` 确定性派生，数据库主键与既有收藏写唯一约束共同防止顺序或并发重试产生重复数据。同键不同 Session 或不同正文返回 `409 IDEMPOTENCY_CONFLICT`。请求校验错误为 422，不存在与跨用户资源统一为 404，真实版本冲突为 409；验证错误响应只返回字段路径和错误类型，不回显正文或 Undo Token。
+M0 使用服务端固定 Demo User；所有 Repository 调用仍显式携带该 `user_id`。消息 ID、Source ID 和 trace ID 由 `user_id + session_id + idempotency_key` 确定性派生；同 Session 同 key 的顺序/并发重放复用结果，不同正文、类型或图片摘要稳定冲突，不同 Session 使用同 key 则保持隔离。请求校验错误为 422，不存在与跨用户资源统一为 404，真实版本冲突为 409；验证错误响应只返回字段路径和错误类型，不回显正文、图片或 Undo Token。
 
 M0-2D 没有新增迁移或配置变量。应用、`/healthz`、OpenAPI 和 Demo Session 在没有模型配置时仍可启动；测试通过 `create_app(..., text_provider=FakeProvider(...))` 显式注入离线 Provider。
 
@@ -241,6 +242,18 @@ python -m pytest -q tests/unit/test_image_recognition_service.py tests/unit/test
 ```
 
 当前修复前交接基线的上述精确命令为 `120 passed`；验收阻断修复后的数量以 `docs/DEV_STATUS.md` 最新交接记录为准。
+
+### M0-4D 统一输入流水线
+
+`TextCollectionWorkflow` 已原位演进为唯一输入编排，不新增平行业务入口。严格冻结的 `TextInput`、`UrlInput`、`ImageInput` 进入同一 Message、Source、AgentRun 与 `CollectionWriteService`；文字旧 JSON 请求继续兼容。URL 只调用一次现有 `WebContentProvider`，成功正文有界截断后交给唯一 `TextExtractionService`，失败不调用模型并返回补充文字/截图动作。图片 API 使用原始有界请求体而非 Base64，按内容 SHA-256 幂等，只调用一次现有 `ImageRecognitionService`，Source 只保存私有 `file_key`、MIME、大小和摘要。
+
+URL 与图片整链路使用不超过 20 秒的逻辑预算。真实网页和图片步骤通过既有 AgentRun 收集器写入实际 ToolRun，模型调用继续只保存安全摘要。相同用户、Session 与 key 的重放不会重复消息、来源、Run、网页获取、模型、收藏或文件；不同 Session 隔离。图片识别后若数据库/收藏写入失败、超时或取消，只删除本次新文件。URL 查询、网页正文、图片/Base64、Prompt、模型响应、Cookie、Authorization、私有路径和异常原文不进入公开响应、运行记录或普通日志。
+
+本阶段不新增迁移、依赖或配置。现有 Source JSON 元数据已能表达最终 URL、失败码、HTTP 状态、重定向次数、MIME、大小和 SHA-256；Alembic head 仍为 `20260722_0006`。聚焦离线验证：
+
+```bash
+python -m pytest -q tests/contract/test_m0_4d_unified_input.py
+```
 
 真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
 
