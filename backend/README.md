@@ -84,6 +84,15 @@ This authorizes one test case and at most two non-streaming Chat Completions req
 be run without explicit user approval. M0-1B has passed that separately authorized acceptance;
 M0-1C development has no authorization to repeat it.
 
+## M0-3C Place matching
+
+`app.domain.places.matching` owns the one pure scoring policy, explainable evidence contracts,
+four match outcomes, deterministic sorting, and explicit user-selection contract.
+`app.application.PlaceMatchingService` owns the one orchestration path and injects the existing
+`MapProvider`; it has no database, file, message, model, or HTTP implementation. Every call
+carries its own `CityScope`, Event candidates are rejected before search, and at most three
+GCJ-02 POIs are returned. Server thresholds come only from `Settings.place_matching_policy()`.
+
 ## M0-1C AgentRun and ToolRun
 
 `nanobot_core.agent.AgentRunner` remains the only execution loop. Its optional synchronous

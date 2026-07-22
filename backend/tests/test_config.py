@@ -444,3 +444,53 @@ def test_settings_repr_masks_model_api_key() -> None:
 
     assert secret not in rendered
     assert "**********" in rendered
+
+
+def test_place_matching_policy_comes_from_one_server_settings_entry() -> None:
+    settings = Settings(
+        _env_file=None,
+        app_env="test",
+        database_url="sqlite+aiosqlite:///:memory:",
+        place_match_unique_score=80,
+        place_match_minimum_score_gap=15,
+        place_match_candidate_score=40,
+    )
+
+    policy = settings.place_matching_policy()
+
+    assert policy.unique_match_score == 80
+    assert policy.minimum_score_gap == 15
+    assert policy.candidate_score == 40
+
+
+@pytest.mark.parametrize("value", [-1, 101, float("nan"), float("inf"), True])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "place_match_unique_score",
+        "place_match_minimum_score_gap",
+        "place_match_candidate_score",
+    ],
+)
+def test_invalid_place_matching_thresholds_are_rejected(
+    field: str,
+    value: float,
+) -> None:
+    with pytest.raises(ValidationError, match="place matching thresholds"):
+        Settings(
+            _env_file=None,
+            app_env="test",
+            database_url="sqlite+aiosqlite:///:memory:",
+            **{field: value},
+        )
+
+
+def test_candidate_threshold_cannot_exceed_unique_threshold() -> None:
+    with pytest.raises(ValidationError, match="cannot exceed"):
+        Settings(
+            _env_file=None,
+            app_env="test",
+            database_url="sqlite+aiosqlite:///:memory:",
+            place_match_unique_score=50,
+            place_match_candidate_score=50.001,
+        )

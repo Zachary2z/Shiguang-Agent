@@ -116,6 +116,9 @@ curl -i -H 'X-Request-ID: local-check-001' http://127.0.0.1:8000/healthz
 | `AMAP_TIMEOUT_SECONDS` | `5` | 单次 HTTP 尝试超时，只允许有限值 `(0, 30]` |
 | `AMAP_MAX_RETRIES` | `1` | 每个逻辑请求额外尝试次数，只允许 `0..1` |
 | `AMAP_RETRY_AFTER_MAX_SECONDS` | `1` | `Retry-After` 等待上限，只允许有限值 `[0, 5]` |
+| `PLACE_MATCH_UNIQUE_SCORE` | `75` | 唯一自动匹配的最低可解释证据分数，范围 `0..100` |
+| `PLACE_MATCH_MINIMUM_SCORE_GAP` | `12` | 第一名相对第二名的最小自动匹配分差，范围 `0..100` |
+| `PLACE_MATCH_CANDIDATE_SCORE` | `35` | 合理候选的最低分数，不得高于唯一匹配阈值 |
 | `RUN_REAL_MAP_TESTS` | `0` | 只有精确设为 `1` 且另获授权才允许真实高德测试 |
 
 `.env` 会被 Git 忽略，不要把真实密钥、Token、Cookie 或账号写入代码、示例、测试输出或提交。
@@ -188,6 +191,14 @@ RUN_REAL_MAP_TESTS=1 python -m pytest -q -m real_map_provider -rs
 ```
 
 真实入口包含 5 个逻辑 HTTP 请求（深圳搜索、广州搜索、一个详情、一条路线、一个城市天气），在 `AMAP_MAX_RETRIES=1` 时最多 10 次 HTTP 尝试；导航 URI 不增加请求。只有用户配置 Key 并对本次真实调用单独授权后才能运行。普通 `pytest` 会默认 skip；本阶段未执行该入口。
+
+### M0-3C 地点匹配评分与候选
+
+`app.domain.places.matching` 是唯一地点评分契约与纯规则归属，按固定顺序评估名称、分店、行政区、商圈、地址、地标、地铁、电话、POI 类型和安全处理后的来源上下文。每个候选保留 `provider + poi_id`、正式 `city_code`、GCJ-02 坐标、供应商原始排名、确定性结果排名、`0..100` 有限分数、置信度和结构化证据；来源全文、电话和供应商响应不进入结果。供应商排名只在分数相同时作为稳定决胜项。
+
+`PlaceMatchingService` 是唯一应用层编排入口。每次调用显式接收 `CityScope`，只把标题与可选行政区交给现有 `MapProvider` 搜索；Event 会在 Provider 调用前拒绝。搜索范围的城市证据固定为零分，只用于拒绝混城结果，因此默认搜索深圳不会成为已确认城市事实。空结果为 `not_found`，弱证据或硬冲突为 `needs_context`，多个合理候选为 `ambiguous`；只有分数、第一二名差距和无硬冲突三项同时通过才为 `matched`，输出最多 3 项。
+
+唯一服务端阈值入口是 `Settings.place_matching_policy()`，由 `PLACE_MATCH_UNIQUE_SCORE`、`PLACE_MATCH_MINIMUM_SCORE_GAP` 和 `PLACE_MATCH_CANDIDATE_SCORE` 构造并拒绝布尔、NaN、Infinity、越界及顺序非法配置。用户选择契约仅表达当前候选中的具体 POI、显式“任意分店”或“以上都不是”；M0-3C 不写数据库，不持久化 `exact / any_branch`，也不修改 CollectionItem。
 
 真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
 

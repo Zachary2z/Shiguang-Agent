@@ -8,16 +8,17 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from math import isfinite
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 from unicodedata import category
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import SecretStr, field_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
+from app.domain.places.matching import PlaceMatchingPolicy
 from nanobot_core.agent.limits import MAX_RUN_TIMEOUT_SECONDS, MAX_TOOL_CALLS_PER_RUN
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -240,6 +241,9 @@ class Settings(BaseSettings):
     amap_timeout_seconds: float = 5.0
     amap_max_retries: int = MAX_AMAP_RETRIES
     amap_retry_after_max_seconds: float = 1.0
+    place_match_unique_score: float = 75.0
+    place_match_minimum_score_gap: float = 12.0
+    place_match_candidate_score: float = 35.0
 
     @field_validator("amap_api_key", mode="before")
     @classmethod
@@ -389,6 +393,37 @@ class Settings(BaseSettings):
             validator=_validate_amap_retry_after_max_seconds,
         )
 
+    @field_validator(
+        "place_match_unique_score",
+        "place_match_minimum_score_gap",
+        "place_match_candidate_score",
+        mode="before",
+    )
+    @classmethod
+    def validate_place_match_threshold_type(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("place matching thresholds must be finite numbers from 0 to 100")
+        return value
+
+    @field_validator(
+        "place_match_unique_score",
+        "place_match_minimum_score_gap",
+        "place_match_candidate_score",
+    )
+    @classmethod
+    def validate_place_match_threshold(cls, value: float) -> float:
+        if not isfinite(value) or value < 0 or value > 100:
+            raise ValueError("place matching thresholds must be finite numbers from 0 to 100")
+        return value
+
+    @model_validator(mode="after")
+    def validate_place_match_threshold_order(self) -> Self:
+        if self.place_match_candidate_score > self.place_match_unique_score:
+            raise ValueError(
+                "PLACE_MATCH_CANDIDATE_SCORE cannot exceed PLACE_MATCH_UNIQUE_SCORE"
+            )
+        return self
+
     def require_model_provider(self) -> ModelProviderSettings:
         """Return complete real-provider settings only when explicitly requested."""
 
@@ -450,6 +485,15 @@ class Settings(BaseSettings):
             timeout_seconds=self.amap_timeout_seconds,
             max_retries=self.amap_max_retries,
             retry_after_max_seconds=self.amap_retry_after_max_seconds,
+        )
+
+    def place_matching_policy(self) -> PlaceMatchingPolicy:
+        """Build the one validated server-side place matching policy."""
+
+        return PlaceMatchingPolicy(
+            unique_match_score=self.place_match_unique_score,
+            minimum_score_gap=self.place_match_minimum_score_gap,
+            candidate_score=self.place_match_candidate_score,
         )
 
 
