@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import logging
 import socket
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import httpx
 import pytest
@@ -64,6 +66,49 @@ class ChunkedStream(httpx.AsyncByteStream):
 def test_fetch_config_enforces_hard_upper_bounds(kwargs: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         WebFetchConfig(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["max_redirects", "max_response_bytes", "max_text_characters"],
+)
+@pytest.mark.parametrize(
+    "value",
+    [1.0, 1.5, Decimal("1"), "1", True, float("nan"), float("inf")],
+)
+def test_fetch_config_integer_limits_reject_non_exact_ints(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError):
+        WebFetchConfig(**{field: value})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["connect_timeout_seconds", "read_timeout_seconds", "total_timeout_seconds"],
+)
+@pytest.mark.parametrize(
+    "value",
+    [True, Decimal("1"), "1", float("nan"), float("inf"), float("-inf")],
+)
+def test_fetch_config_timeouts_reject_non_numeric_or_non_finite_values(
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match="web timeouts must be finite positive numbers"):
+        WebFetchConfig(**{field: value})  # type: ignore[arg-type]
+
+
+def test_fetch_config_timeouts_accept_finite_ints_and_floats() -> None:
+    config = WebFetchConfig(
+        connect_timeout_seconds=1,
+        read_timeout_seconds=2.5,
+        total_timeout_seconds=3,
+    )
+    assert config.connect_timeout_seconds == 1
+    assert config.read_timeout_seconds == 2.5
+    assert config.total_timeout_seconds == 3
 
 
 async def fetch_with(
@@ -273,6 +318,52 @@ async def test_follows_safe_redirects_with_full_validation_per_hop() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("root_level", [logging.INFO, logging.DEBUG])
+async def test_http_client_logs_hide_initial_and_redirect_queries_at_all_root_levels(
+    root_level: int,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    initial_secret = "initial-query-secret"
+    redirect_secret = "redirect-query-secret"
+    body_secret = "response-body-secret"
+    seen_urls: list[str] = []
+    caplog.set_level(root_level)
+    caplog.set_level(root_level, logger="httpx")
+    caplog.set_level(root_level, logger="httpcore")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_urls.append(str(request.url))
+        if request.url.path == "/start":
+            return httpx.Response(
+                302,
+                headers={
+                    "Location": f"https://public.example/final?token={redirect_secret}"
+                },
+            )
+        return httpx.Response(503, text=body_secret)
+
+    result, _ = await fetch_with(
+        f"https://example.com/start?token={initial_secret}",
+        handler,
+        resolver=StubResolver(
+            {"example.com": (PUBLIC_V4,), "public.example": (SECOND_PUBLIC_V4,)}
+        ),
+    )
+
+    assert isinstance(result, WebFetchFailure)
+    assert result.code is WebFetchFailureCode.HTTP_STATUS
+    assert initial_secret in seen_urls[0]
+    assert redirect_secret in seen_urls[1]
+    exposed = caplog.text + repr(result) + json.dumps(result.to_public_dict())
+    for secret in (initial_secret, redirect_secret, body_secret):
+        assert secret not in exposed
+    assert getattr(result, "__context__", None) is None
+    assert getattr(result, "__cause__", None) is None
+    assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+    assert logging.getLogger("httpcore").getEffectiveLevel() >= logging.WARNING
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "location",
     [
@@ -436,6 +527,73 @@ async def test_plain_text_and_common_charsets_are_supported() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "ignored_markup",
+    [
+        "<!-- <meta charset='gb18030'> -->",
+        "<div data-charset='gb18030'>ordinary attribute</div>",
+        "<script>const fake = \"<meta charset='gb18030'>\";</script>",
+        "<section charset='gb18030'>not a meta element</section>",
+    ],
+)
+async def test_charset_discovery_ignores_comments_scripts_and_pseudo_attributes(
+    ignored_markup: str,
+) -> None:
+    html = f"<html><head>{ignored_markup}<meta charset='utf-8'></head><body>正文</body></html>"
+    result, _ = await fetch_with(
+        "https://example.com/charset",
+        lambda _: httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            content=html.encode(),
+        ),
+    )
+    assert isinstance(result, WebPageContent)
+    assert result.text == "正文"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("html", "encoding", "expected"),
+    [
+        (
+            '<html><head><META CONTENT="text/html; charset=GB18030" '
+            'HTTP-EQUIV="Content-Type"></head><body>广州正文</body></html>',
+            "gb18030",
+            "广州正文",
+        ),
+        (
+            "<html><head><meta data-order='first' CHARSET='UTF-8'></head>"
+            "<body>深圳正文</body></html>",
+            "utf-8",
+            "深圳正文",
+        ),
+        (
+            '<html><head><meta http-equiv="CONTENT-TYPE" '
+            'content="text/html; CHARSET=windows-1252"></head><body>Café</body></html>',
+            "windows-1252",
+            "Café",
+        ),
+    ],
+)
+async def test_real_meta_charset_supports_http_equiv_case_and_attribute_order(
+    html: str,
+    encoding: str,
+    expected: str,
+) -> None:
+    result, _ = await fetch_with(
+        "https://example.com/meta-charset",
+        lambda _: httpx.Response(
+            200,
+            headers={"Content-Type": "text/html"},
+            content=html.encode(encoding),
+        ),
+    )
+    assert isinstance(result, WebPageContent)
+    assert result.text == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     "content_type",
     [
         "text/html; charset=made-up",
@@ -586,6 +744,49 @@ async def test_empty_title_metadata_and_body_semantics() -> None:
 
 
 @pytest.mark.asyncio
+async def test_nested_noise_and_hidden_parent_nodes_preserve_only_visible_siblings() -> None:
+    html = """
+    <html><body>
+      <header><nav><span>nested navigation noise</span></nav></header>
+      <main>
+        <div hidden><span>hidden child</span></div>
+        <p>Visible first</p>
+        <section aria-hidden="true"><span>aria hidden child</span></section>
+        <p>Visible second</p>
+        <div style="display: none"><span>display hidden child</span></div>
+        <div style="visibility: hidden"><span>visibility hidden child</span></div>
+        <p>Visible third</p>
+      </main>
+    </body></html>
+    """
+    result, _ = await fetch_with(
+        "https://example.com/nested",
+        lambda _: html_response(html),
+    )
+    assert isinstance(result, WebPageContent)
+    assert result.text == "Visible first\nVisible second\nVisible third"
+
+
+@pytest.mark.asyncio
+async def test_page_with_only_nested_hidden_content_is_unreadable() -> None:
+    html = """
+    <html><body>
+      <header><nav><span>navigation only</span></nav></header>
+      <div hidden><span>hidden child</span></div>
+      <section aria-hidden="true"><span>aria hidden child</span></section>
+      <div style="display:none"><span>display hidden child</span></div>
+      <div style="visibility: hidden"><span>visibility hidden child</span></div>
+    </body></html>
+    """
+    result, _ = await fetch_with(
+        "https://example.com/all-hidden",
+        lambda _: html_response(html),
+    )
+    assert isinstance(result, WebFetchFailure)
+    assert result.code is WebFetchFailureCode.CONTENT_UNREADABLE
+
+
+@pytest.mark.asyncio
 async def test_text_length_is_deterministically_truncated() -> None:
     config = WebFetchConfig(max_text_characters=5)
     result, _ = await fetch_with(
@@ -692,6 +893,57 @@ async def test_environment_proxy_and_credentials_are_not_inherited(
     assert "cookie" not in serialized
     assert "proxy-user" not in serialized
     assert "proxy-secret" not in serialized
+
+
+@pytest.mark.asyncio
+async def test_response_cookies_are_never_retained_sent_or_logged_across_shared_calls(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cookie_secret = "response-cookie-secret"
+    sent_cookie_headers: list[str | None] = []
+    caplog.set_level(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger="httpx")
+    caplog.set_level(logging.DEBUG, logger="httpcore")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        sent_cookie_headers.append(request.headers.get("cookie"))
+        await asyncio.sleep(0)
+        if request.url.path == "/start":
+            return httpx.Response(
+                302,
+                headers={
+                    "Location": "/redirected",
+                    "Set-Cookie": f"session={cookie_secret}; Path=/; HttpOnly",
+                },
+            )
+        return html_response(
+            f"<main>{request.url.path}</main>",
+            headers={"Set-Cookie": f"session={cookie_secret}; Path=/; HttpOnly"},
+        )
+
+    client = create_web_http_client(transport=httpx.MockTransport(handler))
+    provider = HttpxWebContentProvider(
+        http_client=client,
+        resolver=StubResolver(),
+        clock=lambda: NOW,
+    )
+    try:
+        redirected = await provider.fetch("https://example.com/start")
+        repeated = await provider.fetch("https://example.com/repeated")
+        concurrent = await asyncio.gather(
+            provider.fetch("https://example.com/one"),
+            provider.fetch("https://example.com/two"),
+        )
+        assert isinstance(redirected, WebPageContent)
+        assert isinstance(repeated, WebPageContent)
+        assert all(isinstance(result, WebPageContent) for result in concurrent)
+        assert len(client.cookies) == 0
+    finally:
+        await provider.aclose()
+
+    assert sent_cookie_headers == [None, None, None, None, None]
+    assert cookie_secret not in caplog.text
+    assert cookie_secret not in repr(redirected)
 
 
 @pytest.mark.asyncio

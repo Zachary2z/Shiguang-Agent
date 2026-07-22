@@ -15,8 +15,8 @@ from math import isfinite
 from typing import Protocol, Self
 
 import httpx
-from bs4 import BeautifulSoup  # type: ignore[import-untyped]
-from bs4.element import Tag  # type: ignore[import-untyped]
+from bs4 import BeautifulSoup
+from bs4.element import Tag
 
 from app.domain.web import (
     WebFetchDiagnostics,
@@ -38,13 +38,14 @@ from app.domain.web.security import (
     validate_resolved_addresses,
     validate_web_url,
 )
+from app.providers.http_logging import enforce_safe_http_client_logging
 
 SUPPORTED_WEB_CONTENT_TYPES = frozenset(
     {"text/html", "application/xhtml+xml", "text/plain"}
 )
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
-_META_CHARSET = re.compile(
-    rb"<meta\s+[^>]*charset\s*=\s*[\"']?\s*([A-Za-z0-9._-]+)",
+_HTTP_EQUIV_CHARSET = re.compile(
+    r"(?:^|;)\s*charset\s*=\s*[\"']?\s*([A-Za-z0-9._-]+)",
     flags=re.IGNORECASE,
 )
 _WHITESPACE = re.compile(r"[ \t\f\v]+")
@@ -96,19 +97,19 @@ class WebFetchConfig:
             self.read_timeout_seconds,
             self.total_timeout_seconds,
         ):
-            if isinstance(value, bool) or not isfinite(value) or value <= 0:
+            if type(value) not in {int, float} or not isfinite(value) or value <= 0:
                 raise ValueError("web timeouts must be finite positive numbers")
         if self.total_timeout_seconds > 20:
             raise ValueError("web total timeout cannot exceed 20 seconds")
-        if isinstance(self.max_redirects, bool) or not 0 <= self.max_redirects <= 5:
+        if type(self.max_redirects) is not int or not 0 <= self.max_redirects <= 5:
             raise ValueError("web redirect limit must be between zero and five")
         if (
-            isinstance(self.max_response_bytes, bool)
+            type(self.max_response_bytes) is not int
             or not 1 <= self.max_response_bytes <= 2_000_000
         ):
             raise ValueError("web response limit is invalid")
         if (
-            isinstance(self.max_text_characters, bool)
+            type(self.max_text_characters) is not int
             or not 1 <= self.max_text_characters <= 50_000
         ):
             raise ValueError("web text limit is invalid")
@@ -182,6 +183,7 @@ class HttpxWebContentProvider(WebContentProvider):
     ) -> None:
         if not isinstance(http_client, httpx.AsyncClient):
             raise TypeError("http_client must be an httpx.AsyncClient")
+        enforce_safe_http_client_logging()
         self._http_client = http_client
         self._resolver = resolver
         self._config = config or WebFetchConfig()
@@ -342,12 +344,13 @@ class HttpxWebContentProvider(WebContentProvider):
             extensions=extensions,
         )
         try:
-            return await self._http_client.send(
+            response = await self._http_client.send(
                 request,
                 stream=True,
                 auth=None,
                 follow_redirects=False,
             )
+            return response
         except asyncio.CancelledError:
             raise
         except httpx.DecodingError:
@@ -358,6 +361,8 @@ class HttpxWebContentProvider(WebContentProvider):
             return WebFetchFailure.for_code(WebFetchFailureCode.CONNECTION_FAILED)
         except httpx.HTTPError:
             return WebFetchFailure.for_code(WebFetchFailureCode.CONNECTION_FAILED)
+        finally:
+            self._http_client.cookies.clear()
 
 
 def _single_header(headers: httpx.Headers, name: str) -> str | None:
@@ -482,15 +487,9 @@ def _decode_body(
 
     meta_encoding: str | None = None
     if media_type != "text/plain":
-        match = _META_CHARSET.search(body[:4096])
-        if match is not None:
-            try:
-                raw_meta = match.group(1).decode("ascii").lower()
-            except UnicodeDecodeError:
-                return WebFetchFailure.for_code(WebFetchFailureCode.RESPONSE_MALFORMED)
-            meta_encoding = _SAFE_ENCODINGS.get(raw_meta)
-            if meta_encoding is None:
-                return WebFetchFailure.for_code(WebFetchFailureCode.RESPONSE_MALFORMED)
+        meta_encoding = _meta_charset(body)
+        if meta_encoding == "":
+            return WebFetchFailure.for_code(WebFetchFailureCode.RESPONSE_MALFORMED)
 
     comparable_bom = "utf-8" if bom_encoding == "utf-8-sig" else bom_encoding
     declared = [value for value in (header_charset, comparable_bom, meta_encoding) if value]
@@ -501,6 +500,40 @@ def _decode_body(
         return body.decode(encoding, errors="strict")
     except (LookupError, UnicodeDecodeError):
         return WebFetchFailure.for_code(WebFetchFailureCode.RESPONSE_MALFORMED)
+
+
+def _meta_charset(body: bytes) -> str | None:
+    """Return one valid encoding from real meta elements; empty means malformed/conflicting."""
+
+    try:
+        soup = BeautifulSoup(body[:4096], "html.parser")
+    except Exception:
+        return ""
+    encodings: list[str] = []
+    for tag in soup.find_all("meta"):
+        if not isinstance(tag, Tag):
+            continue
+        declared = _tag_string_attribute(tag, "charset")
+        if declared is None:
+            http_equiv = _tag_string_attribute(tag, "http-equiv")
+            if http_equiv is None or http_equiv.casefold() != "content-type":
+                continue
+            content = _tag_string_attribute(tag, "content")
+            if content is None:
+                continue
+            match = _HTTP_EQUIV_CHARSET.search(content)
+            if match is None:
+                continue
+            declared = match.group(1)
+        encoding = _SAFE_ENCODINGS.get(declared.strip().casefold())
+        if encoding is None:
+            return ""
+        encodings.append(encoding)
+    if not encodings:
+        return None
+    if any(encoding != encodings[0] for encoding in encodings[1:]):
+        return ""
+    return encodings[0]
 
 
 def _extract_content(
@@ -522,18 +555,26 @@ def _extract_content(
         for tag in soup.find_all(
             ["script", "style", "nav", "header", "footer", "aside", "noscript", "template", "svg"]
         ):
-            tag.decompose()
+            if isinstance(tag, Tag) and tag.parent is not None:
+                tag.decompose()
         for tag in soup.find_all(True):
-            if _is_hidden(tag):
+            if isinstance(tag, Tag) and tag.parent is not None and _is_hidden(tag):
                 tag.decompose()
 
-        title = _limited_text(soup.title.get_text(" ", strip=True) if soup.title else "", 300) or ""
+        title_tag = soup.title
+        title = (
+            _limited_text(title_tag.get_text(" ", strip=True), 300)
+            if isinstance(title_tag, Tag)
+            else None
+        ) or ""
         metadata = _extract_metadata(soup, final_url)
-        main = soup.find("article") or soup.find("main") or soup.find(attrs={"role": "main"})
+        main = _first_content_tag(soup)
         if main is None and soup.body is None:
             for tag in soup.find_all(["head", "title", "meta", "link"]):
-                tag.decompose()
-        root = main or soup.body or soup
+                if isinstance(tag, Tag) and tag.parent is not None:
+                    tag.decompose()
+        body = soup.body
+        root = main or (body if isinstance(body, Tag) else None) or soup
         text_value = _normalize_text(root.get_text("\n", strip=True))
     except Exception:
         return WebFetchFailure.for_code(WebFetchFailureCode.RESPONSE_MALFORMED)
@@ -545,11 +586,16 @@ def _extract_content(
 
 def _extract_metadata(soup: BeautifulSoup, final_url: str) -> WebPageMetadata:
     canonical: str | None = None
-    canonical_tag = soup.find("link", rel=lambda value: value and "canonical" in value)
-    if isinstance(canonical_tag, Tag):
-        href = canonical_tag.get("href")
-        if isinstance(href, str):
+    for link in soup.find_all("link"):
+        if not isinstance(link, Tag):
+            continue
+        rel = link.get_attribute_list("rel")
+        if not any(isinstance(value, str) and value.casefold() == "canonical" for value in rel):
+            continue
+        href = _tag_string_attribute(link, "href")
+        if href is not None:
             canonical = safe_canonical_url(final_url, href)
+        break
     return WebPageMetadata(
         description=_meta_content(soup, name="description", limit=1000),
         canonical_url=canonical,
@@ -570,12 +616,34 @@ def _meta_content(
     property_name: str | None = None,
     limit: int,
 ) -> str | None:
-    attrs = {"name": name} if name is not None else {"property": property_name}
-    tag = soup.find("meta", attrs=attrs)
-    if not isinstance(tag, Tag):
-        return None
-    content = tag.get("content")
-    return _limited_text(content, limit) if isinstance(content, str) else None
+    attribute = "name" if name is not None else "property"
+    expected = name if name is not None else property_name
+    assert expected is not None
+    for tag in soup.find_all("meta"):
+        if not isinstance(tag, Tag):
+            continue
+        actual = _tag_string_attribute(tag, attribute)
+        if actual is None or actual.casefold() != expected.casefold():
+            continue
+        content = _tag_string_attribute(tag, "content")
+        return _limited_text(content, limit) if content is not None else None
+    return None
+
+
+def _first_content_tag(soup: BeautifulSoup) -> Tag | None:
+    for name in ("article", "main"):
+        for tag in soup.find_all(name, limit=1):
+            if isinstance(tag, Tag):
+                return tag
+    for tag in soup.find_all(None, attrs={"role": "main"}, limit=1):
+        if isinstance(tag, Tag):
+            return tag
+    return None
+
+
+def _tag_string_attribute(tag: Tag, name: str) -> str | None:
+    value = tag.get(name)
+    return value if isinstance(value, str) else None
 
 
 def _is_hidden(tag: Tag) -> bool:

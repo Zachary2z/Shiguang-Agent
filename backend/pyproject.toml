@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
     "aiosqlite>=0.20,<1",
     "alembic>=1.14,<2",
-    "beautifulsoup4>=4.12,<5",
+    "beautifulsoup4>=4.15,<5",
     "fastapi>=0.115,<1",
     "httpx>=0.28,<1",
     "openai>=2.46,<3",

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -33,6 +32,7 @@ from app.domain.places import (
     WeatherRequest,
     WeatherResult,
 )
+from app.providers.http_logging import enforce_safe_http_client_logging
 from app.providers.map import MapProvider, MapProviderError, MapProviderErrorCode
 
 WaitFunction = Callable[[float], Awaitable[None]]
@@ -71,10 +71,6 @@ _RATE_LIMIT_INFOCODES = frozenset(
 _TEMPORARILY_UNAVAILABLE_INFOCODES = frozenset({"10016", "10017"})
 _INVALID_REQUEST_INFOCODES = frozenset({"10011"})
 _REQUEST_INFOCODE_PREFIXES = ("2",)
-_HTTPX_LOGGER = logging.getLogger("httpx")
-_HTTPCORE_LOGGER = logging.getLogger("httpcore")
-
-
 @dataclass(frozen=True, slots=True)
 class _AmapCity:
     city_code: str
@@ -160,9 +156,7 @@ class AmapMapProvider(MapProvider):
         transport: httpx.AsyncBaseTransport | None = None,
         wait: WaitFunction = asyncio.sleep,
     ) -> None:
-        # HTTPX's INFO log includes the complete query string, including the API key.
-        _HTTPX_LOGGER.setLevel(max(_HTTPX_LOGGER.level, logging.WARNING))
-        _HTTPCORE_LOGGER.setLevel(max(_HTTPCORE_LOGGER.level, logging.WARNING))
+        enforce_safe_http_client_logging()
         self._client = create_amap_http_client(config=config, transport=transport)
         self._api_key = config.api_key.get_secret_value()
         self._max_retries = config.max_retries
