@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。M0-2A 至 M0-2D 已全部通过主控验收，文字输入到结构化收藏、可逆写入和最小 HTTP API 的离线闭环已经完成；M0-3A 至 M0-3D 也已全部通过主控验收，MapProvider、高德适配、确定性地点匹配、统一 PlaceTarget、具体分店与“任意分店”目标现已形成完整的离线地点闭环。当前允许开始 M0-4A 私有文件存储，但尚未开发。
+项目处于 **M0 技术验证**。M0-2A 至 M0-2D 已全部通过主控验收，文字输入到结构化收藏、可逆写入和最小 HTTP API 的离线闭环已经完成；M0-3A 至 M0-3D 也已全部通过主控验收，MapProvider、高德适配、确定性地点匹配、统一 PlaceTarget、具体分店与“任意分店”目标现已形成完整的离线地点闭环。M0-4A 私有文件存储已实现，当前等待主控验收。
 
-普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。M0-3B 已在一次单独授权下完成 5 次零重试、只读真实高德验收；该授权不延续到后续任务。M0-3D 未调用真实 Provider；私有文件存储、URL/截图解析、计划、SSE 和前端仍未开始。
+普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。M0-3B 已在一次单独授权下完成 5 次零重试、只读真实高德验收；该授权不延续到后续任务。M0-4A 只实现本地私有目录，没有调用真实 Provider；URL 抓取、图片上传/识别、统一输入流水线、计划、SSE 和前端仍未开始。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -55,6 +55,7 @@ python -m pytest -q tests/test_migrations.py
 python -m pytest -q tests/contract/test_m0_2d_api.py
 python -m pytest -q tests/unit/test_place_contracts.py tests/contract/test_map_provider_contract.py tests/integration/test_map_provider_stub.py
 python -m pytest -q tests/unit/test_amap_provider.py tests/test_config.py
+python -m pytest -q tests/contract/test_storage_provider_contract.py tests/integration/test_local_private_storage.py
 ```
 
 测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
@@ -69,7 +70,7 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前 HEAD revision 是 `20260721_0005`。`0004` 将用户字段明确为 `default_plan_city`，并把收藏城市调整为可空 `city_hint`；`0005` 原位扩展 `collection_items` 的候选线索，并新增幂等写操作及其条目关联表。`0005` 只有在没有可逆写操作、且新增候选字段均为空时才允许降级到 `0004`，否则在任何 DDL 前拒绝，避免静默丢失 Undo、幂等或候选数据。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+当前 HEAD revision 是 `20260722_0006`。`0006` 只扩展现有收藏的统一地点目标和选择幂等边界；M0-4A 复用现有 `Source.file_key`，没有新增或修改数据库迁移。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
 
 ### 启动 API
 
@@ -120,6 +121,9 @@ curl -i -H 'X-Request-ID: local-check-001' http://127.0.0.1:8000/healthz
 | `PLACE_MATCH_MINIMUM_SCORE_GAP` | `12` | 第一名相对第二名的最小自动匹配分差，只允许有限正数 `(0, 100]` |
 | `PLACE_MATCH_CANDIDATE_SCORE` | `35` | 合理候选的最低分数，只允许有限正数 `(0, 100]` 且不得高于唯一匹配阈值 |
 | `RUN_REAL_MAP_TESTS` | `0` | 只有精确设为 `1` 且另获授权才允许真实高德测试 |
+| `STORAGE_PRIVATE_ROOT` | `./data/private` | 本地私有根目录；不得位于公开 `public/static` 目录，完整路径不会进入公开对象或错误 |
+| `STORAGE_MAX_FILE_SIZE_BYTES` | `10000000` | 流式写入上限，只允许 `1..20000000` 字节 |
+| `STORAGE_ALLOWED_CONTENT_TYPES` | `image/jpeg,image/png,image/webp` | 允许类型的逗号分隔子集；声明类型还必须通过集中式文件签名校验 |
 
 `.env` 会被 Git 忽略，不要把真实密钥、Token、Cookie 或账号写入代码、示例、测试输出或提交。
 
@@ -205,6 +209,14 @@ RUN_REAL_MAP_TESTS=1 python -m pytest -q -m real_map_provider -rs
 `app.domain.places.targets` 定义唯一 `PlaceTarget`：`exact` 保存一个已确认 POI 的 `provider + poi_id`、正式 `city_code`、GCJ-02 坐标、确认来源/时间、匹配状态与必要证据；`any_branch` 只接受显式用户选择和已确认的稳定品牌命名空间/身份，不根据相似名称推断或合并。候选快照继续复用 M0-3C 契约，最多 3 项并保存 `queried_at`，不是独立收藏。`resolve_place_target()` 只提供 exact、any_branch、unconfirmed 三态规划边界，不包含路线或动态选店实现。
 
 `PlaceTargetSelectionService` 在现有 CollectionItem、Repository、Source 和事务上完成选择：未选保持 `pending_selection`；具体 POI 转为 `active + exact`；显式任意分店转为 `active + any_branch`；“以上都不是”回到 `pending_details`。多选具体分店在一个事务内拆成独立收藏并共享原 Source，新增分店会加入原写入操作的 Undo 组。每用户的 exact POI、any-branch 品牌和选择幂等键均有数据库约束；唯一冲突会回读并收敛，跨用户复合外键继续阻止 Source、收藏与操作串用。Alembic `20260722_0006` 是从 `20260721_0005` 向前的唯一新迁移。
+
+### M0-4A 私有文件存储
+
+`app.providers.StorageProvider` 是唯一供应商无关边界，提供流式 `put_private`、受控 `get_private_access` 和幂等 `delete`。返回 DTO 只包含随机、不透明 `file_key`、创建时间、字节数、内容类型、保留策略、可选过期时间和 SHA-256，不包含原始文件名、文件内容、绝对路径或本地 URL。当前没有下载路由，因此本地访问明确标记为 `application_download_route_required`，不会伪造 `file://`、HTTP 或公开签名 URL。
+
+唯一 `LocalPrivateStorageProvider` 位于 `app.infrastructure.storage`。它使用密码学安全随机 key、受限目录/文件权限、受控临时目录、排他预留和原子硬链接发布；碰撞不覆盖已有对象，超限、签名不符、异常与取消都会清除临时/最终残留。对象名不使用扩展名或原始文件名，所有查找均拒绝路径语法和 Unicode 混淆，并用 no-follow 目录操作阻止符号链接逃逸。类型、签名和最大硬上限集中在 `app.storage_policy`，没有复制到 API、Source Repository 或 Fixture。
+
+原始截图使用 `original_screenshot_30_days`，Demo 文件可用 `demo_session_max_24_hours`，其他内部文件可显式使用 `user_controlled`；Provider 保存生命周期元数据并在访问描述中标记已过期对象。本阶段没有后台清理 Worker，也没有图片上传/下载 API、OCR、网页抓取、COS/S3 适配或数据库表。
 
 真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
 

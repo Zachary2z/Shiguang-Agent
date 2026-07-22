@@ -290,3 +290,30 @@ RUN_REAL_MAP_TESTS=1 python -m pytest -q -m real_map_provider -rs
 It remains skipped unless both the exact switch and complete Amap settings are present. Do not
 run it without a new user authorization. M0-3B does not implement matching scores, candidate
 limits/selection, POI persistence, or exact/any-branch behavior.
+
+## M0-4A private file storage
+
+`app.providers.StorageProvider` is the only provider-neutral file boundary. It streams private
+writes, returns lifecycle metadata, exposes an application-route-required access descriptor,
+and deletes valid missing keys idempotently. Public DTOs and errors never contain file bytes,
+original filenames, absolute paths, temporary names, or a fabricated local/public URL.
+
+`app.infrastructure.storage.LocalPrivateStorageProvider` is the only local adapter. It writes
+under the injected `STORAGE_PRIVATE_ROOT` with `0700` directories and `0600` files, uses
+`secrets.token_urlsafe` opaque keys, reserves keys exclusively, and publishes completed data and
+metadata without overwriting an existing object. Size is enforced while consuming the async
+stream; empty data, disallowed MIME types, and mismatched PNG/JPEG/WebP signatures are rejected.
+Failure and `CancelledError` paths clean reservations, temporary files, and any partially
+published object, while cancellation itself propagates unchanged.
+
+The local access contract intentionally returns
+`application_download_route_required` because M0-4A has no authenticated download route. It
+never emits `file://`, an absolute path, or a fake HTTP URL. `Source.file_key` remains the only
+source pointer; there is no File/Attachment/Blob table or repository and no migration or new
+dependency.
+
+Offline focus suite:
+
+```bash
+python -m pytest -q tests/contract/test_storage_provider_contract.py tests/integration/test_local_private_storage.py tests/test_config.py
+```

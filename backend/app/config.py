@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from math import isfinite
 from pathlib import Path
@@ -13,12 +13,18 @@ from unicodedata import category
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ArgumentError
 
 from app.domain.places.matching import PlaceMatchingPolicy
+from app.storage_policy import (
+    DEFAULT_STORAGE_ALLOWED_CONTENT_TYPES,
+    DEFAULT_STORAGE_MAX_FILE_SIZE_BYTES,
+    MAX_STORAGE_MAX_FILE_SIZE_BYTES,
+    SUPPORTED_STORAGE_CONTENT_TYPES,
+)
 from nanobot_core.agent.limits import MAX_RUN_TIMEOUT_SECONDS, MAX_TOOL_CALLS_PER_RUN
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +41,10 @@ class ModelConfigurationError(ValueError):
 
 class AmapConfigurationError(Exception):
     """A fixed, secret-safe Amap configuration failure."""
+
+
+class StorageConfigurationError(Exception):
+    """A fixed local storage configuration failure without path disclosure."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +85,36 @@ class AmapProviderSettings:
             "retry_after_max_seconds",
             _validate_amap_retry_after_max_seconds(self.retry_after_max_seconds),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class StorageProviderSettings:
+    """Complete, provider-neutral limits for the local private storage adapter."""
+
+    private_root: Path = field(repr=False)
+    max_file_size_bytes: int
+    allowed_content_types: frozenset[str]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.private_root, Path):
+            raise StorageConfigurationError("STORAGE_PRIVATE_ROOT must be a filesystem path")
+        if (
+            type(self.max_file_size_bytes) is not int
+            or self.max_file_size_bytes < 1
+            or self.max_file_size_bytes > MAX_STORAGE_MAX_FILE_SIZE_BYTES
+        ):
+            raise StorageConfigurationError(
+                "STORAGE_MAX_FILE_SIZE_BYTES must be an integer from 1 to "
+                f"{MAX_STORAGE_MAX_FILE_SIZE_BYTES}"
+            )
+        if (
+            not isinstance(self.allowed_content_types, frozenset)
+            or not self.allowed_content_types
+            or not self.allowed_content_types <= SUPPORTED_STORAGE_CONTENT_TYPES
+        ):
+            raise StorageConfigurationError(
+                "STORAGE_ALLOWED_CONTENT_TYPES must contain only supported private file types"
+            )
 
 
 _AMAP_API_KEY_ERROR = "AMAP_API_KEY must be a non-blank SecretStr"
@@ -244,6 +284,9 @@ class Settings(BaseSettings):
     place_match_unique_score: float = 75.0
     place_match_minimum_score_gap: float = 12.0
     place_match_candidate_score: float = 35.0
+    storage_private_root: Path = Field(default=Path("./data/private"), repr=False)
+    storage_max_file_size_bytes: int = DEFAULT_STORAGE_MAX_FILE_SIZE_BYTES
+    storage_allowed_content_types: str = ",".join(DEFAULT_STORAGE_ALLOWED_CONTENT_TYPES)
 
     @field_validator("amap_api_key", mode="before")
     @classmethod
@@ -424,6 +467,45 @@ class Settings(BaseSettings):
             )
         return self
 
+    @field_validator("storage_max_file_size_bytes", mode="before")
+    @classmethod
+    def validate_storage_size_type(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise StorageConfigurationError(
+                "STORAGE_MAX_FILE_SIZE_BYTES must be an integer from 1 to "
+                f"{MAX_STORAGE_MAX_FILE_SIZE_BYTES}"
+            )
+        return value
+
+    @field_validator("storage_max_file_size_bytes")
+    @classmethod
+    def validate_storage_size(cls, value: int) -> int:
+        if value < 1 or value > MAX_STORAGE_MAX_FILE_SIZE_BYTES:
+            raise StorageConfigurationError(
+                "STORAGE_MAX_FILE_SIZE_BYTES must be an integer from 1 to "
+                f"{MAX_STORAGE_MAX_FILE_SIZE_BYTES}"
+            )
+        return value
+
+    @field_validator("storage_allowed_content_types", mode="before")
+    @classmethod
+    def normalize_storage_content_types(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise StorageConfigurationError(
+                "STORAGE_ALLOWED_CONTENT_TYPES must contain only supported private file types"
+            )
+        parts = tuple(part.strip().lower() for part in value.split(",") if part.strip())
+        allowed = frozenset(parts)
+        if (
+            not parts
+            or len(allowed) != len(parts)
+            or not allowed <= SUPPORTED_STORAGE_CONTENT_TYPES
+        ):
+            raise StorageConfigurationError(
+                "STORAGE_ALLOWED_CONTENT_TYPES must contain only supported private file types"
+            )
+        return ",".join(sorted(allowed))
+
     def require_model_provider(self) -> ModelProviderSettings:
         """Return complete real-provider settings only when explicitly requested."""
 
@@ -494,6 +576,17 @@ class Settings(BaseSettings):
             unique_match_score=self.place_match_unique_score,
             minimum_score_gap=self.place_match_minimum_score_gap,
             candidate_score=self.place_match_candidate_score,
+        )
+
+    def storage_provider_settings(self) -> StorageProviderSettings:
+        """Build the one validated local private storage configuration."""
+
+        return StorageProviderSettings(
+            private_root=self.storage_private_root,
+            max_file_size_bytes=self.storage_max_file_size_bytes,
+            allowed_content_types=frozenset(
+                self.storage_allowed_content_types.split(",")
+            ),
         )
 
 

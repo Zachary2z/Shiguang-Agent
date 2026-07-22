@@ -13,9 +13,12 @@ from app.config import (
     AmapProviderSettings,
     ModelConfigurationError,
     Settings,
+    StorageConfigurationError,
+    StorageProviderSettings,
     load_settings,
 )
 from app.main import create_app
+from app.storage_policy import MAX_STORAGE_MAX_FILE_SIZE_BYTES
 
 
 def test_dotenv_loading_can_be_explicitly_disabled(tmp_path: Path) -> None:
@@ -98,6 +101,85 @@ def test_application_and_health_configuration_do_not_require_real_provider_setti
     app = create_app(settings)
 
     assert app.state.settings is settings
+
+
+def test_local_private_storage_has_safe_non_secret_defaults() -> None:
+    settings = Settings(
+        _env_file=None,
+        app_env="test",
+        database_url="sqlite+aiosqlite:///:memory:",
+    )
+
+    storage = settings.storage_provider_settings()
+
+    assert storage.private_root == Path("data/private")
+    assert storage.max_file_size_bytes == 10_000_000
+    assert storage.allowed_content_types == frozenset(
+        {"image/jpeg", "image/png", "image/webp"}
+    )
+
+
+def test_storage_configuration_is_normalized_and_hides_absolute_root(tmp_path: Path) -> None:
+    private_root = tmp_path / "private-secret-root"
+    settings = Settings(
+        _env_file=None,
+        app_env="test",
+        database_url="sqlite+aiosqlite:///:memory:",
+        storage_private_root=private_root,
+        storage_max_file_size_bytes=4096,
+        storage_allowed_content_types=" image/png,IMAGE/JPEG ",
+    )
+
+    storage = settings.storage_provider_settings()
+
+    assert storage.private_root == private_root
+    assert storage.max_file_size_bytes == 4096
+    assert storage.allowed_content_types == frozenset({"image/jpeg", "image/png"})
+    assert str(private_root) not in repr(settings)
+    assert str(private_root) not in repr(storage)
+
+
+@pytest.mark.parametrize(
+    "maximum",
+    [0, -1, MAX_STORAGE_MAX_FILE_SIZE_BYTES + 1, True],
+)
+def test_storage_size_limit_has_a_central_hard_boundary(maximum: object) -> None:
+    with pytest.raises(StorageConfigurationError, match="STORAGE_MAX_FILE_SIZE_BYTES"):
+        Settings(
+            _env_file=None,
+            app_env="test",
+            database_url="sqlite+aiosqlite:///:memory:",
+            storage_max_file_size_bytes=maximum,
+        )
+
+
+@pytest.mark.parametrize(
+    "allowed",
+    ["", "text/plain", "image/png,image/png", "image/png,text/html", ["image/png"]],
+)
+def test_storage_allowed_content_types_are_central_and_nonempty(allowed: object) -> None:
+    with pytest.raises(StorageConfigurationError, match="STORAGE_ALLOWED_CONTENT_TYPES"):
+        Settings(
+            _env_file=None,
+            app_env="test",
+            database_url="sqlite+aiosqlite:///:memory:",
+            storage_allowed_content_types=allowed,
+        )
+
+
+def test_direct_storage_provider_settings_revalidate_all_fields(tmp_path: Path) -> None:
+    with pytest.raises(StorageConfigurationError, match="STORAGE_MAX_FILE_SIZE_BYTES"):
+        StorageProviderSettings(
+            private_root=tmp_path / "private",
+            max_file_size_bytes=True,  # type: ignore[arg-type]
+            allowed_content_types=frozenset({"image/png"}),
+        )
+    with pytest.raises(StorageConfigurationError, match="STORAGE_ALLOWED_CONTENT_TYPES"):
+        StorageProviderSettings(
+            private_root=tmp_path / "private",
+            max_file_size_bytes=1024,
+            allowed_content_types=frozenset({"text/plain"}),
+        )
 
 
 def test_complete_amap_configuration_is_deferred_and_secret_wrapped() -> None:
