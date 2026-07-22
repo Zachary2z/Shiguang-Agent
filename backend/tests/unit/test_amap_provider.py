@@ -662,6 +662,34 @@ async def test_recoverable_transport_and_http_errors_retry_once(failure: str) ->
 
 
 @pytest.mark.asyncio
+async def test_direct_config_hard_limit_caps_one_request_at_two_http_attempts() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(500, text=FAKE_RAW_RESPONSE)
+
+    provider = AmapMapProvider(
+        config=AmapProviderSettings(
+            api_key=SecretStr(FAKE_KEY),
+            base_url="https://restapi.amap.com",
+            timeout_seconds=1,
+            max_retries=1,
+            retry_after_max_seconds=0,
+        ),
+        transport=mock_transport(handler),
+    )
+
+    with pytest.raises(MapProviderError) as exc_info:
+        await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
+
+    assert exc_info.value.code is MapProviderErrorCode.UNAVAILABLE
+    assert attempts == 2
+    await provider.close()
+
+
+@pytest.mark.asyncio
 async def test_429_retry_after_is_capped_without_real_sleep_and_attempts_are_bounded() -> None:
     attempts = 0
     waits: list[float] = []

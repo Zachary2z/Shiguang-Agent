@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from math import isfinite
@@ -31,7 +32,7 @@ class ModelConfigurationError(ValueError):
     """A fixed, secret-safe model configuration failure."""
 
 
-class AmapConfigurationError(ValueError):
+class AmapConfigurationError(Exception):
     """A fixed, secret-safe Amap configuration failure."""
 
 
@@ -56,7 +57,118 @@ class AmapProviderSettings:
     retry_after_max_seconds: float
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "api_key", _validate_amap_api_key(self.api_key))
         object.__setattr__(self, "base_url", _normalize_amap_base_url(self.base_url))
+        object.__setattr__(
+            self,
+            "timeout_seconds",
+            _validate_amap_timeout_seconds(self.timeout_seconds),
+        )
+        object.__setattr__(
+            self,
+            "max_retries",
+            _validate_amap_max_retries(self.max_retries),
+        )
+        object.__setattr__(
+            self,
+            "retry_after_max_seconds",
+            _validate_amap_retry_after_max_seconds(self.retry_after_max_seconds),
+        )
+
+
+_AMAP_API_KEY_ERROR = "AMAP_API_KEY must be a non-blank SecretStr"
+_AMAP_BASE_URL_ERROR = (
+    "AMAP_BASE_URL must use the fixed official Amap Web Service origin"
+)
+_AMAP_TIMEOUT_ERROR = (
+    f"AMAP_TIMEOUT_SECONDS must be a finite number in (0, {MAX_AMAP_TIMEOUT_SECONDS:g}]"
+)
+_AMAP_MAX_RETRIES_ERROR = (
+    f"AMAP_MAX_RETRIES must be an integer from 0 to {MAX_AMAP_RETRIES}"
+)
+_AMAP_RETRY_AFTER_ERROR = (
+    "AMAP_RETRY_AFTER_MAX_SECONDS must be a finite number in "
+    f"[0, {MAX_AMAP_RETRY_AFTER_SECONDS:g}]"
+)
+
+
+def _validate_amap_api_key(value: object) -> SecretStr:
+    if not isinstance(value, SecretStr) or not value.get_secret_value().strip():
+        raise AmapConfigurationError(_AMAP_API_KEY_ERROR)
+    return value
+
+
+def _parse_settings_amap_api_key(value: object) -> SecretStr | None:
+    if value is None or isinstance(value, SecretStr):
+        return value
+    if isinstance(value, str):
+        return SecretStr(value)
+    raise AmapConfigurationError(_AMAP_API_KEY_ERROR)
+
+
+def _reject_amap_boolean(value: object, *, error_message: str) -> object:
+    if isinstance(value, bool):
+        raise AmapConfigurationError(error_message)
+    return value
+
+
+def _parse_settings_amap_number(
+    value: object,
+    *,
+    error_message: str,
+    validator: Callable[[object], float],
+) -> float:
+    if isinstance(value, str):
+        try:
+            parsed_value: float | None = float(value)
+        except ValueError:
+            parsed_value = None
+        if parsed_value is None:
+            raise AmapConfigurationError(error_message)
+        value = parsed_value
+    return validator(value)
+
+
+def _validate_amap_timeout_seconds(value: object) -> float:
+    _reject_amap_boolean(value, error_message=_AMAP_TIMEOUT_ERROR)
+    if (
+        not isinstance(value, int | float)
+        or not isfinite(value)
+        or value <= 0
+        or value > MAX_AMAP_TIMEOUT_SECONDS
+    ):
+        raise AmapConfigurationError(_AMAP_TIMEOUT_ERROR)
+    return float(value)
+
+
+def _validate_amap_max_retries(value: object) -> int:
+    if type(value) is not int or value < 0 or value > MAX_AMAP_RETRIES:
+        raise AmapConfigurationError(_AMAP_MAX_RETRIES_ERROR)
+    return value
+
+
+def _parse_settings_amap_max_retries(value: object) -> int:
+    if isinstance(value, str):
+        try:
+            parsed_value: int | None = int(value)
+        except ValueError:
+            parsed_value = None
+        if parsed_value is None:
+            raise AmapConfigurationError(_AMAP_MAX_RETRIES_ERROR)
+        value = parsed_value
+    return _validate_amap_max_retries(value)
+
+
+def _validate_amap_retry_after_max_seconds(value: object) -> float:
+    _reject_amap_boolean(value, error_message=_AMAP_RETRY_AFTER_ERROR)
+    if (
+        not isinstance(value, int | float)
+        or not isfinite(value)
+        or value < 0
+        or value > MAX_AMAP_RETRY_AFTER_SECONDS
+    ):
+        raise AmapConfigurationError(_AMAP_RETRY_AFTER_ERROR)
+    return float(value)
 
 
 def _normalize_amap_base_url(value: str) -> str:
@@ -88,9 +200,7 @@ def _normalize_amap_base_url(value: str) -> str:
         except ValueError:
             valid = False
     if not valid:
-        raise AmapConfigurationError(
-            "AMAP_BASE_URL must use the fixed official Amap Web Service origin"
-        )
+        raise AmapConfigurationError(_AMAP_BASE_URL_ERROR)
     return DEFAULT_AMAP_BASE_URL
 
 
@@ -130,6 +240,18 @@ class Settings(BaseSettings):
     amap_timeout_seconds: float = 5.0
     amap_max_retries: int = MAX_AMAP_RETRIES
     amap_retry_after_max_seconds: float = 1.0
+
+    @field_validator("amap_api_key", mode="before")
+    @classmethod
+    def parse_amap_api_key(cls, value: object) -> SecretStr | None:
+        return _parse_settings_amap_api_key(value)
+
+    @field_validator("amap_base_url", mode="before")
+    @classmethod
+    def validate_amap_base_url_type(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise AmapConfigurationError(_AMAP_BASE_URL_ERROR)
+        return value
 
     @field_validator("app_timezone")
     @classmethod
@@ -246,57 +368,26 @@ class Settings(BaseSettings):
 
     @field_validator("amap_timeout_seconds", mode="before")
     @classmethod
-    def reject_boolean_amap_timeout(cls, value: object) -> object:
-        if isinstance(value, bool):
-            raise ValueError("AMAP_TIMEOUT_SECONDS must be a finite positive number")
-        return value
-
-    @field_validator("amap_timeout_seconds")
-    @classmethod
-    def validate_amap_timeout(cls, value: float) -> float:
-        if not isfinite(value) or value <= 0 or value > MAX_AMAP_TIMEOUT_SECONDS:
-            raise ValueError(
-                "AMAP_TIMEOUT_SECONDS must be a finite number in "
-                f"(0, {MAX_AMAP_TIMEOUT_SECONDS:g}]"
-            )
-        return value
+    def parse_amap_timeout(cls, value: object) -> object:
+        return _parse_settings_amap_number(
+            value,
+            error_message=_AMAP_TIMEOUT_ERROR,
+            validator=_validate_amap_timeout_seconds,
+        )
 
     @field_validator("amap_max_retries", mode="before")
     @classmethod
-    def reject_boolean_amap_retries(cls, value: object) -> object:
-        if isinstance(value, bool):
-            raise ValueError(f"AMAP_MAX_RETRIES must be an integer from 0 to {MAX_AMAP_RETRIES}")
-        return value
-
-    @field_validator("amap_max_retries")
-    @classmethod
-    def validate_amap_retries(cls, value: int) -> int:
-        if value < 0 or value > MAX_AMAP_RETRIES:
-            raise ValueError(f"AMAP_MAX_RETRIES must be an integer from 0 to {MAX_AMAP_RETRIES}")
-        return value
-
-    @field_validator("amap_retry_after_max_seconds")
-    @classmethod
-    def validate_amap_retry_after_max(cls, value: float) -> float:
-        if (
-            not isfinite(value)
-            or value < 0
-            or value > MAX_AMAP_RETRY_AFTER_SECONDS
-        ):
-            raise ValueError(
-                "AMAP_RETRY_AFTER_MAX_SECONDS must be a finite number in "
-                f"[0, {MAX_AMAP_RETRY_AFTER_SECONDS:g}]"
-            )
-        return value
+    def parse_amap_retries(cls, value: object) -> object:
+        return _parse_settings_amap_max_retries(value)
 
     @field_validator("amap_retry_after_max_seconds", mode="before")
     @classmethod
-    def reject_boolean_amap_retry_after_max(cls, value: object) -> object:
-        if isinstance(value, bool):
-            raise ValueError(
-                "AMAP_RETRY_AFTER_MAX_SECONDS must be a finite non-negative number"
-            )
-        return value
+    def parse_amap_retry_after_max(cls, value: object) -> object:
+        return _parse_settings_amap_number(
+            value,
+            error_message=_AMAP_RETRY_AFTER_ERROR,
+            validator=_validate_amap_retry_after_max_seconds,
+        )
 
     def require_model_provider(self) -> ModelProviderSettings:
         """Return complete real-provider settings only when explicitly requested."""
@@ -351,9 +442,7 @@ class Settings(BaseSettings):
     def require_amap_provider(self) -> AmapProviderSettings:
         """Return real Amap settings only when the adapter is explicitly constructed."""
 
-        api_key = self.amap_api_key
-        if api_key is None or not api_key.get_secret_value().strip():
-            raise AmapConfigurationError("Missing Amap provider configuration: AMAP_API_KEY")
+        api_key = _validate_amap_api_key(self.amap_api_key)
 
         return AmapProviderSettings(
             api_key=api_key,

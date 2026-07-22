@@ -10,6 +10,7 @@ from pydantic import SecretStr, ValidationError
 import app.config as config_module
 from app.config import (
     AmapConfigurationError,
+    AmapProviderSettings,
     ModelConfigurationError,
     Settings,
     load_settings,
@@ -118,14 +119,19 @@ def test_complete_amap_configuration_is_deferred_and_secret_wrapped() -> None:
     assert amap.timeout_seconds == 8.5
     assert amap.max_retries == 1
     assert amap.retry_after_max_seconds == 2
+    assert "fake-amap-key" not in repr(settings)
+    assert "fake-amap-key" not in repr(amap)
 
 
-def test_missing_amap_key_is_required_only_when_real_adapter_is_requested() -> None:
+@pytest.mark.parametrize("api_key", [None, "", "   "])
+def test_missing_amap_key_is_required_only_when_real_adapter_is_requested(
+    api_key: str | None,
+) -> None:
     settings = Settings(
         _env_file=None,
         app_env="test",
         database_url="sqlite+aiosqlite:///:memory:",
-        amap_api_key=None,
+        amap_api_key=api_key,
     )
 
     with pytest.raises(AmapConfigurationError, match="AMAP_API_KEY"):
@@ -194,9 +200,12 @@ def test_official_amap_base_url_is_canonically_normalized(
     assert settings.require_amap_provider().base_url == expected
 
 
-@pytest.mark.parametrize("timeout", [0, 30.1, -1, float("nan"), float("inf"), True])
-def test_invalid_amap_timeout_is_rejected(timeout: float) -> None:
-    with pytest.raises(ValidationError, match="AMAP_TIMEOUT_SECONDS"):
+@pytest.mark.parametrize(
+    "timeout",
+    [0, 30.1, -1, float("nan"), float("inf"), "fake-timeout-secret", True],
+)
+def test_invalid_amap_timeout_is_rejected(timeout: object) -> None:
+    with pytest.raises(AmapConfigurationError, match="AMAP_TIMEOUT_SECONDS"):
         Settings(
             _env_file=None,
             app_env="test",
@@ -205,9 +214,9 @@ def test_invalid_amap_timeout_is_rejected(timeout: float) -> None:
         )
 
 
-@pytest.mark.parametrize("retries", [-1, 2, True])
-def test_amap_retries_have_one_extra_attempt_hard_limit(retries: int) -> None:
-    with pytest.raises(ValidationError, match="AMAP_MAX_RETRIES"):
+@pytest.mark.parametrize("retries", [-1, 2, 1.0, "fake-retry-secret", True])
+def test_amap_retries_have_one_extra_attempt_hard_limit(retries: object) -> None:
+    with pytest.raises(AmapConfigurationError, match="AMAP_MAX_RETRIES"):
         Settings(
             _env_file=None,
             app_env="test",
@@ -216,15 +225,125 @@ def test_amap_retries_have_one_extra_attempt_hard_limit(retries: int) -> None:
         )
 
 
-@pytest.mark.parametrize("cap", [-1, 5.1, float("nan"), float("inf"), True])
-def test_amap_retry_after_cap_is_bounded(cap: float) -> None:
-    with pytest.raises(ValidationError, match="AMAP_RETRY_AFTER_MAX_SECONDS"):
+@pytest.mark.parametrize(
+    "cap",
+    [-1, 5.1, float("nan"), float("inf"), "fake-retry-after-secret", True],
+)
+def test_amap_retry_after_cap_is_bounded(cap: object) -> None:
+    with pytest.raises(AmapConfigurationError, match="AMAP_RETRY_AFTER_MAX_SECONDS"):
         Settings(
             _env_file=None,
             app_env="test",
             database_url="sqlite+aiosqlite:///:memory:",
             amap_retry_after_max_seconds=cap,
         )
+
+
+def direct_amap_settings(**overrides: object) -> AmapProviderSettings:
+    values: dict[str, object] = {
+        "api_key": SecretStr("fake-direct-amap-key"),
+        "base_url": "https://restapi.amap.com",
+        "timeout_seconds": 5.0,
+        "max_retries": 1,
+        "retry_after_max_seconds": 1.0,
+        **overrides,
+    }
+    return AmapProviderSettings(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("api_key", SecretStr("   "), "AMAP_API_KEY"),
+        ("api_key", None, "AMAP_API_KEY"),
+        ("api_key", "fake-unwrapped-key", "AMAP_API_KEY"),
+        ("timeout_seconds", 0, "AMAP_TIMEOUT_SECONDS"),
+        ("timeout_seconds", -1, "AMAP_TIMEOUT_SECONDS"),
+        ("timeout_seconds", 30.1, "AMAP_TIMEOUT_SECONDS"),
+        ("timeout_seconds", float("nan"), "AMAP_TIMEOUT_SECONDS"),
+        ("timeout_seconds", float("inf"), "AMAP_TIMEOUT_SECONDS"),
+        ("timeout_seconds", "1", "AMAP_TIMEOUT_SECONDS"),
+        ("timeout_seconds", True, "AMAP_TIMEOUT_SECONDS"),
+        ("max_retries", -1, "AMAP_MAX_RETRIES"),
+        ("max_retries", 2, "AMAP_MAX_RETRIES"),
+        ("max_retries", 1.0, "AMAP_MAX_RETRIES"),
+        ("max_retries", "1", "AMAP_MAX_RETRIES"),
+        ("max_retries", True, "AMAP_MAX_RETRIES"),
+        ("retry_after_max_seconds", -1, "AMAP_RETRY_AFTER_MAX_SECONDS"),
+        ("retry_after_max_seconds", 5.1, "AMAP_RETRY_AFTER_MAX_SECONDS"),
+        ("retry_after_max_seconds", float("nan"), "AMAP_RETRY_AFTER_MAX_SECONDS"),
+        ("retry_after_max_seconds", float("inf"), "AMAP_RETRY_AFTER_MAX_SECONDS"),
+        ("retry_after_max_seconds", "1", "AMAP_RETRY_AFTER_MAX_SECONDS"),
+        ("retry_after_max_seconds", True, "AMAP_RETRY_AFTER_MAX_SECONDS"),
+    ],
+)
+def test_direct_amap_settings_reject_every_invalid_boundary_value(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    with pytest.raises(AmapConfigurationError, match=message):
+        direct_amap_settings(**{field: value})
+
+
+@pytest.mark.parametrize(
+    ("timeout", "retries", "retry_after"),
+    [(0.001, 0, 0), (30, 1, 5)],
+)
+def test_direct_and_settings_paths_accept_amap_boundary_values(
+    timeout: float,
+    retries: int,
+    retry_after: float,
+) -> None:
+    direct = direct_amap_settings(
+        timeout_seconds=timeout,
+        max_retries=retries,
+        retry_after_max_seconds=retry_after,
+    )
+    settings = Settings(
+        _env_file=None,
+        app_env="test",
+        database_url="sqlite+aiosqlite:///:memory:",
+        amap_api_key="fake-settings-amap-key",
+        amap_timeout_seconds=timeout,
+        amap_max_retries=retries,
+        amap_retry_after_max_seconds=retry_after,
+    ).require_amap_provider()
+
+    assert (direct.timeout_seconds, direct.max_retries, direct.retry_after_max_seconds) == (
+        timeout,
+        retries,
+        retry_after,
+    )
+    assert settings.timeout_seconds == direct.timeout_seconds
+    assert settings.max_retries == direct.max_retries
+    assert settings.retry_after_max_seconds == direct.retry_after_max_seconds
+
+
+def test_amap_configuration_error_surface_never_exposes_key_or_invalid_value(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "fake-direct-secret-must-not-leak"
+
+    with caplog.at_level("DEBUG"), pytest.raises(AmapConfigurationError) as exc_info:
+        direct_amap_settings(
+            api_key=SecretStr(secret),
+            timeout_seconds=float("nan"),
+        )
+
+    exposed = "\n".join(
+        (
+            str(exc_info.value),
+            repr(exc_info.value),
+            repr(exc_info.value.args),
+            repr(vars(exc_info.value)),
+            caplog.text,
+        )
+    )
+    assert secret not in exposed
+    assert "nan" not in exposed.casefold()
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
 
 
 def test_complete_model_configuration_is_returned_with_secret_type() -> None:
