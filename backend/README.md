@@ -348,3 +348,34 @@ Offline focus suite:
 ```bash
 python -m pytest -q tests/contract/test_web_content_provider_contract.py tests/unit/test_web_url_security.py tests/unit/test_httpx_web_content_provider.py
 ```
+
+## M0-4C private screenshot recognition
+
+`app.application.image_recognition.ImageRecognitionService` is the sole screenshot application
+service. It accepts a bounded async stream, reuses the configured storage MIME/signature/size
+policy, validates the complete JPEG/PNG/WebP decode before any storage or model call, then writes
+through the existing `StorageProvider` with `ORIGINAL_SCREENSHOT` retention. Pillow is the only
+new image dependency: Python's standard library has no complete JPEG/PNG/WebP decoder and cannot
+reliably detect truncation, damaged images, decompression bombs, dimensions, or pixel counts.
+Validation rejects animated images, dimensions over 12,000 pixels per side, and images over 40
+million pixels. EXIF location is never read or promoted to location evidence.
+
+Recognition uses the existing provider-neutral `Message` dictionary with text and `image_url`
+content parts. `OpenAICompatibleProvider` continues to send one non-streaming SDK request per
+`chat()` call with `max_retries=0`; offline MockTransport tests cover the serialized multimodal
+body and zero SDK retry behavior. Text and image services share `extraction_output` for response
+length checks, tool-call rejection, safe validation issues, and the sole structural repair.
+
+The service returns a tuple of existing `PrivateFileMetadata` and `ExtractionResult`; it does not
+define `ImageCandidate`, `OcrCandidate`, a second response DTO, a second model provider, or a
+vision runner. Present screenshot price and location clues are rebuilt with explicit
+`Uncertainty`; formal POI, coordinates, city code, and screenshot-only opening hours are absent
+from the candidate schema. Provider error, unexpected exception, and cancellation paths delete
+only the object created by that call. There is no HTTP upload route, Source/Collection workflow,
+new setting, migration, real vision marker, or M0-4D unified input pipeline.
+
+Offline focus suite:
+
+```bash
+python -m pytest -q tests/unit/test_image_recognition_service.py tests/unit/test_openai_compatible_provider.py tests/unit/test_text_extraction_service.py
+```

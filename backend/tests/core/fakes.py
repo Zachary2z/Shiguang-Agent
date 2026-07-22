@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import cast
 
 from nanobot_core.providers import (
@@ -22,8 +22,8 @@ from nanobot_core.tools import Tool, ToolInput, ToolResult
 
 @dataclass(frozen=True, slots=True)
 class ProviderCall:
-    messages: list[Message]
-    tools: list[ToolDefinition] | None
+    messages: list[Message] = field(repr=False)
+    tools: list[ToolDefinition] | None = field(repr=False)
 
 
 class FakeProvider(ModelProvider):

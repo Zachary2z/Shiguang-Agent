@@ -4,9 +4,9 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。M0-2A 至 M0-2D 已全部通过主控验收，文字输入到结构化收藏、可逆写入和最小 HTTP API 的离线闭环已经完成；M0-3A 至 M0-3D 也已全部通过主控验收，MapProvider、高德适配、确定性地点匹配、统一 PlaceTarget、具体分店与“任意分店”目标现已形成完整的离线地点闭环。M0-4A 私有文件存储与 M0-4B 安全网页解析均已通过主控验收；当前允许开始 M0-4C 截图识别。
+项目处于 **M0 技术验证**。M0-2A 至 M0-2D 已全部通过主控验收，文字输入到结构化收藏、可逆写入和最小 HTTP API 的离线闭环已经完成；M0-3A 至 M0-3D 也已全部通过主控验收，MapProvider、高德适配、确定性地点匹配、统一 PlaceTarget、具体分店与“任意分店”目标现已形成完整的离线地点闭环。M0-4A 私有文件存储与 M0-4B 安全网页解析均已通过主控验收；M0-4C 截图识别已完成开发并待主控验收，当前允许阶段仍为 M0-4C。
 
-普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。M0-3B 已在一次单独授权下完成 5 次零重试、只读真实高德验收；该授权不延续到后续任务。M0-4A 只实现本地私有目录；M0-4B 只通过 MockTransport、Stub DNS 和固定 HTML 验证公开 HTTP(S) 获取、SSRF 防护与正文抽取，没有访问真实网页。M0-4C 图片上传/识别尚未开始；统一输入流水线、计划、SSE 和前端也仍未开始。
+普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。M0-3B 已在一次单独授权下完成 5 次零重试、只读真实高德验收；该授权不延续到后续任务。M0-4A 只实现本地私有目录；M0-4B 只通过 MockTransport、Stub DNS 和固定 HTML 验证公开 HTTP(S) 获取、SSRF 防护与正文抽取，没有访问真实网页。M0-4C 只使用固定图片、Fake Provider 和 MockTransport 验证私有图片输入与多模态抽取，没有真实视觉调用；M0-4D 统一输入、计划、SSE 和前端仍未开始。
 
 Dockerfile 推迟到 M0-Gate；本阶段不创建 Docker Compose。
 
@@ -49,7 +49,7 @@ Windows PowerShell 激活命令为 `.venv\Scripts\Activate.ps1`，之后同样�
 ```bash
 python -m ruff check .
 python -m mypy app migrations nanobot_core
-python -m pytest -q -m "not real_provider and not real_map_provider"
+python -m pytest -q -m "not real_provider and not real_map_provider and not real_vision_provider"
 python -m pytest -q tests/core
 python -m pytest -q tests/test_migrations.py
 python -m pytest -q tests/contract/test_m0_2d_api.py
@@ -57,6 +57,7 @@ python -m pytest -q tests/unit/test_place_contracts.py tests/contract/test_map_p
 python -m pytest -q tests/unit/test_amap_provider.py tests/test_config.py
 python -m pytest -q tests/contract/test_storage_provider_contract.py tests/integration/test_local_private_storage.py
 python -m pytest -q tests/contract/test_web_content_provider_contract.py tests/unit/test_web_url_security.py tests/unit/test_httpx_web_content_provider.py
+python -m pytest -q tests/unit/test_image_recognition_service.py tests/unit/test_openai_compatible_provider.py tests/unit/test_text_extraction_service.py
 ```
 
 测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
@@ -71,7 +72,7 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前 HEAD revision 是 `20260722_0006`。`0006` 只扩展现有收藏的统一地点目标和选择幂等边界；M0-4A 复用现有 `Source.file_key`，M0-4B 只增加网页 Provider、领域契约和安全策略，两者都没有新增或修改数据库迁移。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+当前 HEAD revision 是 `20260722_0006`。`0006` 只扩展现有收藏的统一地点目标和选择幂等边界；M0-4A 复用现有 `Source.file_key`，M0-4B 只增加网页 Provider、领域契约和安全策略，M0-4C 只增加应用服务、共享抽取解析与图片安全依赖，三个子阶段都没有新增或修改数据库迁移。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
 
 ### 启动 API
 
@@ -226,6 +227,18 @@ RUN_REAL_MAP_TESTS=1 python -m pytest -q -m real_map_provider -rs
 唯一 `HttpxWebContentProvider` 显式注入 `AsyncClient` 和 DNS Resolver。集中式 URL/SSRF 策略只允许标准端口的 HTTP(S)，拒绝用户信息、混淆 IP、本机/内网/链路本地/元数据/非全局地址及混合 DNS 答案；每一跳都重新解析并校验，再把实际连接固定到已验证 IP，同时保留安全的 Host 与 TLS SNI。应用显式处理最多 5 次重定向并检测循环；客户端禁用环境代理、认证、Cookie、自动重定向、自动重试和持久连接，`CancelledError` 原样传播。
 
 响应只接受 `text/html`、`application/xhtml+xml` 和 `text/plain`；传输体与解压后正文均有 2 MB 硬上限，清理后文本最多 50,000 字符。唯一 BeautifulSoup 抽取器移除脚本、样式、导航与不可见内容，只允许 description、canonical 和三项 Open Graph 元数据。BeautifulSoup 是本阶段唯一新增的解析依赖；未增加配置变量、路由、持久化、迁移、截图/OCR 或统一 Source 工作流。
+
+### M0-4C 截图识别
+
+`ImageRecognitionService` 在应用层接收受限异步图片流，复用 M0-4A 的唯一 `StorageProvider` 与 `ORIGINAL_SCREENSHOT` 30 天生命周期。服务先按现有 MIME、签名和配置大小边界缓冲，再用唯一 Pillow 解码器校验 JPEG/PNG/WebP 的格式、完整性、静态帧、宽高和 4000 万像素硬上限；任何空文件、伪装、截断、损坏、超限或像素异常输入都在保存和模型调用前失败。标准库没有 JPEG/PNG/WebP 完整解码器，无法可靠执行这些安全检查，因此 Pillow 是本阶段唯一新增的图片依赖，不接 OCR SDK 或外部 OCR 服务。
+
+验证通过后原图才进入私有存储，返回值只组合既有 `PrivateFileMetadata` 和 `ExtractionResult`，不提供本地路径、公开 URL、图片专用候选或 OCR DTO。多模态消息继续通过唯一 `ModelProvider` 与 `OpenAICompatibleProvider`，SDK 仍为非流式、`max_retries=0`；文字和图片共用一处 JSON Schema 校验与最多一次结构修复。截图价格及城市、行政区、地址、商圈、地标、地铁线索由应用层强制标记为 uncertain，不产生正式 POI、坐标、已确认城市或营业时间字段。Provider 异常与取消会清理由本次调用创建的对象，既有文件不会被删除。
+
+本阶段没有上传 HTTP 路由、Source/Collection/AgentRun 编排、配置变量、数据库迁移、真实视觉测试入口或 M0-4D 统一输入。离线聚焦命令：
+
+```bash
+python -m pytest -q tests/unit/test_image_recognition_service.py tests/unit/test_openai_compatible_provider.py tests/unit/test_text_extraction_service.py
+```
 
 真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
 
