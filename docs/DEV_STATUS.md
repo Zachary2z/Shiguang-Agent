@@ -937,3 +937,14 @@ M0-4A 至 M0-4D 以及 M0-5A 均已通过主控验收并集成到 `main`，计�
 - 迁移、依赖与范围：未新增或修改 ORM、表、迁移、依赖、配置、API、前端、SSE、Worker、队列、AgentRunner、ToolRegistry、Collection Repository、PlaceTarget、MapProvider 或地点匹配算法；Alembic 唯一 head 保持 `20260722_0006`。没有 Plan、PlanItem、草案、主/备方案、时间组合、交通缓冲、结束留白、外部高德补充、Approval、Prompt、Tool Calling、向量/Embedding、自动重试/退避/断路器或 M0-5C/D 代码
 - 真实调用与风险：未读取、打印或修改本机 `.env`；真实模型、高德、路线、天气、网页、DNS、对象存储、消息及其他外部/付费 API 调用均为 0。当前验证限于 SQLite、Fake/Stub/Fixture 和请求级动态事实；真实路线/天气事实采集与完整 Provider 延迟不属于本阶段且未验证
 - 主控复测重点：确认 Event 正式城市来自显式已核验事实而非 city_hint；所有 included 候选已知硬约束均满足；unknown 不会变成 included；任意分店只做请求级解析且同 POI 来源合并；Repository 实际只读且用户隔离；稳定原因/摘要无敏感泄漏；净复杂度没有第二套规则或测试特例。验收前 M0-5B 保持待验收，M0-5C/D 未开始，不合并 main、不推送
+
+#### 2026-07-23｜M0-5B 主控验收 3 个 P1 边界修复｜待主控复验
+
+- 分支与提交关系：修复直接追加在 `codex/m0-5-planning` 的待修复提交 `6aa7aec1f7228cb6ff2d1b78580f3fb505dfbe39` 上，不 amend、不 rebase、不 reset；开始门禁确认当前分支、HEAD 和干净工作区精确符合任务要求，`main` 与 `origin/main` 均为基线 `78f2ae65de09d13a22e7d4cef4bbcee6b3734ab7`，未合并 main
+- 三个根因：唯一 `retrieve()` 未执行临时约束有效期门禁；路线只用整个计划时长判断，未把 Event 结束时间纳入候选到达期限；`_branch_candidate()` 将品牌收藏残留的旧分店 district/address/business_district/landmark/metro_station 等字段复制为新分店匹配证据，导致本次计划范围内的有效分店被旧行政区硬冲突排除
+- 有效期统一修复：`retrieve()` 现在强制显式接收确定性 aware `now`，入口第一步复用 `PlanConstraints.is_active()`；`expires_at` 前一微秒仍有效，到达或超过 `expires_at` 固定返回 `PLAN_CONSTRAINTS_EXPIRED`，非法时间固定返回 `INVALID_RETRIEVAL_TIME`。两者复用既有唯一 `StructuredCollectionRetrievalError` 安全边界，无原约束、origin、底层异常或 cause/context，并在 Repository、PlaceMatchingService 和 MapProvider 前零 I/O 停止；Repository/MapProvider 的原始 `CancelledError` 对象继续透传
+- 路线期限统一修复：删除原先 `route_duration >= constraints.duration` 的单一计划窗口比较，改为一个纯到达期限函数；Place 的排他期限仍为计划结束，Event 为计划结束与 Event 结束中的较早者。从计划开始出发的到达时刻必须严格早于期限，等于或晚于 Event 结束均直接 `ROUTE_EXCEEDS_TIME_WINDOW`；没有加入访问时长、缓冲、多地点组合或 M0-5C 排序
+- 任意分店统一修复：`_branch_candidate()` 只从已确认 `BrandIdentity.display_name` 构造品牌身份，删除旧分店位置、价格、标签和描述字段复制；搜索城市、district 和 origin 只通过既有 `search_district/search_location` 从本次 PlanConstraints 传入。普通 exact 匹配与行政区硬冲突规则未放宽，解析后仍走同一份城市、范围、路线、天气、营业和预算规则；原收藏不清空、不改绑、不写回，同 POI 去重和来源关系不变
+- 测试与验证：macOS、项目 `.venv`、Python 3.13.5，全部 pytest 显式设置 `APP_ENV=test RUN_REAL_MODEL_TESTS=0 RUN_REAL_MAP_TESTS=0`。editable 安装、`pip check`、Ruff、strict mypy（89 个源文件）均退出 0；M0-5B 聚焦 `38 passed`，指定 PlanConstraints/地点匹配/MapProvider/PlaceTarget 相关回归 `204 passed`，Core `118 passed`，迁移 `21 passed`，非真实全集 `1356 passed / 2 deselected`，默认全集 `1356 passed / 2 skipped`，均退出 0
+- 迁移、依赖与净复杂度：未新增迁移、ORM、依赖、配置、API、前端、Worker、队列、重试或外部调用；Alembic 唯一 head 仍为 `20260722_0006`。生产代码只增加一个入口门禁和两个小型纯路线函数，并删除旧分店字段复制及被替代的路线判断；一个 retrieve、一个安全错误边界、一份候选规则、一个路线期限、一个 any_branch 输入构造、一个 PlaceMatchingService 和一个 MapProvider 的结构保持不变
+- 范围与主控复测：M0-5B 继续保持待主控验收，M0-5C/D 未开始；真实模型、高德、路线、天气、网页、DNS、消息及其他外部/付费 API 调用均为 0。主控重点复测 `expires_at` 排他边界和零 I/O、取消对象透传、Event 到达等号边界、旧南山线索到本次福田分店解析、exact 行政区冲突、解析后动态硬规则及 exact/any_branch 同 POI 去重；本分支不合并、不推送

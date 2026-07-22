@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -252,14 +253,19 @@ def _known_poi_facts(poi: Poi, *, duration: int = 600) -> PoiPlanningFacts:
     )
 
 
-def _known_event_facts(item: CollectionItem) -> CollectionPlanningFacts:
+def _known_event_facts(
+    item: CollectionItem,
+    *,
+    route: RouteAssessment = RouteAssessment.REACHABLE,
+    duration: int | None = 900,
+) -> CollectionPlanningFacts:
     return CollectionPlanningFacts(
         collection_item_id=item.id,
         formal_city=_constraints().city_scope,
         location_confirmed=True,
         coordinate=SHENZHEN_COORDINATE,
-        route=RouteAssessment.REACHABLE,
-        route_duration_seconds=900,
+        route=route,
+        route_duration_seconds=duration,
         weather=WeatherAssessment.COMPATIBLE,
         availability=AvailabilityAssessment.AVAILABLE,
     )
@@ -317,6 +323,7 @@ async def test_current_user_place_and_live_event_are_included_without_writes() -
             collections=(_known_event_facts(event),),
             pois=(_known_poi_facts(place_poi),),
         ),
+        now=NOW,
     )
 
     assert {decision.collection_item_ids for decision in result.included} == {
@@ -369,6 +376,7 @@ async def test_sql_repository_retrieval_is_user_scoped_and_read_only(
             user_id=user_id,
             constraints=_constraints(),
             facts=PlanningFactSnapshot(pois=(_known_poi_facts(poi),)),
+            now=NOW,
         )
 
     async with database.session() as session:
@@ -427,6 +435,7 @@ async def test_repository_failure_and_owner_violation_are_fixed_and_do_not_leak(
                 user_id=user_id,
                 constraints=_constraints(origin=ORIGIN),
                 facts=PlanningFactSnapshot(),
+                now=NOW,
             )
         error = captured.value
         assert error.to_dict() == {
@@ -436,6 +445,149 @@ async def test_repository_failure_and_owner_violation_are_fixed_and_do_not_leak(
         assert error.__cause__ is None
         assert error.__context__ is None
         assert "private-origin-secret" not in repr(error)
+
+
+@pytest.mark.asyncio
+async def test_constraints_expiry_boundary_stops_before_repository_and_map() -> None:
+    user_id = generate_user_id()
+    expiry = NOW + timedelta(hours=1)
+    branch = _poi(
+        "poi_expiry_branch",
+        name="测试咖啡",
+        branch_name="中心店",
+        poi_type=PoiType.CAFE,
+    )
+    brand = _place(
+        user_id,
+        title="测试咖啡",
+        target=_brand_target(),
+        tags=("咖啡",),
+        price=Decimal("35"),
+    )
+    constraints = _constraints(origin=ORIGIN).model_copy(
+        update={"expires_at": expiry}
+    )
+
+    valid_service, valid_repository = _service(
+        [brand],
+        provider=_branch_provider((branch,), district="福田区"),
+    )
+    valid = await valid_service.retrieve(
+        user_id=user_id,
+        constraints=constraints,
+        facts=PlanningFactSnapshot(pois=(_known_poi_facts(branch),)),
+        now=expiry - timedelta(microseconds=1),
+    )
+    assert valid.included
+    assert valid_repository.calls == [(user_id, True)]
+
+    map_calls: list[SearchPoiRequest] = []
+
+    async def capture(request: Any) -> None:
+        if isinstance(request, SearchPoiRequest):
+            map_calls.append(request)
+
+    for invalid_now in (expiry, expiry + timedelta(microseconds=1)):
+        map_calls.clear()
+        service, repository = _service(
+            [brand],
+            provider=_branch_provider((branch,), call_hook=capture),
+        )
+        with pytest.raises(StructuredCollectionRetrievalError) as error_info:
+            await service.retrieve(
+                user_id=user_id,
+                constraints=constraints,
+                facts=PlanningFactSnapshot(pois=(_known_poi_facts(branch),)),
+                now=invalid_now,
+            )
+
+        error = error_info.value
+        assert error.to_dict() == {
+            "code": "PLAN_CONSTRAINTS_EXPIRED",
+            "summary": "Plan constraints have expired.",
+        }
+        assert error.__cause__ is None
+        assert error.__context__ is None
+        assert str(ORIGIN.latitude) not in repr(error)
+        assert repository.calls == []
+        assert map_calls == []
+
+
+@pytest.mark.asyncio
+async def test_retrieval_now_requires_aware_time_before_any_io() -> None:
+    user_id = generate_user_id()
+    service, repository = _service([_place(user_id, poi=_poi("poi_naive_now"))])
+
+    with pytest.raises(StructuredCollectionRetrievalError) as captured:
+        await service.retrieve(
+            user_id=user_id,
+            constraints=_constraints(origin=ORIGIN),
+            facts=PlanningFactSnapshot(),
+            now=NOW.replace(tzinfo=None),
+        )
+
+    assert captured.value.to_dict() == {
+        "code": "INVALID_RETRIEVAL_TIME",
+        "summary": "Retrieval time is invalid.",
+    }
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert repository.calls == []
+
+
+@pytest.mark.asyncio
+async def test_retrieval_preserves_repository_and_map_cancellation() -> None:
+    user_id = generate_user_id()
+    repository_cancelled = asyncio.CancelledError()
+
+    class CancelledRepository(ReadOnlyRepository):
+        async def list_collection_items(
+            self,
+            *,
+            user_id: str,
+            include_inactive: bool = False,
+        ) -> list[CollectionItem]:
+            raise repository_cancelled
+
+    repository_service = StructuredCollectionRetrievalService(
+        repository=CancelledRepository([]),  # type: ignore[arg-type]
+        place_matching=PlaceMatchingService(
+            map_provider=StubMapProvider(),
+            policy=PlaceMatchingPolicy(
+                unique_match_score=30,
+                minimum_score_gap=5,
+                candidate_score=20,
+            ),
+        ),
+    )
+    with pytest.raises(asyncio.CancelledError) as repository_error:
+        await repository_service.retrieve(
+            user_id=user_id,
+            constraints=_constraints(),
+            facts=PlanningFactSnapshot(),
+            now=NOW,
+        )
+    assert repository_error.value is repository_cancelled
+
+    map_cancelled = asyncio.CancelledError()
+
+    async def cancel_map(_request: Any) -> None:
+        raise map_cancelled
+
+    brand = _place(user_id, title="测试咖啡", target=_brand_target())
+    map_service, repository = _service(
+        [brand],
+        provider=_branch_provider((), call_hook=cancel_map),
+    )
+    with pytest.raises(asyncio.CancelledError) as map_error:
+        await map_service.retrieve(
+            user_id=user_id,
+            constraints=_constraints(area=None, origin=ORIGIN),
+            facts=PlanningFactSnapshot(),
+            now=NOW,
+        )
+    assert map_error.value is map_cancelled
+    assert repository.calls == [(user_id, True)]
 
 
 @pytest.mark.asyncio
@@ -467,6 +619,7 @@ async def test_formal_city_controls_eligibility_and_city_hint_never_substitutes(
             ),
             pois=(_known_poi_facts(other_city.place_target.poi),),  # type: ignore[union-attr]
         ),
+        now=NOW,
     )
 
     reasons = {
@@ -499,6 +652,7 @@ async def test_inactive_pending_deleted_and_unconfirmed_place_are_excluded() -> 
         user_id=user_id,
         constraints=_constraints(),
         facts=PlanningFactSnapshot(),
+        now=NOW,
     )
 
     assert len(result.excluded) == len(statuses)
@@ -522,7 +676,12 @@ async def test_event_end_and_time_window_boundaries_are_deterministic() -> None:
         collections=tuple(_known_event_facts(item) for item in (ended, starts_at_end, missing_time))
     )
 
-    result = await service.retrieve(user_id=user_id, constraints=_constraints(), facts=facts)
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(),
+        facts=facts,
+        now=NOW,
+    )
     by_title = {item.title: item for item in result.decisions}
 
     assert CandidateReasonCode.EVENT_ENDED in by_title["ended"].reason_codes
@@ -546,6 +705,7 @@ async def test_district_area_tags_keywords_include_and_exclude_are_hard_rules() 
             exclude=("咖啡",),
         ),
         facts=PlanningFactSnapshot(pois=(_known_poi_facts(poi),)),
+        now=NOW,
     )
     decision = result.decisions[0]
 
@@ -567,11 +727,17 @@ async def test_budget_null_does_not_filter_known_price_and_unknown_price_is_neve
         pois=(_known_poi_facts(known_poi), _known_poi_facts(unknown_poi))
     )
 
-    no_budget = await service.retrieve(user_id=user_id, constraints=_constraints(), facts=facts)
+    no_budget = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(),
+        facts=facts,
+        now=NOW,
+    )
     with_budget = await service.retrieve(
         user_id=user_id,
         constraints=_constraints(budget=Decimal("100")),
         facts=facts,
+        now=NOW,
     )
 
     no_budget_by_title = {item.title: item for item in no_budget.decisions}
@@ -643,6 +809,7 @@ async def test_explicit_route_weather_and_availability_facts_never_fake_success(
         user_id=user_id,
         constraints=_constraints(),
         facts=PlanningFactSnapshot(pois=(facts,)),
+        now=NOW,
     )
 
     assert expected in result.decisions[0].reason_codes
@@ -665,6 +832,7 @@ async def test_unknown_route_weather_and_opening_require_verification() -> None:
         user_id=user_id,
         constraints=_constraints(),
         facts=PlanningFactSnapshot(),
+        now=NOW,
     )
 
     decision = result.decisions[0]
@@ -689,10 +857,115 @@ async def test_reachable_route_must_still_fit_the_available_time_window() -> Non
         user_id=user_id,
         constraints=_constraints(),
         facts=PlanningFactSnapshot(pois=(facts,)),
+        now=NOW,
     )
 
     assert result.decisions[0].outcome is CandidateOutcome.EXCLUDED
     assert CandidateReasonCode.ROUTE_EXCEEDS_TIME_WINDOW in result.decisions[0].reason_codes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route_seconds", "expected_outcome"),
+    [
+        (1799, CandidateOutcome.INCLUDED),
+        (1800, CandidateOutcome.EXCLUDED),
+        (1801, CandidateOutcome.EXCLUDED),
+    ],
+)
+async def test_event_route_must_arrive_strictly_before_event_end(
+    route_seconds: int,
+    expected_outcome: CandidateOutcome,
+) -> None:
+    user_id = generate_user_id()
+    event = _event(
+        user_id,
+        start_at=START - timedelta(hours=1),
+        end_at=START + timedelta(minutes=30),
+    )
+    service, _ = _service([event])
+
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(),
+        facts=PlanningFactSnapshot(
+            collections=(_known_event_facts(event, duration=route_seconds),)
+        ),
+        now=NOW,
+    )
+
+    decision = result.decisions[0]
+    assert decision.outcome is expected_outcome
+    assert (
+        CandidateReasonCode.ROUTE_EXCEEDS_TIME_WINDOW in decision.reason_codes
+    ) is (expected_outcome is CandidateOutcome.EXCLUDED)
+
+
+@pytest.mark.asyncio
+async def test_started_event_remains_eligible_when_arrival_precedes_end() -> None:
+    user_id = generate_user_id()
+    event = _event(
+        user_id,
+        start_at=START - timedelta(hours=2),
+        end_at=START + timedelta(minutes=20),
+    )
+    service, _ = _service([event])
+
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(),
+        facts=PlanningFactSnapshot(
+            collections=(_known_event_facts(event, duration=600),)
+        ),
+        now=NOW,
+    )
+
+    assert result.decisions[0].outcome is CandidateOutcome.INCLUDED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("route", "expected_reason", "expected_outcome"),
+    [
+        (
+            RouteAssessment.UNREACHABLE,
+            CandidateReasonCode.ROUTE_UNREACHABLE,
+            CandidateOutcome.EXCLUDED,
+        ),
+        (
+            RouteAssessment.UNKNOWN,
+            CandidateReasonCode.ROUTE_UNKNOWN,
+            CandidateOutcome.VERIFICATION_REQUIRED,
+        ),
+        (
+            RouteAssessment.PROVIDER_FAILED,
+            CandidateReasonCode.ROUTE_PROVIDER_FAILED,
+            CandidateOutcome.VERIFICATION_REQUIRED,
+        ),
+    ],
+)
+async def test_event_non_reachable_route_states_keep_existing_semantics(
+    route: RouteAssessment,
+    expected_reason: CandidateReasonCode,
+    expected_outcome: CandidateOutcome,
+) -> None:
+    user_id = generate_user_id()
+    event = _event(user_id)
+    service, _ = _service([event])
+
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(),
+        facts=PlanningFactSnapshot(
+            collections=(_known_event_facts(event, route=route, duration=None),)
+        ),
+        now=NOW,
+    )
+
+    decision = result.decisions[0]
+    assert decision.outcome is expected_outcome
+    assert expected_reason in decision.reason_codes
+    assert CandidateReasonCode.ROUTE_EXCEEDS_TIME_WINDOW not in decision.reason_codes
 
 
 def _branch_provider(
@@ -750,6 +1023,7 @@ async def test_any_branch_uses_city_area_route_and_origin_without_mutating_colle
         facts=PlanningFactSnapshot(
             pois=(_known_poi_facts(far, duration=1200), _known_poi_facts(near, duration=300))
         ),
+        now=NOW,
     )
 
     assert result.included[0].poi is not None
@@ -758,6 +1032,120 @@ async def test_any_branch_uses_city_area_route_and_origin_without_mutating_colle
     assert calls[0].district == "福田区"
     assert repository.items == before
     assert repository.items[0].place_target.scope is PlaceScope.ANY_BRANCH
+
+
+@pytest.mark.asyncio
+async def test_any_branch_ignores_stale_branch_location_clues_for_new_plan_scope() -> None:
+    user_id = generate_user_id()
+    branch = _poi(
+        "poi_futian_branch",
+        district="福田区",
+        name="测试咖啡",
+        branch_name="福田店",
+        poi_type=PoiType.CAFE,
+    )
+    brand = _place(
+        user_id,
+        title="测试咖啡旧南山店描述",
+        target=_brand_target(),
+        tags=("咖啡",),
+        price=Decimal("35"),
+    ).model_copy(
+        update={
+            "district": "南山区",
+            "address": "南山区旧分店地址",
+            "business_district": "旧南山商圈",
+            "landmark": "旧南山地标",
+            "metro_station": "旧南山站",
+        },
+        deep=True,
+    )
+    provider_calls: list[SearchPoiRequest] = []
+
+    async def capture(request: Any) -> None:
+        if isinstance(request, SearchPoiRequest):
+            provider_calls.append(request)
+
+    service, repository = _service(
+        [brand],
+        provider=_branch_provider(
+            (branch,),
+            district="福田区",
+            origin=ORIGIN,
+            call_hook=capture,
+        ),
+    )
+    before = copy.deepcopy(repository.items)
+
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(
+            area=ActivityArea(districts=("福田区",)),
+            origin=ORIGIN,
+        ),
+        facts=PlanningFactSnapshot(pois=(_known_poi_facts(branch),)),
+        now=NOW,
+    )
+
+    assert result.included[0].poi is not None
+    assert result.included[0].poi.poi_id == branch.poi_id
+    assert provider_calls == [
+        SearchPoiRequest(
+            query="测试咖啡",
+            city=_constraints().city_scope,
+            district="福田区",
+            location=ORIGIN,
+        )
+    ]
+    assert repository.items == before
+    assert repository.items[0].district == "南山区"
+    assert repository.items[0].place_target == brand.place_target
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed_rule", ["weather", "availability", "budget"])
+async def test_resolved_any_branch_still_applies_candidate_hard_rules(
+    failed_rule: str,
+) -> None:
+    user_id = generate_user_id()
+    branch = _poi(
+        f"poi_branch_{failed_rule}",
+        name="测试咖啡",
+        branch_name="福田店",
+        poi_type=PoiType.CAFE,
+    )
+    brand = _place(
+        user_id,
+        title="测试咖啡",
+        target=_brand_target(),
+        tags=("咖啡",),
+        price=Decimal("35"),
+    )
+    dynamic = _known_poi_facts(branch)
+    if failed_rule == "weather":
+        dynamic = dynamic.model_copy(update={"weather": WeatherAssessment.CONFLICT})
+    elif failed_rule == "availability":
+        dynamic = dynamic.model_copy(
+            update={"availability": AvailabilityAssessment.UNAVAILABLE}
+        )
+    constraints = _constraints(
+        area=None,
+        origin=ORIGIN,
+        budget=Decimal("20") if failed_rule == "budget" else None,
+    )
+    service, _ = _service([brand], provider=_branch_provider((branch,)))
+
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=constraints,
+        facts=PlanningFactSnapshot(pois=(dynamic,)),
+        now=NOW,
+    )
+
+    assert result.decisions[0].outcome is CandidateOutcome.EXCLUDED
+    assert CandidateReasonCode.BRANCH_NO_HARD_CONSTRAINT_MATCH in (
+        result.decisions[0].reason_codes
+    )
 
 
 @pytest.mark.asyncio
@@ -786,6 +1174,7 @@ async def test_any_branch_failure_modes_have_stable_safe_reasons(
         user_id=user_id,
         constraints=_constraints(area=None, origin=ORIGIN),
         facts=PlanningFactSnapshot(),
+        now=NOW,
     )
 
     assert expected in result.decisions[0].reason_codes
@@ -826,6 +1215,7 @@ async def test_any_branch_with_only_unreachable_candidates_is_excluded() -> None
                 ),
             )
         ),
+        now=NOW,
     )
 
     assert result.decisions[0].outcome is CandidateOutcome.EXCLUDED
@@ -863,6 +1253,7 @@ async def test_exact_and_any_branch_same_poi_are_deduplicated_with_both_sources(
         user_id=user_id,
         constraints=_constraints(area=None, origin=ORIGIN),
         facts=PlanningFactSnapshot(pois=(_known_poi_facts(poi),)),
+        now=NOW,
     )
 
     assert len(result.included) == 1
@@ -889,8 +1280,18 @@ async def test_repeated_calls_are_identical_do_not_modify_inputs_and_never_use_n
 
     monkeypatch.setattr("socket.socket.connect", forbidden)
     monkeypatch.setattr("socket.create_connection", forbidden)
-    first = await service.retrieve(user_id=user_id, constraints=constraints, facts=facts)
-    second = await service.retrieve(user_id=user_id, constraints=constraints, facts=facts)
+    first = await service.retrieve(
+        user_id=user_id,
+        constraints=constraints,
+        facts=facts,
+        now=NOW,
+    )
+    second = await service.retrieve(
+        user_id=user_id,
+        constraints=constraints,
+        facts=facts,
+        now=NOW,
+    )
 
     assert first == second
     assert constraints == constraints_before

@@ -77,9 +77,11 @@ python -m pytest -q tests/application/test_structured_collection_retrieval.py
 
 `StructuredCollectionRetrievalService` 是唯一正式检索入口：它用显式 `user_id` 从既有 `CollectionRepository` 只读加载收藏，并复用 M0-5A `PlanConstraints`、既有 `PlaceTarget`、`PlaceMatchingService` 和 `MapProvider`。正式城市只来自已确认 POI 或请求级的已核验 Event 位置事实；`city_hint` 不参与计划城市判断。非 active、已删除、待选择、待补充、位置/城市未确认、已结束 Event 及违反行政区、活动范围、时间、预算、include/exclude、路线、天气或营业硬条件的条目会得到稳定原因码，不会仅降低分数。
 
+调用 `retrieve()` 必须显式传入确定性的 aware `now`。入口先复用 `PlanConstraints.is_active()` 校验 `[created_at, expires_at)`，过期或非法时间分别通过同一个安全错误类型返回 `PLAN_CONSTRAINTS_EXPIRED` 或 `INVALID_RETRIEVAL_TIME`，并在 Repository、地点匹配和 MapProvider 之前停止。路线期限规则只有一份：普通 Place 必须在计划结束前到达，Event 还必须严格早于其结束时间到达；到达时刻等于期限也会排除。
+
 路线、天气、营业和 Event 正式位置通过冻结的 `PlanningFactSnapshot` 注入；未知、离线失败和明确冲突分别保留不同结论，不把未知价格、路线、天气或营业状态伪造成零或通过。结果只有 `included`、`excluded` 和 `verification_required` 三种稳定结论，并携带固定安全摘要。预算为 `None` 时不按已知价格过滤；价格未知仍标记待确认。
 
-`any_branch` 在本次请求中按计划城市、单一行政区/精确 origin 和路线事实调用既有地点匹配入口；不创建分店收藏、不改绑品牌收藏、不写数据库。无候选、证据不足、Provider 失败和没有满足硬约束的分店均有独立原因码。品牌收藏与精确收藏解析到同一 `provider + poi_id` 时合并为一个候选，同时保留全部 `collection_item_ids` 和任意分店来源 ID，供后续 M0-5C 解释；本阶段没有 Plan、PlanItem 或草案代码。
+`any_branch` 在本次请求中只用已确认 `BrandIdentity` 作为匹配身份，计划城市、单一行政区和精确 origin 仅来自本次 `PlanConstraints`。原收藏残留的旧分店 district、address、business_district、landmark、metro_station 和描述不会复制到动态分店匹配候选；原收藏本身不被清空、改绑或写回。无候选、证据不足、Provider 失败和没有满足硬约束的分店均有独立原因码。品牌收藏与精确收藏解析到同一 `provider + poi_id` 时合并为一个候选，同时保留全部 `collection_item_ids` 和任意分店来源 ID，供后续 M0-5C 解释；本阶段没有 Plan、PlanItem 或草案代码。
 
 聚焦回归入口为 `APP_ENV=test RUN_REAL_MODEL_TESTS=0 RUN_REAL_MAP_TESTS=0 python -m pytest -q tests/application/test_structured_collection_retrieval.py`。
 

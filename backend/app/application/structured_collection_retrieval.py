@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable
-from typing import Final
+from datetime import datetime, timedelta
+from typing import ClassVar, Final
 from unicodedata import normalize
 
 from app.application.place_matching import PlaceMatchingService
@@ -47,13 +48,18 @@ _CNY: Final[str] = "CNY"
 
 
 class StructuredCollectionRetrievalError(RuntimeError):
-    """Fixed safe failure for repository or ownership boundary violations."""
+    """The single fixed, safe public failure for the retrieval boundary."""
 
-    __slots__ = ()
-    code: Final[str] = "COLLECTION_RETRIEVAL_FAILED"
-    summary: Final[str] = "Collection retrieval failed."
+    __slots__ = ("code", "summary")
+    _SUMMARIES: ClassVar[dict[str, str]] = {
+        "COLLECTION_RETRIEVAL_FAILED": "Collection retrieval failed.",
+        "PLAN_CONSTRAINTS_EXPIRED": "Plan constraints have expired.",
+        "INVALID_RETRIEVAL_TIME": "Retrieval time is invalid.",
+    }
 
-    def __init__(self) -> None:
+    def __init__(self, code: str = "COLLECTION_RETRIEVAL_FAILED") -> None:
+        self.code = code
+        self.summary = self._SUMMARIES[code]
         super().__init__(self.summary)
 
     def to_dict(self) -> dict[str, str]:
@@ -135,6 +141,28 @@ def _dynamic_reasons(
     return reasons
 
 
+def _route_misses_arrival_deadline(
+    *,
+    item: CollectionItem,
+    constraints: PlanConstraints,
+    facts: CandidateFactValues,
+) -> bool:
+    """Apply the sole route-duration deadline rule for Place and Event."""
+
+    if (
+        facts.route is not RouteAssessment.REACHABLE
+        or facts.route_duration_seconds is None
+    ):
+        return False
+    arrival_at = constraints.start_at + timedelta(
+        seconds=facts.route_duration_seconds
+    )
+    arrival_deadline = constraints.end_at
+    if item.kind is CollectionKind.EVENT and item.event_end_at is not None:
+        arrival_deadline = min(arrival_deadline, item.event_end_at)
+    return arrival_at >= arrival_deadline
+
+
 def _candidate_decision(
     *,
     item: CollectionItem,
@@ -200,10 +228,10 @@ def _candidate_decision(
 
     if apply_dynamic_facts:
         reasons.update(_dynamic_reasons(facts, is_place=item.kind is CollectionKind.PLACE))
-        if (
-            facts.route is RouteAssessment.REACHABLE
-            and facts.route_duration_seconds is not None
-            and facts.route_duration_seconds >= constraints.duration.total_seconds()
+        if _route_misses_arrival_deadline(
+            item=item,
+            constraints=constraints,
+            facts=facts,
         ):
             reasons.add(CandidateReasonCode.ROUTE_EXCEEDS_TIME_WINDOW)
     ordered = _ordered_reasons(reasons)
@@ -223,33 +251,22 @@ def _candidate_decision(
     )
 
 
-def _missing_candidate_fields(item: CollectionItem) -> tuple[CandidateField, ...]:
-    values = {
-        CandidateField.CITY_HINT: None,
-        CandidateField.DISTRICT: item.district,
-        CandidateField.ADDRESS: item.address,
-        CandidateField.BUSINESS_DISTRICT: item.business_district,
-        CandidateField.LANDMARK: item.landmark,
-        CandidateField.METRO_STATION: item.metro_station,
-        CandidateField.PRICE: item.price_amount,
-        CandidateField.TAGS: item.tags or None,
-    }
-    return tuple(field for field in CandidateField if field in values and values[field] is None)
+def _branch_candidate(brand_name: str) -> PlaceCandidate:
+    """Build brand-only matching input without stale source-branch clues."""
 
-
-def _branch_candidate(item: CollectionItem, brand_name: str) -> PlaceCandidate:
     return PlaceCandidate(
         title=brand_name,
         city_hint=None,
-        district=item.district,
-        address=item.address,
-        business_district=item.business_district,
-        landmark=item.landmark,
-        metro_station=item.metro_station,
-        price_amount=item.price_amount,
-        price_currency=item.price_currency,
-        tags=item.tags,
-        missing_fields=_missing_candidate_fields(item),
+        missing_fields=(
+            CandidateField.CITY_HINT,
+            CandidateField.DISTRICT,
+            CandidateField.ADDRESS,
+            CandidateField.BUSINESS_DISTRICT,
+            CandidateField.LANDMARK,
+            CandidateField.METRO_STATION,
+            CandidateField.PRICE,
+            CandidateField.TAGS,
+        ),
     )
 
 
@@ -328,7 +345,24 @@ class StructuredCollectionRetrievalService:
         user_id: str,
         constraints: PlanConstraints,
         facts: PlanningFactSnapshot,
+        now: datetime,
     ) -> StructuredCollectionResult:
+        invalid_time = False
+        try:
+            constraints_active = constraints.is_active(now)
+        except ValueError:
+            invalid_time = True
+            constraints_active = False
+        if invalid_time:
+            raise StructuredCollectionRetrievalError("INVALID_RETRIEVAL_TIME") from None
+        if not constraints_active:
+            code = (
+                "PLAN_CONSTRAINTS_EXPIRED"
+                if now >= constraints.expires_at
+                else "INVALID_RETRIEVAL_TIME"
+            )
+            raise StructuredCollectionRetrievalError(code) from None
+
         retrieval_failed = False
         try:
             items = await self._repository.list_collection_items(
@@ -434,7 +468,7 @@ class StructuredCollectionRetrievalService:
         try:
             result = await self._place_matching.match(
                 PlaceMatchRequest(
-                    candidate=_branch_candidate(item, resolved.brand_identity.display_name),
+                    candidate=_branch_candidate(resolved.brand_identity.display_name),
                     city=constraints.city_scope,
                     search_district=(
                         constraints.area.districts[0]
