@@ -463,7 +463,7 @@ def test_place_matching_policy_comes_from_one_server_settings_entry() -> None:
     assert policy.candidate_score == 40
 
 
-@pytest.mark.parametrize("value", [-1, 101, float("nan"), float("inf"), True])
+@pytest.mark.parametrize("value", [0, -1, 101, float("nan"), float("inf"), True])
 @pytest.mark.parametrize(
     "field",
     [
@@ -493,4 +493,26 @@ def test_candidate_threshold_cannot_exceed_unique_threshold() -> None:
             database_url="sqlite+aiosqlite:///:memory:",
             place_match_unique_score=50,
             place_match_candidate_score=50.001,
+        )
+
+
+@pytest.mark.parametrize(
+    "environment_name",
+    [
+        "PLACE_MATCH_UNIQUE_SCORE",
+        "PLACE_MATCH_MINIMUM_SCORE_GAP",
+        "PLACE_MATCH_CANDIDATE_SCORE",
+    ],
+)
+def test_zero_place_matching_thresholds_from_environment_are_rejected(
+    environment_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(environment_name, "0")
+
+    with pytest.raises(ValidationError, match="place matching thresholds"):
+        Settings(
+            _env_file=None,
+            app_env="test",
+            database_url="sqlite+aiosqlite:///:memory:",
         )

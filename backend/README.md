@@ -92,6 +92,10 @@ four match outcomes, deterministic sorting, and explicit user-selection contract
 `MapProvider`; it has no database, file, message, model, or HTTP implementation. Every call
 carries its own `CityScope`, Event candidates are rejected before search, and at most three
 GCJ-02 POIs are returned. Server thresholds come only from `Settings.place_matching_policy()`.
+The unique, candidate, and minimum-gap thresholds must each be finite positive values in
+`(0, 100]`; candidate score cannot exceed unique score. Public candidates meet the candidate
+threshold and have no hard conflict, while an empty reliable set is represented as
+`needs_context` when the provider returned POIs.
 
 ## M0-1C AgentRun and ToolRun
 

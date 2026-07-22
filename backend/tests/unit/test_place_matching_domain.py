@@ -17,6 +17,7 @@ from app.domain.places import (
     PlaceMatchCandidate,
     PlaceMatchingPolicy,
     PlaceMatchRequest,
+    PlaceMatchResult,
     PlaceSelection,
     PlaceSelectionKind,
     PoiProvider,
@@ -31,6 +32,8 @@ from tests.fixtures.place_matching import (
     M_STAND_MIXC,
     SHENZHEN,
     SHENZHEN_MOCAUP,
+    STARBUCKS_COCO,
+    STARBUCKS_ONE_AVENUE,
     place_candidate,
     poi,
 )
@@ -217,7 +220,8 @@ def test_same_name_in_different_areas_prefers_the_supported_area() -> None:
     assert result.status is MatchStatus.NEEDS_CONTEXT
     assert result.candidates[0].poi_id == "book_nanshan"
     assert result.candidates[0].provider_rank == 2
-    assert result.candidates[1].has_hard_conflict is True
+    assert len(result.candidates) == 1
+    assert all(not candidate.has_hard_conflict for candidate in result.candidates)
 
 
 def test_matching_name_with_district_conflict_needs_context() -> None:
@@ -237,7 +241,8 @@ def test_matching_name_with_district_conflict_needs_context() -> None:
     result = classify_place_matches((scored,), policy=POLICY)
 
     assert result.status is MatchStatus.NEEDS_CONTEXT
-    district = _by_field(result.candidates[0])[EvidenceField.DISTRICT]
+    assert result.candidates == ()
+    district = _by_field(scored)[EvidenceField.DISTRICT]
     assert district.outcome is EvidenceOutcome.CONFLICT
     assert district.hard_conflict is True
 
@@ -274,6 +279,120 @@ def test_name_and_branch_fields_produce_match_and_conflict_evidence() -> None:
     branch = _by_field(unsupported)[EvidenceField.BRANCH_NAME]
     assert branch.outcome is EvidenceOutcome.CONFLICT
     assert branch.hard_conflict is True
+
+
+@pytest.mark.parametrize(
+    ("title", "candidate_poi"),
+    [
+        ("M Stand咖啡店", M_STAND_COASTAL),
+        (
+            "诚品书店",
+            poi(
+                poi_id="eslite_coastal",
+                name="诚品书店",
+                branch_name="海岸城店",
+            ),
+        ),
+        (
+            "海底捞餐厅",
+            poi(
+                poi_id="haidilao_houhai",
+                name="海底捞",
+                branch_name="后海店",
+                poi_type=PoiType.RESTAURANT,
+            ),
+        ),
+    ],
+)
+def test_generic_business_names_are_not_specific_branch_conflicts(
+    title: str,
+    candidate_poi: object,
+) -> None:
+    scored = score_place_candidate(
+        request=_request(candidate_title=title, source_context=f"想收藏{title}"),
+        poi=candidate_poi,  # type: ignore[arg-type]
+        provider_rank=1,
+        policy=POLICY,
+    )
+
+    branch = _by_field(scored)[EvidenceField.BRANCH_NAME]
+    assert branch.outcome is EvidenceOutcome.MISSING
+    assert branch.hard_conflict is False
+
+
+@pytest.mark.parametrize(
+    ("generic_title", "specific_title", "expected_id", "other_id", "pois"),
+    [
+        (
+            "M Stand咖啡店",
+            "M Stand咖啡海岸城店",
+            "mstand_coastal",
+            "mstand_mixc",
+            (M_STAND_COASTAL, M_STAND_MIXC),
+        ),
+        (
+            "星巴克咖啡店",
+            "星巴克COCO Park店",
+            "starbucks_coco",
+            "starbucks_one_avenue",
+            (STARBUCKS_COCO, STARBUCKS_ONE_AVENUE),
+        ),
+    ],
+)
+def test_two_chains_distinguish_generic_correct_and_wrong_branch_names(
+    generic_title: str,
+    specific_title: str,
+    expected_id: str,
+    other_id: str,
+    pois: tuple[object, ...],
+) -> None:
+    generic_request = _request(
+        candidate_title=generic_title,
+        tags=("咖啡",),
+        source_context=f"想收藏{generic_title}",
+    )
+    generic_scores = tuple(
+        score_place_candidate(
+            request=generic_request,
+            poi=candidate_poi,  # type: ignore[arg-type]
+            provider_rank=rank,
+            policy=POLICY,
+        )
+        for rank, candidate_poi in enumerate(pois, start=1)
+    )
+
+    generic_result = classify_place_matches(generic_scores, policy=POLICY)
+
+    assert generic_result.status is MatchStatus.AMBIGUOUS
+    assert len(generic_result.candidates) == 2
+    assert all(
+        _by_field(candidate)[EvidenceField.BRANCH_NAME].outcome
+        is EvidenceOutcome.MISSING
+        for candidate in generic_scores
+    )
+
+    specific_request = _request(
+        candidate_title=specific_title,
+        tags=("咖啡",),
+        source_context=f"想收藏{specific_title}",
+    )
+    specific_scores = tuple(
+        score_place_candidate(
+            request=specific_request,
+            poi=candidate_poi,  # type: ignore[arg-type]
+            provider_rank=rank,
+            policy=POLICY,
+        )
+        for rank, candidate_poi in enumerate(pois, start=1)
+    )
+    by_id = {candidate.poi_id: candidate for candidate in specific_scores}
+    specific_result = classify_place_matches(specific_scores, policy=POLICY)
+
+    assert _by_field(by_id[expected_id])[EvidenceField.BRANCH_NAME].outcome is EvidenceOutcome.MATCH
+    wrong_branch = _by_field(by_id[other_id])[EvidenceField.BRANCH_NAME]
+    assert wrong_branch.outcome is EvidenceOutcome.CONFLICT
+    assert wrong_branch.hard_conflict is True
+    assert tuple(candidate.poi_id for candidate in specific_result.candidates) == (expected_id,)
 
 
 @pytest.mark.parametrize(
@@ -476,6 +595,42 @@ def test_equal_scores_use_provider_rank_as_a_stable_tie_breaker_only() -> None:
     assert tuple(item.poi_id for item in first.candidates) == ("first", "second", "third")
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["unique_match_score", "minimum_score_gap", "candidate_score"],
+)
+def test_direct_policy_construction_rejects_zero_safety_thresholds(field: str) -> None:
+    values = POLICY.model_dump()
+    values[field] = 0.0
+
+    with pytest.raises(ValidationError):
+        PlaceMatchingPolicy.model_validate(values)
+
+
+def test_model_construct_cannot_bypass_zero_threshold_safety() -> None:
+    unsafe = PlaceMatchingPolicy.model_construct(
+        unique_match_score=0.0,
+        minimum_score_gap=0.0,
+        candidate_score=0.0,
+        partial_match_factor=POLICY.partial_match_factor,
+        weights=POLICY.weights,
+    )
+    equal = (
+        _scored(0.0, poi_id="first", provider_rank=1),
+        _scored(0.0, poi_id="second", provider_rank=2),
+    )
+
+    with pytest.raises(ValueError, match="policy thresholds"):
+        classify_place_matches(equal, policy=unsafe)
+    with pytest.raises(ValueError, match="policy thresholds"):
+        score_place_candidate(
+            request=_request(),
+            poi=SHENZHEN_MOCAUP,
+            provider_rank=1,
+            policy=unsafe,
+        )
+
+
 def test_city_mismatch_is_a_hard_conflict_and_cannot_match() -> None:
     request = PlaceMatchRequest(candidate=place_candidate(title="广州塔"), city=SHENZHEN)
     guangzhou_poi = poi(
@@ -494,6 +649,7 @@ def test_city_mismatch_is_a_hard_conflict_and_cannot_match() -> None:
     result = classify_place_matches((scored,), policy=POLICY)
 
     assert result.status is MatchStatus.NEEDS_CONTEXT
+    assert result.candidates == ()
     city = _by_field(scored)[EvidenceField.CITY]
     assert city.outcome is EvidenceOutcome.CONFLICT
     assert city.hard_conflict is True
@@ -522,9 +678,117 @@ def test_explicit_city_hint_conflicting_with_search_scope_cannot_auto_match() ->
 
     assert scored.score >= POLICY.unique_match_score
     assert result.status is MatchStatus.NEEDS_CONTEXT
+    assert result.candidates == ()
     city = _by_field(scored)[EvidenceField.CITY]
     assert city.reason is EvidenceReason.CITY_HINT_CONFLICT
     assert city.hard_conflict is True
+
+
+@pytest.mark.parametrize("city_hint", ["上海", "北京", "未知城市文本"])
+def test_unresolved_non_empty_city_hint_blocks_automatic_matching(city_hint: str) -> None:
+    request = _request(
+        city_hint=city_hint,
+        district="福田区",
+        address="福中路184号",
+        business_district="市民中心",
+        landmark="深圳市民中心",
+        metro_station="少年宫地铁站",
+        tags=("博物馆",),
+        source_context="福中路184号的深圳当代艺术与城市规划馆，电话0755-12345678",
+    )
+    scored = score_place_candidate(
+        request=request,
+        poi=SHENZHEN_MOCAUP,
+        provider_rank=1,
+        policy=POLICY,
+    )
+
+    result = classify_place_matches((scored,), policy=POLICY)
+
+    assert result.status is MatchStatus.NEEDS_CONTEXT
+    assert result.candidates == ()
+    city = _by_field(scored)[EvidenceField.CITY]
+    assert city.reason is EvidenceReason.CITY_HINT_UNRESOLVED
+    assert city.hard_conflict is True
+
+
+@pytest.mark.parametrize(
+    ("city_hint", "city", "city_code", "district"),
+    [
+        ("深圳", SHENZHEN, "shenzhen", "福田区"),
+        ("深圳市", SHENZHEN, "shenzhen", "福田区"),
+        ("shenzhen", SHENZHEN, "shenzhen", "福田区"),
+        ("广州", GUANGZHOU, "guangzhou", "越秀区"),
+        ("广州市", GUANGZHOU, "guangzhou", "越秀区"),
+        ("canton", GUANGZHOU, "guangzhou", "越秀区"),
+    ],
+)
+def test_supported_city_aliases_match_the_correct_explicit_scope(
+    city_hint: str,
+    city: object,
+    city_code: str,
+    district: str,
+) -> None:
+    candidate_poi = poi(
+        poi_id=f"museum_{city_code}",
+        name="城市博物馆",
+        city_code=city_code,
+        district=district,
+        business_area="中心区",
+        address=f"{district}中心路1号 地标广场 中心地铁站",
+        poi_type=PoiType.MUSEUM,
+        phone="020-12345678" if city_code == "guangzhou" else "0755-12345678",
+    )
+    request = PlaceMatchRequest(
+        candidate=place_candidate(
+            title="城市博物馆",
+            city_hint=city_hint,
+            district=district,
+            address=f"{district}中心路1号",
+            business_district="中心区",
+            landmark="地标广场",
+            metro_station="中心地铁站",
+            tags=("博物馆",),
+        ),
+        city=city,  # type: ignore[arg-type]
+        source_context="城市博物馆在中心路1号，电话020-12345678"
+        if city_code == "guangzhou"
+        else "城市博物馆在中心路1号，电话0755-12345678",
+    )
+    scored = score_place_candidate(
+        request=request,
+        poi=candidate_poi,
+        provider_rank=1,
+        policy=POLICY,
+    )
+
+    result = classify_place_matches((scored,), policy=POLICY)
+
+    assert result.status is MatchStatus.MATCHED
+    assert _by_field(scored)[EvidenceField.CITY].reason is EvidenceReason.WITHIN_SEARCH_SCOPE
+
+
+def test_supported_city_alias_conflicting_with_scope_is_hidden() -> None:
+    request = PlaceMatchRequest(
+        candidate=place_candidate(title="城市博物馆", city_hint="深圳市"),
+        city=GUANGZHOU,
+    )
+    scored = score_place_candidate(
+        request=request,
+        poi=poi(
+            poi_id="museum_guangzhou",
+            name="城市博物馆",
+            city_code="guangzhou",
+        ),
+        provider_rank=1,
+        policy=POLICY,
+    )
+
+    result = classify_place_matches((scored,), policy=POLICY)
+
+    assert result.status is MatchStatus.NEEDS_CONTEXT
+    assert result.candidates == ()
+    assert _by_field(scored)[EvidenceField.CITY].reason is EvidenceReason.CITY_HINT_CONFLICT
 
 
 def test_search_scope_is_not_positive_city_evidence() -> None:
@@ -619,6 +883,83 @@ def test_invalid_or_non_current_selection_is_rejected() -> None:
             provider=PoiProvider.AMAP,
             poi_id="current",
         )
+
+
+@pytest.mark.parametrize(
+    ("score", "hard_conflict", "visible"),
+    [
+        (0.0, False, False),
+        (POLICY.candidate_score - 0.001, False, False),
+        (POLICY.candidate_score, False, True),
+        (POLICY.candidate_score + 0.001, False, True),
+        (POLICY.candidate_score + 20.0, True, False),
+    ],
+)
+def test_only_threshold_qualified_conflict_free_candidates_are_public(
+    score: float,
+    hard_conflict: bool,
+    visible: bool,
+) -> None:
+    candidate = _scored(
+        score,
+        poi_id="quality_boundary",
+        hard_conflict=hard_conflict,
+    )
+
+    result = classify_place_matches((candidate,), policy=POLICY)
+
+    assert result.status is MatchStatus.NEEDS_CONTEXT
+    assert (len(result.candidates) == 1) is visible
+
+
+def test_provider_results_without_reliable_candidates_are_not_not_found() -> None:
+    result = classify_place_matches(
+        (
+            _scored(0.0, poi_id="zero"),
+            _scored(POLICY.candidate_score - 0.001, poi_id="low", provider_rank=2),
+            _scored(90.0, poi_id="conflict", provider_rank=3, hard_conflict=True),
+        ),
+        policy=POLICY,
+    )
+
+    assert result.status is MatchStatus.NEEDS_CONTEXT
+    assert result.candidates == ()
+
+
+def test_result_contract_only_allows_empty_candidates_for_safe_empty_outcomes() -> None:
+    assert PlaceMatchResult(status=MatchStatus.NEEDS_CONTEXT).candidates == ()
+    assert PlaceMatchResult(status=MatchStatus.NOT_FOUND).candidates == ()
+
+    with pytest.raises(ValidationError, match="require candidates"):
+        PlaceMatchResult(status=MatchStatus.MATCHED)
+    with pytest.raises(ValidationError, match="require candidates"):
+        PlaceMatchResult(status=MatchStatus.AMBIGUOUS)
+    with pytest.raises(ValidationError, match="hard conflicts"):
+        PlaceMatchResult(
+            status=MatchStatus.NEEDS_CONTEXT,
+            candidates=(
+                _scored(90.0, poi_id="conflict", hard_conflict=True),
+            ),
+        )
+
+
+def test_hidden_low_quality_and_hard_conflict_candidates_cannot_be_selected() -> None:
+    result = classify_place_matches(
+        (
+            _scored(0.0, poi_id="zero"),
+            _scored(90.0, poi_id="conflict", provider_rank=2, hard_conflict=True),
+        ),
+        policy=POLICY,
+    )
+
+    for poi_id in ("zero", "conflict"):
+        selection = PlaceSelection(
+            kind=PlaceSelectionKind.CANDIDATE,
+            provider=PoiProvider.AMAP,
+            poi_id=poi_id,
+        )
+        with pytest.raises(ValueError, match="without current candidates"):
+            validate_place_selection(result, selection)
 
 
 @pytest.mark.parametrize(

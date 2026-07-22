@@ -72,6 +72,7 @@ class EvidenceReason(StrEnum):
     WITHIN_SEARCH_SCOPE = "within_search_scope"
     OUTSIDE_SEARCH_SCOPE = "outside_search_scope"
     CITY_HINT_CONFLICT = "city_hint_conflict"
+    CITY_HINT_UNRESOLVED = "city_hint_unresolved"
     BRANCH_CORROBORATED = "branch_corroborated"
     BRANCH_CONFLICT = "branch_conflict"
     PHONE_CORROBORATED = "phone_corroborated"
@@ -151,9 +152,9 @@ class EvidenceWeights(PlaceMatchingContract):
 class PlaceMatchingPolicy(PlaceMatchingContract):
     """Validated thresholds and weights injected into every matching call."""
 
-    unique_match_score: float = Field(ge=0, le=100)
-    minimum_score_gap: float = Field(ge=0, le=100)
-    candidate_score: float = Field(ge=0, le=100)
+    unique_match_score: float = Field(gt=0, le=100)
+    minimum_score_gap: float = Field(gt=0, le=100)
+    candidate_score: float = Field(gt=0, le=100)
     partial_match_factor: float = Field(default=0.75, gt=0, lt=1)
     weights: EvidenceWeights = Field(default_factory=EvidenceWeights)
 
@@ -265,10 +266,10 @@ class PlaceMatchResult(PlaceMatchingContract):
             raise ValueError("candidate ranks must be consecutive and ordered")
         if self.status is MatchStatus.NOT_FOUND and self.candidates:
             raise ValueError("not-found results cannot carry candidates")
-        if self.status is not MatchStatus.NOT_FOUND and not self.candidates:
-            raise ValueError("non-empty match outcomes require candidates")
-        if self.status is MatchStatus.MATCHED and self.candidates[0].has_hard_conflict:
-            raise ValueError("matched results cannot select a hard-conflict candidate")
+        if self.status in {MatchStatus.MATCHED, MatchStatus.AMBIGUOUS} and not self.candidates:
+            raise ValueError("matched and ambiguous outcomes require candidates")
+        if any(candidate.has_hard_conflict for candidate in self.candidates):
+            raise ValueError("public match candidates cannot carry hard conflicts")
         return self
 
 
@@ -316,6 +317,23 @@ _PUNCTUATION_OR_SPACE = re.compile(r"[\W_]+", flags=re.UNICODE)
 _PHONE = re.compile(r"(?<!\d)(?:\+?86[- ]?)?(\d(?:[- ]?\d){6,14})(?!\d)")
 _BRANCH = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]{2,18}(?:分店|店)")
 
+_GENERIC_PLACE_SUFFIXES: tuple[str, ...] = (
+    "咖啡店",
+    "咖啡馆",
+    "书店",
+    "餐厅",
+    "餐馆",
+    "饭店",
+    "酒家",
+    "茶饮店",
+    "奶茶店",
+    "甜品店",
+    "面包店",
+    "蛋糕店",
+    "便利店",
+    "火锅店",
+)
+
 _CITY_HINT_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("shenzhen", ("shenzhen", "深圳", "深圳市")),
     ("guangzhou", ("guangzhou", "canton", "广州", "广州市")),
@@ -339,12 +357,35 @@ def _compact(value: str | None) -> str:
     return _PUNCTUATION_OR_SPACE.sub("", normalized)
 
 
-def _recognized_city_hint(value: str | None) -> str | None:
+def _resolve_city_hint(value: str | None) -> tuple[bool, str | None]:
+    """Resolve supported hints through the single future CityCatalog integration point."""
+
+    if value is None:
+        return (False, None)
     normalized = _compact(value)
     for city_code, aliases in _CITY_HINT_ALIASES:
         if normalized in {_compact(alias) for alias in aliases}:
-            return city_code
-    return None
+            return (True, city_code)
+    # A supplied but unsupported hint is deliberately distinct from no hint. U1 can
+    # replace this resolver with the shared CityCatalog without changing scoring.
+    return (True, None)
+
+
+def _require_safe_policy(policy: PlaceMatchingPolicy) -> None:
+    thresholds = (
+        policy.unique_match_score,
+        policy.minimum_score_gap,
+        policy.candidate_score,
+    )
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not isfinite(value)
+        or value <= 0
+        or value > 100
+        for value in thresholds
+    ) or policy.candidate_score > policy.unique_match_score:
+        raise ValueError("place matching policy thresholds are invalid")
 
 
 def _relation(left: str | None, right: str | None) -> EvidenceOutcome:
@@ -427,6 +468,30 @@ def _name_without_branch(poi: Poi) -> str:
     return name
 
 
+def _name_source(candidate_title: str, provider_name: str) -> str:
+    """Ignore a generic business suffix only when it merely extends the POI name."""
+
+    source = _compact(candidate_title)
+    provider = _compact(provider_name)
+    suffixes = ("店", *_GENERIC_PLACE_SUFFIXES)
+    if source in {f"{provider}{_compact(suffix)}" for suffix in suffixes}:
+        return provider_name
+    return candidate_title
+
+
+def _specific_branch_clues(corpus: str) -> tuple[str, ...]:
+    clues: list[str] = []
+    for item in _BRANCH.findall(normalize("NFKC", corpus)):
+        compact = _compact(item)
+        if item == "这家店" or compact in {"店", "分店"}:
+            continue
+        if any(compact.endswith(_compact(suffix)) for suffix in _GENERIC_PLACE_SUFFIXES):
+            continue
+        if item not in clues:
+            clues.append(item)
+    return tuple(clues)
+
+
 def _branch_evidence(
     *,
     candidate: PlaceCandidate,
@@ -450,9 +515,7 @@ def _branch_evidence(
             reason=EvidenceReason.BRANCH_CORROBORATED,
             score_delta=weight,
         )
-    explicit_branches = tuple(
-        item for item in _BRANCH.findall(normalize("NFKC", corpus)) if item != "这家店"
-    )
+    explicit_branches = _specific_branch_clues(corpus)
     if explicit_branches:
         return MatchEvidence(
             field=EvidenceField.BRANCH_NAME,
@@ -581,6 +644,7 @@ def score_place_candidate(
         raise TypeError("Event candidates cannot enter POI matching")
     if provider_rank < 1:
         raise ValueError("provider rank must be positive")
+    _require_safe_policy(policy)
 
     candidate = request.candidate
     context = _source_context(request)
@@ -596,15 +660,21 @@ def score_place_candidate(
         )
         if value
     )
-    hinted_city = _recognized_city_hint(candidate.city_hint)
+    has_city_hint, hinted_city = _resolve_city_hint(candidate.city_hint)
+    unresolved_city_hint = has_city_hint and hinted_city is None
     within_search_scope = poi.city_code == request.city.city_code
-    city_hint_conflicts = hinted_city is not None and hinted_city != poi.city_code
-    city_matches = within_search_scope and not city_hint_conflicts
+    city_hint_conflicts = (
+        hinted_city is not None and hinted_city != request.city.city_code
+    )
+    city_matches = (
+        within_search_scope and not unresolved_city_hint and not city_hint_conflicts
+    )
+    provider_name = _name_without_branch(poi)
     evidence = (
         _weighted_evidence(
             field=EvidenceField.NAME,
-            source=candidate.title,
-            provider=_name_without_branch(poi),
+            source=_name_source(candidate.title, provider_name),
+            provider=provider_name,
             weight=weights.name,
             partial_factor=policy.partial_match_factor,
         ),
@@ -621,9 +691,13 @@ def score_place_candidate(
                 EvidenceReason.WITHIN_SEARCH_SCOPE
                 if city_matches
                 else (
-                    EvidenceReason.CITY_HINT_CONFLICT
-                    if city_hint_conflicts
-                    else EvidenceReason.OUTSIDE_SEARCH_SCOPE
+                    EvidenceReason.CITY_HINT_UNRESOLVED
+                    if unresolved_city_hint
+                    else (
+                        EvidenceReason.CITY_HINT_CONFLICT
+                        if city_hint_conflicts
+                        else EvidenceReason.OUTSIDE_SEARCH_SCOPE
+                    )
                 )
             ),
             # Search scope is a hard boundary, never positive proof of confirmed city.
@@ -707,6 +781,7 @@ def classify_place_matches(
 ) -> PlaceMatchResult:
     """Sort and classify scored candidates using only deterministic rules."""
 
+    _require_safe_policy(policy)
     identities = tuple(candidate.identity for candidate in scored_candidates)
     if len(set(identities)) != len(identities):
         raise ValueError("scored candidates contain duplicate provider and POI identities")
@@ -719,25 +794,32 @@ def classify_place_matches(
             candidate.poi_id,
         ),
     )
+    reasonable = tuple(
+        candidate
+        for candidate in ordered
+        if candidate.score >= policy.candidate_score and not candidate.has_hard_conflict
+    )
     selected = tuple(
         candidate.model_copy(update={"rank": index}, deep=True)
-        for index, candidate in enumerate(ordered[:MAX_PLACE_MATCH_CANDIDATES], start=1)
+        for index, candidate in enumerate(reasonable[:MAX_PLACE_MATCH_CANDIDATES], start=1)
     )
-    if not selected:
+    if not ordered:
         return PlaceMatchResult(status=MatchStatus.NOT_FOUND)
+    if not selected:
+        return PlaceMatchResult(status=MatchStatus.NEEDS_CONTEXT)
 
     top = selected[0]
-    gap = top.score - selected[1].score if len(selected) > 1 else 100.0
+    competitor_scores = tuple(
+        candidate.score for candidate in ordered if candidate.identity != top.identity
+    )
+    gap = top.score - max(competitor_scores) if competitor_scores else 100.0
     if (
         top.score >= policy.unique_match_score
         and gap >= policy.minimum_score_gap
+        and gap > 0
         and not top.has_hard_conflict
     ):
         return PlaceMatchResult(status=MatchStatus.MATCHED, candidates=selected)
 
-    plausible = sum(
-        candidate.score >= policy.candidate_score and not candidate.has_hard_conflict
-        for candidate in selected
-    )
-    status = MatchStatus.AMBIGUOUS if plausible >= 2 else MatchStatus.NEEDS_CONTEXT
+    status = MatchStatus.AMBIGUOUS if len(selected) >= 2 else MatchStatus.NEEDS_CONTEXT
     return PlaceMatchResult(status=status, candidates=selected)

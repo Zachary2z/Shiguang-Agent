@@ -139,6 +139,65 @@ async def test_close_chain_candidates_are_ambiguous() -> None:
 
 
 @pytest.mark.asyncio
+async def test_generic_chain_business_name_remains_a_selectable_ambiguity() -> None:
+    request = _request(
+        title="M Stand咖啡店",
+        tags=("咖啡",),
+        source_context="想收藏M Stand咖啡店",
+    )
+    provider = _provider_for_request(
+        request,
+        PoiSearchResult(
+            city_code="shenzhen",
+            pois=(M_STAND_COASTAL, M_STAND_MIXC),
+        ),
+    )
+
+    result = await _service(provider).match(request)
+
+    assert result.status is MatchStatus.AMBIGUOUS
+    assert tuple(candidate.poi_id for candidate in result.candidates) == (
+        "mstand_coastal",
+        "mstand_mixc",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("city_hint", ["上海", "北京", "未知城市文本"])
+async def test_unresolved_city_hint_cannot_bind_search_scope_poi(city_hint: str) -> None:
+    original = _unique_request()
+    request = original.model_copy(
+        update={
+            "candidate": original.candidate.model_copy(update={"city_hint": city_hint})
+        },
+        deep=True,
+    )
+    provider = _provider_for_request(
+        request,
+        PoiSearchResult(city_code="shenzhen", pois=(SHENZHEN_MOCAUP,)),
+    )
+
+    result = await _service(provider).match(request)
+
+    assert result.status is MatchStatus.NEEDS_CONTEXT
+    assert result.candidates == ()
+
+
+@pytest.mark.asyncio
+async def test_provider_pois_without_reliable_candidates_become_empty_needs_context() -> None:
+    request = _request(title="完全不同的名称")
+    provider = _provider_for_request(
+        request,
+        PoiSearchResult(city_code="shenzhen", pois=(SHENZHEN_MOCAUP,)),
+    )
+
+    result = await _service(provider).match(request)
+
+    assert result.status is MatchStatus.NEEDS_CONTEXT
+    assert result.candidates == ()
+
+
+@pytest.mark.asyncio
 async def test_service_never_returns_more_than_three_candidates() -> None:
     request = _request(title="连锁咖啡", tags=("咖啡",), source_context="连锁咖啡")
     pois = tuple(

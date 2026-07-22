@@ -402,7 +402,7 @@ class Settings(BaseSettings):
     @classmethod
     def validate_place_match_threshold_type(cls, value: object) -> object:
         if isinstance(value, bool):
-            raise ValueError("place matching thresholds must be finite numbers from 0 to 100")
+            raise ValueError("place matching thresholds must be finite numbers in (0, 100]")
         return value
 
     @field_validator(
@@ -412,8 +412,8 @@ class Settings(BaseSettings):
     )
     @classmethod
     def validate_place_match_threshold(cls, value: float) -> float:
-        if not isfinite(value) or value < 0 or value > 100:
-            raise ValueError("place matching thresholds must be finite numbers from 0 to 100")
+        if not isfinite(value) or value <= 0 or value > 100:
+            raise ValueError("place matching thresholds must be finite numbers in (0, 100]")
         return value
 
     @model_validator(mode="after")
