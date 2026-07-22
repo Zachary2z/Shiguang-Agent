@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-4A 私有文件存储 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-4-url-image |
+| 当前子阶段 | M0-4B 网页解析 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-22 |
-| 阻塞项 | 无；等待主控验收 M0-4A |
+| 阻塞项 | 无；M0-4B 前置条件已满足 |
 
 ## 当前任务
 
-M0-4A 已完成开发并等待主控验收：新增唯一、供应商无关的 StorageProvider 契约和唯一本地私有目录适配器，以密码学安全随机 `file_key`、集中式 MIME/签名/流式大小边界、原子排他发布、固定安全错误、生命周期元数据和失败/取消清理形成后续截图上传的安全存储边界。没有上传/下载 API、URL 抓取、截图识别、统一输入流水线、云存储、数据库迁移或新依赖；M0-4B 及以后仍未开始。
+M0-4A 已通过主控验收并纯快进集成到 `main`：唯一 StorageProvider 契约和本地私有目录适配器已具备随机 key、类型/大小限制、生命周期元数据、排他原子发布、异常/取消清理、符号链接防护和幂等删除。当前允许开始 M0-4B 网页解析；M0-4C 截图识别、M0-4D 统一输入和 M0-5 仍未开始。
 
 ## M0 状态
 
@@ -23,7 +23,7 @@ M0-4A 已完成开发并等待主控验收：新增唯一、供应商无关的 S
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
-| M0-4 URL 与截图 | 进行中 | M0-4A 私有文件存储待验收；M0-4B、M0-4C、M0-4D 均未开始 |
+| M0-4 URL 与截图 | 进行中 | M0-4A 私有文件存储已完成；M0-4B 允许开始，M0-4C、M0-4D 未开始 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
@@ -49,10 +49,11 @@ M0-4A 已完成开发并等待主控验收：新增唯一、供应商无关的 S
 - M0-3B 已完成：唯一服务端高德 Web 服务适配、严格配置与响应边界、错误/重试/取消映射、真实响应空数组兼容及 5 次零重试只读真实验收已通过主控验收。
 - M0-3C 已完成：供应商无关的确定性匹配评分、可靠候选过滤、城市与分店硬冲突、四种结果和显式用户选择契约已通过主控验收。
 - M0-3D 已完成：统一 PlaceTarget、具体地点与任意分店目标、持久化候选快照、正式 POI/品牌幂等、多选事务、规划解析边界和异常链安全均已通过主控验收。
+- M0-4A 已完成：唯一 StorageProvider、本地私有目录、随机 key、类型/大小边界、生命周期元数据、原子排他发布、失败/取消清理和幂等删除已通过主控验收。
 
 ## 下一步
 
-由主控在隔离环境复验 `codex/m0-4-url-image` 的 M0-4A：重点检查随机 key、私有路径隔离、符号链接边界、流式上限、签名校验、原子写入、异常/取消清理、并发碰撞、幂等删除、生命周期元数据、异常脱敏和禁网全集。验收前不得开始 M0-4B；未经新授权不得调用任何真实或付费 Provider。
+从最新 `main` 创建 `codex/m0-4b-web-parsing`，只实施 M0-4B 网页解析：建立唯一网页内容获取/抽取边界，严格限制 HTTP(S)，阻止本机、内网、云元数据和重定向绕过，输出标题、正文、元数据与最终 URL，并为超时、过长、格式错误和访问失败提供可恢复结果。默认测试必须使用 Stub/MockTransport 和固定 HTML，未经用户明确授权不得访问任何真实网页、模型、地图或付费 Provider；不得提前开发 M0-4C/M0-4D/M0-5。
 
 ## 已确认跨城市收藏与后续升级
 
@@ -720,3 +721,12 @@ M0-4A 已完成开发并等待主控验收：新增唯一、供应商无关的 S
 - 正式回归：新增 5 个测试函数、共 7 个故障注入 case，覆盖数据硬链接后 objects 目录 fsync 失败、元数据硬链接后 metadata 目录 fsync 失败、objects 探测异常、metadata 探测异常、链接建立前失败且既有对象保留、清理后同 key 成功复用，以及硬链接后取消传播；探测失败测试同时放置其他请求的既有 reservation，确认只删除本请求 reservation。原碰撞、并发、流异常、取消、超限、类型/签名、符号链接、生命周期与幂等删除测试全部保留
 - 验证环境与结果：macOS、仓库受忽略 `.venv`、Python 3.13.5；`pip check`、Ruff、strict mypy（77 个源文件）及全部 pytest 命令退出 0。仓库实际存储测试路径 `tests/contract/test_storage_provider_contract.py tests/integration/test_local_private_storage.py` 为 `71 passed`，core 为 `118 passed`，实际迁移路径 `tests/integration/test_migrations.py` 为 `21 passed`；正式非真实全集为 `993 passed / 2 deselected`，默认全集为 `993 passed / 2 skipped`。临时插件封锁 socket connect/connect_ex/create_connection 与 DNS 后，非真实全集再次 `993 passed / 2 deselected`，随后删除插件
 - 范围、迁移与风险：只修改唯一本地存储适配器、直接相关正式离线测试和本交接记录；StorageProvider、LocalPrivateStorageProvider、Source 与配置入口仍各自唯一。没有迁移或依赖变化，没有修改 AgentRunner、ToolRegistry、ModelProvider、MapProvider、`.env`、数据库或 `0001`–`0006`；未实现 M0-4B/C/D、M0-5、云存储、上传下载 API 或真实 Provider，网络及真实/付费 API 调用为 0。一般性不可恢复硬件/文件系统故障仍可能阻止物理清理，但公开错误继续固定安全；当前实现只在 macOS/Python 3.13.5 验证，主控应在隔离 Linux 文件系统重点复测两个 post-link fsync 故障、reservation 探测故障、清理失败脱敏、同 key 重试、取消、碰撞和并发。M0-4A 仍为“待验收”，M0-4B 仍“未开始”，本分支不合并、不推送
+
+#### 2026-07-22｜M0-4A｜已完成（主控验收）
+
+- 提交与集成：阶段提交 `76463d98cafc0dc2ab08c3d1669b1f3e61479cc4` 和原子发布/reservation 清理修复 `2d3710e9010b36e878c4a2af08a78c79f0e7b795` 均直接包含已验收基线 `d9b6e1355ef49b6625957b11f6785816a963309b`；主控以 `git merge --ff-only` 将 `codex/m0-4-url-image` 纯快进集成到 `main`，无冲突、无额外代码变化，合并前后树哈希均为 `bc3afaec8507a4dc89fc6dfd9dcc2bf91f26bb28`
+- 验收环境与自动化：对最终阶段 HEAD 使用仓库外 `git archive` 和全新 Python 3.13.5 虚拟环境；editable 安装、`pip check`、Ruff 均通过，strict mypy 对 77 个源文件无问题。存储契约/集成测试 `71 passed`、core `118 passed`、迁移 `21 passed`；正式非真实全集 `993 passed / 2 deselected`，默认全集 `993 passed / 2 skipped`；封锁 socket connect/connect_ex/create_connection 和 DNS 后非真实全集再次 `993 passed / 2 deselected`
+- 缺陷关闭与独立对抗：原验收发现的两个 P1 已关闭。仓库外 7 项独立探针全部通过，覆盖 objects/metadata 两个硬链接后目录 `fsync` 失败、objects/metadata 两个 reservation 探测失败、链接建立前失败不误删既有对象、清理后同 key 可重试，以及硬链接后 `CancelledError` 传播与无残留；固定公开错误不包含注入的路径或伪 secret
+- 存储、安全与冗余：StorageProvider、LocalPrivateStorageProvider、Source、AgentRunner、ToolRegistry、ModelProvider 和 MapProvider 均保持唯一；未发现第二套存储契约、适配器、配置入口或 SDK 客户端。私有路径、随机 key、类型/签名/流式大小边界、0700/0600 权限、符号链接拒绝、排他发布、碰撞与并发、过期访问、幂等删除、异常链脱敏和测试自动清理均满足 M0-4A；Git 未跟踪 `.env`、上传文件、数据库、缓存、临时文件或响应快照
+- 迁移、外部调用与合并后检查：M0-4A 没有依赖或 Alembic 变化；临时 SQLite 完成 fresh upgrade、check、downgrade `20260721_0005`、re-upgrade、check 和 current，最终仍为唯一 `20260722_0006 (head)`。未读取本机 `.env`，未运行真实 marker，百炼、高德、网页、COS、DNS、HTTP、消息及其他真实/付费 API 调用均为 0。合并后 Ruff、77 文件 mypy 和非真实全集再次通过（`993 passed / 2 deselected`）
+- 验收结论与下一步：没有未关闭的 P0/P1，M0-4A 完成标准满足。M0-4B 前置条件已满足；从本次状态提交后的最新 `main` 创建 `codex/m0-4b-web-parsing`，只实现安全网页获取与内容抽取，不提前实现截图识别、统一输入、计划、前端或真实网络验收
