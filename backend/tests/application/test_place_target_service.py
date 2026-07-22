@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ from alembic.config import Config
 from app.application import CollectionWriteService, PlaceTargetSelectionService
 from app.domain.collections import (
     CandidateField,
+    CollectionDataIntegrityError,
     CollectionItem,
     CollectionKind,
     CollectionStatus,
@@ -27,6 +28,7 @@ from app.domain.collections import (
     UndoOutcome,
     User,
     UserMode,
+    VersionConflictError,
 )
 from app.domain.collections import (
     PlaceCandidate as ExtractedPlaceCandidate,
@@ -45,6 +47,7 @@ from app.domain.places import (
     MatchConfidence,
     MatchEvidence,
     MatchStatus,
+    PlaceConfirmationSource,
     PlaceMatchCandidate,
     PlaceMatchResult,
     PlaceScope,
@@ -115,6 +118,14 @@ def _match_result() -> PlaceMatchResult:
     )
 
 
+def _unique_match_result() -> PlaceMatchResult:
+    candidate = _candidate(0).model_copy(
+        update={"confidence": MatchConfidence.HIGH, "score": 92.0},
+        deep=True,
+    )
+    return PlaceMatchResult(status=MatchStatus.MATCHED, candidates=(candidate,))
+
+
 def _brand(*, stable_id: str = "brand_mstand_cn") -> ConfirmedBrandIdentity:
     return ConfirmedBrandIdentity(
         namespace="curated_brand",
@@ -183,6 +194,24 @@ async def _record(
         )
 
 
+async def _record_result(
+    database: Database,
+    user: User,
+    source: Source,
+    item: CollectionItem,
+    result: PlaceMatchResult,
+) -> CollectionItem:
+    async with database.session() as session:
+        return await PlaceTargetSelectionService(session=session).record_candidates(
+            user_id=user.id,
+            collection_item_id=item.id,
+            source_id=source.id,
+            match_result=result,
+            queried_at=NOW,
+            expected_version=item.version,
+        )
+
+
 def _candidate_choice(index: int) -> PlaceSelection:
     candidate = _candidate(index)
     return PlaceSelection(
@@ -190,6 +219,11 @@ def _candidate_choice(index: int) -> PlaceSelection:
         provider=candidate.provider,
         poi_id=candidate.poi_id,
     )
+
+
+def _snapshot_fingerprint(item: CollectionItem) -> str:
+    assert item.place_candidate_snapshot is not None
+    return item.place_candidate_snapshot.fingerprint
 
 
 @pytest.mark.asyncio
@@ -214,6 +248,122 @@ async def test_candidate_refresh_saves_queried_at_without_creating_collections(
 
 
 @pytest.mark.asyncio
+async def test_unique_high_confidence_match_atomically_becomes_active_exact(
+    target_database: tuple[str, Path],
+) -> None:
+    database_url, database_path = target_database
+    database = Database(database_url)
+    user, source, item = await _seed_pending(database)
+
+    stored = await _record_result(database, user, source, item, _unique_match_result())
+
+    target = stored.place_target
+    snapshot = stored.place_candidate_snapshot
+    assert stored.status is CollectionStatus.ACTIVE
+    assert target.scope is PlaceScope.EXACT
+    assert target.poi.poi_id == M_STAND_COASTAL.poi_id
+    assert target.confirmed_by is PlaceConfirmationSource.AUTO_UNIQUE_MATCH
+    assert target.confirmed_at == NOW
+    assert target.confidence is MatchConfidence.HIGH
+    assert target.evidence_summary == snapshot.candidates[0].evidence
+    assert snapshot.queried_at == NOW
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT status, place_scope, poi_provider, poi_id, place_confirmed_by, "
+            "candidate_count, candidates_queried_at FROM collection_items WHERE id = ?",
+            (item.id,),
+        ).fetchone() == (
+            "active",
+            "exact",
+            M_STAND_COASTAL.provider.value,
+            M_STAND_COASTAL.poi_id,
+            "auto_unique_match",
+            1,
+            "2026-07-22 05:00:00.000000",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_kind", ["multiple", "medium", "hard_conflict"])
+async def test_illegal_matched_results_are_rejected_without_writes(
+    target_database: tuple[str, Path],
+    invalid_kind: str,
+) -> None:
+    database_url, database_path = target_database
+    database = Database(database_url)
+    user, source, item = await _seed_pending(database)
+    high = _unique_match_result().candidates[0]
+    if invalid_kind == "multiple":
+        second = _candidate(1).model_copy(
+            update={"confidence": MatchConfidence.HIGH, "score": 80.0}, deep=True
+        )
+        result = PlaceMatchResult(status=MatchStatus.MATCHED, candidates=(high, second))
+    elif invalid_kind == "medium":
+        result = PlaceMatchResult(
+            status=MatchStatus.MATCHED,
+            candidates=(_candidate(0),),
+        )
+    else:
+        hard_evidence = high.evidence[0].model_copy(
+            update={
+                "outcome": EvidenceOutcome.CONFLICT,
+                "reason": EvidenceReason.CONFLICT,
+                "score_delta": -10.0,
+                "hard_conflict": True,
+            }
+        )
+        hard = high.model_copy(
+            update={"evidence": (hard_evidence, *high.evidence[1:])}, deep=True
+        )
+        result = PlaceMatchResult.model_construct(
+            status=MatchStatus.MATCHED,
+            candidates=(hard,),
+        )
+
+    with pytest.raises(ValueError):
+        await _record_result(database, user, source, item, result)
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT status, version, place_scope, candidate_count FROM collection_items "
+            "WHERE id = ?",
+            (item.id,),
+        ).fetchone() == ("pending_details", item.version, None, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "with_candidate"),
+    [
+        (MatchStatus.NEEDS_CONTEXT, True),
+        (MatchStatus.NEEDS_CONTEXT, False),
+        (MatchStatus.NOT_FOUND, False),
+    ],
+)
+async def test_non_selectable_match_outcomes_enter_pending_details(
+    target_database: tuple[str, Path],
+    status: MatchStatus,
+    with_candidate: bool,
+) -> None:
+    database_url, _ = target_database
+    database = Database(database_url)
+    user, source, item = await _seed_pending(database)
+    candidates = (_candidate(0),) if with_candidate else ()
+
+    stored = await _record_result(
+        database,
+        user,
+        source,
+        item,
+        PlaceMatchResult(status=status, candidates=candidates),
+    )
+
+    assert stored.status is CollectionStatus.PENDING_DETAILS
+    assert stored.place_target is None
+    assert stored.place_candidate_snapshot.result.status is status
+
+
+@pytest.mark.asyncio
 async def test_second_specific_candidate_becomes_one_exact_confirmed_poi(
     target_database: tuple[str, Path],
 ) -> None:
@@ -227,9 +377,9 @@ async def test_second_specific_candidate_becomes_one_exact_confirmed_poi(
             user_id=user.id,
             collection_item_id=pending.id,
             source_id=source.id,
-            match_result=_match_result(),
             selections=(_candidate_choice(1),),
             queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending),
             idempotency_key="choose-second",
             expected_version=pending.version,
         )
@@ -259,9 +409,9 @@ async def test_multi_select_creates_independent_exact_items_with_one_source(
             user_id=user.id,
             collection_item_id=pending.id,
             source_id=source.id,
-            match_result=_match_result(),
             selections=(_candidate_choice(0), _candidate_choice(1)),
             queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending),
             idempotency_key="choose-two",
             expected_version=pending.version,
         )
@@ -300,9 +450,9 @@ async def test_any_branch_requires_explicit_identity_and_is_idempotent_across_ke
                 user_id=user.id,
                 collection_item_id=pending.id,
                 source_id=source.id,
-                match_result=_match_result(),
                 selections=selection,
                 queried_at=NOW,
+                snapshot_fingerprint=_snapshot_fingerprint(pending),
                 idempotency_key="missing-brand",
                 expected_version=pending.version,
             )
@@ -310,9 +460,9 @@ async def test_any_branch_requires_explicit_identity_and_is_idempotent_across_ke
             user_id=user.id,
             collection_item_id=pending.id,
             source_id=source.id,
-            match_result=_match_result(),
             selections=selection,
             queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending),
             idempotency_key="brand-one",
             expected_version=pending.version,
             brand_identity=_brand(),
@@ -322,9 +472,9 @@ async def test_any_branch_requires_explicit_identity_and_is_idempotent_across_ke
             user_id=user.id,
             collection_item_id=pending.id,
             source_id=source.id,
-            match_result=_match_result(),
             selections=selection,
             queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending),
             idempotency_key="brand-two",
             expected_version=pending.version,
             brand_identity=_brand(),
@@ -363,9 +513,9 @@ async def test_concurrent_any_branch_choices_converge_to_one_user_brand_collecti
                 user_id=user.id,
                 collection_item_id=item.id,
                 source_id=source.id,
-                match_result=_match_result(),
                 selections=selection,
                 queried_at=NOW,
+                snapshot_fingerprint=_snapshot_fingerprint(item),
                 idempotency_key=idempotency_key,
                 expected_version=item.version,
                 brand_identity=_brand(),
@@ -405,9 +555,9 @@ async def test_duplicate_exact_poi_reuses_collection_and_keeps_both_sources(
             user_id=user.id,
             collection_item_id=first_pending.id,
             source_id=first_source.id,
-            match_result=_match_result(),
             selections=(_candidate_choice(0),),
             queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(first_pending),
             idempotency_key="exact-first",
             expected_version=first_pending.version,
         )
@@ -416,9 +566,9 @@ async def test_duplicate_exact_poi_reuses_collection_and_keeps_both_sources(
             user_id=user.id,
             collection_item_id=second_pending.id,
             source_id=second_source.id,
-            match_result=_match_result(),
             selections=(_candidate_choice(0),),
             queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(second_pending),
             idempotency_key="exact-second",
             expected_version=second_pending.version,
         )
@@ -451,9 +601,9 @@ async def test_same_key_replay_is_stable_and_conflicting_payload_is_rejected(
             user_id=user.id,
             collection_item_id=pending.id,
             source_id=source.id,
-            match_result=_match_result(),
             selections=(_candidate_choice(0),),
             queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending),
             idempotency_key="stable-replay",
             expected_version=pending.version,
         )
@@ -463,9 +613,9 @@ async def test_same_key_replay_is_stable_and_conflicting_payload_is_rejected(
             user_id=user.id,
             collection_item_id=pending.id,
             source_id=source.id,
-            match_result=_match_result(),
             selections=(_candidate_choice(0),),
             queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending),
             idempotency_key="stable-replay",
             expected_version=pending.version,
         )
@@ -474,14 +624,156 @@ async def test_same_key_replay_is_stable_and_conflicting_payload_is_rejected(
                 user_id=user.id,
                 collection_item_id=pending.id,
                 source_id=source.id,
-                match_result=_match_result(),
                 selections=(_candidate_choice(1),),
                 queried_at=NOW,
+                snapshot_fingerprint=_snapshot_fingerprint(pending),
                 idempotency_key="stable-replay",
                 expected_version=pending.version,
             )
     assert replay.replayed is True
     assert replay.items[0].id == first.items[0].id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tamper_kind", ["forged_poi", "stale_time", "different_snapshot"])
+async def test_selection_rejects_candidate_state_not_in_persisted_snapshot(
+    target_database: tuple[str, Path],
+    tamper_kind: str,
+) -> None:
+    database_url, database_path = target_database
+    database = Database(database_url)
+    user, source, initial = await _seed_pending(database)
+    pending = await _record(database, user, source, initial)
+    queried_at = NOW
+    fingerprint = _snapshot_fingerprint(pending)
+    selection = _candidate_choice(0)
+    if tamper_kind == "forged_poi":
+        selection = PlaceSelection(
+            kind=PlaceSelectionKind.CANDIDATE,
+            provider=M_STAND_COASTAL.provider,
+            poi_id="poi-never-shown",
+        )
+    elif tamper_kind == "stale_time":
+        queried_at = NOW - timedelta(minutes=1)
+    else:
+        fingerprint = "f" * 64
+
+    async with database.session() as session:
+        with pytest.raises(ValueError):
+            await PlaceTargetSelectionService(session=session).apply_selection(
+                user_id=user.id,
+                collection_item_id=pending.id,
+                source_id=source.id,
+                selections=(selection,),
+                queried_at=queried_at,
+                snapshot_fingerprint=fingerprint,
+                idempotency_key=f"tampered-{tamper_kind}",
+                expected_version=pending.version,
+            )
+
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT status, version, place_scope FROM collection_items WHERE id = ?",
+            (pending.id,),
+        ).fetchone() == ("pending_selection", pending.version, None)
+        assert connection.execute("SELECT COUNT(*) FROM place_selection_operations").fetchone() == (
+            0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_same_key_concurrent_cas_conflict_replays_one_stable_operation(
+    target_database: tuple[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url, database_path = target_database
+    database = Database(database_url)
+    user, source, initial = await _seed_pending(database)
+    pending = await _record(database, user, source, initial)
+    barrier = asyncio.Barrier(2)
+    winner_completed = asyncio.Event()
+    leader_repositories: set[int] = set()
+    original_apply = SqlAlchemyCollectionRepository.apply_place_resolution
+
+    async def synchronized_cas(
+        repository: SqlAlchemyCollectionRepository,
+        *,
+        user_id: str,
+        item: CollectionItem,
+        expected_version: int,
+    ) -> CollectionItem:
+        position = await barrier.wait()
+        if position == 0:
+            leader_repositories.add(id(repository))
+            return await original_apply(
+                repository,
+                user_id=user_id,
+                item=item,
+                expected_version=expected_version,
+            )
+        await winner_completed.wait()
+        raise VersionConflictError
+
+    monkeypatch.setattr(
+        SqlAlchemyCollectionRepository,
+        "apply_place_resolution",
+        synchronized_cas,
+    )
+
+    async def choose() -> tuple[str, bool]:
+        async with database.session() as session:
+            service = PlaceTargetSelectionService(session=session)
+            try:
+                result = await service.apply_selection(
+                    user_id=user.id,
+                    collection_item_id=pending.id,
+                    source_id=source.id,
+                    selections=(_candidate_choice(0),),
+                    queried_at=NOW,
+                    snapshot_fingerprint=_snapshot_fingerprint(pending),
+                    idempotency_key="concurrent-stable-replay",
+                    expected_version=pending.version,
+                )
+                return result.items[0].id, result.replayed
+            finally:
+                if id(service._repository) in leader_repositories:
+                    winner_completed.set()
+
+    results = await asyncio.gather(choose(), choose())
+
+    assert len({identifier for identifier, _ in results}) == 1
+    assert sorted(replayed for _, replayed in results) == [False, True]
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM place_selection_operations").fetchone() == (
+            1,
+        )
+        assert connection.execute(
+            "SELECT COUNT(*) FROM collection_items WHERE place_scope = 'exact' "
+            "AND status <> 'deleted'"
+        ).fetchone() == (1,)
+
+
+@pytest.mark.asyncio
+async def test_real_version_conflict_without_idempotency_operation_is_preserved(
+    target_database: tuple[str, Path],
+) -> None:
+    database_url, _ = target_database
+    database = Database(database_url)
+    user, source, initial = await _seed_pending(database)
+    pending = await _record(database, user, source, initial)
+
+    async with database.session() as session:
+        with pytest.raises(VersionConflictError):
+            await PlaceTargetSelectionService(session=session).apply_selection(
+                user_id=user.id,
+                collection_item_id=pending.id,
+                source_id=source.id,
+                selections=(_candidate_choice(0),),
+                queried_at=NOW,
+                snapshot_fingerprint=_snapshot_fingerprint(pending),
+                idempotency_key="genuine-version-conflict",
+                expected_version=pending.version - 1,
+            )
 
 
 @pytest.mark.asyncio
@@ -498,9 +790,9 @@ async def test_none_of_above_enters_pending_details_and_cannot_resolve_for_plann
             user_id=user.id,
             collection_item_id=pending.id,
             source_id=source.id,
-            match_result=_match_result(),
             selections=(PlaceSelection(kind=PlaceSelectionKind.NONE_OF_ABOVE),),
             queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending),
             idempotency_key="none",
             expected_version=pending.version,
         )
@@ -536,9 +828,9 @@ async def test_multi_select_second_write_failure_rolls_back_everything(
                 user_id=user.id,
                 collection_item_id=pending.id,
                 source_id=source.id,
-                match_result=_match_result(),
                 selections=(_candidate_choice(0), _candidate_choice(1)),
                 queried_at=NOW,
+                snapshot_fingerprint=_snapshot_fingerprint(pending),
                 idempotency_key="rollback-two",
                 expected_version=pending.version,
             )
@@ -607,9 +899,9 @@ async def test_multi_select_extends_original_write_group_so_undo_deletes_all_bra
             user_id=user.id,
             collection_item_id=pending.id,
             source_id=source.id,
-            match_result=_match_result(),
             selections=(_candidate_choice(0), _candidate_choice(1)),
             queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending),
             idempotency_key="split-two-for-undo",
             expected_version=pending.version,
         )
@@ -644,9 +936,9 @@ async def test_source_and_collection_ownership_are_enforced(
                 user_id=first_user.id,
                 collection_item_id=pending.id,
                 source_id=second_source.id,
-                match_result=_match_result(),
                 selections=(_candidate_choice(0),),
                 queried_at=NOW,
+                snapshot_fingerprint=_snapshot_fingerprint(pending),
                 idempotency_key="cross-user-source",
                 expected_version=pending.version,
             )
@@ -669,9 +961,9 @@ async def test_different_users_and_distinct_stable_brand_ids_do_not_merge(
                 user_id=user.id,
                 collection_item_id=pending.id,
                 source_id=source.id,
-                match_result=_match_result(),
                 selections=selections,
                 queried_at=NOW,
+                snapshot_fingerprint=_snapshot_fingerprint(pending),
                 idempotency_key=f"brand-user-{index}",
                 expected_version=pending.version,
                 brand_identity=_brand(),
@@ -686,9 +978,9 @@ async def test_different_users_and_distinct_stable_brand_ids_do_not_merge(
             user_id=user.id,
             collection_item_id=pending.id,
             source_id=source.id,
-            match_result=_match_result(),
             selections=selections,
             queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending),
             idempotency_key="similar-one",
             expected_version=pending.version,
             brand_identity=_brand(stable_id="brand_one"),
@@ -726,9 +1018,9 @@ async def test_different_users_and_distinct_stable_brand_ids_do_not_merge(
             user_id=user.id,
             collection_item_id=pending_two.id,
             source_id=user_source_two.id,
-            match_result=_match_result(),
             selections=selections,
             queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending_two),
             idempotency_key="similar-two",
             expected_version=pending_two.version,
             brand_identity=_brand(stable_id="brand_two"),
@@ -737,3 +1029,141 @@ async def test_different_users_and_distinct_stable_brand_ids_do_not_merge(
     assert first.items[0].place_target.brand_identity.normalized_name == (
         second.items[0].place_target.brand_identity.normalized_name
     )
+
+
+@pytest.mark.asyncio
+async def test_exact_poi_and_any_branch_brand_identity_remain_isolated(
+    target_database: tuple[str, Path],
+) -> None:
+    database_url, database_path = target_database
+    database = Database(database_url)
+    user, exact_source, exact_initial = await _seed_pending(database)
+    _, brand_source, brand_initial = await _seed_pending(database, user=user)
+    exact_pending = await _record(database, user, exact_source, exact_initial)
+    brand_pending = await _record(database, user, brand_source, brand_initial)
+
+    async with database.session() as session:
+        exact = await PlaceTargetSelectionService(session=session).apply_selection(
+            user_id=user.id,
+            collection_item_id=exact_pending.id,
+            source_id=exact_source.id,
+            selections=(_candidate_choice(0),),
+            queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(exact_pending),
+            idempotency_key="isolated-exact",
+            expected_version=exact_pending.version,
+        )
+    async with database.session() as session:
+        brand = await PlaceTargetSelectionService(session=session).apply_selection(
+            user_id=user.id,
+            collection_item_id=brand_pending.id,
+            source_id=brand_source.id,
+            selections=(PlaceSelection(kind=PlaceSelectionKind.ANY_BRANCH),),
+            queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(brand_pending),
+            idempotency_key="isolated-brand",
+            expected_version=brand_pending.version,
+            brand_identity=_brand(),
+        )
+
+    assert exact.items[0].id != brand.items[0].id
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT place_scope, COUNT(*) FROM collection_items "
+            "WHERE status <> 'deleted' AND place_scope IS NOT NULL GROUP BY place_scope "
+            "ORDER BY place_scope"
+        ).fetchall() == [("any_branch", 1), ("exact", 1)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column", "corrupt_value"),
+    [
+        ("poi_provider", "forged_provider"),
+        ("poi_id", "forged-poi"),
+        ("poi_city_code", "forged_city"),
+        ("poi_latitude", 1.25),
+        ("poi_longitude", 2.5),
+        ("poi_coordinate_system", "wgs_84"),
+        ("place_confirmed_by", "auto_unique_match"),
+        ("candidate_count", 1),
+        ("candidates_queried_at", "2026-07-22 04:59:00.000000"),
+    ],
+)
+async def test_repository_rejects_exact_json_and_flat_column_mismatches(
+    target_database: tuple[str, Path],
+    column: str,
+    corrupt_value: object,
+) -> None:
+    database_url, database_path = target_database
+    database = Database(database_url)
+    user, source, initial = await _seed_pending(database)
+    pending = await _record(database, user, source, initial)
+    async with database.session() as session:
+        selected = await PlaceTargetSelectionService(session=session).apply_selection(
+            user_id=user.id,
+            collection_item_id=pending.id,
+            source_id=source.id,
+            selections=(_candidate_choice(0),),
+            queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending),
+            idempotency_key=f"integrity-{column}",
+            expected_version=pending.version,
+        )
+    exact_id = selected.items[0].id
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            f"UPDATE collection_items SET {column} = ? WHERE id = ?",  # noqa: S608
+            (corrupt_value, exact_id),
+        )
+        connection.commit()
+
+    async with database.session() as session:
+        with pytest.raises(
+            CollectionDataIntegrityError,
+            match="^collection data integrity violation$",
+        ):
+            await SqlAlchemyCollectionRepository(session).get_collection_item(
+                user_id=user.id,
+                collection_item_id=exact_id,
+            )
+
+
+@pytest.mark.asyncio
+async def test_repository_rejects_brand_json_and_flat_identity_mismatch(
+    target_database: tuple[str, Path],
+) -> None:
+    database_url, database_path = target_database
+    database = Database(database_url)
+    user, source, initial = await _seed_pending(database)
+    pending = await _record(database, user, source, initial)
+    async with database.session() as session:
+        selected = await PlaceTargetSelectionService(session=session).apply_selection(
+            user_id=user.id,
+            collection_item_id=pending.id,
+            source_id=source.id,
+            selections=(PlaceSelection(kind=PlaceSelectionKind.ANY_BRANCH),),
+            queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(pending),
+            idempotency_key="integrity-brand",
+            expected_version=pending.version,
+            brand_identity=_brand(),
+        )
+    brand_id = selected.items[0].id
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE collection_items SET brand_id = 'forged-brand' WHERE id = ?",
+            (brand_id,),
+        )
+        connection.commit()
+
+    async with database.session() as session:
+        with pytest.raises(CollectionDataIntegrityError):
+            await SqlAlchemyCollectionRepository(session).get_collection_item(
+                user_id=user.id,
+                collection_item_id=brand_id,
+            )

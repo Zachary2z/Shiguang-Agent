@@ -27,6 +27,8 @@ from app.domain.identifiers import (
 )
 from app.domain.places import (
     ConfirmedBrandIdentity,
+    MatchConfidence,
+    MatchStatus,
     PlaceCandidateSnapshot,
     PlaceConfirmationSource,
     PlaceMatchCandidate,
@@ -66,7 +68,7 @@ class PlaceTargetSelectionService:
         queried_at: datetime,
         expected_version: int,
     ) -> CollectionItem:
-        """Refresh at most three candidates without creating any collection."""
+        """Persist one match decision, promoting only a legal unique match."""
 
         owner = validate_user_id(user_id)
         identifier = validate_collection_item_id(collection_item_id)
@@ -75,14 +77,56 @@ class PlaceTargetSelectionService:
             result=match_result.model_copy(deep=True),
             queried_at=require_aware_utc(queried_at),
         )
+        auto_candidate = self._unique_auto_match_candidate(snapshot)
         target_status = (
             CollectionStatus.PENDING_SELECTION
-            if snapshot.candidates
+            if snapshot.result.status is MatchStatus.AMBIGUOUS
             else CollectionStatus.PENDING_DETAILS
         )
         async with self._session.begin():
             item = await self._require_pending_place(owner, identifier)
             await self._require_linked_source(owner, identifier, source)
+            if auto_candidate is not None:
+                existing = await self._repository.find_exact_place_item(
+                    user_id=owner,
+                    provider=auto_candidate.provider,
+                    poi_id=auto_candidate.poi_id,
+                )
+                if existing is not None:
+                    await self._repository.ensure_collection_source(
+                        user_id=owner,
+                        collection_item_id=existing.id,
+                        source_id=source,
+                        created_at=snapshot.queried_at,
+                    )
+                    await self._repository.delete_collection_item(
+                        user_id=owner,
+                        collection_item_id=item.id,
+                        updated_at=snapshot.queried_at,
+                        expected_version=expected_version,
+                    )
+                    return existing
+                target = exact_target_from_candidate(
+                    auto_candidate,
+                    confirmed_by=PlaceConfirmationSource.AUTO_UNIQUE_MATCH,
+                    confirmed_at=snapshot.queried_at,
+                )
+                desired = self._updated_item(
+                    item,
+                    status=CollectionStatus.ACTIVE,
+                    target=target,
+                    snapshot=snapshot,
+                    now=snapshot.queried_at,
+                    title=self._official_title(auto_candidate),
+                    district=auto_candidate.district,
+                    address=auto_candidate.address,
+                    business_district=auto_candidate.business_area,
+                )
+                return await self._repository.apply_place_resolution(
+                    user_id=owner,
+                    item=desired,
+                    expected_version=expected_version,
+                )
             desired = self._updated_item(
                 item,
                 status=target_status,
@@ -102,9 +146,9 @@ class PlaceTargetSelectionService:
         user_id: str,
         collection_item_id: str,
         source_id: str,
-        match_result: PlaceMatchResult,
         selections: tuple[PlaceSelection, ...],
         queried_at: datetime,
+        snapshot_fingerprint: str,
         idempotency_key: str,
         expected_version: int,
         brand_identity: ConfirmedBrandIdentity | None = None,
@@ -112,16 +156,17 @@ class PlaceTargetSelectionService:
         owner = validate_user_id(user_id)
         identifier = validate_collection_item_id(collection_item_id)
         source = validate_source_id(source_id)
-        snapshot = PlaceCandidateSnapshot(
-            result=match_result.model_copy(deep=True),
-            queried_at=require_aware_utc(queried_at),
+        expected_queried_at = require_aware_utc(queried_at)
+        expected_snapshot_fingerprint = self._validate_snapshot_fingerprint(
+            snapshot_fingerprint
         )
-        choices = self._validated_choices(match_result, selections)
+        choices = self._validated_choices(selections)
         self._validate_choice_group(choices, brand_identity)
         fingerprint = self._fingerprint(
             collection_item_id=identifier,
             source_id=source,
-            snapshot=snapshot,
+            snapshot_fingerprint=expected_snapshot_fingerprint,
+            queried_at=expected_queried_at,
             choices=choices,
             brand_identity=brand_identity,
         )
@@ -132,7 +177,8 @@ class PlaceTargetSelectionService:
                     owner=owner,
                     collection_item_id=identifier,
                     source_id=source,
-                    snapshot=snapshot,
+                    expected_snapshot_fingerprint=expected_snapshot_fingerprint,
+                    expected_queried_at=expected_queried_at,
                     choices=choices,
                     idempotency_key=idempotency_key,
                     fingerprint=fingerprint,
@@ -150,6 +196,16 @@ class PlaceTargetSelectionService:
                     return replay
                 if attempt:
                     raise
+            except VersionConflictError:
+                await self._session.rollback()
+                replay = await self._replay(
+                    owner=owner,
+                    idempotency_key=idempotency_key,
+                    fingerprint=fingerprint,
+                )
+                if replay is not None:
+                    return replay
+                raise
         raise AssertionError("unreachable selection retry state")
 
     async def _apply_once(
@@ -158,7 +214,8 @@ class PlaceTargetSelectionService:
         owner: str,
         collection_item_id: str,
         source_id: str,
-        snapshot: PlaceCandidateSnapshot,
+        expected_snapshot_fingerprint: str,
+        expected_queried_at: datetime,
         choices: tuple[PlaceSelection, ...],
         idempotency_key: str,
         fingerprint: str,
@@ -180,9 +237,23 @@ class PlaceTargetSelectionService:
             if item is None or item.kind is not CollectionKind.PLACE:
                 raise ResourceNotFoundError
             await self._require_linked_source(owner, collection_item_id, source_id)
+            snapshot = self._persisted_selection_snapshot(
+                item,
+                expected_fingerprint=expected_snapshot_fingerprint,
+                expected_queried_at=expected_queried_at,
+            )
+            choices = tuple(
+                validate_place_selection(snapshot.result, choice) for choice in choices
+            )
             now = snapshot.queried_at
 
-            if choices[0].kind is PlaceSelectionKind.NONE_OF_ABOVE:
+            if item.status is CollectionStatus.ACTIVE:
+                items = self._active_selection_result(
+                    item,
+                    choices=choices,
+                    brand_identity=brand_identity,
+                )
+            elif choices[0].kind is PlaceSelectionKind.NONE_OF_ABOVE:
                 items = await self._choose_none(
                     owner=owner,
                     item=item,
@@ -232,8 +303,6 @@ class PlaceTargetSelectionService:
         snapshot: PlaceCandidateSnapshot,
         expected_version: int,
     ) -> tuple[CollectionItem, ...]:
-        if item.status is CollectionStatus.PENDING_DETAILS and item.place_target is None:
-            return (item,)
         if item.status is not CollectionStatus.PENDING_SELECTION:
             raise VersionConflictError
         desired = self._updated_item(
@@ -464,16 +533,92 @@ class PlaceTargetSelectionService:
 
     @staticmethod
     def _validated_choices(
-        result: PlaceMatchResult,
         choices: tuple[PlaceSelection, ...],
     ) -> tuple[PlaceSelection, ...]:
         if not choices:
             raise ValueError("at least one explicit Place selection is required")
-        validated = tuple(validate_place_selection(result, choice) for choice in choices)
-        identities = tuple((choice.provider, choice.poi_id) for choice in validated)
+        validated = tuple(choice.model_copy(deep=True) for choice in choices)
+        identities = tuple(
+            (choice.provider, choice.poi_id)
+            for choice in validated
+            if choice.kind is PlaceSelectionKind.CANDIDATE
+        )
         if len(set(identities)) != len(identities):
             raise ValueError("specific Place selections must be unique")
         return validated
+
+    @staticmethod
+    def _unique_auto_match_candidate(
+        snapshot: PlaceCandidateSnapshot,
+    ) -> PlaceMatchCandidate | None:
+        result = snapshot.result
+        if result.status is not MatchStatus.MATCHED:
+            return None
+        if len(result.candidates) != 1:
+            raise ValueError("matched result must contain exactly one automatic candidate")
+        candidate = result.candidates[0]
+        if candidate.confidence is not MatchConfidence.HIGH:
+            raise ValueError("matched result requires one high-confidence candidate")
+        if candidate.has_hard_conflict:
+            raise ValueError("matched result cannot contain a hard-conflict candidate")
+        return candidate
+
+    @staticmethod
+    def _validate_snapshot_fingerprint(value: str) -> str:
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise ValueError("candidate snapshot fingerprint is invalid")
+        return value
+
+    @staticmethod
+    def _persisted_selection_snapshot(
+        item: CollectionItem,
+        *,
+        expected_fingerprint: str,
+        expected_queried_at: datetime,
+    ) -> PlaceCandidateSnapshot:
+        snapshot = item.place_candidate_snapshot
+        if (
+            item.status not in {CollectionStatus.PENDING_SELECTION, CollectionStatus.ACTIVE}
+            or (item.status is CollectionStatus.PENDING_SELECTION) is not (
+                item.place_target is None
+            )
+            or not isinstance(snapshot, PlaceCandidateSnapshot)
+        ):
+            raise VersionConflictError
+        if (
+            snapshot.queried_at != expected_queried_at
+            or snapshot.fingerprint != expected_fingerprint
+        ):
+            raise ValueError("candidate snapshot does not match persisted state")
+        return snapshot
+
+    @staticmethod
+    def _active_selection_result(
+        item: CollectionItem,
+        *,
+        choices: tuple[PlaceSelection, ...],
+        brand_identity: ConfirmedBrandIdentity | None,
+    ) -> tuple[CollectionItem, ...]:
+        target = item.place_target
+        if not isinstance(target, PlaceTarget) or len(choices) != 1:
+            raise VersionConflictError
+        choice = choices[0]
+        if target.scope is PlaceScope.EXACT:
+            if (
+                choice.kind is not PlaceSelectionKind.CANDIDATE
+                or target.poi is None
+                or (choice.provider, choice.poi_id)
+                != (target.poi.provider, target.poi.poi_id)
+            ):
+                raise VersionConflictError
+        elif (
+            choice.kind is not PlaceSelectionKind.ANY_BRANCH
+            or brand_identity is None
+            or target.brand_identity is None
+            or brand_identity.identity != target.brand_identity.identity
+        ):
+            raise VersionConflictError
+        return (item,)
 
     @staticmethod
     def _validate_choice_group(
@@ -602,7 +747,8 @@ class PlaceTargetSelectionService:
         *,
         collection_item_id: str,
         source_id: str,
-        snapshot: PlaceCandidateSnapshot,
+        snapshot_fingerprint: str,
+        queried_at: datetime,
         choices: tuple[PlaceSelection, ...],
         brand_identity: ConfirmedBrandIdentity | None,
     ) -> str:
@@ -610,7 +756,8 @@ class PlaceTargetSelectionService:
             {
                 "collection_item_id": collection_item_id,
                 "source_id": source_id,
-                "snapshot": snapshot.model_dump(mode="json"),
+                "snapshot_fingerprint": snapshot_fingerprint,
+                "queried_at": queried_at.isoformat(),
                 "choices": [choice.model_dump(mode="json") for choice in choices],
                 "brand_identity": (
                     None if brand_identity is None else brand_identity.model_dump(mode="json")

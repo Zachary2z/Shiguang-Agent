@@ -14,6 +14,7 @@ from app.domain.collections import (
     DEFAULT_COLLECTION_STATUSES,
     DELETABLE_COLLECTION_STATUSES,
     CandidateField,
+    CollectionDataIntegrityError,
     CollectionItem,
     CollectionKind,
     CollectionSource,
@@ -994,6 +995,26 @@ class SqlAlchemyCollectionRepository:
 
     @staticmethod
     def _collection_item(row: CollectionItemModel) -> CollectionItem:
+        try:
+            target = (
+                None
+                if row.place_target_json is None
+                else PlaceTarget.model_validate_json(json.dumps(row.place_target_json))
+            )
+            snapshot = (
+                None
+                if row.place_candidate_snapshot_json is None
+                else PlaceCandidateSnapshot.model_validate_json(
+                    json.dumps(row.place_candidate_snapshot_json)
+                )
+            )
+            SqlAlchemyCollectionRepository._validate_place_storage_consistency(
+                row,
+                target=target,
+                snapshot=snapshot,
+            )
+        except (KeyError, TypeError, ValueError):
+            raise CollectionDataIntegrityError from None
         return CollectionItem(
             id=row.id,
             user_id=row.user_id,
@@ -1020,23 +1041,95 @@ class SqlAlchemyCollectionRepository:
                 )
                 for value in row.uncertainties_json
             ),
-            place_target=(
-                None
-                if row.place_target_json is None
-                else PlaceTarget.model_validate_json(json.dumps(row.place_target_json))
-            ),
-            place_candidate_snapshot=(
-                None
-                if row.place_candidate_snapshot_json is None
-                else PlaceCandidateSnapshot.model_validate_json(
-                    json.dumps(row.place_candidate_snapshot_json)
-                )
-            ),
+            place_target=target,
+            place_candidate_snapshot=snapshot,
             status=CollectionStatus(row.status),
             version=row.version,
             created_at=required_utc(row.created_at),
             updated_at=required_utc(row.updated_at),
         )
+
+    @staticmethod
+    def _validate_place_storage_consistency(
+        row: CollectionItemModel,
+        *,
+        target: PlaceTarget | None,
+        snapshot: PlaceCandidateSnapshot | None,
+    ) -> None:
+        if target is None:
+            if any(
+                value is not None
+                for value in (
+                    row.place_scope,
+                    row.poi_provider,
+                    row.poi_id,
+                    row.poi_city_code,
+                    row.poi_latitude,
+                    row.poi_longitude,
+                    row.poi_coordinate_system,
+                    row.brand_namespace,
+                    row.brand_id,
+                    row.place_match_status,
+                    row.place_confirmed_by,
+                    row.place_confirmed_at,
+                )
+            ):
+                raise CollectionDataIntegrityError
+        else:
+            confirmed_at = row.place_confirmed_at
+            if (
+                row.place_scope != target.scope.value
+                or row.place_match_status != target.match_status.value
+                or row.place_confirmed_by != target.confirmed_by.value
+                or confirmed_at is None
+                or required_utc(confirmed_at) != target.confirmed_at
+            ):
+                raise CollectionDataIntegrityError
+            if target.scope is PlaceScope.EXACT:
+                assert target.poi is not None
+                poi = target.poi
+                if (
+                    row.poi_provider != poi.provider.value
+                    or row.poi_id != poi.poi_id
+                    or row.poi_city_code != poi.city_code
+                    or row.poi_latitude != poi.coordinate.latitude
+                    or row.poi_longitude != poi.coordinate.longitude
+                    or row.poi_coordinate_system != poi.coordinate.coordinate_system.value
+                    or row.brand_namespace is not None
+                    or row.brand_id is not None
+                ):
+                    raise CollectionDataIntegrityError
+            else:
+                assert target.brand_identity is not None
+                brand = target.brand_identity
+                if (
+                    row.brand_namespace != brand.namespace
+                    or row.brand_id != brand.stable_id
+                    or any(
+                        value is not None
+                        for value in (
+                            row.poi_provider,
+                            row.poi_id,
+                            row.poi_city_code,
+                            row.poi_latitude,
+                            row.poi_longitude,
+                            row.poi_coordinate_system,
+                        )
+                    )
+                ):
+                    raise CollectionDataIntegrityError
+
+        if snapshot is None:
+            if row.candidate_count != 0 or row.candidates_queried_at is not None:
+                raise CollectionDataIntegrityError
+        else:
+            queried_at = row.candidates_queried_at
+            if (
+                row.candidate_count != len(snapshot.candidates)
+                or queried_at is None
+                or required_utc(queried_at) != snapshot.queried_at
+            ):
+                raise CollectionDataIntegrityError
 
     @staticmethod
     def _collection_source(row: CollectionSourceModel) -> CollectionSource:

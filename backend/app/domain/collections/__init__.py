@@ -29,7 +29,11 @@ from app.domain.collections.extraction import (
     PlaceCandidate,
     UnsupportedReason,
 )
-from app.domain.collections.repositories import CollectionRepository, ResourceNotFoundError
+from app.domain.collections.repositories import (
+    CollectionDataIntegrityError,
+    CollectionRepository,
+    ResourceNotFoundError,
+)
 from app.domain.collections.statuses import (
     DEFAULT_COLLECTION_STATUSES,
     DELETABLE_COLLECTION_STATUSES,
@@ -69,6 +73,7 @@ __all__ = [
     "AutoSaveResult",
     "CollectionItem",
     "CollectionItemPatch",
+    "CollectionDataIntegrityError",
     "CollectionKind",
     "CollectionRepository",
     "CollectionSource",

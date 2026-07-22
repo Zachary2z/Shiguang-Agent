@@ -32,6 +32,13 @@ class ResourceNotFoundError(LookupError):
         super().__init__("resource not found")
 
 
+class CollectionDataIntegrityError(RuntimeError):
+    """Fixed safe failure for contradictory persisted collection representations."""
+
+    def __init__(self) -> None:
+        super().__init__("collection data integrity violation")
+
+
 class CollectionRepository(Protocol):
     """Every public query and write requires an explicit owner user_id."""
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from datetime import datetime
 from enum import StrEnum
@@ -131,6 +133,18 @@ class PlaceCandidateSnapshot(PlaceTargetContract):
     @property
     def candidates(self) -> tuple[PlaceMatchCandidate, ...]:
         return self.result.candidates
+
+    @property
+    def fingerprint(self) -> str:
+        """Stable token proving which persisted candidate snapshot a user saw."""
+
+        payload = json.dumps(
+            self.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
 
 
 class PlaceTarget(PlaceTargetContract):

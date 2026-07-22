@@ -256,11 +256,44 @@ class CollectionItemModel(Base):
             name="ck_collection_items_place_target_shape",
         ),
         CheckConstraint(
+            "place_target_json IS NULL OR (json_valid(place_target_json) AND "
+            "json_type(place_target_json, '$') = 'object' AND "
+            "json_extract(place_target_json, '$.scope') = place_scope AND "
+            "json_extract(place_target_json, '$.match_status') = place_match_status AND "
+            "json_extract(place_target_json, '$.confirmed_by') = place_confirmed_by AND "
+            "julianday(json_extract(place_target_json, '$.confirmed_at')) = "
+            "julianday(place_confirmed_at) AND ((place_scope = 'exact' AND "
+            "json_extract(place_target_json, '$.poi.provider') = poi_provider AND "
+            "json_extract(place_target_json, '$.poi.poi_id') = poi_id AND "
+            "json_extract(place_target_json, '$.poi.city_code') = poi_city_code AND "
+            "json_extract(place_target_json, '$.poi.coordinate.latitude') = poi_latitude AND "
+            "json_extract(place_target_json, '$.poi.coordinate.longitude') = poi_longitude AND "
+            "json_extract(place_target_json, '$.poi.coordinate.coordinate_system') = "
+            "poi_coordinate_system AND "
+            "json_type(place_target_json, '$.brand_identity') = 'null') OR "
+            "(place_scope = 'any_branch' AND "
+            "json_extract(place_target_json, '$.brand_identity.namespace') = "
+            "brand_namespace AND "
+            "json_extract(place_target_json, '$.brand_identity.stable_id') = brand_id AND "
+            "json_type(place_target_json, '$.poi') = 'null')))",
+            name="ck_collection_items_place_target_json_consistency",
+        ),
+        CheckConstraint(
             "(place_candidate_snapshot_json IS NULL AND candidate_count = 0 AND "
             "candidates_queried_at IS NULL) OR "
             "(place_candidate_snapshot_json IS NOT NULL AND "
             "candidate_count BETWEEN 0 AND 3 AND candidates_queried_at IS NOT NULL)",
             name="ck_collection_items_candidate_snapshot_shape",
+        ),
+        CheckConstraint(
+            "place_candidate_snapshot_json IS NULL OR "
+            "(json_valid(place_candidate_snapshot_json) AND "
+            "json_type(place_candidate_snapshot_json, '$') = 'object' AND "
+            "json_array_length(place_candidate_snapshot_json, '$.result.candidates') = "
+            "candidate_count AND "
+            "julianday(json_extract(place_candidate_snapshot_json, '$.queried_at')) = "
+            "julianday(candidates_queried_at))",
+            name="ck_collection_items_candidate_snapshot_json_consistency",
         ),
         CheckConstraint(
             "kind = 'place' OR (place_scope IS NULL AND place_target_json IS NULL AND "

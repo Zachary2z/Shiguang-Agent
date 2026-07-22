@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -10,7 +11,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
-BACKEND_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 HEAD_REVISION = "20260722_0006"
 PREVIOUS_REVISION = "20260721_0005"
 M02C_REVISION = "20260721_0005"
@@ -73,6 +74,46 @@ def index_definitions(
         )
         definitions[index_name] = (bool(row[2]), columns)
     return definitions
+
+
+def _exact_target_json(*, poi_id: str, confirmed_at: str) -> str:
+    return json.dumps(
+        {
+            "scope": "exact",
+            "poi": {
+                "provider": "fixture",
+                "poi_id": poi_id,
+                "city_code": "0755",
+                "coordinate": {
+                    "latitude": 22.5,
+                    "longitude": 114.0,
+                    "coordinate_system": "gcj_02",
+                },
+            },
+            "brand_identity": None,
+            "match_status": "matched",
+            "confirmed_by": "user_selection",
+            "confirmed_at": confirmed_at,
+        },
+        separators=(",", ":"),
+    )
+
+
+def _any_branch_target_json(*, brand_id: str, confirmed_at: str) -> str:
+    return json.dumps(
+        {
+            "scope": "any_branch",
+            "poi": None,
+            "brand_identity": {
+                "namespace": "curated_brand",
+                "stable_id": brand_id,
+            },
+            "match_status": "ambiguous",
+            "confirmed_by": "user_selection",
+            "confirmed_at": confirmed_at,
+        },
+        separators=(",", ":"),
+    )
 
 
 def _alembic_config(monkeypatch: pytest.MonkeyPatch, database_path: Path) -> Config:
@@ -848,6 +889,7 @@ def test_0006_incompatible_downgrade_fails_before_schema_or_data_change(
     command.upgrade(alembic_config, "head")
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA ignore_check_constraints=ON")
         _insert_user(connection, user_id)
         _insert_source(connection, source_id=source_id, user_id=user_id)
         _insert_collection_item(connection, item_id=item_id, user_id=user_id)
@@ -918,7 +960,7 @@ def test_0006_database_rejects_invalid_targets_duplicates_and_cross_user_operati
     item_b = "col_99999999999999999999999999999991"
 
     exact_update = (
-        "UPDATE collection_items SET place_scope = 'exact', place_target_json = '{}', "
+        "UPDATE collection_items SET place_scope = 'exact', place_target_json = ?, "
         "poi_provider = 'fixture', poi_id = 'shared-poi', poi_city_code = '0755', "
         "poi_latitude = 22.5, poi_longitude = 114.0, "
         "poi_coordinate_system = 'gcj_02', place_match_status = 'matched', "
@@ -956,13 +998,14 @@ def test_0006_database_rejects_invalid_targets_duplicates_and_cross_user_operati
         connection.rollback()
 
         confirmed_at = "2026-07-22T00:00:00+00:00"
-        connection.execute(exact_update, (confirmed_at, item_a))
+        target_json = _exact_target_json(poi_id="shared-poi", confirmed_at=confirmed_at)
+        connection.execute(exact_update, (target_json, confirmed_at, item_a))
         connection.commit()
         with pytest.raises(sqlite3.IntegrityError):
-            connection.execute(exact_update, (confirmed_at, item_duplicate))
+            connection.execute(exact_update, (target_json, confirmed_at, item_duplicate))
         connection.rollback()
 
-        connection.execute(exact_update, (confirmed_at, item_b))
+        connection.execute(exact_update, (target_json, confirmed_at, item_b))
         connection.commit()
         assert connection.execute(
             "SELECT COUNT(*) FROM collection_items WHERE poi_id = 'shared-poi'"
@@ -983,6 +1026,89 @@ def test_0006_database_rejects_invalid_targets_duplicates_and_cross_user_operati
                     confirmed_at,
                 ),
             )
+
+
+def test_0006_database_protects_json_and_flat_place_consistency(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "m03d-json-consistency.db"
+    command.upgrade(_alembic_config(monkeypatch, database_path), "head")
+    user_id = "usr_12121212121212121212121212121212"
+    exact_id = "col_12121212121212121212121212121211"
+    brand_item_id = "col_12121212121212121212121212121212"
+    confirmed_at = "2026-07-22T00:00:00+00:00"
+    queried_at = "2026-07-22T00:01:00+00:00"
+    with sqlite3.connect(database_path) as connection:
+        _insert_user(connection, user_id)
+        _insert_collection_item(connection, item_id=exact_id, user_id=user_id)
+        _insert_collection_item(connection, item_id=brand_item_id, user_id=user_id)
+        connection.execute(
+            "UPDATE collection_items SET place_scope = 'exact', place_target_json = ?, "
+            "poi_provider = 'fixture', poi_id = 'poi-exact', poi_city_code = '0755', "
+            "poi_latitude = 22.5, poi_longitude = 114.0, "
+            "poi_coordinate_system = 'gcj_02', place_match_status = 'matched', "
+            "place_confirmed_by = 'user_selection', place_confirmed_at = ? WHERE id = ?",
+            (
+                _exact_target_json(poi_id="poi-exact", confirmed_at=confirmed_at),
+                confirmed_at,
+                exact_id,
+            ),
+        )
+        connection.execute(
+            "UPDATE collection_items SET place_scope = 'any_branch', place_target_json = ?, "
+            "brand_namespace = 'curated_brand', brand_id = 'brand-exact', "
+            "place_match_status = 'ambiguous', place_confirmed_by = 'user_selection', "
+            "place_confirmed_at = ? WHERE id = ?",
+            (
+                _any_branch_target_json(
+                    brand_id="brand-exact",
+                    confirmed_at=confirmed_at,
+                ),
+                confirmed_at,
+                brand_item_id,
+            ),
+        )
+        snapshot_json = json.dumps(
+            {
+                "result": {"candidates": [{"poi_id": "one"}, {"poi_id": "two"}]},
+                "queried_at": queried_at,
+            },
+            separators=(",", ":"),
+        )
+        connection.execute(
+            "UPDATE collection_items SET place_candidate_snapshot_json = ?, "
+            "candidate_count = 2, candidates_queried_at = ? WHERE id = ?",
+            (snapshot_json, queried_at, exact_id),
+        )
+        connection.commit()
+
+        for statement in (
+            "UPDATE collection_items SET poi_id = 'forged' WHERE id = ?",
+            "UPDATE collection_items SET poi_latitude = 1.0 WHERE id = ?",
+            "UPDATE collection_items SET place_confirmed_by = 'auto_unique_match' WHERE id = ?",
+            "UPDATE collection_items SET candidate_count = 1 WHERE id = ?",
+            "UPDATE collection_items SET candidates_queried_at = "
+            "'2026-07-22T00:02:00+00:00' WHERE id = ?",
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(statement, (exact_id,))
+            connection.rollback()
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE collection_items SET brand_id = 'forged' WHERE id = ?",
+                (brand_item_id,),
+            )
+        connection.rollback()
+
+        table_sql = str(
+            connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'collection_items'"
+            ).fetchone()[0]
+        )
+    assert "ck_collection_items_place_target_json_consistency" in table_sql
+    assert "ck_collection_items_candidate_snapshot_json_consistency" in table_sql
 
 
 def test_alembic_has_one_head_and_metadata_matches_head_schema(
