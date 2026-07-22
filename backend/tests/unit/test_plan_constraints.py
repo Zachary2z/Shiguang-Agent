@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import json
 import logging
 import socket
 from copy import deepcopy
@@ -137,7 +138,7 @@ def test_exactly_24_hours_is_allowed_and_more_is_rejected() -> None:
 
 
 def test_area_or_origin_is_required_and_each_is_sufficient_alone() -> None:
-    with pytest.raises(ValidationError, match="activity area or origin"):
+    with pytest.raises(ValidationError, match="activity range"):
         complete(area=None, origin=None)
 
     assert complete(area=AREA, origin=None).area == AREA
@@ -351,6 +352,151 @@ def test_origin_is_absent_from_repr_errors_public_dumps_and_logs(
     with pytest.raises(ValidationError) as exc_info:
         complete(area=None, origin=ORIGIN, end_at=START_AT)
     assert all(value not in str(exc_info.value) for value in sensitive_values)
+
+
+PRIVATE_AREA = "PRIVATE_AREA_SENTINEL"
+PRIVATE_REQUIREMENT = "PRIVATE_REQUIREMENT_SENTINEL"
+PRIVATE_EXCLUSION = "PRIVATE_EXCLUSION_SENTINEL"
+PRIVATE_LATITUDE = "22.123456"
+PRIVATE_LONGITUDE = "113.654321"
+PRIVATE_ORIGIN = Coordinate(
+    latitude=float(PRIVATE_LATITUDE),
+    longitude=float(PRIVATE_LONGITUDE),
+    coordinate_system=CoordinateSystem.GCJ_02,
+)
+PRIVATE_VALUES = (
+    "origin",
+    PRIVATE_AREA,
+    PRIVATE_REQUIREMENT,
+    PRIVATE_EXCLUSION,
+    PRIVATE_LATITUDE,
+    PRIVATE_LONGITUDE,
+)
+
+
+def assert_validation_error_is_safe(
+    error: ValidationError,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Exercise every application-observable Pydantic error representation."""
+
+    structured = error.errors(include_url=False)
+    outputs = (str(error), repr(error), repr(structured), error.json(include_url=False))
+    with caplog.at_level(logging.INFO, logger="plan-validation-test"):
+        logger = logging.getLogger("plan-validation-test")
+        logger.info("%s", error)
+        logger.info("%r", error)
+
+    assert all(value not in output for value in PRIVATE_VALUES for output in outputs)
+    assert all(value not in caplog.text for value in PRIVATE_VALUES)
+    assert all(item["input"] is None for item in structured)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"end_at": START_AT},
+        {"expires_at": CREATED_AT},
+        {
+            "include": (PRIVATE_REQUIREMENT,),
+            "exclude": (PRIVATE_REQUIREMENT,),
+        },
+    ],
+    ids=("invalid-time-window", "invalid-temporary-lifetime", "private-conflict"),
+)
+def test_validation_error_boundary_redacts_complete_python_input(
+    changes: dict[str, object],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    raw = input_values(
+        area=ActivityArea(labels=(PRIVATE_AREA,)),
+        origin=PRIVATE_ORIGIN,
+        include=(PRIVATE_REQUIREMENT,),
+        exclude=(PRIVATE_EXCLUSION,),
+    )
+    raw.update(changes)
+    original = deepcopy(raw)
+
+    results: list[tuple[object, str]] = []
+    for use_model_validate in (False, True):
+        caplog.clear()
+        with pytest.raises(ValidationError) as exc_info:
+            if use_model_validate:
+                PlanConstraints.model_validate(raw)
+            else:
+                PlanConstraints(**raw)
+        assert_validation_error_is_safe(exc_info.value, caplog)
+        results.append(
+            (
+                exc_info.value.errors(include_context=False, include_url=False),
+                exc_info.value.json(include_url=False),
+            )
+        )
+
+    assert results[0] == results[1]
+    assert raw == original
+
+
+def test_validation_error_boundary_redacts_complete_json_input(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    payload = json.dumps(
+        {
+            "city_code": "shenzhen",
+            "start_at": START_AT.isoformat(),
+            "end_at": START_AT.isoformat(),
+            "area": {"labels": [PRIVATE_AREA]},
+            "origin": {
+                "latitude": float(PRIVATE_LATITUDE),
+                "longitude": float(PRIVATE_LONGITUDE),
+                "coordinate_system": "gcj_02",
+            },
+            "budget": None,
+            "pace": "relaxed",
+            "transport_modes": ["walking"],
+            "include": [PRIVATE_REQUIREMENT],
+            "exclude": [PRIVATE_EXCLUSION],
+            "collection_only": False,
+            "created_at": CREATED_AT.isoformat(),
+            "expires_at": EXPIRES_AT.isoformat(),
+        }
+    )
+    original = payload
+
+    rendered: list[str] = []
+    for _ in range(2):
+        caplog.clear()
+        with pytest.raises(ValidationError) as exc_info:
+            PlanConstraints.model_validate_json(payload)
+        assert_validation_error_is_safe(exc_info.value, caplog)
+        rendered.append(exc_info.value.json(include_url=False))
+
+    assert rendered[0] == rendered[1]
+    assert payload == original
+
+
+def test_successful_python_and_json_public_dumps_exclude_precise_origin() -> None:
+    constraints = complete(origin=PRIVATE_ORIGIN)
+    json_constraints = PlanConstraints.model_validate_json(
+        json.dumps(
+            {
+                **constraints.model_dump(mode="json"),
+                "origin": {
+                    "latitude": float(PRIVATE_LATITUDE),
+                    "longitude": float(PRIVATE_LONGITUDE),
+                    "coordinate_system": "gcj_02",
+                },
+            }
+        )
+    )
+
+    for value in (constraints, json_constraints):
+        dumped = value.model_dump()
+        serialized = value.model_dump_json()
+        assert "origin" not in dumped
+        assert all(item not in serialized for item in ("origin", *PRIVATE_VALUES[-2:]))
 
 
 def test_resolution_has_no_network_file_database_or_provider_side_effects(

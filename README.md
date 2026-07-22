@@ -68,7 +68,9 @@ python -m pytest -q tests/unit/test_plan_constraints.py
 
 `app.domain.plans.PlanConstraints` 是唯一完整计划约束契约。调用方必须显式传入 `PlanCity.SHENZHEN`；通过 `city_scope` 可转换为既有 `CityScope`，不依赖全局当前城市。契约复用既有 `Coordinate` 和 `TransportMode`（公共交通值保持 `transit`），要求一个 aware 且不超过 24 小时的连续时间段，以及粗粒度 `ActivityArea` 或敏感 `origin` 二者之一。
 
-预算使用严格 `Decimal | None`，`None` 不会被改写成默认金额；pace、交通方式、include/exclude 和 `collection_only` 均为可选且不阻塞。`resolve_plan_constraints()` 只会按稳定顺序返回一个缺失项：先 `time_window`，再 `activity_range`。临时约束在 `[created_at, expires_at)` 内有效，到达过期时刻后整组约束不可继续解析；该纯函数不访问数据库、文件、网络或 Provider，也不写入长期记忆。精确 `origin` 不进入 repr、日志或公开序列化。
+预算使用严格 `Decimal | None`，`None` 不会被改写成默认金额；pace、交通方式、include/exclude 和 `collection_only` 均为可选且不阻塞。`resolve_plan_constraints()` 只会按稳定顺序返回一个缺失项：先 `time_window`，再 `activity_range`。临时约束在 `[created_at, expires_at)` 内有效，到达过期时刻后整组约束不可继续解析；该纯函数不访问数据库、文件、网络或 Provider，也不写入长期记忆。
+
+`PlanContract` 提供唯一的安全校验错误边界：Python 与 JSON 输入产生的原始 Pydantic 错误在离开契约前统一重建，错误项的 `input` 固定为 `None`，敏感字段位置和非白名单消息被替换，原异常链被丢弃。因此 `str`、`repr`、`errors()`、`json()` 和普通异常日志都不会携带精确 `origin`、私人活动范围、include/exclude 私人要求或原始完整输入；这项保证不只依赖 `hide_input_in_errors`。成功对象的精确 `origin` 仍不进入 repr、日志、`model_dump()` 或 `model_dump_json()`。聚焦回归入口为 `APP_ENV=test RUN_REAL_MODEL_TESTS=0 RUN_REAL_MAP_TESTS=0 python -m pytest -q tests/unit/test_plan_constraints.py`。
 
 ### 数据库迁移
 
