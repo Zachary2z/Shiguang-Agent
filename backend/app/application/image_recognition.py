@@ -44,7 +44,14 @@ from nanobot_core.providers import Message, ModelProvider, ModelResponse, Provid
 MAX_IMAGE_WIDTH: Final = 12_000
 MAX_IMAGE_HEIGHT: Final = 12_000
 MAX_IMAGE_PIXELS: Final = 40_000_000
+MIN_MODEL_IMAGE_DIMENSION: Final = 11
+MAX_MODEL_IMAGE_ASPECT_RATIO: Final = 200
+MAX_MODEL_IMAGE_PIXELS: Final = 4_000_000
+MAX_MODEL_IMAGE_SIDE: Final = 4_096
+MAX_MODEL_DATA_URL_CHARS: Final = 10_000_000
 ORIGINAL_SCREENSHOT_RETENTION_DAYS: Final = 30
+_INFERENCE_JPEG_QUALITIES: Final = (85, 70, 55)
+_INFERENCE_RESIZE_ATTEMPTS: Final = 6
 
 _PIL_FORMAT_BY_CONTENT_TYPE: Final = {
     "image/jpeg": "JPEG",
@@ -102,6 +109,9 @@ class ImageRecognitionErrorCode(StrEnum):
     CORRUPT_IMAGE = "IMAGE_CORRUPT"
     DIMENSIONS_EXCEEDED = "IMAGE_DIMENSIONS_EXCEEDED"
     PIXELS_EXCEEDED = "IMAGE_PIXELS_EXCEEDED"
+    MODEL_DIMENSIONS_UNSUPPORTED = "IMAGE_MODEL_DIMENSIONS_UNSUPPORTED"
+    MODEL_ASPECT_RATIO_EXCEEDED = "IMAGE_MODEL_ASPECT_RATIO_EXCEEDED"
+    MODEL_PAYLOAD_EXCEEDED = "IMAGE_MODEL_PAYLOAD_EXCEEDED"
     ANIMATED_IMAGE_NOT_ALLOWED = "IMAGE_ANIMATED_NOT_ALLOWED"
     PROCESSING_FAILED = "IMAGE_PROCESSING_FAILED"
 
@@ -122,6 +132,15 @@ _ERROR_SUMMARIES = {
     ),
     ImageRecognitionErrorCode.PIXELS_EXCEEDED: (
         "The screenshot pixel count exceeds the safety limit."
+    ),
+    ImageRecognitionErrorCode.MODEL_DIMENSIONS_UNSUPPORTED: (
+        "The screenshot dimensions are not supported for recognition."
+    ),
+    ImageRecognitionErrorCode.MODEL_ASPECT_RATIO_EXCEEDED: (
+        "The screenshot aspect ratio is not supported for recognition."
+    ),
+    ImageRecognitionErrorCode.MODEL_PAYLOAD_EXCEEDED: (
+        "The screenshot cannot be prepared within the recognition limit."
     ),
     ImageRecognitionErrorCode.ANIMATED_IMAGE_NOT_ALLOWED: (
         "Animated screenshots are not supported."
@@ -182,12 +201,20 @@ class ImageRecognitionService:
     ) -> tuple[PrivateFileMetadata, ExtractionResult]:
         """Return the existing file metadata and existing extraction result contracts."""
 
+        self._validate_content_type(content_type)
         image_bytes = await self._read_bounded(file)
-        self._validate_image(image_bytes, content_type=content_type)
+        dimensions = self._validate_image(image_bytes, content_type=content_type)
+        inference_bytes, inference_content_type = self._prepare_inference_image(
+            image_bytes,
+            content_type=content_type,
+            dimensions=dimensions,
+        )
         expires_at = require_aware_utc(self._clock()) + timedelta(
             days=ORIGINAL_SCREENSHOT_RETENTION_DAYS
         )
         stored_file: PrivateFileMetadata | None = None
+        public_error: ProviderError | StorageProviderError | ImageRecognitionError | None = None
+        cancellation: asyncio.CancelledError | None = None
         unexpected_failure = False
         try:
             stored_file = await self._storage.put_private(
@@ -197,28 +224,29 @@ class ImageRecognitionService:
                 expires_at=expires_at,
                 original_filename=original_filename,
             )
-            result = await self._extract(image_bytes, content_type=content_type)
+            result = await self._extract(
+                inference_bytes,
+                content_type=inference_content_type,
+            )
             return stored_file, result
-        except asyncio.CancelledError:
-            if stored_file is not None:
-                await self._best_effort_delete(stored_file.file_key)
-            raise
-        except (ProviderError, StorageProviderError):
-            if stored_file is not None:
-                await self._best_effort_delete(stored_file.file_key)
-            raise
-        except ImageRecognitionError:
-            if stored_file is not None:
-                await self._best_effort_delete(stored_file.file_key)
-            raise
+        except asyncio.CancelledError as error:
+            cancellation = error
+        except (ProviderError, StorageProviderError, ImageRecognitionError) as error:
+            public_error = error
         except Exception:
             unexpected_failure = True
-        if unexpected_failure:
-            if stored_file is not None:
-                await self._best_effort_delete(stored_file.file_key)
+
+        cleanup_failed = False
+        if stored_file is not None:
+            cleanup_failed = not await self._delete_current_file(stored_file.file_key)
+        if cancellation is not None:
+            raise cancellation
+        if unexpected_failure or cleanup_failed:
             raise ImageRecognitionError(
                 code=ImageRecognitionErrorCode.PROCESSING_FAILED
             )
+        if public_error is not None:
+            raise public_error
         raise AssertionError("unreachable screenshot recognition state")
 
     async def _extract(
@@ -227,10 +255,7 @@ class ImageRecognitionService:
         *,
         content_type: str,
     ) -> ExtractionResult:
-        data_url = (
-            f"data:{content_type};base64,"
-            f"{base64.b64encode(image_bytes).decode('ascii')}"
-        )
+        data_url = _build_model_data_url(image_bytes, content_type=content_type)
         initial_messages: list[Message] = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {
@@ -297,14 +322,13 @@ class ImageRecognitionService:
             raise ImageRecognitionError(code=ImageRecognitionErrorCode.FILE_EMPTY)
         return bytes(payload)
 
-    def _validate_image(self, payload: bytes, *, content_type: str) -> None:
-        if (
-            not isinstance(content_type, str)
-            or content_type not in self._allowed_content_types
-        ):
+    def _validate_content_type(self, content_type: str) -> None:
+        if not isinstance(content_type, str) or content_type not in self._allowed_content_types:
             raise ImageRecognitionError(
                 code=ImageRecognitionErrorCode.CONTENT_TYPE_NOT_ALLOWED
             )
+
+    def _validate_image(self, payload: bytes, *, content_type: str) -> tuple[int, int]:
         prefix = payload[:STORAGE_SIGNATURE_PROBE_BYTES]
         if not content_signature_matches(content_type=content_type, prefix=prefix):
             raise ImageRecognitionError(
@@ -312,11 +336,13 @@ class ImageRecognitionService:
             )
 
         corrupt_image = False
+        dimensions: tuple[int, int] | None = None
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("error", Image.DecompressionBombWarning)
                 with Image.open(BytesIO(payload)) as image:
                     self._validate_open_image(image, content_type=content_type)
+                    dimensions = image.size
                     image.verify()
                 with Image.open(BytesIO(payload)) as decoded:
                     self._validate_open_image(decoded, content_type=content_type)
@@ -336,6 +362,8 @@ class ImageRecognitionService:
             raise ImageRecognitionError(
                 code=ImageRecognitionErrorCode.CORRUPT_IMAGE
             )
+        assert dimensions is not None
+        return dimensions
 
     @staticmethod
     def _validate_open_image(image: Image.Image, *, content_type: str) -> None:
@@ -354,6 +382,14 @@ class ImageRecognitionService:
             raise ImageRecognitionError(
                 code=ImageRecognitionErrorCode.PIXELS_EXCEEDED
             )
+        if width < MIN_MODEL_IMAGE_DIMENSION or height < MIN_MODEL_IMAGE_DIMENSION:
+            raise ImageRecognitionError(
+                code=ImageRecognitionErrorCode.MODEL_DIMENSIONS_UNSUPPORTED
+            )
+        if max(width, height) > min(width, height) * MAX_MODEL_IMAGE_ASPECT_RATIO:
+            raise ImageRecognitionError(
+                code=ImageRecognitionErrorCode.MODEL_ASPECT_RATIO_EXCEEDED
+            )
         if getattr(image, "is_animated", False) or getattr(image, "n_frames", 1) != 1:
             raise ImageRecognitionError(
                 code=ImageRecognitionErrorCode.ANIMATED_IMAGE_NOT_ALLOWED
@@ -363,15 +399,127 @@ class ImageRecognitionService:
         if isinstance(response, ModelResponse) and self._response_observer is not None:
             self._response_observer(response)
 
-    async def _best_effort_delete(self, file_key: str) -> None:
+    def _prepare_inference_image(
+        self,
+        payload: bytes,
+        *,
+        content_type: str,
+        dimensions: tuple[int, int],
+    ) -> tuple[bytes, str]:
+        width, height = dimensions
+        if (
+            width * height <= MAX_MODEL_IMAGE_PIXELS
+            and max(width, height) <= MAX_MODEL_IMAGE_SIDE
+            and _model_payload_fits(payload, content_type=content_type)
+        ):
+            return payload, content_type
+
+        failed = False
+        try:
+            with Image.open(BytesIO(payload)) as source:
+                source.load()
+                inference = source.convert("RGB")
+            inference = _resize_for_model(inference)
+            for attempt in range(_INFERENCE_RESIZE_ATTEMPTS):
+                for quality in _INFERENCE_JPEG_QUALITIES:
+                    output = BytesIO()
+                    inference.save(
+                        output,
+                        format="JPEG",
+                        quality=quality,
+                        optimize=False,
+                        progressive=False,
+                    )
+                    encoded = output.getvalue()
+                    if _model_dimensions_fit(inference.size) and _model_payload_fits(
+                        encoded,
+                        content_type="image/jpeg",
+                    ):
+                        return encoded, "image/jpeg"
+                if attempt + 1 < _INFERENCE_RESIZE_ATTEMPTS:
+                    next_size = (
+                        max(MIN_MODEL_IMAGE_DIMENSION, int(inference.width * 0.75)),
+                        max(MIN_MODEL_IMAGE_DIMENSION, int(inference.height * 0.75)),
+                    )
+                    inference = inference.resize(next_size, Image.Resampling.LANCZOS)
+        except (OSError, ValueError):
+            failed = True
+        if failed:
+            raise ImageRecognitionError(code=ImageRecognitionErrorCode.PROCESSING_FAILED)
+        raise ImageRecognitionError(code=ImageRecognitionErrorCode.MODEL_PAYLOAD_EXCEEDED)
+
+    async def _delete_current_file(self, file_key: str) -> bool:
+        unexpected_failure = False
         try:
             await self._storage.delete(file_key)
-        except (asyncio.CancelledError, StorageProviderError):
-            return
+        except asyncio.CancelledError:
+            raise
+        except StorageProviderError:
+            return True
+        except Exception:
+            unexpected_failure = True
+        return not unexpected_failure
 
 
 async def _single_chunk(payload: bytes) -> AsyncIterable[bytes]:
     yield payload
+
+
+def _resize_for_model(image: Image.Image) -> Image.Image:
+    scale = min(
+        1.0,
+        MAX_MODEL_IMAGE_SIDE / max(image.size),
+        (MAX_MODEL_IMAGE_PIXELS / (image.width * image.height)) ** 0.5,
+    )
+    if scale >= 1.0:
+        return image
+    width = max(MIN_MODEL_IMAGE_DIMENSION, int(image.width * scale))
+    height = max(MIN_MODEL_IMAGE_DIMENSION, int(image.height * scale))
+    if width >= height:
+        minimum_height = (
+            width + MAX_MODEL_IMAGE_ASPECT_RATIO - 1
+        ) // MAX_MODEL_IMAGE_ASPECT_RATIO
+        height = max(height, minimum_height)
+    else:
+        minimum_width = (
+            height + MAX_MODEL_IMAGE_ASPECT_RATIO - 1
+        ) // MAX_MODEL_IMAGE_ASPECT_RATIO
+        width = max(width, minimum_width)
+    size = (
+        width,
+        height,
+    )
+    return image.resize(size, Image.Resampling.LANCZOS)
+
+
+def _model_dimensions_fit(size: tuple[int, int]) -> bool:
+    width, height = size
+    return (
+        width >= MIN_MODEL_IMAGE_DIMENSION
+        and height >= MIN_MODEL_IMAGE_DIMENSION
+        and max(width, height) <= MAX_MODEL_IMAGE_SIDE
+        and width * height <= MAX_MODEL_IMAGE_PIXELS
+        and max(width, height) <= min(width, height) * MAX_MODEL_IMAGE_ASPECT_RATIO
+    )
+
+
+def _base64_encoded_length(byte_size: int) -> int:
+    return 4 * ((byte_size + 2) // 3)
+
+
+def _model_payload_fits(payload: bytes, *, content_type: str) -> bool:
+    prefix_length = len(f"data:{content_type};base64,")
+    return prefix_length + _base64_encoded_length(len(payload)) < MAX_MODEL_DATA_URL_CHARS
+
+
+def _build_model_data_url(payload: bytes, *, content_type: str) -> str:
+    if not _model_payload_fits(payload, content_type=content_type):
+        raise ImageRecognitionError(code=ImageRecognitionErrorCode.MODEL_PAYLOAD_EXCEEDED)
+    encoded = base64.b64encode(payload).decode("ascii")
+    assert len(encoded) == _base64_encoded_length(len(payload))
+    data_url = f"data:{content_type};base64,{encoded}"
+    assert len(data_url) < MAX_MODEL_DATA_URL_CHARS
+    return data_url
 
 
 def _canonicalize_image_result(result: ExtractionResult) -> ExtractionResult:
@@ -426,5 +574,10 @@ __all__ = [
     "MAX_IMAGE_HEIGHT",
     "MAX_IMAGE_PIXELS",
     "MAX_IMAGE_WIDTH",
+    "MAX_MODEL_DATA_URL_CHARS",
+    "MAX_MODEL_IMAGE_ASPECT_RATIO",
+    "MAX_MODEL_IMAGE_PIXELS",
+    "MAX_MODEL_IMAGE_SIDE",
+    "MIN_MODEL_IMAGE_DIMENSION",
     "ORIGINAL_SCREENSHOT_RETENTION_DAYS",
 ]

@@ -5,18 +5,27 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import random
 import struct
 import zlib
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image
 
+import app.application.image_recognition as image_recognition_module
 from app.application.image_recognition import (
     MAX_IMAGE_WIDTH,
+    MAX_MODEL_DATA_URL_CHARS,
+    MAX_MODEL_IMAGE_ASPECT_RATIO,
+    MAX_MODEL_IMAGE_PIXELS,
+    MAX_MODEL_IMAGE_SIDE,
+    MIN_MODEL_IMAGE_DIMENSION,
     ImageRecognitionError,
     ImageRecognitionErrorCode,
     ImageRecognitionService,
@@ -181,6 +190,24 @@ def _png_with_dimensions(width: int, height: int) -> bytes:
     return bytes(payload)
 
 
+def _encoded_solid_image(
+    size: tuple[int, int],
+    *,
+    image_format: str = "PNG",
+) -> bytes:
+    output = BytesIO()
+    Image.new("RGB", size, color=(42, 124, 180)).save(output, format=image_format)
+    return output.getvalue()
+
+
+def _incompressible_png() -> bytes:
+    size = (1_700, 1_700)
+    pixels = random.Random(20260722).randbytes(size[0] * size[1] * 3)
+    output = BytesIO()
+    Image.frombytes("RGB", size, pixels).save(output, format="PNG", compress_level=0)
+    return output.getvalue()
+
+
 @pytest.mark.parametrize(
     ("payload", "content_type"),
     [
@@ -224,6 +251,92 @@ async def test_supported_images_are_private_and_use_one_model_call(
     assert FAKE_FILENAME not in public_values
     assert "file://" not in public_values
     assert str(root) not in public_values
+
+
+@pytest.mark.asyncio
+async def test_large_incompressible_png_uses_bounded_inference_copy_only(
+    tmp_path: Path,
+) -> None:
+    payload = _incompressible_png()
+    assert 8_600_000 < len(payload) < 8_800_000
+    assert len(base64.b64encode(payload)) > MAX_MODEL_DATA_URL_CHARS
+    provider = FakeProvider([_response_for(_place())])
+    service, storage, root = _service(tmp_path, provider)
+
+    metadata, result = await service.recognize(
+        _stream(payload),
+        content_type="image/png",
+        original_filename=FAKE_FILENAME,
+    )
+
+    assert result.outcome is ExtractionOutcome.CANDIDATES
+    assert metadata.byte_size == len(payload)
+    assert metadata.content_type == "image/png"
+    assert metadata.retention_policy is RetentionPolicy.ORIGINAL_SCREENSHOT
+    assert metadata.expires_at == FIXED_NOW + timedelta(days=30)
+    assert (await storage.get_private_access(metadata.file_key)).file == metadata
+    assert [path.name for path in (root / "objects").iterdir()] == [metadata.file_key]
+    user_content = provider.calls[0].messages[1]["content"]
+    assert isinstance(user_content, list)
+    data_url = user_content[1]["image_url"]["url"]
+    assert data_url.startswith("data:image/jpeg;base64,")
+    assert len(data_url) < MAX_MODEL_DATA_URL_CHARS
+    assert base64_marker(payload) not in data_url
+    inference_payload = base64.b64decode(data_url.partition(",")[2], validate=True)
+    with Image.open(BytesIO(inference_payload)) as inference:
+        width, height = inference.size
+        assert width >= MIN_MODEL_IMAGE_DIMENSION
+        assert height >= MIN_MODEL_IMAGE_DIMENSION
+        assert max(width, height) <= MAX_MODEL_IMAGE_SIDE
+        assert width * height <= MAX_MODEL_IMAGE_PIXELS
+        assert max(width, height) <= min(width, height) * MAX_MODEL_IMAGE_ASPECT_RATIO
+    assert len(provider.calls) == 1
+
+
+def test_model_data_url_exact_threshold_and_one_raw_byte_over() -> None:
+    content_type = "image/jpeg"
+    prefix_length = len(f"data:{content_type};base64,")
+    accepted_quads = (MAX_MODEL_DATA_URL_CHARS - prefix_length - 1) // 4
+    accepted_payload = b"x" * (accepted_quads * 3)
+
+    data_url = image_recognition_module._build_model_data_url(
+        accepted_payload,
+        content_type=content_type,
+    )
+
+    assert len(data_url) < MAX_MODEL_DATA_URL_CHARS
+    assert len(data_url) + 1 == MAX_MODEL_DATA_URL_CHARS
+    with pytest.raises(ImageRecognitionError) as exc_info:
+        image_recognition_module._build_model_data_url(
+            accepted_payload + b"x",
+            content_type=content_type,
+        )
+    assert exc_info.value.code is ImageRecognitionErrorCode.MODEL_PAYLOAD_EXCEEDED
+
+
+@pytest.mark.asyncio
+async def test_known_oversize_model_payload_never_reaches_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content_type = "image/jpeg"
+    prefix_length = len(f"data:{content_type};base64,")
+    accepted_quads = (MAX_MODEL_DATA_URL_CHARS - prefix_length - 1) // 4
+    oversize = b"x" * (accepted_quads * 3 + 1)
+    provider = FakeProvider([])
+    service, _storage, root = _service(tmp_path, provider)
+    monkeypatch.setattr(
+        service,
+        "_prepare_inference_image",
+        lambda *_args, **_kwargs: (oversize, content_type),
+    )
+
+    with pytest.raises(ImageRecognitionError) as exc_info:
+        await service.recognize(_stream(PNG_SCREENSHOT), content_type="image/png")
+
+    assert exc_info.value.code is ImageRecognitionErrorCode.MODEL_PAYLOAD_EXCEEDED
+    assert provider.calls == []
+    _assert_no_storage_residue(root)
 
 
 @pytest.mark.asyncio
@@ -376,6 +489,75 @@ async def test_unsafe_images_never_reach_storage_or_model(
         await service.recognize(_stream(payload), content_type=content_type)
 
     assert exc_info.value.code is expected
+    assert provider.calls == []
+    _assert_no_storage_residue(root)
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [
+        ((10, 10), ImageRecognitionErrorCode.MODEL_DIMENSIONS_UNSUPPORTED),
+        ((10, 11), ImageRecognitionErrorCode.MODEL_DIMENSIONS_UNSUPPORTED),
+        ((11, 2_201), ImageRecognitionErrorCode.MODEL_ASPECT_RATIO_EXCEEDED),
+    ],
+)
+@pytest.mark.asyncio
+async def test_model_dimension_and_aspect_boundaries_are_rejected_before_storage(
+    tmp_path: Path,
+    size: tuple[int, int],
+    expected: ImageRecognitionErrorCode,
+) -> None:
+    provider = FakeProvider([])
+    service, _storage, root = _service(tmp_path, provider)
+
+    with pytest.raises(ImageRecognitionError) as exc_info:
+        await service.recognize(
+            _stream(_encoded_solid_image(size)),
+            content_type="image/png",
+        )
+
+    assert exc_info.value.code is expected
+    assert provider.calls == []
+    _assert_no_storage_residue(root)
+
+
+@pytest.mark.asyncio
+async def test_exact_200_to_1_aspect_ratio_is_supported(tmp_path: Path) -> None:
+    provider = FakeProvider([_response_for(_place())])
+    service, _storage, _root = _service(tmp_path, provider)
+
+    metadata, result = await service.recognize(
+        _stream(_encoded_solid_image((11, 2_200))),
+        content_type="image/png",
+    )
+
+    assert metadata.content_type == "image/png"
+    assert result.outcome is ExtractionOutcome.CANDIDATES
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_disallowed_mime_consumes_zero_chunks_and_has_no_side_effects(
+    tmp_path: Path,
+) -> None:
+    consumed = 0
+
+    async def observable_stream() -> AsyncIterator[bytes]:
+        nonlocal consumed
+        consumed += 1
+        yield PNG_SCREENSHOT
+
+    provider = FakeProvider([])
+    service, _storage, root = _service(tmp_path, provider)
+
+    with pytest.raises(ImageRecognitionError) as exc_info:
+        await service.recognize(
+            observable_stream(),
+            content_type="application/octet-stream",
+        )
+
+    assert exc_info.value.code is ImageRecognitionErrorCode.CONTENT_TYPE_NOT_ALLOWED
+    assert consumed == 0
     assert provider.calls == []
     _assert_no_storage_residue(root)
 
@@ -559,6 +741,67 @@ async def test_cancelled_error_propagates_and_removes_new_file(tmp_path: Path) -
 
     assert exc_info.value is cancellation
     _assert_no_storage_residue(root)
+
+
+@pytest.mark.asyncio
+async def test_provider_error_cleanup_cancellation_propagates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = FakeProvider([ProviderError(code=ProviderErrorCode.TIMEOUT)])
+    service, storage, root = _service(tmp_path, provider)
+    cleanup_cancellation = asyncio.CancelledError("cancel-cleanup")
+    monkeypatch.setattr(storage, "delete", AsyncMock(side_effect=cleanup_cancellation))
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await service.recognize(_stream(PNG_SCREENSHOT), content_type="image/png")
+
+    assert exc_info.value is cleanup_cancellation
+    assert len(list((root / "objects").iterdir())) == 1
+
+
+@pytest.mark.asyncio
+async def test_private_cleanup_runtime_error_is_fixed_and_does_not_touch_existing_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider = FakeProvider([ProviderError(code=ProviderErrorCode.PROVIDER_ERROR)])
+    service, storage, root = _service(tmp_path, provider)
+    existing = await storage.put_private(
+        _stream(PNG_SCREENSHOT),
+        content_type="image/png",
+        retention_policy=RetentionPolicy.ORIGINAL_SCREENSHOT,
+        expires_at=FIXED_NOW + timedelta(days=30),
+    )
+    private_detail = f"cleanup-secret {FAKE_FILENAME} {root}"
+    deleted_keys: list[str] = []
+
+    async def fail_delete(file_key: str) -> None:
+        deleted_keys.append(file_key)
+        raise RuntimeError(private_detail)
+
+    monkeypatch.setattr(storage, "delete", fail_delete)
+
+    with caplog.at_level(logging.DEBUG), pytest.raises(ImageRecognitionError) as exc_info:
+        await service.recognize(
+            _stream(PNG_SCREENSHOT),
+            content_type="image/png",
+            original_filename=FAKE_FILENAME,
+        )
+
+    error = exc_info.value
+    assert error.code is ImageRecognitionErrorCode.PROCESSING_FAILED
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    rendered = f"{error!s}{error!r}{error.to_public_dict()!r}{caplog.text}"
+    assert private_detail not in rendered
+    assert FAKE_FILENAME not in rendered
+    assert str(root) not in rendered
+    assert len(deleted_keys) == 1
+    assert deleted_keys[0] != existing.file_key
+    assert (await storage.get_private_access(existing.file_key)).file == existing
+    assert existing.file_key in {path.name for path in (root / "objects").iterdir()}
 
 
 @pytest.mark.asyncio

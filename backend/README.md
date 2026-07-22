@@ -357,8 +357,12 @@ policy, validates the complete JPEG/PNG/WebP decode before any storage or model 
 through the existing `StorageProvider` with `ORIGINAL_SCREENSHOT` retention. Pillow is the only
 new image dependency: Python's standard library has no complete JPEG/PNG/WebP decoder and cannot
 reliably detect truncation, damaged images, decompression bombs, dimensions, or pixel counts.
-Validation rejects animated images, dimensions over 12,000 pixels per side, and images over 40
-million pixels. EXIF location is never read or promoted to location evidence.
+Validation rejects animated images, dimensions over 12,000 pixels per side, images over 40
+million pixels, a side shorter than 11 pixels, and aspect ratios over 200:1. EXIF location is
+never read or promoted to location evidence. The original remains the sole 30-day stored object.
+Large valid inputs use a deterministic in-memory JPEG inference copy capped at 4 million pixels
+and 4,096 pixels per side; the complete model data URL is asserted below 10,000,000 characters
+before the provider is called, and the inference copy is never stored.
 
 Recognition uses the existing provider-neutral `Message` dictionary with text and `image_url`
 content parts. `OpenAICompatibleProvider` continues to send one non-streaming SDK request per
@@ -371,8 +375,10 @@ define `ImageCandidate`, `OcrCandidate`, a second response DTO, a second model p
 vision runner. Present screenshot price and location clues are rebuilt with explicit
 `Uncertainty`; formal POI, coordinates, city code, and screenshot-only opening hours are absent
 from the candidate schema. Provider error, unexpected exception, and cancellation paths delete
-only the object created by that call. There is no HTTP upload route, Source/Collection workflow,
-new setting, migration, real vision marker, or M0-4D unified input pipeline.
+only the object created by that call. A cancellation raised during cleanup propagates, while an
+unexpected cleanup exception becomes a fixed public-safe image error without retaining private
+cause or context. There is no HTTP upload route, Source/Collection workflow, new setting,
+migration, real vision marker, or M0-4D unified input pipeline.
 
 Offline focus suite:
 

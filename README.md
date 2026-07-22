@@ -49,7 +49,7 @@ Windows PowerShell 激活命令为 `.venv\Scripts\Activate.ps1`，之后同样�
 ```bash
 python -m ruff check .
 python -m mypy app migrations nanobot_core
-python -m pytest -q -m "not real_provider and not real_map_provider and not real_vision_provider"
+python -m pytest -q -m "not real_provider and not real_map_provider"
 python -m pytest -q tests/core
 python -m pytest -q tests/test_migrations.py
 python -m pytest -q tests/contract/test_m0_2d_api.py
@@ -230,15 +230,17 @@ RUN_REAL_MAP_TESTS=1 python -m pytest -q -m real_map_provider -rs
 
 ### M0-4C 截图识别
 
-`ImageRecognitionService` 在应用层接收受限异步图片流，复用 M0-4A 的唯一 `StorageProvider` 与 `ORIGINAL_SCREENSHOT` 30 天生命周期。服务先按现有 MIME、签名和配置大小边界缓冲，再用唯一 Pillow 解码器校验 JPEG/PNG/WebP 的格式、完整性、静态帧、宽高和 4000 万像素硬上限；任何空文件、伪装、截断、损坏、超限或像素异常输入都在保存和模型调用前失败。标准库没有 JPEG/PNG/WebP 完整解码器，无法可靠执行这些安全检查，因此 Pillow 是本阶段唯一新增的图片依赖，不接 OCR SDK 或外部 OCR 服务。
+`ImageRecognitionService` 在应用层接收受限异步图片流，复用 M0-4A 的唯一 `StorageProvider` 与 `ORIGINAL_SCREENSHOT` 30 天生命周期。服务在消费异步流前检查 MIME，再按现有签名和配置大小边界缓冲，并用唯一 Pillow 解码器校验 JPEG/PNG/WebP 的格式、完整性、静态帧、宽高和 4000 万像素安全上限；任何空文件、伪装、截断、损坏、超限或像素异常输入都在保存和模型调用前失败。标准库没有 JPEG/PNG/WebP 完整解码器，无法可靠执行这些安全检查，因此 Pillow 是本阶段唯一新增的图片依赖，不接 OCR SDK 或外部 OCR 服务。
 
-验证通过后原图才进入私有存储，返回值只组合既有 `PrivateFileMetadata` 和 `ExtractionResult`，不提供本地路径、公开 URL、图片专用候选或 OCR DTO。多模态消息继续通过唯一 `ModelProvider` 与 `OpenAICompatibleProvider`，SDK 仍为非流式、`max_retries=0`；文字和图片共用一处 JSON Schema 校验与最多一次结构修复。截图价格及城市、行政区、地址、商圈、地标、地铁线索由应用层强制标记为 uncertain，不产生正式 POI、坐标、已确认城市或营业时间字段。Provider 异常与取消会清理由本次调用创建的对象，既有文件不会被删除。
+验证通过后原图才进入私有存储，返回值只组合既有 `PrivateFileMetadata` 和 `ExtractionResult`，不提供本地路径、公开 URL、图片专用候选或 OCR DTO。模型侧每边必须至少 11 像素且比例不超过 200:1；普通小图直接使用已验证原字节，较大图片只在内存中确定性转换为最长边 4096、最多 400 万像素的 JPEG 推理副本，并在编码前后保证完整 data URL 严格小于 10,000,000 字符。推理副本不进入存储，原图仍按 30 天策略保存，也不读取 EXIF。多模态消息继续通过唯一 `ModelProvider` 与 `OpenAICompatibleProvider`，SDK 仍为非流式、`max_retries=0`；文字和图片共用一处 JSON Schema 校验与最多一次结构修复。Provider 异常与取消只清理本次对象；清理期间新取消继续传播，其他意外清理错误固定脱敏。
 
 本阶段没有上传 HTTP 路由、Source/Collection/AgentRun 编排、配置变量、数据库迁移、真实视觉测试入口或 M0-4D 统一输入。离线聚焦命令：
 
 ```bash
 python -m pytest -q tests/unit/test_image_recognition_service.py tests/unit/test_openai_compatible_provider.py tests/unit/test_text_extraction_service.py
 ```
+
+当前修复前交接基线的上述精确命令为 `120 passed`；验收阻断修复后的数量以 `docs/DEV_STATUS.md` 最新交接记录为准。
 
 真实 Provider 测试只包含一个无文件、消息或外部 API 副作用的确定性加法工具。获得用户明确授权并完成上述四项模型配置后，从 `backend` 目录运行：
 
