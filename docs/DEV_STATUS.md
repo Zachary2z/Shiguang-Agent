@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-4C 截图识别 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-4c-image-recognition |
+| 当前子阶段 | M0-4D 统一输入流水线 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-22 |
-| 阻塞项 | 无；等待主控离线验收，真实视觉调用未授权且不属于本轮完成条件 |
+| 阻塞项 | 无；M0-4D 前置条件已满足 |
 
 ## 当前任务
 
-M0-4A 与 M0-4B 均已通过主控验收并纯快进集成到 `main`。M0-4C 已在指定分支完成私有截图接收、Pillow 安全验证、现有 ModelProvider 多模态链路、统一候选映射、失败清理和完整离线测试，开发提交为 `e7f153dd53765c87393687a307fb93cd1dd019d0`，当前等待主控验收。当前允许阶段仍为 M0-4C；M0-4D 统一输入和 M0-5 仍未开始且不允许提前开发。
+M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4C 已完成私有截图接收、Pillow 安全验证、现有 ModelProvider 多模态抽取、统一候选映射、供应商载荷约束、失败清理和存储前异常脱敏。当前唯一允许开始的阶段为 M0-4D 统一输入流水线；M0-5 仍未开始且不允许提前开发。
 
 ## M0 状态
 
@@ -23,7 +23,7 @@ M0-4A 与 M0-4B 均已通过主控验收并纯快进集成到 `main`。M0-4C 已
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
-| M0-4 URL 与截图 | 进行中 | M0-4A、M0-4B 已完成；M0-4C 开发完成、待主控验收；M0-4D 未开始 |
+| M0-4 URL 与截图 | 进行中 | M0-4A、M0-4B、M0-4C 已完成；M0-4D 未开始 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
@@ -51,10 +51,11 @@ M0-4A 与 M0-4B 均已通过主控验收并纯快进集成到 `main`。M0-4C 已
 - M0-3D 已完成：统一 PlaceTarget、具体地点与任意分店目标、持久化候选快照、正式 POI/品牌幂等、多选事务、规划解析边界和异常链安全均已通过主控验收。
 - M0-4A 已完成：唯一 StorageProvider、本地私有目录、随机 key、类型/大小边界、生命周期元数据、原子排他发布、失败/取消清理和幂等删除已通过主控验收。
 - M0-4B 已完成：唯一 WebContentProvider、网页成功/失败契约、集中 URL/SSRF 策略、DNS 连接绑定、显式重定向、响应/解压/文本边界、Cookie 零状态、HTTP 日志防泄漏和 BeautifulSoup 白名单抽取已通过主控验收。
+- M0-4C 已完成：唯一 ImageRecognitionService、私有原图生命周期、多模态候选抽取、图片与模型载荷边界、不确定字段保护、失败清理和异常脱敏已通过主控验收。
 
 ## 下一步
 
-主控从开发提交 `e7f153dd53765c87393687a307fb93cd1dd019d0` 独立复核 M0-4C 范围、安全、文件生命周期、多模态请求和全部离线命令。验收通过前当前允许阶段仍为 M0-4C；不得开始 M0-4D 统一输入流水线、Source/Collection/AgentRun 编排、M0-5、前端或真实外部调用。真实多模态模型调用仍需在新的当前任务中单独取得明确授权。
+从本次状态提交后的最新 `main` 创建 `codex/m0-4d-unified-input`，只实现 TextInput、UrlInput、ImageInput 到现有 Source、Collection 状态、AgentRun/ToolRun 和幂等收藏流程的统一编排。必须复用 M0-2、M0-4A、M0-4B、M0-4C 的唯一服务与契约，不得提前实现 M0-5、前端、Worker、自动外部检索或未经授权的真实调用。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -810,3 +811,14 @@ M0-4A 与 M0-4B 均已通过主控验收并纯快进集成到 `main`。M0-4C 已
 - 策略与范围：本轮未改变现有图片 MIME、签名、尺寸、比例、像素、data URL 上限、确定性 JPEG 推理副本或原图 30 天保存策略；未修改 `nanobot_core`、ModelProvider、OpenAICompatibleProvider、StorageProvider 契约、候选 Schema、文字抽取、配置、数据库或迁移。未新增 Provider、Storage 实现、DTO、上传路由或统一输入编排，未实现 M0-4D/M0-5
 - 验证结果：项目 `.venv` 的 `python -m pip check`、`python -m ruff check .`、`python -m mypy app migrations nanobot_core` 均退出 0，mypy 检查 84 个源文件；三文件聚焦回归退出 0，`139 passed`；存储契约/本地集成退出 0，`71 passed`；core 退出 0，`118 passed`；迁移退出 0，`21 passed`；正式非真实全集退出 0，`1242 passed / 2 deselected`；默认全集退出 0，`1242 passed / 2 skipped`
 - 禁网与安全：仓库外 `/tmp` 临时 pytest 插件同时封锁 socket connect/connect_ex/create_connection 与 DNS getaddrinfo 后，正式非真实全集再次退出 0，`1242 passed / 2 deselected`。未读取本机 `.env`，未启用真实 marker，真实模型、高德、网页、DNS、对象存储、消息及其他真实/付费 API 调用均为 0；Git 敏感文件、范围和重复定义扫描通过。本阶段仍待主控复验，不合并、不推送、不开始 M0-4D
+
+#### 2026-07-22｜M0-4C｜已完成（主控验收）
+
+- 提交与集成：功能提交 `e7f153dd53765c87393687a307fb93cd1dd019d0`、第一轮加固 `c08fe0de975fc4200876171fbcf9089c599ecc30` 和存储前异常边界修复 `b8f493b70f07075b4f08150066ef0e675e08ea8c` 均直接包含原阶段基线 `2cd2036a88da1a2858756c3b88c3227f3db579d7`。由于 `main` 已包含独立的 M0-Gate 延迟校准文档提交，主控以无冲突非快进合并集成，合并提交为 `cd1e53920ec158eef0f581d3d67365a2c85c9534`；最终后端树与已验收阶段 HEAD 完全一致，额外差异只有 `main` 原有的三份 Gate 文档。
+- 验收环境与静态检查：对精确修复 HEAD 使用仓库外 `git archive`、全新 Python 3.14.0 虚拟环境和重新安装的 `backend[dev]`；Pillow 12.3.0，`pip check`、Ruff 和 strict mypy 均退出 0，mypy 检查 84 个源文件。
+- 自动化结果：M0-4C/Provider/文字抽取聚焦测试 `139 passed`；存储契约与本地集成 `71 passed`；core `118 passed`；迁移 `21 passed`；正式非真实全集 `1242 passed / 2 deselected`；默认全集 `1242 passed / 2 skipped`；封锁 socket connect/connect_ex/create_connection 与 DNS 后非真实全集再次 `1242 passed / 2 deselected`。
+- 独立对抗与真实素材离线检查：仓库外 6 项独立探针全部通过，覆盖图片完整校验、推理副本、时钟和 UTC 校验的私密未预期异常、预处理取消原对象传播，以及用户提供的 16-bit PNG 原图保留和模型 data URL 边界。原验收发现的载荷超限、模型尺寸/比例、非法 MIME 流消费、清理取消、清理异常泄漏和存储前异常泄漏均已关闭；错误前存储、删除和模型调用为 0，固定异常不保留 cause/context 或私密文本。
+- 范围、安全与冗余：M0-4C 只新增应用层唯一 ImageRecognitionService、共享抽取校验、固定图片 Fixture 和 Pillow 依赖；StorageProvider、LocalPrivateStorageProvider、ModelProvider、OpenAICompatibleProvider、AgentRunner、ToolRegistry、TextExtractionService、Place/Event 候选和 ExtractionResult 均保持唯一。没有迁移、配置变量、上传路由、统一输入编排、M0-4D/M0-5、前端、Worker、OCR SDK、自动重试或第二套 DTO；Git 不含 `.env`、数据库、原图、Base64、缓存或响应快照。
+- 合并后验证：在合并后的 `main` 使用 Python 3.13.5 重新安装 editable 包；`pip check`、Ruff、84 文件 mypy、139 项聚焦测试和正式非真实全集 `1242 passed / 2 deselected` 再次通过。合并没有冲突，代码树没有额外变化。
+- 真实调用与剩余验证：本轮未读取 `.env`，真实视觉、百炼、高德、网页、DNS、对象存储、消息和其他外部/付费调用均为 0。真实截图内容识别质量、P50/P95、成本与超时校准按既定要求留到 M0-Gate，在对应当前任务中逐项取得授权后执行，不阻塞 M0-4C 完成。
+- 验收结论与下一步：没有未关闭的 P0/P1；M0-4C 已完成，M0-4D 前置条件已满足。下一阶段只统一三种输入与现有 Source、Collection 状态、AgentRun/ToolRun 和幂等流程，不复制 M0-2/M0-4 服务，不提前实现 M0-5 或真实外部调用。
