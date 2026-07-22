@@ -21,6 +21,7 @@ from app.domain.places import (
     MatchStatus,
     PlaceMatchCandidate,
     PlaceMatchRequest,
+    PlaceScope,
     Poi,
     PoiProvider,
     ResolvedPlaceTargetKind,
@@ -72,17 +73,18 @@ def _text_identity(value: str) -> str:
 
 def _searchable_values(item: CollectionItem, poi: Poi | None) -> tuple[str, ...]:
     values: list[str] = [item.title, *item.tags]
-    values.extend(
-        value
-        for value in (
-            item.district,
-            item.address,
-            item.business_district,
-            item.landmark,
-            item.metro_station,
+    if item.place_target is None or item.place_target.scope is not PlaceScope.ANY_BRANCH:
+        values.extend(
+            value
+            for value in (
+                item.district,
+                item.address,
+                item.business_district,
+                item.landmark,
+                item.metro_station,
+            )
+            if value is not None
         )
-        if value is not None
-    )
     if poi is not None:
         values.extend(
             value
@@ -199,7 +201,11 @@ def _candidate_decision(
 
     if constraints.area is not None:
         if constraints.area.districts:
-            district = poi.district if poi is not None else item.district
+            district = (
+                poi.district
+                if poi is not None
+                else None if resolved_from_any_branch else item.district
+            )
             allowed = {_text_identity(value) for value in constraints.area.districts}
             if district is None:
                 reasons.add(CandidateReasonCode.DISTRICT_UNKNOWN)
@@ -506,7 +512,7 @@ class StructuredCollectionRetrievalService:
                 apply_dynamic_facts=False,
                 resolved_from_any_branch=True,
             )
-        if result.status is MatchStatus.NEEDS_CONTEXT:
+        if not result.candidates:
             return _candidate_decision(
                 item=item,
                 constraints=constraints,

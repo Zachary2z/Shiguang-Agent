@@ -18,6 +18,7 @@ from app.application import (
     StructuredCollectionRetrievalError,
     StructuredCollectionRetrievalService,
 )
+from app.config import Settings
 from app.domain.collections import (
     CollectionItem,
     CollectionKind,
@@ -279,11 +280,7 @@ def _service(
     repository = ReadOnlyRepository(items)
     matching = PlaceMatchingService(
         map_provider=provider or StubMapProvider(),
-        policy=PlaceMatchingPolicy(
-            unique_match_score=30,
-            minimum_score_gap=5,
-            candidate_score=20,
-        ),
+        policy=Settings(_env_file=None, app_env="test").place_matching_policy(),
     )
     return (
         StructuredCollectionRetrievalService(
@@ -990,6 +987,56 @@ def _branch_provider(
     )
 
 
+def test_any_branch_tests_use_unchanged_production_matching_thresholds() -> None:
+    policy = Settings(_env_file=None, app_env="test").place_matching_policy()
+
+    assert policy.unique_match_score == 75
+    assert policy.minimum_score_gap == 12
+    assert policy.candidate_score == 35
+
+
+@pytest.mark.asyncio
+async def test_production_policy_needs_context_candidate_is_evaluated_and_included() -> None:
+    user_id = generate_user_id()
+    branch = _poi(
+        "poi_default_policy_branch",
+        name="测试咖啡",
+        branch_name="福田店",
+        poi_type=PoiType.CAFE,
+    )
+    brand = _place(
+        user_id,
+        title="测试咖啡",
+        target=_brand_target(),
+        tags=("咖啡",),
+        price=Decimal("35"),
+    )
+    service, repository = _service([brand], provider=_branch_provider((branch,)))
+    constraints = _constraints(area=None, origin=ORIGIN)
+    facts = PlanningFactSnapshot(pois=(_known_poi_facts(branch),))
+    before = copy.deepcopy(repository.items)
+
+    first = await service.retrieve(
+        user_id=user_id,
+        constraints=constraints,
+        facts=facts,
+        now=NOW,
+    )
+    second = await service.retrieve(
+        user_id=user_id,
+        constraints=constraints,
+        facts=facts,
+        now=NOW,
+    )
+
+    assert first == second
+    assert first.included[0].poi is not None
+    assert first.included[0].poi.poi_id == branch.poi_id
+    assert repository.items == before
+    assert constraints == _constraints(area=None, origin=ORIGIN)
+    assert facts == PlanningFactSnapshot(pois=(_known_poi_facts(branch),))
+
+
 @pytest.mark.asyncio
 async def test_any_branch_uses_city_area_route_and_origin_without_mutating_collection() -> None:
     user_id = generate_user_id()
@@ -1100,6 +1147,51 @@ async def test_any_branch_ignores_stale_branch_location_clues_for_new_plan_scope
     assert repository.items == before
     assert repository.items[0].district == "南山区"
     assert repository.items[0].place_target == brand.place_target
+
+
+@pytest.mark.asyncio
+async def test_unresolved_any_branch_does_not_reuse_stale_location_fields() -> None:
+    user_id = generate_user_id()
+    weak = _poi("poi_unrelated", name="不相关地点", poi_type=PoiType.CAFE)
+    brand = _place(
+        user_id,
+        title="测试咖啡",
+        target=_brand_target(),
+        tags=("咖啡",),
+        price=Decimal("35"),
+    ).model_copy(
+        update={
+            "district": "南山区",
+            "address": "旧南山地址",
+            "business_district": "旧南山商圈",
+            "landmark": "旧南山地标",
+            "metro_station": "旧南山站",
+        },
+        deep=True,
+    )
+    service, repository = _service(
+        [brand],
+        provider=_branch_provider((weak,), district="福田区"),
+    )
+    before = copy.deepcopy(repository.items)
+
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(
+            area=ActivityArea(districts=("福田区",)),
+            origin=ORIGIN,
+            exclude=("旧南山地址",),
+        ),
+        facts=PlanningFactSnapshot(),
+        now=NOW,
+    )
+
+    decision = result.decisions[0]
+    assert decision.outcome is CandidateOutcome.VERIFICATION_REQUIRED
+    assert CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT in decision.reason_codes
+    assert CandidateReasonCode.DISTRICT_MISMATCH not in decision.reason_codes
+    assert CandidateReasonCode.EXCLUDED_BY_USER not in decision.reason_codes
+    assert repository.items == before
 
 
 @pytest.mark.asyncio
