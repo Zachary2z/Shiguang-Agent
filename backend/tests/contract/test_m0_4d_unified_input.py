@@ -21,8 +21,19 @@ from sqlalchemy import text
 from app.application.collection_writes import CollectionWriteService
 from app.application.demo_sessions import DEMO_USER_ID
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
+from app.application.pricing import ConfiguredPricingPolicy
+from app.application.text_collection_workflow import TextCollectionWorkflow
 from app.config import Settings
-from app.domain.collections import CandidateField, ExtractionResult, PlaceCandidate
+from app.domain.collections import (
+    CandidateField,
+    ExtractionResult,
+    PlaceCandidate,
+    Session,
+    SessionChannel,
+    User,
+    UserMode,
+)
+from app.domain.identifiers import generate_session_id, generate_user_id
 from app.domain.web import (
     WebFetchDiagnostics,
     WebFetchFailure,
@@ -32,10 +43,11 @@ from app.domain.web import (
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.main import create_app
+from app.providers.storage import StorageProviderError, StorageProviderErrorCode
 from app.providers.web import WebContentProvider
-from nanobot_core.providers import ModelProvider
+from nanobot_core.providers import ModelProvider, ProviderError, ProviderErrorCode
 from tests.core.fakes import FakeProvider, fake_response
-from tests.fixtures.images import PNG_SCREENSHOT
+from tests.fixtures.images import JPEG_SCREENSHOT, PNG_SCREENSHOT, WEBP_SCREENSHOT
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 7, 22, tzinfo=UTC)
@@ -182,11 +194,14 @@ async def test_text_url_and_image_share_one_result_and_collection_mapping(
         "url",
         "image",
     ]
-    assert {result.json()["collections"][0]["status"] for result in (
-        text_result,
-        url_result,
-        image_result,
-    )} == {"pending_details"}
+    assert {
+        result.json()["collections"][0]["status"]
+        for result in (
+            text_result,
+            url_result,
+            image_result,
+        )
+    } == {"pending_details"}
     assert [len(run.json()["tool_runs"]) for run in runs] == [0, 1, 1]
     assert runs[1].json()["tool_runs"][0]["tool_name"] == "web_content_fetch"
     assert runs[2].json()["tool_runs"][0]["tool_name"] == "image_recognition"
@@ -196,9 +211,7 @@ async def test_text_url_and_image_share_one_result_and_collection_mapping(
     assert sources[2].file_key is not None
     assert sources[2].metadata.content_sha256 is not None
     assert sources[2].file_key not in image_result.text
-    database_path = Path(
-        test_settings.database_url.removeprefix("sqlite+aiosqlite:///")
-    )
+    database_path = Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///"))
     database_dump = await asyncio.to_thread(database_path.read_bytes)
     assert b"RAW_WEB_PRIVATE_MARKER" not in database_dump
     assert PNG_SCREENSHOT not in database_dump
@@ -240,6 +253,9 @@ async def test_url_failure_is_recoverable_and_never_calls_model(
     assert response.json()["collections"] == []
     assert set(response.json()["recovery_actions"]) == {"supply_text", "send_screenshot"}
     assert replay.json()["replayed"] is True
+    assert replay.json()["source_parse_status"] == response.json()["source_parse_status"]
+    assert replay.json()["error_code"] == response.json()["error_code"]
+    assert replay.json()["recovery_actions"] == response.json()["recovery_actions"]
     assert len(web.calls) == 1 and provider.calls == []
     assert run.json()["status"] == "partially_succeeded"
     assert run.json()["tool_runs"][0]["status"] == "failed"
@@ -320,6 +336,63 @@ async def test_same_key_is_isolated_between_sessions_and_image_replay_stores_onc
 
 
 @pytest.mark.asyncio
+async def test_same_key_and_frozen_input_remain_isolated_across_users(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider([_response("Demo user"), _response("Second user")])
+    second_user_id = generate_user_id()
+    second_session_id = generate_session_id()
+    second_input = TextInput(text="同一个键的第二位用户")
+    input_snapshot = second_input.model_dump(mode="python")
+    async with _client(test_settings, provider) as (api, client, _storage):
+        demo_session_id = await _demo(client)
+        first = await client.post(
+            f"/api/v1/sessions/{demo_session_id}/messages",
+            json={"idempotency_key": "cross-user", "content": "第一位用户"},
+        )
+        async with api.state.database.session() as session:
+            repository = SqlAlchemyCollectionRepository(session)
+            await repository.add_user(
+                user_id=second_user_id,
+                user=User(id=second_user_id, mode=UserMode.DEMO, created_at=NOW),
+            )
+            await repository.add_session(
+                user_id=second_user_id,
+                session=Session(
+                    id=second_session_id,
+                    user_id=second_user_id,
+                    channel=SessionChannel.DEMO,
+                    created_at=NOW,
+                    updated_at=NOW,
+                ),
+            )
+            await session.commit()
+            second = await TextCollectionWorkflow(
+                session=session,
+                provider=provider,
+                pricing=ConfiguredPricingPolicy.from_settings(test_settings),
+                locks=api.state.idempotency_locks,
+                timeout_seconds=test_settings.agent_timeout_seconds,
+                now=lambda: NOW,
+            ).submit_input(
+                user_id=second_user_id,
+                session_id=second_session_id,
+                idempotency_key="cross-user",
+                input=second_input,
+            )
+            first_sources = await repository.list_sources(user_id=DEMO_USER_ID)
+            second_sources = await repository.list_sources(user_id=second_user_id)
+
+    assert first.status_code == 200
+    assert first.json()["message_id"] != second.message.id
+    assert first.json()["trace_id"] != second.trace_id
+    assert first.json()["source_id"] != second.source.id
+    assert len(first_sources) == len(second_sources) == 1
+    assert len(provider.calls) == 2
+    assert second_input.model_dump(mode="python") == input_snapshot
+
+
+@pytest.mark.asyncio
 async def test_invalid_and_different_image_payloads_never_duplicate_or_leak_files(
     test_settings: Settings,
 ) -> None:
@@ -341,29 +414,121 @@ async def test_invalid_and_different_image_payloads_never_duplicate_or_leak_file
             content=PNG_SCREENSHOT + b"different",
             headers={"Content-Type": "image/png", "Idempotency-Key": "image-conflict"},
         )
-        invalid_run = await client.get(
-            f"/api/v1/agent-runs/{invalid.json()['trace_id']}"
-        )
+        invalid_run = await client.get(f"/api/v1/agent-runs/{invalid.json()['trace_id']}")
 
-    private_root = Path(
-        test_settings.database_url.removeprefix("sqlite+aiosqlite:///")
-    ).parent / "private"
+    private_root = (
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent / "private"
+    )
     objects = list((private_root / "objects").iterdir())
-    combined = invalid.text + invalid_run.text + repr(ImageInput.from_bytes(
-        PNG_SCREENSHOT,
-        content_type="image/png",
-    ))
+    combined = (
+        invalid.text
+        + invalid_run.text
+        + repr(
+            ImageInput.from_bytes(
+                PNG_SCREENSHOT,
+                content_type="image/png",
+            )
+        )
+    )
     assert invalid.status_code == 500
     assert invalid.json()["error_code"] == "IMAGE_CONTENT_SIGNATURE_MISMATCH"
     assert invalid.json()["recovery_actions"] == ["reupload_image", "supply_text"]
     assert invalid_run.json()["status"] == "failed"
-    assert invalid_run.json()["tool_runs"][0]["error_code"] == (
-        "IMAGE_CONTENT_SIGNATURE_MISMATCH"
-    )
+    assert invalid_run.json()["tool_runs"][0]["error_code"] == ("IMAGE_CONTENT_SIGNATURE_MISMATCH")
     assert first.status_code == 200 and conflict.status_code == 409
     assert len(provider.calls) == 1 and len(objects) == 1
     assert "not-an-image-private-marker" not in combined
     assert str(private_root) not in combined
+
+
+@pytest.mark.asyncio
+async def test_image_idempotency_identity_includes_normalized_media_type(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider([])
+    async with _client(test_settings, provider) as (api, client, _storage):
+        session_id = await _demo(client)
+        declared_jpeg = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            content=PNG_SCREENSHOT,
+            headers={"Content-Type": "image/jpeg", "Idempotency-Key": "mime-conflict"},
+        )
+        declared_png = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            content=PNG_SCREENSHOT,
+            headers={"Content-Type": "IMAGE/PNG", "Idempotency-Key": "mime-conflict"},
+        )
+        async with api.state.database.session() as session:
+            message_content = await session.scalar(text("SELECT content FROM messages LIMIT 1"))
+
+    assert declared_jpeg.status_code == 500
+    assert declared_jpeg.json()["error_code"] == "IMAGE_CONTENT_SIGNATURE_MISMATCH"
+    assert declared_png.status_code == 409
+    assert declared_png.json()["error_code"] == "IDEMPOTENCY_CONFLICT"
+    assert provider.calls == []
+    assert isinstance(message_content, str)
+    assert message_content.startswith("image:image/jpeg:sha256:")
+    assert "PNG" not in message_content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("media_type", "payload"),
+    (
+        ("image/jpeg", JPEG_SCREENSHOT),
+        ("image/png", PNG_SCREENSHOT),
+        ("image/webp", WEBP_SCREENSHOT),
+    ),
+)
+async def test_each_image_media_type_replays_without_duplicate_side_effects(
+    test_settings: Settings,
+    media_type: str,
+    payload: bytes,
+) -> None:
+    provider = FakeProvider([_response(media_type)])
+    key = media_type.replace("/", "-")
+    async with _client(test_settings, provider) as (api, client, _storage):
+        session_id = await _demo(client)
+        first = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            content=payload,
+            headers={"Content-Type": media_type, "Idempotency-Key": key},
+        )
+        replay = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            content=payload,
+            headers={"Content-Type": media_type.upper(), "Idempotency-Key": key},
+        )
+        run = await client.get(f"/api/v1/agent-runs/{first.json()['trace_id']}")
+        async with api.state.database.session() as session:
+            count_values: list[int] = []
+            for table in ("messages", "sources", "agent_runs", "tool_runs"):
+                count_values.append(
+                    int(await session.scalar(text(f"SELECT COUNT(*) FROM {table}")) or 0)
+                )
+            counts = tuple(count_values)
+
+    private_root = (
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent / "private"
+    )
+    assert first.status_code == replay.status_code == 200
+    assert replay.json()["replayed"] is True
+    assert replay.json()["message_id"] == first.json()["message_id"]
+    assert replay.json()["source_id"] == first.json()["source_id"]
+    assert replay.json()["trace_id"] == first.json()["trace_id"]
+    for field in (
+        "run_status",
+        "source_parse_status",
+        "error_code",
+        "recovery_actions",
+        "extraction",
+        "collections",
+    ):
+        assert replay.json()[field] == first.json()[field]
+    assert counts == (1, 1, 1, 1)
+    assert len(provider.calls) == 1
+    assert len(list((private_root / "objects").iterdir())) == 1
+    assert media_type in run.json()["tool_runs"][0]["input_summary"]
 
 
 @pytest.mark.asyncio
@@ -382,6 +547,11 @@ async def test_image_insufficient_information_keeps_private_source_unconfirmed(
             content=PNG_SCREENSHOT,
             headers={"Content-Type": "image/png", "Idempotency-Key": "insufficient"},
         )
+        replay = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            content=PNG_SCREENSHOT,
+            headers={"Content-Type": "image/png", "Idempotency-Key": "insufficient"},
+        )
         async with api.state.database.session() as session:
             sources = await SqlAlchemyCollectionRepository(session).list_sources(
                 user_id=DEMO_USER_ID
@@ -392,7 +562,58 @@ async def test_image_insufficient_information_keeps_private_source_unconfirmed(
     assert response.json()["collections"] == []
     assert response.json()["source_parse_status"] == "failed"
     assert response.json()["recovery_actions"] == ["supply_text", "reupload_image"]
+    assert replay.json()["replayed"] is True
+    assert replay.json()["source_parse_status"] == response.json()["source_parse_status"]
+    assert replay.json()["extraction"] == response.json()["extraction"]
+    assert replay.json()["recovery_actions"] == response.json()["recovery_actions"]
+    assert len(provider.calls) == 1
     assert len(sources) == 1 and sources[0].file_key is not None
+
+
+@pytest.mark.asyncio
+async def test_text_and_url_recoverable_results_replay_the_same_safe_state(
+    test_settings: Settings,
+) -> None:
+    insufficient = ExtractionResult.insufficient(
+        missing_fields=(CandidateField.ADDRESS,),
+        recovery_suggestions=("请补充区域或地址。",),
+    )
+    provider = FakeProvider([fake_response(content=insufficient.model_dump_json())])
+    web = StubWebProvider(_web_success())
+    async with _client(test_settings, provider, web=web) as (_api, client, _storage):
+        session_id = await _demo(client)
+        text_payload = {
+            "type": "text",
+            "idempotency_key": "unsupported-replay",
+            "text": "请给我一份番茄炒蛋菜谱和制作步骤",
+        }
+        url_payload = {
+            "type": "url",
+            "idempotency_key": "url-insufficient-replay",
+            "url": "https://example.com/article?a=private-query",
+        }
+        text_first = await client.post(f"/api/v1/sessions/{session_id}/messages", json=text_payload)
+        text_replay = await client.post(
+            f"/api/v1/sessions/{session_id}/messages", json=text_payload
+        )
+        url_first = await client.post(f"/api/v1/sessions/{session_id}/messages", json=url_payload)
+        url_replay = await client.post(f"/api/v1/sessions/{session_id}/messages", json=url_payload)
+
+    for first, replay in ((text_first, text_replay), (url_first, url_replay)):
+        assert first.status_code == replay.status_code == 200
+        assert replay.json()["replayed"] is True
+        for field in (
+            "run_status",
+            "source_parse_status",
+            "error_code",
+            "recovery_actions",
+            "extraction",
+            "collections",
+        ):
+            assert replay.json()[field] == first.json()[field]
+    assert text_first.json()["recovery_actions"] == ["supply_text"]
+    assert url_first.json()["recovery_actions"] == ["supply_text", "send_screenshot"]
+    assert len(web.calls) == len(provider.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -446,15 +667,164 @@ async def test_image_cancellation_finalizes_run_and_removes_new_file(
                 text("SELECT trace_id FROM agent_runs ORDER BY created_at DESC LIMIT 1")
             )
         run = await client.get(f"/api/v1/agent-runs/{trace_id}")
+        replay = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            content=PNG_SCREENSHOT,
+            headers={"Content-Type": "image/png", "Idempotency-Key": "cancel-image"},
+        )
 
-    private_root = Path(
-        test_settings.database_url.removeprefix("sqlite+aiosqlite:///")
-    ).parent / "private"
+    private_root = (
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent / "private"
+    )
     assert caught.value is cancellation
     assert run.json()["status"] == "cancelled"
     assert run.json()["error_code"] == "RUN_CANCELLED"
     assert run.json()["tool_runs"][0]["status"] == "cancelled"
+    assert replay.status_code == 500
+    assert replay.json()["error_code"] == "RUN_CANCELLED"
+    assert len(provider.calls) == 1
     assert list((private_root / "objects").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_image_provider_failure_replay_has_no_additional_side_effects(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider([ProviderError(code=ProviderErrorCode.TIMEOUT)])
+    async with _client(test_settings, provider) as (_api, client, _storage):
+        session_id = await _demo(client)
+        request = {
+            "content": PNG_SCREENSHOT,
+            "headers": {
+                "Content-Type": "image/png",
+                "Idempotency-Key": "provider-failure-replay",
+            },
+        }
+        first = await client.post(f"/api/v1/sessions/{session_id}/messages", **request)
+        replay = await client.post(f"/api/v1/sessions/{session_id}/messages", **request)
+        run = await client.get(f"/api/v1/agent-runs/{first.json()['trace_id']}")
+
+    private_root = (
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent / "private"
+    )
+    assert first.status_code == replay.status_code == 502
+    assert replay.json() == first.json()
+    assert len(provider.calls) == 1
+    assert run.json()["status"] == "failed"
+    assert run.json()["error_code"] == "PROVIDER_TIMEOUT"
+    assert run.json()["tool_runs"][0]["status"] == "failed"
+    assert list((private_root / "objects").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_cleanup_failure_is_fixed_and_does_not_leak_sensitive_context(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    marker = "cleanup-secret Authorization=Bearer-private"
+    private_path = "/private/uploads/original.png?token=url-query-secret"
+    provider = FakeProvider([_response("Image")])
+
+    async def fail_write(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise RuntimeError("database-private-trigger")
+
+    async def fail_delete(file_key: str) -> object:
+        del file_key
+        raise RuntimeError(f"{marker} {private_path}")
+
+    monkeypatch.setattr(CollectionWriteService, "auto_save", fail_write)
+    async with _client(test_settings, provider) as (api, client, storage):
+        monkeypatch.setattr(storage, "delete", fail_delete)
+        session_id = await _demo(client)
+        response = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            content=PNG_SCREENSHOT,
+            headers={
+                "Content-Type": "image/png",
+                "Idempotency-Key": "cleanup-failure",
+                "Authorization": "Bearer-private",
+            },
+        )
+        run = await client.get(f"/api/v1/agent-runs/{response.json()['trace_id']}")
+        async with api.state.database.session() as session:
+            tool_rows = (
+                await session.execute(
+                    text(
+                        "SELECT arguments_fingerprint, input_summary, output_summary, "
+                        "error_code FROM tool_runs"
+                    )
+                )
+            ).all()
+
+    combined = response.text + run.text + repr(tool_rows) + caplog.text
+    assert response.status_code == 500
+    assert response.json()["error_code"] == "IMAGE_CLEANUP_FAILED"
+    assert run.json()["status"] == "failed"
+    assert run.json()["error_code"] == "IMAGE_CLEANUP_FAILED"
+    assert len(provider.calls) == 1 and len(tool_rows) == 1
+    for secret in (marker, private_path, "Bearer-private", "url-query-secret"):
+        assert secret not in combined
+    assert "base64" not in combined.lower()
+
+
+@pytest.mark.asyncio
+async def test_collection_cancellation_survives_storage_cleanup_failure(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancellation = asyncio.CancelledError()
+    provider = FakeProvider([_response("Image")])
+    delete_calls = 0
+
+    async def cancel_write(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise cancellation
+
+    async def fail_delete(file_key: str) -> object:
+        nonlocal delete_calls
+        del file_key
+        delete_calls += 1
+        raise StorageProviderError(code=StorageProviderErrorCode.DELETE_FAILED)
+
+    monkeypatch.setattr(CollectionWriteService, "auto_save", cancel_write)
+    async with _client(test_settings, provider) as (api, client, storage):
+        monkeypatch.setattr(storage, "delete", fail_delete)
+        session_id = await _demo(client)
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await client.post(
+                f"/api/v1/sessions/{session_id}/messages",
+                content=PNG_SCREENSHOT,
+                headers={"Content-Type": "image/png", "Idempotency-Key": "cancel-cleanup"},
+            )
+        async with api.state.database.session() as session:
+            run = (
+                await session.execute(
+                    text(
+                        "SELECT trace_id, status, error_code FROM agent_runs "
+                        "ORDER BY created_at DESC LIMIT 1"
+                    )
+                )
+            ).one()
+            tool_count = int(await session.scalar(text("SELECT COUNT(*) FROM tool_runs")) or 0)
+
+    combined = (
+        repr(caught.value)
+        + repr(run)
+        + repr(
+            ImageInput.from_bytes(
+                PNG_SCREENSHOT,
+                content_type="image/png",
+            )
+        )
+    )
+    assert caught.value is cancellation
+    assert delete_calls == 1
+    assert run.status == "cancelled" and run.error_code == "RUN_CANCELLED"
+    assert tool_count == 1 and len(provider.calls) == 1
+    assert "STORAGE_DELETE_FAILED" not in combined
+    assert "private" not in combined.lower()
 
 
 @pytest.mark.asyncio
@@ -487,9 +857,9 @@ async def test_image_collection_write_failure_rolls_back_and_cleans_file(
                 text("SELECT status FROM agent_runs ORDER BY created_at DESC LIMIT 1")
             )
 
-    private_root = Path(
-        test_settings.database_url.removeprefix("sqlite+aiosqlite:///")
-    ).parent / "private"
+    private_root = (
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent / "private"
+    )
     assert counts == (0, 0, 0)
     assert run_status == "failed"
     assert list((private_root / "objects").iterdir()) == []

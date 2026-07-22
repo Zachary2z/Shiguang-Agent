@@ -12,6 +12,12 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.collections.candidate_metadata import CandidateField, Uncertainty
+from app.domain.collections.extraction import (
+    ExtractionOutcome,
+    ExtractionReasonCode,
+    ExtractionResult,
+    UnsupportedReason,
+)
 from app.domain.collections.statuses import (
     CollectionStatus,
     ensure_persistable_collection_status,
@@ -103,6 +109,26 @@ class SourceMetadata(DomainModel):
     )
     redirect_count: int | None = Field(default=None, ge=0, le=5)
     text_truncated: bool | None = None
+    extraction_outcome: ExtractionOutcome | None = None
+    extraction_reason_code: ExtractionReasonCode | None = None
+    extraction_unsupported_reason: UnsupportedReason | None = None
+    extraction_missing_fields: tuple[CandidateField, ...] = Field(
+        default_factory=tuple,
+        max_length=len(CandidateField),
+    )
+    extraction_uncertainties: tuple[Uncertainty, ...] = Field(
+        default_factory=tuple,
+        max_length=len(CandidateField),
+    )
+    extraction_recovery_suggestions: tuple[str, ...] = Field(
+        default_factory=tuple,
+        max_length=4,
+        repr=False,
+    )
+    workflow_recovery_actions: tuple[str, ...] = Field(
+        default_factory=tuple,
+        max_length=4,
+    )
 
     @field_validator("media_type")
     @classmethod
@@ -117,6 +143,59 @@ class SourceMetadata(DomainModel):
         if value is not None and _SHA256.fullmatch(value) is None:
             raise ValueError("content_sha256 must be 64 lowercase hexadecimal characters")
         return value
+
+    @field_validator("extraction_recovery_suggestions")
+    @classmethod
+    def validate_recovery_suggestions(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("extraction recovery suggestions must be unique")
+        if any(not item.strip() or len(item) > 240 for item in value):
+            raise ValueError("extraction recovery suggestions must be safe and bounded")
+        return value
+
+    @field_validator("workflow_recovery_actions")
+    @classmethod
+    def validate_workflow_recovery_actions(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("workflow recovery actions must be unique")
+        if any(re.fullmatch(r"[a-z][a-z0-9_]{0,63}", item) is None for item in value):
+            raise ValueError("workflow recovery actions must use stable identifiers")
+        return value
+
+    @model_validator(mode="after")
+    def validate_extraction_summary(self) -> Self:
+        if self.extraction_outcome is None:
+            if (
+                self.extraction_reason_code is not None
+                or self.extraction_unsupported_reason is not None
+                or self.extraction_missing_fields
+                or self.extraction_uncertainties
+                or self.extraction_recovery_suggestions
+            ):
+                raise ValueError("extraction summary fields require an outcome")
+            return self
+        if self.extraction_outcome is ExtractionOutcome.CANDIDATES:
+            if (
+                self.extraction_reason_code is not None
+                or self.extraction_unsupported_reason is not None
+                or self.extraction_missing_fields
+                or self.extraction_uncertainties
+                or self.extraction_recovery_suggestions
+            ):
+                raise ValueError("candidate extraction summaries cannot carry gaps")
+            return self
+        try:
+            ExtractionResult(
+                outcome=self.extraction_outcome,
+                reason_code=self.extraction_reason_code,
+                unsupported_reason=self.extraction_unsupported_reason,
+                missing_fields=self.extraction_missing_fields,
+                uncertainties=self.extraction_uncertainties,
+                recovery_suggestions=self.extraction_recovery_suggestions,
+            )
+        except ValueError:
+            raise ValueError("source extraction summary is invalid") from None
+        return self
 
     @field_validator("final_url")
     @classmethod

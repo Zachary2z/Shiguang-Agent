@@ -60,6 +60,14 @@ class ImageInput(_InputModel):
     payload: bytes = Field(min_length=1, repr=False)
     content_sha256: str = Field(pattern=r"^[a-f0-9]{64}$", repr=False)
 
+    @field_validator("content_type")
+    @classmethod
+    def normalize_content_type(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized or ";" in normalized or "/" not in normalized:
+            raise ValueError("content_type must be a normalized media type")
+        return normalized
+
     @field_validator("content_sha256")
     @classmethod
     def require_matching_digest(cls, value: str, info: object) -> str:

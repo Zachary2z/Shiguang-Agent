@@ -988,7 +988,7 @@ class SqlAlchemyCollectionRepository:
             platform=row.platform,
             parse_status=SourceParseStatus(row.parse_status),
             fetched_at=as_utc(row.fetched_at),
-            metadata=SourceMetadata.model_validate(row.metadata_json),
+            metadata=SourceMetadata.model_validate_json(json.dumps(row.metadata_json)),
             created_at=required_utc(row.created_at),
             updated_at=required_utc(row.updated_at),
         )

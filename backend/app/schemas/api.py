@@ -16,6 +16,7 @@ from app.domain.collections import (
     CollectionStatus,
     ExtractionOutcome,
     ExtractionReasonCode,
+    IdempotencyKey,
     MessageContentType,
     Source,
     SourceParseStatus,
@@ -45,11 +46,7 @@ class DemoSessionResponse(ApiModel):
 
 
 class MessageCreateRequest(ApiModel):
-    idempotency_key: str = Field(
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-    )
+    idempotency_key: IdempotencyKey = Field(repr=False)
     content: str = Field(min_length=1, max_length=20_000, repr=False)
 
     @field_validator("content")
@@ -62,11 +59,7 @@ class MessageCreateRequest(ApiModel):
 
 class TextMessageCreateRequest(ApiModel):
     type: Literal["text"]
-    idempotency_key: str = Field(
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-    )
+    idempotency_key: IdempotencyKey = Field(repr=False)
     text: str = Field(min_length=1, max_length=20_000, repr=False)
 
     @field_validator("text")
@@ -79,11 +72,7 @@ class TextMessageCreateRequest(ApiModel):
 
 class UrlMessageCreateRequest(ApiModel):
     type: Literal["url"]
-    idempotency_key: str = Field(
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-    )
+    idempotency_key: IdempotencyKey = Field(repr=False)
     url: str = Field(min_length=1, max_length=2048, repr=False)
 
 

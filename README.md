@@ -51,7 +51,7 @@ python -m ruff check .
 python -m mypy app migrations nanobot_core
 python -m pytest -q -m "not real_provider and not real_map_provider"
 python -m pytest -q tests/core
-python -m pytest -q tests/test_migrations.py
+python -m pytest -q tests/integration/test_migrations.py
 python -m pytest -q tests/contract/test_m0_2d_api.py
 python -m pytest -q tests/unit/test_place_contracts.py tests/contract/test_map_provider_contract.py tests/integration/test_map_provider_stub.py
 python -m pytest -q tests/unit/test_amap_provider.py tests/test_config.py

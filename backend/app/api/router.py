@@ -37,8 +37,10 @@ from app.application.text_collection_workflow import (
 )
 from app.config import Settings
 from app.domain.collections import (
+    IDEMPOTENCY_KEY_JSON_SCHEMA,
     CollectionKind,
     CollectionStatus,
+    IdempotencyKey,
     ResourceNotFoundError,
     UndoOutcome,
 )
@@ -79,16 +81,10 @@ AgentTimeout = Annotated[float, Depends(get_agent_timeout_seconds)]
 WebProvider = Annotated[WebContentProvider | None, Depends(get_web_provider)]
 PrivateStorage = Annotated[StorageProvider | None, Depends(get_storage_provider)]
 
-_JSON_MESSAGE_ADAPTER: TypeAdapter[JsonMessageCreateRequest] = TypeAdapter(
-    JsonMessageCreateRequest
-)
+_JSON_MESSAGE_ADAPTER: TypeAdapter[JsonMessageCreateRequest] = TypeAdapter(JsonMessageCreateRequest)
+_IDEMPOTENCY_KEY_ADAPTER: TypeAdapter[str] = TypeAdapter(IdempotencyKey)
 _MAX_JSON_MESSAGE_BYTES = 24_000
-_IDEMPOTENCY_SCHEMA = {
-    "type": "string",
-    "minLength": 1,
-    "maxLength": 128,
-    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
-}
+_IDEMPOTENCY_SCHEMA = IDEMPOTENCY_KEY_JSON_SCHEMA
 _MESSAGE_REQUEST_BODY = {
     "required": True,
     "content": {
@@ -226,9 +222,7 @@ async def create_message(
         ),
         source_id=None if result.source is None else result.source.id,
         source_type=None if result.source is None else result.source.type,
-        source_parse_status=(
-            None if result.source is None else result.source.parse_status
-        ),
+        source_parse_status=(None if result.source is None else result.source.parse_status),
         recovery_actions=result.recovery_actions,
         error_code=result.error_code,
         undo_token=plaintext_token,
@@ -258,10 +252,7 @@ async def _parse_collection_input(
     if media_type in {"image/jpeg", "image/png", "image/webp"}:
         key = request.headers.get("idempotency-key", "")
         try:
-            validated_key = MessageCreateRequest(
-                idempotency_key=key,
-                content="image",
-            ).idempotency_key
+            validated_key = _IDEMPOTENCY_KEY_ADAPTER.validate_python(key)
             settings: Settings = request.app.state.settings
             payload = await _read_limited_body(
                 request,

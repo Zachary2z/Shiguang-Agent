@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-4D 统一输入流水线 |
-| 状态 | 待验收 |
+| 状态 | 待主控复验 |
 | 当前分支 | codex/m0-4d-unified-input |
 | 最近更新 | 2026-07-22 |
 | 阻塞项 | 无；M0-4D 前置条件已满足 |
 
 ## 当前任务
 
-M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4D 已在 `codex/m0-4d-unified-input` 完成统一文字、URL、图片到现有 Message、Source、AgentRun/ToolRun、ExtractionResult 和 CollectionWriteService 的离线实现，当前等待主控独立验收。M0-5 仍未开始且不允许提前开发。
+M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4D 已在 `codex/m0-4d-unified-input` 完成统一文字、URL、图片流水线，并在问题提交 `80b3f9d6a3b2b41062868ced9dc7ee828710ffeb` 之上修复主控 QA 发现的图片 MIME 幂等、恢复状态重放、取消清理和重复校验问题，当前等待主控复验。M0-5 仍未开始且不允许提前开发。
 
 ## M0 状态
 
@@ -23,7 +23,7 @@ M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4D 已�
 | M0-1 模型与运行记录 | 已完成 | M0-1A、M0-1B、M0-1C 均已通过主控验收 |
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
-| M0-4 URL 与截图 | 进行中 | M0-4A、M0-4B、M0-4C 已完成；M0-4D 待验收 |
+| M0-4 URL 与截图 | 进行中 | M0-4A、M0-4B、M0-4C 已完成；M0-4D 待主控复验 |
 | M0-5 计划技术验证 | 未开始 | 依赖 M0-2、M0-3 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
@@ -840,3 +840,14 @@ M0-4A、M0-4B 与 M0-4C 均已通过主控验收并集成到 `main`。M0-4D 已�
 - 验证结果：项目 `.venv` 的 editable 安装、`pip check`、Ruff 与 strict mypy（85 个源文件）均退出 0；core `118 passed`，迁移 `21 passed`，M0-4D 新增契约 `10 passed`，完整非真实 `1252 passed / 2 deselected`，默认全集 `1252 passed / 2 skipped`。仓库外 pytest 插件封锁 socket connect/connect_ex/create_connection 与 DNS getaddrinfo 后，完整非真实再次 `1252 passed / 2 deselected`
 - 真实调用、范围与风险：未读取、打印或修改本机 `.env`，未设置真实 marker，真实模型、高德、网页、DNS、对象存储、消息及任何外部/付费调用均为 0。没有 M0-5 计划/路线/天气/评分、真实外部地点补充、前端、SSE、Worker、Redis、Celery、COS、OCR SDK、浏览器自动化、自动重试/退避/熔断或后台任务。当前验证限于 macOS/Python 3.13.5、SQLite、Fake/Stub/Fixture；多进程跨进程锁与真实链路延迟留待后续对应阶段，当前无已知未关闭 P0/P1
 - 下一步：主控在独立干净 Python 3.11+ 环境复核提交范围和完整离线命令，重点复核三类统一状态映射、URL 零额外请求、图片零重复存储/失败清理、成功/失败/取消/超时重放、跨用户/Session 隔离、Source 元数据、20 秒预算、ToolRun 真实性、API/OpenAPI 脱敏、无迁移依据、唯一实现和反向依赖；通过前本分支不合并、不推送、不进入 M0-5
+
+#### 2026-07-22｜M0-4D 主控 QA 缺陷修复｜待主控复验
+
+- 分支与提交关系：修复直接追加在 `codex/m0-4d-unified-input` 的问题提交 `80b3f9d6a3b2b41062868ced9dc7ee828710ffeb` 上，不 amend、不 rebase；开始门禁确认工作区干净、分支与 HEAD 精确一致，指定阶段基线 `c6d8ac570983c5bd9fd6d73e672030ba65644b7b` 同时为 `main` 和 merge-base。未检出、修改或合并 `codex/ux-composer-dock`，独立修复提交完整 SHA 见本窗口最终交接
+- 图片 MIME 幂等：`ImageInput` 在冻结契约入口规范化 media type；消息安全投影、请求指纹和图片 ToolRun 参数指纹统一包含输入类型、规范 MIME 与内容 SHA-256，但不包含图片、Base64、文件路径或原文件名。同 key、同字节、不同 MIME 在第二次请求进入 Provider/存储前稳定返回 `IDEMPOTENCY_CONFLICT`；JPEG、PNG、WebP 的同 MIME 同字节顺序重放复用原 Message、Source、AgentRun/ToolRun、模型、文件与收藏
+- 恢复状态重放：复用现有 Source 受限 JSON metadata，新增显式、强类型、可验证的 Extraction 结果摘要与固定恢复动作；不保存网页正文、图片、Prompt、完整模型响应或异常原文。文字不支持/信息不足、URL 抓取失败、URL 抽取信息不足、图片信息不足和成功收藏均从首次持久状态确定性恢复 source_parse_status、error_code、恢复动作、必要 Extraction 摘要与收藏；图片信息不足保持 `supply_text + reupload_image`，URL 失败保持 `supply_text + send_screenshot`。Provider 失败、超时和取消继续从同一终态 Run 重放且不再次执行副作用
+- 取消与清理：图片识别完成后收藏/数据库阶段的原始 `asyncio.CancelledError` 会先触发本次新文件删除；固定 StorageProviderError 或其他非取消清理错误不会覆盖原取消对象，Run 仍终结为 `cancelled / RUN_CANCELLED`。清理期间新发生的 CancelledError 按既有 ImageRecognitionService 契约传播新取消；非取消路径仍固定映射 `IMAGE_CLEANUP_FAILED`，响应、Run、ToolRun、repr 和日志不保留 file_key、路径、Authorization、URL query、清理异常或伪 secret
+- 幂等约束收敛：`app/domain/collections/writes.py` 现在是 idempotency_key 长度、正则、Pydantic 类型、直接校验器和 JSON Schema 的唯一归属；旧文字 JSON、新 text/url JSON、图片 Header、CollectionWriteService、TextCollectionWorkflow 与手写 OpenAPI 共同复用。图片 Header 直接通过共享 TypeAdapter 校验，不再构造无关文字请求 DTO
+- 测试覆盖：M0-4D 契约由 `10 passed` 增至 `19 passed`，新增 PNG 字节 MIME 冲突、JPEG/PNG/WebP 规范 MIME 重放、文字/URL/图片恢复状态重放、Provider/取消重放、取消时固定删除错误、非取消清理异常脱敏、跨用户/Session 隔离、冻结输入、一次 URL 抓取及一次图片识别/存储。图片服务 `52 passed`、旧 M0-2D API `16 passed`、core `118 passed`、迁移 `21 passed`；正式非真实全集 `1261 passed / 2 deselected`，默认全集 `1261 passed / 2 skipped`，全部退出 0
+- 静态、迁移与范围：editable 安装、`pip check`、Ruff、strict mypy（85 个源文件）均退出 0；根 README 的迁移命令已修正为 `tests/integration/test_migrations.py`。本轮没有新增迁移、依赖、配置、表、Repository、Runner、Registry、Provider、工作流、响应 DTO 或 `nanobot_core` 修改；Alembic head 保持唯一 `20260722_0006`
+- 真实调用与下一步：未读取、打印或修改本机 `.env`，未启用真实 marker；真实模型、高德、网页、DNS、对象存储、消息及任何真实/付费 API 调用均为 0。M0-5、计划、路线、天气、前端、SSE、Worker、队列和后台清理均未开始。当前状态保持待主控复验，本分支不合并、不推送

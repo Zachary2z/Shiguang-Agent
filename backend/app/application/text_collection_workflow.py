@@ -29,22 +29,25 @@ from app.application.text_extraction import MAX_TEXT_INPUT_CHARS, TextExtraction
 from app.config import StorageProviderSettings
 from app.domain.collections import (
     AutoSaveResult,
+    CollectionKind,
+    EventCandidate,
     ExtractionOutcome,
     ExtractionResult,
     IdempotencyConflictError,
     Message,
     MessageContentType,
     MessageRole,
+    PlaceCandidate,
     ResourceNotFoundError,
     Source,
     SourceMetadata,
     SourceParseStatus,
     SourceType,
 )
-from app.domain.collections.writes import IDEMPOTENCY_KEY_PATTERN
+from app.domain.collections.writes import validate_idempotency_key
 from app.domain.runs import AgentRunCreate, AgentRunStatus
 from app.domain.time import utc_now
-from app.domain.web import WebFetchFailure, WebPageContent, WebRecoveryAction
+from app.domain.web import WebFetchFailure, WebPageContent
 from app.domain.web.security import UrlPolicyError, validate_web_url
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.providers.storage import StorageProvider, StorageProviderError
@@ -178,8 +181,7 @@ class TextCollectionWorkflow:
         idempotency_key: str,
         input: CollectionInput,
     ) -> TextCollectionWorkflowResult:
-        if IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key) is None:
-            raise ValueError("idempotency_key must use safe visible characters")
+        idempotency_key = validate_idempotency_key(idempotency_key)
         async with self._locks.lock(
             user_id=user_id,
             session_id=session_id,
@@ -355,13 +357,20 @@ class TextCollectionWorkflow:
                 )
             )
             raise
-        source = Source(
-            id=source_id,
-            user_id=user_id,
-            type=SourceType.TEXT,
-            parse_status=self._parse_status(extraction),
-            created_at=timestamp,
-            updated_at=self._now(),
+        recovery_actions = (
+            () if extraction.outcome is ExtractionOutcome.CANDIDATES else (_RECOVERY_SUPPLY_TEXT,)
+        )
+        source = self._with_extraction_summary(
+            Source(
+                id=source_id,
+                user_id=user_id,
+                type=SourceType.TEXT,
+                parse_status=self._parse_status(extraction),
+                created_at=timestamp,
+                updated_at=self._now(),
+            ),
+            extraction=extraction,
+            recovery_actions=recovery_actions,
         )
         saved = await self._save_extraction(
             user_id=user_id,
@@ -373,11 +382,7 @@ class TextCollectionWorkflow:
             source=source,
             extraction=extraction,
             saved=saved,
-            recovery_actions=(
-                ()
-                if extraction.outcome is ExtractionOutcome.CANDIDATES
-                else (_RECOVERY_SUPPLY_TEXT,)
-            ),
+            recovery_actions=recovery_actions,
         )
 
     async def _process_url(
@@ -402,6 +407,7 @@ class TextCollectionWorkflow:
         )
         timestamp = self._now()
         if isinstance(fetched, WebFetchFailure):
+            recovery_actions = tuple(action.value for action in fetched.recovery_actions)
             source = Source(
                 id=source_id,
                 user_id=user_id,
@@ -411,6 +417,7 @@ class TextCollectionWorkflow:
                 metadata=SourceMetadata(
                     http_status=fetched.http_status,
                     failure_code=fetched.code.value,
+                    workflow_recovery_actions=recovery_actions,
                 ),
                 created_at=timestamp,
                 updated_at=timestamp,
@@ -420,7 +427,7 @@ class TextCollectionWorkflow:
                 source=source,
                 extraction=None,
                 saved=AutoSaveResult(source_id=source.id),
-                recovery_actions=tuple(action.value for action in fetched.recovery_actions),
+                recovery_actions=recovery_actions,
                 error_code=fetched.code.value,
             )
 
@@ -447,11 +454,20 @@ class TextCollectionWorkflow:
                 )
             )
             raise
-        source = source.model_copy(
-            update={
-                "parse_status": self._parse_status(extraction),
-                "updated_at": self._now(),
-            }
+        recovery_actions = (
+            ()
+            if extraction.outcome is ExtractionOutcome.CANDIDATES
+            else (_RECOVERY_SUPPLY_TEXT, _RECOVERY_SEND_SCREENSHOT)
+        )
+        source = self._with_extraction_summary(
+            source.model_copy(
+                update={
+                    "parse_status": self._parse_status(extraction),
+                    "updated_at": self._now(),
+                }
+            ),
+            extraction=extraction,
+            recovery_actions=recovery_actions,
         )
         saved = await self._save_extraction(
             user_id=user_id,
@@ -463,11 +479,7 @@ class TextCollectionWorkflow:
             source=source,
             extraction=extraction,
             saved=saved,
-            recovery_actions=(
-                ()
-                if extraction.outcome is ExtractionOutcome.CANDIDATES
-                else (_RECOVERY_SUPPLY_TEXT, _RECOVERY_SEND_SCREENSHOT)
-            ),
+            recovery_actions=recovery_actions,
         )
 
     async def _process_image(
@@ -487,8 +499,8 @@ class TextCollectionWorkflow:
         try:
             metadata, extraction = await observer.run_tool(
                 tool_name="image_recognition",
-                arguments_fingerprint=input.content_sha256,
-                input_summary='{"input_type":"image"}',
+                arguments_fingerprint=self._input_fingerprint(input),
+                input_summary=(f'{{"input_type":"image","media_type":"{input.content_type}"}}'),
                 operation=lambda: ImageRecognitionService(
                     provider=self._provider,
                     storage=storage,
@@ -508,20 +520,29 @@ class TextCollectionWorkflow:
                 ),
             )
             timestamp = self._now()
-            source = Source(
-                id=source_id,
-                user_id=user_id,
-                type=SourceType.IMAGE,
-                file_key=metadata.file_key,
-                parse_status=self._parse_status(extraction),
-                fetched_at=metadata.created_at,
-                metadata=SourceMetadata(
-                    media_type=metadata.content_type,
-                    byte_size=metadata.byte_size,
-                    content_sha256=metadata.content_sha256,
+            recovery_actions = (
+                ()
+                if extraction.outcome is ExtractionOutcome.CANDIDATES
+                else (_RECOVERY_SUPPLY_TEXT, _RECOVERY_REUPLOAD_IMAGE)
+            )
+            source = self._with_extraction_summary(
+                Source(
+                    id=source_id,
+                    user_id=user_id,
+                    type=SourceType.IMAGE,
+                    file_key=metadata.file_key,
+                    parse_status=self._parse_status(extraction),
+                    fetched_at=metadata.created_at,
+                    metadata=SourceMetadata(
+                        media_type=metadata.content_type,
+                        byte_size=metadata.byte_size,
+                        content_sha256=metadata.content_sha256,
+                    ),
+                    created_at=timestamp,
+                    updated_at=timestamp,
                 ),
-                created_at=timestamp,
-                updated_at=timestamp,
+                extraction=extraction,
+                recovery_actions=recovery_actions,
             )
             saved = await self._save_extraction(
                 user_id=user_id,
@@ -533,15 +554,14 @@ class TextCollectionWorkflow:
                 source=source,
                 extraction=extraction,
                 saved=saved,
-                recovery_actions=(
-                    ()
-                    if extraction.outcome is ExtractionOutcome.CANDIDATES
-                    else (_RECOVERY_SUPPLY_TEXT, _RECOVERY_REUPLOAD_IMAGE)
-                ),
+                recovery_actions=recovery_actions,
             )
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancellation:
             if metadata is not None:
-                await self._cleanup_image(metadata.file_key)
+                await self._cleanup_image_after_cancellation(
+                    metadata.file_key,
+                    cancellation,
+                )
             raise
         except ProviderError:
             raise
@@ -608,6 +628,25 @@ class TextCollectionWorkflow:
         except Exception:
             raise ApplicationRunFailureError(error_code="IMAGE_CLEANUP_FAILED") from None
 
+    async def _cleanup_image_after_cancellation(
+        self,
+        file_key: str,
+        cancellation: asyncio.CancelledError,
+    ) -> None:
+        """Preserve the original cancellation unless cleanup is itself cancelled."""
+
+        assert self._storage is not None
+        cleanup_cancellation: asyncio.CancelledError | None = None
+        try:
+            await self._storage.delete(file_key)
+        except asyncio.CancelledError as error:
+            cleanup_cancellation = error
+        except Exception:
+            pass
+        if cleanup_cancellation is not None:
+            raise cleanup_cancellation
+        raise cancellation
+
     async def _replay(
         self,
         *,
@@ -648,20 +687,21 @@ class TextCollectionWorkflow:
         )
         if previous is None and source is not None:
             previous = AutoSaveResult(source_id=source.id, replayed=True)
-        recovery = (
-            tuple(action.value for action in WebRecoveryAction)
-            if existing_status is AgentRunStatus.PARTIALLY_SUCCEEDED
-            else ()
-        )
+        recovery = () if source is None else source.metadata.workflow_recovery_actions
+        extraction = self._extraction_from_source(source, previous)
         return TextCollectionWorkflowResult(
             message=message,
             source=source,
             trace_id=trace_id,
             run_status=existing_status,
-            extraction_result=None,
+            extraction_result=extraction,
             auto_save_result=previous,
             recovery_actions=recovery,
-            error_code=existing_error_code,
+            error_code=(
+                existing_error_code
+                if source is None or source.metadata.failure_code is None
+                else source.metadata.failure_code
+            ),
             replayed=True,
         )
 
@@ -714,7 +754,10 @@ class TextCollectionWorkflow:
             except UrlPolicyError:
                 value = input.url
             return value, MessageContentType.URL
-        return f"image-sha256:{input.content_sha256}", MessageContentType.IMAGE
+        return (
+            f"image:{input.content_type}:sha256:{input.content_sha256}",
+            MessageContentType.IMAGE,
+        )
 
     @staticmethod
     def _input_fingerprint(input: CollectionInput) -> str:
@@ -727,8 +770,82 @@ class TextCollectionWorkflow:
                 url = input.url
             value = f"url\0{url}"
         else:
-            value = f"image\0{input.content_sha256}"
+            value = f"image\0{input.content_type}\0{input.content_sha256}"
         return hashlib.sha256(value.encode()).hexdigest()
+
+    @staticmethod
+    def _with_extraction_summary(
+        source: Source,
+        *,
+        extraction: ExtractionResult,
+        recovery_actions: tuple[str, ...],
+    ) -> Source:
+        metadata = source.metadata.model_copy(
+            update={
+                "extraction_outcome": extraction.outcome,
+                "extraction_reason_code": extraction.reason_code,
+                "extraction_unsupported_reason": extraction.unsupported_reason,
+                "extraction_missing_fields": extraction.missing_fields,
+                "extraction_uncertainties": extraction.uncertainties,
+                "extraction_recovery_suggestions": extraction.recovery_suggestions,
+                "workflow_recovery_actions": recovery_actions,
+            }
+        )
+        return source.model_copy(update={"metadata": metadata})
+
+    @staticmethod
+    def _extraction_from_source(
+        source: Source | None,
+        saved: AutoSaveResult | None,
+    ) -> ExtractionResult | None:
+        if source is None:
+            return None
+        outcome = source.metadata.extraction_outcome
+        if outcome is None:
+            return None
+        if outcome is ExtractionOutcome.CANDIDATES:
+            if saved is None or not saved.items:
+                return None
+            candidates: list[PlaceCandidate | EventCandidate] = []
+            for item in saved.items:
+                candidate_data: dict[str, object] = {
+                    "kind": item.kind,
+                    "title": item.title,
+                    "city_hint": item.city_hint,
+                    "district": item.district,
+                    "address": item.address,
+                    "business_district": item.business_district,
+                    "landmark": item.landmark,
+                    "metro_station": item.metro_station,
+                    "price_amount": item.price_amount,
+                    "price_currency": item.price_currency,
+                    "tags": item.tags,
+                    "missing_fields": item.missing_fields,
+                    "uncertainties": item.uncertainties,
+                }
+                if item.kind is CollectionKind.PLACE:
+                    candidates.append(PlaceCandidate.model_validate(candidate_data))
+                else:
+                    candidate_data.update(
+                        {
+                            "event_start_at": item.event_start_at,
+                            "event_end_at": item.event_end_at,
+                            "event_start_clue": item.event_start_clue,
+                            "event_end_clue": item.event_end_clue,
+                        }
+                    )
+                    candidates.append(
+                        EventCandidate.model_validate(candidate_data)
+                    )
+            return ExtractionResult.with_candidates(tuple(candidates))
+        return ExtractionResult(
+            outcome=outcome,
+            reason_code=source.metadata.extraction_reason_code,
+            unsupported_reason=source.metadata.extraction_unsupported_reason,
+            missing_fields=source.metadata.extraction_missing_fields,
+            uncertainties=source.metadata.extraction_uncertainties,
+            recovery_suggestions=source.metadata.extraction_recovery_suggestions,
+        )
 
     @staticmethod
     def _run_outcome(result: _OperationResult) -> tuple[AgentRunStatus, str | None]:

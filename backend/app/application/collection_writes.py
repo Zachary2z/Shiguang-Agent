@@ -30,7 +30,7 @@ from app.domain.collections import (
     VersionConflictError,
     status_for_extraction_candidate,
 )
-from app.domain.collections.writes import IDEMPOTENCY_KEY_PATTERN
+from app.domain.collections.writes import validate_idempotency_key
 from app.domain.identifiers import validate_collection_item_id, validate_user_id
 from app.domain.time import require_aware_utc, utc_now
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
@@ -69,8 +69,7 @@ class CollectionWriteService:
         owner = validate_user_id(user_id)
         if source.user_id != owner:
             raise ValueError("user_id must match Source.user_id")
-        if IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key) is None:
-            raise ValueError("idempotency_key must use safe visible characters")
+        idempotency_key = validate_idempotency_key(idempotency_key)
         if extraction_result.outcome is not ExtractionOutcome.CANDIDATES:
             return AutoSaveResult(source_id=None)
 
@@ -172,8 +171,7 @@ class CollectionWriteService:
         """Return a prior safe result without reissuing its one-time Undo token."""
 
         owner = validate_user_id(user_id)
-        if IDEMPOTENCY_KEY_PATTERN.fullmatch(idempotency_key) is None:
-            raise ValueError("idempotency_key must use safe visible characters")
+        idempotency_key = validate_idempotency_key(idempotency_key)
         operation = await self._repository.get_write_operation_by_idempotency_key(
             user_id=owner,
             idempotency_key=idempotency_key,

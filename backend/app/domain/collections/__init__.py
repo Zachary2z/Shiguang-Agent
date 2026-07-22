@@ -51,14 +51,17 @@ from app.domain.collections.statuses import (
 )
 from app.domain.collections.types import CollectionKind
 from app.domain.collections.writes import (
+    IDEMPOTENCY_KEY_JSON_SCHEMA,
     AutoSaveResult,
     CollectionItemPatch,
     CollectionWriteOperation,
     IdempotencyConflictError,
+    IdempotencyKey,
     UndoOutcome,
     UndoResult,
     VersionConflictError,
     status_for_extraction_candidate,
+    validate_idempotency_key,
 )
 
 __all__ = [
@@ -85,6 +88,8 @@ __all__ = [
     "ExtractionOutcome",
     "ExtractionReasonCode",
     "ExtractionResult",
+    "IDEMPOTENCY_KEY_JSON_SCHEMA",
+    "IdempotencyKey",
     "IdempotencyConflictError",
     "Message",
     "MessageContentType",
@@ -113,4 +118,5 @@ __all__ = [
     "ensure_persistable_collection_status",
     "is_collection_visible_by_default",
     "status_for_extraction_candidate",
+    "validate_idempotency_key",
 ]

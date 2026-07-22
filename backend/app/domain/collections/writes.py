@@ -6,9 +6,18 @@ import re
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Self
+from typing import Annotated, Any, Self
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from app.domain.collections.candidate_metadata import CandidateField, Uncertainty
 from app.domain.collections.entities import CollectionItem
@@ -22,8 +31,30 @@ from app.domain.identifiers import (
 )
 from app.domain.time import require_aware_utc
 
-IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+IDEMPOTENCY_KEY_MIN_LENGTH = 1
+IDEMPOTENCY_KEY_MAX_LENGTH = 128
+IDEMPOTENCY_KEY_PATTERN_TEXT = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+IdempotencyKey = Annotated[
+    str,
+    Field(
+        min_length=IDEMPOTENCY_KEY_MIN_LENGTH,
+        max_length=IDEMPOTENCY_KEY_MAX_LENGTH,
+        pattern=IDEMPOTENCY_KEY_PATTERN_TEXT,
+        strict=True,
+    ),
+]
+IDEMPOTENCY_KEY_ADAPTER: TypeAdapter[str] = TypeAdapter(IdempotencyKey)
+IDEMPOTENCY_KEY_JSON_SCHEMA = IDEMPOTENCY_KEY_ADAPTER.json_schema()
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+
+
+def validate_idempotency_key(value: str) -> str:
+    """Apply the one idempotency-key contract at every transport boundary."""
+
+    try:
+        return IDEMPOTENCY_KEY_ADAPTER.validate_python(value)
+    except ValidationError:
+        raise ValueError("idempotency_key must use safe visible characters") from None
 
 
 class IdempotencyConflictError(RuntimeError):
@@ -48,7 +79,7 @@ class CollectionWriteOperation(BaseModel):
     id: str = Field(default_factory=generate_collection_write_operation_id)
     user_id: str
     source_id: str
-    idempotency_key: str = Field(min_length=1, max_length=128, repr=False)
+    idempotency_key: IdempotencyKey = Field(repr=False)
     request_fingerprint: str = Field(min_length=64, max_length=64, repr=False)
     undo_expires_at: datetime
     undone_at: datetime | None = None
@@ -68,13 +99,6 @@ class CollectionWriteOperation(BaseModel):
     @classmethod
     def validate_source(cls, value: str) -> str:
         return validate_source_id(value)
-
-    @field_validator("idempotency_key")
-    @classmethod
-    def validate_idempotency_key(cls, value: str) -> str:
-        if IDEMPOTENCY_KEY_PATTERN.fullmatch(value) is None:
-            raise ValueError("idempotency_key must use safe visible characters")
-        return value
 
     @field_validator("request_fingerprint")
     @classmethod
