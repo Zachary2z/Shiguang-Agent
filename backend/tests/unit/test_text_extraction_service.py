@@ -6,6 +6,7 @@ import ast
 import asyncio
 import inspect
 import json
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -14,6 +15,7 @@ import pytest
 import app.application.text_extraction as text_extraction_module
 from app.application.extraction_output import (
     EXTRACTION_SEMANTIC_RULES,
+    _normalize_model_extraction_output,
     build_repair_messages,
     extraction_result_schema,
     parse_extraction_response,
@@ -141,37 +143,6 @@ class _EvidenceCheckingTextProvider(FakeProvider):
             assert "只修复深圳湾文化广场候选" in rendered
             assert "深圳湾文化广场" in rendered
             assert '"role": "assistant"' in rendered
-        return await super().chat(
-            messages=messages,
-            tools=tools,
-            response_format=response_format,
-        )
-
-
-class _JsonInvalidClosureRepairProvider(FakeProvider):
-    def __init__(
-        self,
-        *,
-        source_identity: str,
-        expected: ExtractionResult,
-    ) -> None:
-        super().__init__([_result_response(expected)])
-        self._source_identity = source_identity
-
-    async def chat(
-        self,
-        *,
-        messages: list[Message],
-        tools: list[ToolDefinition] | None,
-        response_format: StructuredOutput | None = None,
-    ) -> ModelResponse:
-        rendered = json.dumps(messages, ensure_ascii=False)
-        repair_prompt = str(messages[-1]["content"])
-        assert self._source_identity in rendered
-        assert "json_invalid" in repair_prompt
-        assert "audit every candidate for field closure" in repair_prompt
-        assert "city_hint, district, address, business_district" in repair_prompt
-        assert "event_start_at, event_end_at" in repair_prompt
         return await super().chat(
             messages=messages,
             tools=tools,
@@ -508,117 +479,288 @@ async def test_first_invalid_output_can_be_repaired_once() -> None:
     assert len(provider.calls) == 2
     repair_request = provider.calls[1].messages[-1]["content"]
     assert "json_invalid" in repair_request
+    assert "Rebuild the object to match the schema and outcome rules." in repair_request
+    assert "audit every candidate for field closure" not in repair_request
+    assert "Rebuild one complete JSON object from the supplied evidence." not in repair_request
     assert provider.calls[1].tools is None
 
 
-def test_json_invalid_uses_fixed_field_closure_guidance_without_private_values() -> None:
-    private_sentinel = "private-fixture-value-must-not-enter-guidance"
-    exception_sentinel = "JSONDecodeError(private-exception-text)"
-    messages = [
-        {"role": "system", "content": f"Rules:\n{EXTRACTION_SEMANTIC_RULES}"},
-        {"role": "user", "content": private_sentinel},
-    ]
-    invalid_response = fake_response(content="{fixed-local-invalid-json")
-    result, issues = parse_extraction_response(invalid_response)
+def _raw_candidate_result(candidate: dict[str, object]) -> dict[str, object]:
+    return {"outcome": "candidates", "candidates": [candidate]}
 
-    repaired = build_repair_messages(
-        messages,
-        invalid_response=invalid_response,
-        issues=issues,
+
+def _parse_raw_result(
+    payload: dict[str, object],
+) -> tuple[ExtractionResult | None, tuple[dict[str, str], ...]]:
+    return parse_extraction_response(
+        fake_response(content=json.dumps(payload, ensure_ascii=False))
     )
 
-    assert result is None
-    assert issues == ({"path": "$", "type": "json_invalid"},)
-    assert repaired is not None
-    guidance = str(repaired[-1]["content"])
-    assert "Rebuild one complete JSON object from the supplied evidence." in guidance
-    assert "Rebuild the object to match the schema and outcome rules." not in guidance
-    for field_name in (
-        "city_hint",
-        "district",
-        "address",
-        "business_district",
-        "landmark",
-        "metro_station",
-        "price",
-        "tags",
-        "event_start_at",
-        "event_end_at",
-    ):
-        assert field_name in guidance
-    for invariant in (
-        "price_amount and price_currency paired",
-        "Place must not carry Event time metadata",
-        "Event with an absent exact start or end must classify that time",
-        "candidates outcome must not carry result-level error metadata",
-        "Never emit model_invalid_output",
-        "Do not invent facts",
-    ):
-        assert invariant in guidance
-    assert private_sentinel not in guidance
-    assert exception_sentinel not in guidance
-    assert "input" not in json.dumps(issues)
-    assert "value" not in json.dumps(issues)
+
+def test_place_empty_fields_are_recorded_missing_in_candidate_field_order() -> None:
+    raw_candidate: dict[str, object] = {
+        "kind": "place",
+        "title": "保守归一化地点",
+        "missing_fields": [],
+        "uncertainties": [],
+    }
+
+    result, issues = _parse_raw_result(_raw_candidate_result(raw_candidate))
+
+    assert issues == ()
+    assert result is not None
+    candidate = result.candidates[0]
+    assert isinstance(candidate, PlaceCandidate)
+    assert candidate.title == "保守归一化地点"
+    assert candidate.missing_fields == (
+        CandidateField.CITY_HINT,
+        CandidateField.DISTRICT,
+        CandidateField.ADDRESS,
+        CandidateField.BUSINESS_DISTRICT,
+        CandidateField.LANDMARK,
+        CandidateField.METRO_STATION,
+        CandidateField.PRICE,
+        CandidateField.TAGS,
+    )
+    assert CandidateField.EVENT_START_AT not in candidate.missing_fields
+    assert CandidateField.EVENT_END_AT not in candidate.missing_fields
+
+
+def test_event_adds_time_fields_without_changing_explicit_uncertainty() -> None:
+    reason = "原文只有大致区域"
+    raw_candidate: dict[str, object] = {
+        "kind": "event",
+        "title": "保守归一化活动",
+        "city_hint": "深圳",
+        "district": None,
+        "uncertainties": [{"field": "district", "reason": reason}],
+        "missing_fields": ["address"],
+    }
+
+    result, issues = _parse_raw_result(_raw_candidate_result(raw_candidate))
+
+    assert issues == ()
+    assert result is not None
+    candidate = result.candidates[0]
+    assert isinstance(candidate, EventCandidate)
+    assert candidate.city_hint == "深圳"
+    assert candidate.uncertainties[0].field is CandidateField.DISTRICT
+    assert candidate.uncertainties[0].reason == reason
+    assert CandidateField.DISTRICT not in candidate.missing_fields
+    assert candidate.missing_fields == (
+        CandidateField.ADDRESS,
+        CandidateField.BUSINESS_DISTRICT,
+        CandidateField.LANDMARK,
+        CandidateField.METRO_STATION,
+        CandidateField.EVENT_START_AT,
+        CandidateField.EVENT_END_AT,
+        CandidateField.PRICE,
+        CandidateField.TAGS,
+    )
+
+
+def test_nonempty_model_facts_are_preserved_and_not_marked_missing() -> None:
+    raw_candidate: dict[str, object] = {
+        "kind": "place",
+        "title": "事实保持地点",
+        "city_hint": "深圳",
+        "district": "福田区",
+        "address": "福中路 184 号",
+        "business_district": "市民中心",
+        "landmark": "市民中心",
+        "metro_station": "市民中心站",
+        "price_amount": "0.00",
+        "price_currency": "CNY",
+        "tags": ["室内", "博物馆"],
+        "missing_fields": [],
+        "uncertainties": [],
+    }
+
+    result, issues = _parse_raw_result(_raw_candidate_result(raw_candidate))
+
+    assert issues == ()
+    assert result is not None
+    candidate = result.candidates[0]
+    assert candidate.title == raw_candidate["title"]
+    assert candidate.city_hint == raw_candidate["city_hint"]
+    assert candidate.district == raw_candidate["district"]
+    assert candidate.address == raw_candidate["address"]
+    assert candidate.business_district == raw_candidate["business_district"]
+    assert candidate.landmark == raw_candidate["landmark"]
+    assert candidate.metro_station == raw_candidate["metro_station"]
+    assert candidate.price_amount == Decimal("0.00")
+    assert candidate.price_currency == "CNY"
+    assert candidate.tags == ("室内", "博物馆")
+    assert candidate.missing_fields == ()
 
 
 @pytest.mark.parametrize(
-    ("source_identity", "candidate"),
+    ("candidate_update", "error_type"),
     [
-        ("固定地点证据身份", _only_name_place(title="固定地点证据身份")),
+        ({"city_hint": "深圳", "missing_fields": ["city_hint"]}, "present_field_marked_missing"),
         (
-            "固定活动证据身份",
-            EventCandidate(
-                title="固定活动证据身份",
-                missing_fields=(
-                    CandidateField.CITY_HINT,
-                    CandidateField.DISTRICT,
-                    CandidateField.ADDRESS,
-                    CandidateField.BUSINESS_DISTRICT,
-                    CandidateField.LANDMARK,
-                    CandidateField.METRO_STATION,
-                    CandidateField.EVENT_START_AT,
-                    CandidateField.EVENT_END_AT,
-                    CandidateField.PRICE,
-                    CandidateField.TAGS,
-                ),
-            ),
+            {
+                "missing_fields": ["city_hint"],
+                "uncertainties": [{"field": "city_hint", "reason": "待确认"}],
+            },
+            "missing_and_uncertain_conflict",
         ),
+        (
+            {"missing_fields": ["city_hint", "city_hint"]},
+            "duplicate_missing_field",
+        ),
+        (
+            {
+                "uncertainties": [
+                    {"field": "city_hint", "reason": "待确认"},
+                    {"field": "city_hint", "reason": "仍待确认"},
+                ]
+            },
+            "duplicate_uncertainty_field",
+        ),
+        ({"missing_fields": "city_hint"}, "tuple_type"),
+        ({"uncertainties": "city_hint"}, "tuple_type"),
+        ({"uncertainties": [{"field": "city_hint"}]}, "missing"),
+        ({"missing_fields": ["unknown_field"]}, "enum"),
+        ({"kind": "unknown"}, "union_tag_invalid"),
+        ({"district": 123}, "string_type"),
+        ({"tags": None}, "tuple_type"),
     ],
 )
-@pytest.mark.asyncio
-async def test_fixed_invalid_fixture_uses_one_evidence_bound_repair_call(
-    source_identity: str,
-    candidate: PlaceCandidate | EventCandidate,
+def test_normalization_does_not_repair_invalid_model_classification(
+    candidate_update: dict[str, object],
+    error_type: str,
 ) -> None:
-    expected = ExtractionResult.with_candidates((candidate,))
-    initial_messages: list[Message] = [
-        {"role": "system", "content": f"Rules:\n{EXTRACTION_SEMANTIC_RULES}"},
-        {"role": "user", "content": source_identity},
+    candidate: dict[str, object] = {
+        "kind": "place",
+        "title": "非法状态候选",
+        "missing_fields": [],
+        "uncertainties": [],
+    }
+    candidate.update(candidate_update)
+
+    result, issues = _parse_raw_result(_raw_candidate_result(candidate))
+
+    assert result is None
+    assert any(error_type in issue["type"] for issue in issues)
+
+
+def test_price_pair_and_event_time_order_rules_remain_strict() -> None:
+    place = {
+        "kind": "place",
+        "title": "币种孤立候选",
+        "price_currency": "CNY",
+        "missing_fields": [
+            "city_hint",
+            "district",
+            "address",
+            "business_district",
+            "landmark",
+            "metro_station",
+            "price",
+            "tags",
+        ],
+        "uncertainties": [],
+    }
+    event = {
+        "kind": "event",
+        "title": "时间倒序活动",
+        "event_start_at": "2026-07-25T14:00:00+08:00",
+        "event_end_at": "2026-07-25T13:00:00+08:00",
+        "missing_fields": [
+            "city_hint",
+            "district",
+            "address",
+            "business_district",
+            "landmark",
+            "metro_station",
+            "price",
+            "tags",
+        ],
+        "uncertainties": [],
+    }
+
+    place_result, place_issues = _parse_raw_result(_raw_candidate_result(place))
+    event_result, event_issues = _parse_raw_result(_raw_candidate_result(event))
+
+    assert place_result is None
+    assert place_issues[0]["type"] == "price_pair_incomplete"
+    assert event_result is None
+    assert event_issues[0]["type"] == "event_time_order_invalid"
+
+
+def test_non_candidate_outcome_with_candidates_still_fails() -> None:
+    payload = {
+        "outcome": "unsupported",
+        "reason_code": "INPUT_EMPTY",
+        "candidates": [{"kind": "place", "title": "不应携带的候选"}],
+    }
+
+    result, issues = _parse_raw_result(payload)
+
+    assert result is None
+    assert issues[0]["type"] == "candidates_forbidden_for_outcome"
+
+
+def test_normalization_is_immutable_repeatable_and_keeps_candidate_order() -> None:
+    payload = {
+        "outcome": "candidates",
+        "candidates": [
+            {
+                "kind": "place",
+                "title": "候选 A",
+                "missing_fields": [],
+                "uncertainties": [],
+            },
+            {
+                "kind": "event",
+                "title": "候选 B",
+                "missing_fields": [],
+                "uncertainties": [],
+            },
+        ],
+    }
+    original = deepcopy(payload)
+
+    first = _normalize_model_extraction_output(payload)
+    second = _normalize_model_extraction_output(payload)
+
+    assert payload == original
+    assert first == second
+    assert first is not payload
+    assert isinstance(first, dict)
+    assert [candidate["title"] for candidate in first["candidates"]] == [
+        "候选 A",
+        "候选 B",
     ]
-    invalid_response = fake_response(content="{fixed-local-invalid-json")
-    _result, issues = parse_extraction_response(invalid_response)
-    repair_messages = build_repair_messages(
-        initial_messages,
-        invalid_response=invalid_response,
-        issues=issues,
-    )
-    assert repair_messages is not None
-    provider = _JsonInvalidClosureRepairProvider(
-        source_identity=source_identity,
-        expected=expected,
-    )
 
-    repaired_response = await provider.chat(
-        messages=repair_messages,
-        tools=None,
-        response_format=None,
-    )
-    repaired_result, repaired_issues = parse_extraction_response(repaired_response)
 
-    assert repaired_result == expected
-    assert repaired_issues == ()
-    assert len(provider.calls) == 1
-    assert provider.calls[0].tools is None
+@pytest.mark.parametrize(
+    "candidate",
+    [
+        {"kind": "place", "title": "固定 repair 地点一"},
+        {"kind": "place", "title": "固定 repair 地点二", "city_hint": "深圳"},
+        {
+            "kind": "event",
+            "title": "固定 repair 活动",
+            "event_start_clue": "周六下午",
+        },
+    ],
+)
+def test_fixed_repair_response_with_only_missing_classification_omitted_passes_parser(
+    candidate: dict[str, object],
+) -> None:
+    original = deepcopy(candidate)
+
+    result, issues = _parse_raw_result(_raw_candidate_result(candidate))
+
+    assert issues == ()
+    assert result is not None
+    parsed_candidate = result.candidates[0]
+    assert parsed_candidate.title == original["title"]
+    assert parsed_candidate.city_hint == original.get("city_hint")
+    if isinstance(parsed_candidate, EventCandidate):
+        assert parsed_candidate.event_start_clue == original["event_start_clue"]
 
 
 @pytest.mark.asyncio
@@ -734,6 +876,7 @@ def test_generated_schema_and_shared_semantic_rules_stay_on_the_domain_contract(
         "CNY",
     ):
         assert rule in EXTRACTION_SEMANTIC_RULES
+    assert "audit every candidate for field closure" not in EXTRACTION_SEMANTIC_RULES
 
 
 @pytest.mark.asyncio
@@ -772,11 +915,12 @@ async def test_two_invalid_outputs_stop_at_two_calls_with_stable_result() -> Non
 
 
 @pytest.mark.asyncio
-async def test_repair_still_rejects_unclassified_absent_field_without_third_call() -> None:
+async def test_repair_normalizes_only_unclassified_absent_field_without_third_call() -> None:
     invalid_repair = json.loads(
         ExtractionResult.with_candidates((_only_name_place(),)).model_dump_json()
     )
     invalid_repair["candidates"][0]["missing_fields"].remove("address")
+    original_repair = deepcopy(invalid_repair)
     provider = FakeProvider(
         [
             fake_response(content="{fixed-local-invalid-json"),
@@ -786,7 +930,11 @@ async def test_repair_still_rejects_unclassified_absent_field_without_third_call
 
     result = await TextExtractionService(provider).extract("M Stand")
 
-    assert result.outcome is ExtractionOutcome.MODEL_INVALID_OUTPUT
+    candidate = result.candidates[0]
+    assert candidate.title == "M Stand"
+    assert set(candidate.missing_fields) == set(_only_name_place().missing_fields)
+    assert candidate.missing_fields[-1] is CandidateField.ADDRESS
+    assert invalid_repair == original_repair
     assert len(provider.calls) == 2
 
 
@@ -941,7 +1089,12 @@ async def test_repeated_calls_do_not_share_candidates_or_errors() -> None:
 async def test_concurrent_calls_do_not_share_result_state() -> None:
     titles = ("深圳菜谱文化主题展", "深圳产品参数设计展", "上海宾馆", "北京饭店")
     responses = [
-        _result_response(ExtractionResult.with_candidates((_only_name_place(title=title),)))
+        fake_response(
+            content=json.dumps(
+                _raw_candidate_result({"kind": "place", "title": title}),
+                ensure_ascii=False,
+            )
+        )
         for title in titles
     ]
     provider = FakeProvider(responses)
@@ -951,6 +1104,10 @@ async def test_concurrent_calls_do_not_share_result_state() -> None:
 
     result_titles = {result.candidates[0].title for result in results}
     assert result_titles == set(titles)
+    assert all(
+        result.candidates[0].missing_fields == _only_name_place().missing_fields
+        for result in results
+    )
     assert len({id(result) for result in results}) == 4
     assert len(provider.calls) == 4
 

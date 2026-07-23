@@ -11,9 +11,12 @@ from pydantic import ValidationError
 
 from app.domain.collections import (
     CandidateField,
+    CollectionKind,
+    EventCandidate,
     ExtractionOutcome,
     ExtractionReasonCode,
     ExtractionResult,
+    PlaceCandidate,
     UnsupportedReason,
     default_cny_for_known_price,
 )
@@ -27,27 +30,22 @@ from nanobot_core.providers import (
 MAX_MODEL_OUTPUT_CHARS: Final = 50_000
 _EXTRACTION_SCHEMA_NAME: Final = "shiguang_extraction_result"
 _EXTRACTION_RESULT_SCHEMA: Final = ExtractionResult.model_json_schema()
-_COMMON_CANDIDATE_FIELDS: Final = tuple(
-    field.value
-    for field in CandidateField
-    if field
-    not in {
-        CandidateField.TITLE,
-        CandidateField.EVENT_START_AT,
-        CandidateField.EVENT_END_AT,
-    }
-)
-_EVENT_TIME_FIELDS: Final = (
-    CandidateField.EVENT_START_AT.value,
-    CandidateField.EVENT_END_AT.value,
-)
-_CANDIDATE_FIELD_CLOSURE_GUIDANCE: Final = (
-    "Before output, audit every candidate for field closure. For each Place check: "
-    f"{', '.join(_COMMON_CANDIDATE_FIELDS)}. For each Event check those fields plus: "
-    f"{', '.join(_EVENT_TIME_FIELDS)}. For every absent field choose exactly one "
-    "classification: missing_fields or uncertainties. Never put the same field in both, "
-    "and never mark a present field missing."
-)
+_CANDIDATE_FIELD_VALUES: Final = frozenset(field.value for field in CandidateField)
+_CANDIDATE_MODELS_BY_KIND: Final[
+    dict[str, type[PlaceCandidate] | type[EventCandidate]]
+] = {
+    CollectionKind.PLACE.value: PlaceCandidate,
+    CollectionKind.EVENT.value: EventCandidate,
+}
+_CANDIDATE_FIELDS_BY_KIND: Final[dict[str, tuple[CandidateField, ...]]] = {
+    kind: tuple(
+        field
+        for field in CandidateField
+        if field is not CandidateField.TITLE
+        and (field is CandidateField.PRICE or field.value in model.model_fields)
+    )
+    for kind, model in _CANDIDATE_MODELS_BY_KIND.items()
+}
 EXTRACTION_SEMANTIC_RULES: Final = (
     "- Select exactly one outcome shape:\n"
     "  * candidates: one or more candidates; reason_code, unsupported_reason, "
@@ -58,20 +56,21 @@ EXTRACTION_SEMANTIC_RULES: Final = (
     "  * unsupported: no candidates or field gaps; reason_code is INPUT_EMPTY or "
     "INPUT_UNSUPPORTED. unsupported_reason is required only for INPUT_UNSUPPORTED.\n"
     "  * Never emit model_invalid_output; that outcome is reserved for the application.\n"
-    f"- {_CANDIDATE_FIELD_CLOSURE_GUIDANCE}\n"
-    "- missing_fields must be unique and uncertainties may contain at most one item per "
-    "field.\n"
+    "- For every candidate, missing_fields must be unique and uncertainties may contain "
+    "at most one item per field. The two sets must not overlap.\n"
+    "- Leave unavailable candidate facts empty. The application records conservative "
+    "missing state after the model response; explicit uncertainty must remain explicit.\n"
     "- Place candidates must not classify Event start/end fields and must not carry Event "
     "time semantics.\n"
-    "- Event start/end values use timezone-aware ISO 8601. A missing exact time must be "
-    "classified missing or uncertain; a present time cannot be missing. If both exact "
-    "times exist, end must be after start. Incomplete wording belongs only in the matching "
-    "time clue.\n"
+    "- Event start/end values use timezone-aware ISO 8601. If both exact times exist, end "
+    "must be after start. Keep absent exact times null; use uncertainty only when the "
+    "source contains ambiguous time evidence.\n"
     "- Shiguang currently uses renminbi only; users do not choose a currency.\n"
     "- When a local price is clear but no currency is written, emit price_amount and "
     'price_currency "CNY" together. This includes an explicit free price as amount 0.\n'
     "- Never treat unrelated numbers as prices. If a price cannot be identified, leave "
-    "both price_amount and price_currency null and mark PRICE missing or uncertain.\n"
+    "both price_amount and price_currency null; use uncertainty only for ambiguous price "
+    "evidence.\n"
     "- Foreign currencies and exchange-rate conversion are unsupported.\n"
 )
 
@@ -93,18 +92,7 @@ _IMAGE_REPAIR_EVIDENCE_CONSTRAINT: Final = (
     "invent any place, activity, or fact that was absent from that output."
 )
 _UNKNOWN_REPAIR_GUIDANCE: Final = "Rebuild the object to match the schema and outcome rules."
-_JSON_INVALID_REPAIR_GUIDANCE: Final = (
-    "Rebuild one complete JSON object from the supplied evidence. First select the outcome "
-    "and distinguish every candidate as Place or Event. "
-    f"{_CANDIDATE_FIELD_CLOSURE_GUIDANCE} "
-    "Keep price_amount and price_currency paired, using CNY only for a known local amount. "
-    "A Place must not carry Event time metadata; an Event with an absent exact start or end "
-    "must classify that time. A candidates outcome must not carry result-level error "
-    "metadata. Never emit model_invalid_output. Do not invent facts absent from the supplied "
-    "evidence."
-)
 _REPAIR_GUIDANCE_BY_TYPE: Final = {
-    "json_invalid": _JSON_INVALID_REPAIR_GUIDANCE,
     "price_pair_incomplete": "Provide amount and CNY together, or set both price fields null.",
     "price_currency_unsupported": "Use CNY for a known local amount; do not convert currency.",
     "missing_and_uncertain_conflict": "Classify a field as missing or uncertain, never both.",
@@ -197,7 +185,7 @@ def parse_extraction_response(
 
     try:
         normalized_json = json.dumps(
-            _default_candidate_price_currencies(raw_result),
+            _normalize_model_extraction_output(raw_result),
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -210,20 +198,95 @@ def parse_extraction_response(
     return parsed, ()
 
 
-def _default_candidate_price_currencies(raw_result: object) -> object:
-    if not isinstance(raw_result, dict):
-        return raw_result
-    normalized = dict(raw_result)
+def _normalize_model_extraction_output(raw_result: object) -> object:
+    """Copy and normalize only application-derived state at the model JSON boundary."""
+
+    normalized = deepcopy(raw_result)
+    if not isinstance(normalized, dict):
+        return normalized
     candidates = normalized.get("candidates")
     if not isinstance(candidates, list):
         return normalized
     normalized["candidates"] = [
-        default_cny_for_known_price(candidate)
-        if isinstance(candidate, dict)
-        else candidate
-        for candidate in candidates
+        _normalize_model_candidate(candidate) for candidate in candidates
     ]
     return normalized
+
+
+def _normalize_model_candidate(candidate: object) -> object:
+    if not isinstance(candidate, dict):
+        return candidate
+
+    normalized = default_cny_for_known_price(candidate)
+    classification = _valid_candidate_classification(normalized)
+    kind = normalized.get("kind")
+    applicable_fields = (
+        _CANDIDATE_FIELDS_BY_KIND.get(kind) if isinstance(kind, str) else None
+    )
+    if classification is None or applicable_fields is None:
+        return normalized
+
+    missing_fields, uncertain_fields = classification
+    additions = [
+        field.value
+        for field in applicable_fields
+        if field.value not in missing_fields
+        and field.value not in uncertain_fields
+        and _candidate_field_is_empty(normalized, field)
+    ]
+    if additions:
+        normalized["missing_fields"] = [*missing_fields, *additions]
+    return normalized
+
+
+def _valid_candidate_classification(
+    candidate: dict[str, object],
+) -> tuple[list[str], set[str]] | None:
+    raw_missing = candidate.get("missing_fields", [])
+    raw_uncertainties = candidate.get("uncertainties", [])
+    if not isinstance(raw_missing, list) or not isinstance(raw_uncertainties, list):
+        return None
+    if not all(isinstance(field, str) for field in raw_missing):
+        return None
+
+    missing_fields = list(raw_missing)
+    if (
+        any(field not in _CANDIDATE_FIELD_VALUES for field in missing_fields)
+        or len(set(missing_fields)) != len(missing_fields)
+    ):
+        return None
+
+    uncertain_fields: list[str] = []
+    for uncertainty in raw_uncertainties:
+        if (
+            not isinstance(uncertainty, dict)
+            or set(uncertainty) != {"field", "reason"}
+            or not isinstance(uncertainty.get("field"), str)
+            or not isinstance(uncertainty.get("reason"), str)
+        ):
+            return None
+        uncertain_fields.append(uncertainty["field"])
+    if (
+        any(field not in _CANDIDATE_FIELD_VALUES for field in uncertain_fields)
+        or len(set(uncertain_fields)) != len(uncertain_fields)
+        or set(missing_fields).intersection(uncertain_fields)
+    ):
+        return None
+    return missing_fields, set(uncertain_fields)
+
+
+def _candidate_field_is_empty(
+    candidate: dict[str, object],
+    field: CandidateField,
+) -> bool:
+    if field is CandidateField.PRICE:
+        return (
+            candidate.get("price_amount") is None
+            and candidate.get("price_currency") is None
+        )
+    if field is CandidateField.TAGS:
+        return candidate.get(field.value, []) == []
+    return candidate.get(field.value) is None
 
 
 def build_repair_messages(
