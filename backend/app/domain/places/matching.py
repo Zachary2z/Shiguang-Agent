@@ -275,6 +275,23 @@ class PlaceMatchResult(PlaceMatchingContract):
         return self
 
 
+def poi_from_match_candidate(candidate: PlaceMatchCandidate) -> Poi:
+    """Project a normalized match candidate into the existing internal POI DTO."""
+
+    return Poi(
+        provider=candidate.provider,
+        poi_id=candidate.poi_id,
+        name=candidate.name,
+        branch_name=candidate.branch_name,
+        city_code=candidate.city_code,
+        district=candidate.district,
+        business_area=candidate.business_area,
+        address=candidate.address,
+        coordinate=candidate.coordinate.model_copy(deep=True),
+        poi_type=candidate.poi_type,
+    )
+
+
 class PlaceSelectionKind(StrEnum):
     CANDIDATE = "candidate"
     ANY_BRANCH = "any_branch"

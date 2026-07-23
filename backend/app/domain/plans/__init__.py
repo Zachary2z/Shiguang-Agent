@@ -18,6 +18,7 @@ from app.domain.plans.contracts import (
 from app.domain.plans.drafts import (
     DraftCandidateFacts,
     DraftRouteFacts,
+    ExternalDraftCandidate,
     PlanDraftFactSnapshot,
     PlanDraftFailureCode,
     PlanDraftOutcome,
@@ -44,6 +45,17 @@ from app.domain.plans.retrieval import (
     RouteAssessment,
     StructuredCollectionResult,
     WeatherAssessment,
+    external_poi_scope_reasons,
+)
+from app.domain.plans.supplement import (
+    ExternalApprovalDecision,
+    ExternalPlaceApprovalDecision,
+    ExternalPlaceApprovalRequirement,
+    ExternalPlaceSupplementResult,
+    ExternalRecoveryCode,
+    ExternalSupplementOutcome,
+    RequiredGapKind,
+    RequiredPlanGap,
 )
 
 __all__ = [
@@ -71,8 +83,10 @@ __all__ = [
     "RouteAssessment",
     "StructuredCollectionResult",
     "WeatherAssessment",
+    "external_poi_scope_reasons",
     "DraftCandidateFacts",
     "DraftRouteFacts",
+    "ExternalDraftCandidate",
     "PlanDraftFactSnapshot",
     "PlanDraftFailureCode",
     "PlanDraftOutcome",
@@ -86,4 +100,12 @@ __all__ = [
     "PlanOptionRole",
     "PlanRiskCode",
     "PlanSelectionReasonCode",
+    "ExternalApprovalDecision",
+    "ExternalPlaceApprovalDecision",
+    "ExternalPlaceApprovalRequirement",
+    "ExternalPlaceSupplementResult",
+    "ExternalRecoveryCode",
+    "ExternalSupplementOutcome",
+    "RequiredGapKind",
+    "RequiredPlanGap",
 ]

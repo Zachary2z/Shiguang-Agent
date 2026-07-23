@@ -4,7 +4,7 @@
 
 ## 当前阶段
 
-项目处于 **M0 技术验证**。M0-2A 至 M0-2D、M0-3A 至 M0-3D、M0-4A 至 M0-4D 以及 M0-5A/M0-5B/M0-5C 均已通过主控验收。当前允许开始 M0-5D 收藏不足与高德补充；M0-Gate 及后续阶段仍未开始。
+项目处于 **M0 技术验证**。M0-2A 至 M0-2D、M0-3A 至 M0-3D、M0-4A 至 M0-4D 以及 M0-5A/M0-5B/M0-5C 均已通过主控验收；M0-5D 收藏不足与高德补充已完成离线开发验证，当前等待主控验收。M0-Gate 及后续阶段仍未开始。
 
 普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。此前真实模型和高德的单次授权均不延续到 M0-5D；真实模型、高德、网页、对象存储及其他外部/付费调用默认未授权。M0-5D 只允许验证收藏不足时的少量只读地点补充与 Approval 边界，不实现 SSE、Worker、前端、正式计划确认或 Event 外部搜索。
 
@@ -100,6 +100,12 @@ python -m pytest -q tests/application/test_plan_drafts.py
 
 每个 PlanItem 草案快照包含时间、访问时长、入站路线、费用、收藏来源 ID、具体 POI、风险和稳定选择理由。任意分店必须同时保存本次解析出的具体 POI、查询时间、品牌级来源 ID，并固定标记为 `collection_derived`；M0-5B 已合并的 exact/any_branch 同 POI 来源只产生一个 PlanItem。生成后 `PlanDraftService.validate()` 使用同一事实契约重新检查时间/Event 边界、路线和交通方式、缓冲、结束留白、预算、费用、来源、任意分店快照及重复 POI；被篡改结果返回稳定违反码。
 
+### M0-5D 收藏不足与高德补充
+
+`ExternalPlaceSupplementService` 是唯一外部 Place 补充编排入口。调用方必须提供结构化的单个 `RequiredPlanGap`，服务不会扫描自由文本、把软偏好变成缺口，或因为计划仍有空闲时间而外搜。它直接消费唯一 `StructuredCollectionRetrievalService` 的结果，复用既有 `PlaceMatchingService`、`MapProvider` 与 `PlanDraftService.generate()/validate()`；每次最多执行一次 `search_poi`，最多保留 3 个候选，且最多向主方案加入一个外部 Place。
+
+收藏已满足且没有显式必要缺口时地图调用为 0；`collection_only` 和 Event 缺口始终禁止外搜。没有可执行收藏核心时，决定必须携带与当前缺口绑定的确定性 Approval ID；未决定或决定不匹配时返回 `waiting_user`，拒绝后只返回收藏内草案或继续添加收藏的恢复路径。外部地点固定标记为“高德补充 · 未收藏”，保存供应商无关 POI、查询时间、补充原因、已知路线以及价格/营业时间风险，不携带 CollectionItem ID，也不会写入收藏或数据库。本阶段只验证不可变草案与授权边界，不提供正式确认或“加入收藏”动作。
+
 本阶段只有不可变技术验证契约，不创建 Plan/PlanItem Repository 或数据库表，不调用模型、地图、路线、天气、网页及其他外部 API。20 组固定 Fixture 的生成后硬约束违反数为 0。聚焦回归入口为 `APP_ENV=test RUN_REAL_MODEL_TESTS=0 RUN_REAL_MAP_TESTS=0 python -m pytest -q tests/application/test_plan_drafts.py`。
 
 ### 数据库迁移
@@ -112,7 +118,7 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前 HEAD revision 是 `20260722_0006`。M0-4D、M0-5A、M0-5B 与 M0-5C 均未新增迁移；现有 Message、Source、AgentRun/ToolRun、收藏、地点目标和幂等表继续作为检索的唯一持久数据来源。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+当前 HEAD revision 是 `20260722_0006`。M0-4D、M0-5A、M0-5B、M0-5C 与 M0-5D 均未新增迁移；现有 Message、Source、AgentRun/ToolRun、收藏、地点目标和幂等表继续作为检索的唯一持久数据来源。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
 
 ### 启动 API
 

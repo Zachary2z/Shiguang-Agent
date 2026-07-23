@@ -19,12 +19,12 @@ from app.domain.collections import (
 )
 from app.domain.places import (
     MatchStatus,
-    PlaceMatchCandidate,
     PlaceMatchRequest,
     PlaceScope,
     Poi,
     PoiProvider,
     ResolvedPlaceTargetKind,
+    poi_from_match_candidate,
     resolve_place_target,
 )
 from app.domain.plans import PlanConstraints
@@ -270,21 +270,6 @@ def _branch_candidate(brand_name: str) -> PlaceCandidate:
     )
 
 
-def _poi_from_match(candidate: PlaceMatchCandidate) -> Poi:
-    return Poi(
-        provider=candidate.provider,
-        poi_id=candidate.poi_id,
-        name=candidate.name,
-        branch_name=candidate.branch_name,
-        city_code=candidate.city_code,
-        district=candidate.district,
-        business_area=candidate.business_area,
-        address=candidate.address,
-        coordinate=candidate.coordinate.model_copy(deep=True),
-        poi_type=candidate.poi_type,
-    )
-
-
 def _merge_duplicate_pois(
     decisions: Iterable[CollectionCandidateDecision],
 ) -> tuple[CollectionCandidateDecision, ...]:
@@ -521,7 +506,7 @@ class StructuredCollectionRetrievalService:
 
         branch_decisions: list[CollectionCandidateDecision] = []
         for candidate in result.candidates:
-            poi = _poi_from_match(candidate)
+            poi = poi_from_match_candidate(candidate)
             dynamic = poi_facts.get(
                 (poi.provider, poi.poi_id),
                 PoiPlanningFacts(provider=poi.provider, poi_id=poi.poi_id),

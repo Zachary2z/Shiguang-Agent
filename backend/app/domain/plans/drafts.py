@@ -11,7 +11,7 @@ from pydantic import Field, field_validator, model_validator
 
 from app.domain.collections import CollectionKind, validate_cny_price_pair
 from app.domain.identifiers import validate_collection_item_id
-from app.domain.places import Poi, TransportMode
+from app.domain.places import Poi, PoiProvider, TransportMode
 from app.domain.plans.contracts import PlanContract
 from app.domain.plans.retrieval import CandidateReasonCode
 from app.domain.time import require_aware_utc
@@ -144,6 +144,7 @@ class PlanItemRole(StrEnum):
 
 class PlanItemSourceKind(StrEnum):
     COLLECTION_DERIVED = "collection_derived"
+    EXTERNAL_PLACE = "external_place"
 
 
 class PlanSelectionReasonCode(StrEnum):
@@ -167,10 +168,12 @@ SELECTION_REASON_SUMMARIES: dict[PlanSelectionReasonCode, str] = {
 
 class PlanRiskCode(StrEnum):
     PRICE_UNKNOWN = "PRICE_UNKNOWN"
+    OPENING_HOURS_UNKNOWN = "OPENING_HOURS_UNKNOWN"
 
 
 RISK_SUMMARIES: dict[PlanRiskCode, str] = {
     PlanRiskCode.PRICE_UNKNOWN: "The item price needs confirmation.",
+    PlanRiskCode.OPENING_HOURS_UNKNOWN: "The opening hours need confirmation.",
 }
 
 
@@ -187,7 +190,9 @@ class PlanDraftExclusion(PlanContract):
 
 class PlanRouteLeg(PlanContract):
     from_collection_item_ids: tuple[str, ...] = Field(default_factory=tuple)
-    to_collection_item_ids: tuple[str, ...]
+    to_collection_item_ids: tuple[str, ...] = Field(default_factory=tuple)
+    to_external_provider: PoiProvider | None = None
+    to_external_poi_id: str | None = Field(default=None, min_length=1, max_length=128)
     duration_seconds: int = Field(ge=0)
     distance_meters: int = Field(ge=0)
     transport_mode: TransportMode
@@ -200,20 +205,31 @@ class PlanRouteLeg(PlanContract):
     @field_validator("to_collection_item_ids")
     @classmethod
     def validate_to_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _collection_ids(value)
+        return _collection_ids(value, allow_empty=True)
+
+    @model_validator(mode="after")
+    def validate_target(self) -> Self:
+        has_external = (
+            self.to_external_provider is not None and self.to_external_poi_id is not None
+        )
+        if (not self.to_collection_item_ids) is not has_external:
+            raise ValueError("route requires exactly one collection or external target")
+        return self
 
 
 class PlanItemSource(PlanContract):
     kind: PlanItemSourceKind = PlanItemSourceKind.COLLECTION_DERIVED
-    collection_item_ids: tuple[str, ...]
+    collection_item_ids: tuple[str, ...] = Field(default_factory=tuple)
     any_branch_collection_item_ids: tuple[str, ...] = Field(default_factory=tuple)
     concrete_poi: Poi | None = None
     poi_queried_at: datetime | None = None
+    supplement_reason: str | None = Field(default=None, min_length=1, max_length=240)
+    source_label: str | None = Field(default=None, min_length=1, max_length=80)
 
     @field_validator("collection_item_ids")
     @classmethod
     def validate_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _collection_ids(value)
+        return _collection_ids(value, allow_empty=True)
 
     @field_validator("any_branch_collection_item_ids")
     @classmethod
@@ -227,12 +243,55 @@ class PlanItemSource(PlanContract):
 
     @model_validator(mode="after")
     def validate_branch_snapshot(self) -> Self:
+        if self.kind is PlanItemSourceKind.COLLECTION_DERIVED:
+            if not self.collection_item_ids:
+                raise ValueError("collection-derived sources require collection ids")
+            if self.supplement_reason is not None or self.source_label is not None:
+                raise ValueError("collection-derived sources cannot carry external metadata")
+        else:
+            if (
+                self.collection_item_ids
+                or self.any_branch_collection_item_ids
+                or self.concrete_poi is None
+                or self.poi_queried_at is None
+                or self.supplement_reason is None
+                or self.source_label != "高德补充 · 未收藏"
+            ):
+                raise ValueError("external sources require one uncollected POI snapshot")
         if not set(self.any_branch_collection_item_ids).issubset(self.collection_item_ids):
             raise ValueError("any-branch source ids must be collection sources")
         if self.any_branch_collection_item_ids and (
             self.concrete_poi is None or self.poi_queried_at is None
         ):
             raise ValueError("any-branch sources require a concrete queried POI snapshot")
+        return self
+
+
+class ExternalDraftCandidate(PlanContract):
+    """One explicit external Place and the known facts needed by the sole scheduler."""
+
+    poi: Poi
+    queried_at: datetime
+    supplement_reason: str = Field(min_length=1, max_length=240)
+    visit_duration_seconds: int = Field(gt=0, le=24 * 60 * 60)
+    inbound_route: PlanRouteLeg
+    price_amount: Decimal | None = None
+    price_currency: str | None = None
+
+    @field_validator("queried_at")
+    @classmethod
+    def normalize_queried_at(cls, value: datetime) -> datetime:
+        return require_aware_utc(value)
+
+    @model_validator(mode="after")
+    def validate_external_route(self) -> Self:
+        if (
+            self.inbound_route.to_collection_item_ids
+            or self.inbound_route.to_external_provider is not self.poi.provider
+            or self.inbound_route.to_external_poi_id != self.poi.poi_id
+        ):
+            raise ValueError("external inbound routes cannot target a collection id")
+        validate_cny_price_pair(self.price_amount, self.price_currency)
         return self
 
 

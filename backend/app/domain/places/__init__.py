@@ -35,6 +35,7 @@ from app.domain.places.matching import (
     PlaceSelection,
     PlaceSelectionKind,
     classify_place_matches,
+    poi_from_match_candidate,
     score_place_candidate,
     validate_place_selection,
 )
@@ -86,6 +87,7 @@ __all__ = [
     "PlaceSelection",
     "PlaceSelectionKind",
     "classify_place_matches",
+    "poi_from_match_candidate",
     "score_place_candidate",
     "validate_place_selection",
     "BrandIdentityConfirmationSource",

@@ -5,12 +5,14 @@ from __future__ import annotations
 from decimal import Decimal
 from enum import StrEnum
 from typing import Self
+from unicodedata import normalize
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.collections import CollectionKind, validate_cny_price_pair
 from app.domain.identifiers import validate_collection_item_id
 from app.domain.places import CityScope, Coordinate, Poi, PoiProvider
+from app.domain.plans.contracts import PlanConstraints
 
 
 class RetrievalContract(BaseModel):
@@ -203,6 +205,53 @@ REASON_SUMMARIES: dict[CandidateReasonCode, str] = {
         "No branch satisfies the known hard constraints."
     ),
 }
+
+
+def external_poi_scope_reasons(
+    poi: Poi,
+    constraints: PlanConstraints,
+) -> tuple[CandidateReasonCode, ...]:
+    """Apply explicit plan city/area/include/exclude rules to an external POI."""
+
+    def identity(value: str) -> str:
+        return "".join(normalize("NFKC", value).casefold().split())
+
+    values = tuple(
+        identity(value)
+        for value in (
+            poi.name,
+            poi.branch_name,
+            poi.district,
+            poi.business_area,
+            poi.address,
+            poi.poi_type.value,
+        )
+        if value is not None
+    )
+
+    def matches(term: str) -> bool:
+        needle = identity(term)
+        return any(needle in value for value in values)
+
+    reasons: set[CandidateReasonCode] = set()
+    if poi.city_code != constraints.city_code.value:
+        reasons.add(CandidateReasonCode.CITY_MISMATCH)
+    if constraints.area is not None:
+        if constraints.area.districts:
+            allowed = {identity(value) for value in constraints.area.districts}
+            if poi.district is None:
+                reasons.add(CandidateReasonCode.DISTRICT_UNKNOWN)
+            elif identity(poi.district) not in allowed:
+                reasons.add(CandidateReasonCode.DISTRICT_MISMATCH)
+        if constraints.area.labels and not any(
+            matches(label) for label in constraints.area.labels
+        ):
+            reasons.add(CandidateReasonCode.AREA_MISMATCH)
+    if any(not matches(term) for term in constraints.include):
+        reasons.add(CandidateReasonCode.INCLUDE_NOT_MATCHED)
+    if any(matches(term) for term in constraints.exclude):
+        reasons.add(CandidateReasonCode.EXCLUDED_BY_USER)
+    return tuple(code for code in CandidateReasonCode if code in reasons)
 
 _EXCLUSION_REASONS = frozenset(
     {

@@ -14,6 +14,7 @@ from app.domain.plans.drafts import (
     SELECTION_REASON_SUMMARIES,
     DraftCandidateFacts,
     DraftRouteFacts,
+    ExternalDraftCandidate,
     PlanDraftExclusion,
     PlanDraftFactSnapshot,
     PlanDraftFailureCode,
@@ -82,9 +83,10 @@ class PlanDraftService:
         constraints: PlanConstraints,
         collections: StructuredCollectionResult,
         facts: PlanDraftFactSnapshot,
+        external_candidate: ExternalDraftCandidate | None = None,
     ) -> PlanDraftResult:
         exclusions = self._exclusions(collections)
-        if not collections.included:
+        if not collections.included and external_candidate is None:
             return self._failure(PlanDraftFailureCode.NO_INCLUDED_CANDIDATES, exclusions)
 
         candidate_facts = {item.collection_item_ids: item for item in facts.candidates}
@@ -120,7 +122,22 @@ class PlanDraftService:
                 continue
 
             items: tuple[PlanItem, ...] = (core_item,)
+            if external_candidate is not None and not options:
+                external_item = self._schedule_external_item(
+                    candidate=external_candidate,
+                    role=PlanItemRole.AUXILIARY,
+                    earliest_departure=core_item.end_at
+                    + timedelta(seconds=switch_buffer),
+                    from_ids=core.collection_item_ids,
+                    constraints=constraints,
+                    end_buffer_seconds=end_buffer,
+                    existing_items=items,
+                )
+                if external_item is not None:
+                    items = (core_item, external_item)
             for auxiliary in ranked:
+                if len(items) == 2:
+                    break
                 if auxiliary.collection_item_ids == core.collection_item_ids:
                     continue
                 auxiliary_item = self._schedule_item(
@@ -158,6 +175,28 @@ class PlanDraftService:
                 )
             )
 
+        if not options and external_candidate is not None:
+            external_item = self._schedule_external_item(
+                candidate=external_candidate,
+                role=PlanItemRole.CORE,
+                earliest_departure=constraints.start_at,
+                from_ids=(),
+                constraints=constraints,
+                end_buffer_seconds=end_buffer,
+                existing_items=(),
+            )
+            if external_item is not None:
+                risks = _option_risks((external_item,))
+                options.append(
+                    PlanOption(
+                        role=PlanOptionRole.MAIN,
+                        items=(external_item,),
+                        end_buffer_seconds=end_buffer,
+                        risk_codes=risks,
+                        risks=tuple(RISK_SUMMARIES[risk] for risk in risks),
+                    )
+                )
+
         if not options:
             return self._failure(PlanDraftFailureCode.NO_EXECUTABLE_OPTION, exclusions)
 
@@ -171,6 +210,7 @@ class PlanDraftService:
             constraints=constraints,
             collections=collections,
             facts=facts,
+            external_candidate=external_candidate,
         )
         if not validation.is_valid:
             return self._failure(
@@ -186,6 +226,7 @@ class PlanDraftService:
         constraints: PlanConstraints,
         collections: StructuredCollectionResult,
         facts: PlanDraftFactSnapshot,
+        external_candidate: ExternalDraftCandidate | None = None,
     ) -> PlanDraftValidation:
         """Re-run every known scheduling invariant against the immutable facts."""
 
@@ -213,6 +254,7 @@ class PlanDraftService:
         routes = {item.identity: item for item in facts.routes}
         expected_switch, expected_end = _BUFFER_SECONDS[constraints.pace]
         sequences: set[tuple[tuple[str, ...], ...]] = set()
+        external_item_count = 0
 
         for option_index, option in enumerate(draft.options):
             if not 1 <= len(option.items) <= 2:
@@ -239,6 +281,25 @@ class PlanDraftService:
                 )
                 if item.role is not expected_item_role:
                     violations.add(PlanDraftViolationCode.ITEM_ROLE_INVALID)
+                if item.source.kind is PlanItemSourceKind.EXTERNAL_PLACE:
+                    external_item_count += 1
+                    self._validate_external_item(
+                        item=item,
+                        candidate=external_candidate,
+                        previous_end=previous_end,
+                        previous_ids=previous_ids,
+                        item_index=item_index,
+                        option_index=option_index,
+                        constraints=constraints,
+                        expected_switch=expected_switch,
+                        expected_end=expected_end,
+                        seen_pois=seen_pois,
+                        violations=violations,
+                    )
+                    previous_end = item.end_at
+                    previous_ids = ()
+                    continue
+
                 decision = included.get(item.source.collection_item_ids)
                 if decision is None:
                     violations.add(PlanDraftViolationCode.SOURCE_NOT_INCLUDED)
@@ -352,7 +413,104 @@ class PlanDraftService:
             ):
                 violations.add(PlanDraftViolationCode.BUDGET_VIOLATED)
 
+        if external_item_count > 1:
+            violations.add(PlanDraftViolationCode.SOURCE_NOT_INCLUDED)
         return self._validation(violations)
+
+    @staticmethod
+    def _external_risks(candidate: ExternalDraftCandidate) -> tuple[PlanRiskCode, ...]:
+        risks = (
+            [PlanRiskCode.PRICE_UNKNOWN]
+            if candidate.price_amount is None
+            else []
+        )
+        if candidate.poi.opening_hours_summary is None:
+            risks.append(PlanRiskCode.OPENING_HOURS_UNKNOWN)
+        return tuple(risks)
+
+    def _schedule_external_item(
+        self,
+        *,
+        candidate: ExternalDraftCandidate,
+        role: PlanItemRole,
+        earliest_departure: datetime,
+        from_ids: tuple[str, ...],
+        constraints: PlanConstraints,
+        end_buffer_seconds: int,
+        existing_items: tuple[PlanItem, ...],
+    ) -> PlanItem | None:
+        route = candidate.inbound_route
+        if route.from_collection_item_ids != from_ids:
+            return None
+        risks = self._external_risks(candidate)
+        reason = (
+            PlanSelectionReasonCode.PRIMARY_STABLE_RANK
+            if role is PlanItemRole.CORE
+            else PlanSelectionReasonCode.AUXILIARY_FITS_KNOWN_ROUTE
+        )
+        return self._schedule_known_item(
+            role=role,
+            title=candidate.poi.name,
+            kind=CollectionKind.PLACE,
+            visit_duration_seconds=candidate.visit_duration_seconds,
+            event_start_at=None,
+            event_end_at=None,
+            route=route,
+            price_amount=candidate.price_amount,
+            source=PlanItemSource(
+                kind=PlanItemSourceKind.EXTERNAL_PLACE,
+                concrete_poi=candidate.poi.model_copy(deep=True),
+                poi_queried_at=candidate.queried_at,
+                supplement_reason=candidate.supplement_reason,
+                source_label="高德补充 · 未收藏",
+            ),
+            reason=reason,
+            earliest_departure=earliest_departure,
+            constraints=constraints,
+            end_buffer_seconds=end_buffer_seconds,
+            existing_items=existing_items,
+            risk_codes=risks,
+        )
+
+    def _validate_external_item(
+        self,
+        *,
+        item: PlanItem,
+        candidate: ExternalDraftCandidate | None,
+        previous_end: datetime,
+        previous_ids: tuple[str, ...],
+        item_index: int,
+        option_index: int,
+        constraints: PlanConstraints,
+        expected_switch: int,
+        expected_end: int,
+        seen_pois: set[tuple[object, str]],
+        violations: set[PlanDraftViolationCode],
+    ) -> None:
+        if candidate is None:
+            violations.add(PlanDraftViolationCode.SOURCE_NOT_INCLUDED)
+            return
+        expected_role = PlanItemRole.CORE if item_index == 0 else PlanItemRole.AUXILIARY
+        expected = self._schedule_external_item(
+            candidate=candidate,
+            role=expected_role,
+            earliest_departure=previous_end
+            + timedelta(seconds=expected_switch if item_index == 1 else 0),
+            from_ids=previous_ids,
+            constraints=constraints,
+            end_buffer_seconds=expected_end,
+            existing_items=(),
+        )
+        identity = (candidate.poi.provider, candidate.poi.poi_id)
+        if identity in seen_pois:
+            violations.add(PlanDraftViolationCode.DUPLICATE_POI)
+        seen_pois.add(identity)
+        if (
+            option_index != 0
+            or expected is None
+            or item != expected
+        ):
+            violations.add(PlanDraftViolationCode.FACTS_MISSING_OR_MISMATCHED)
 
     @staticmethod
     def _rank_key(
@@ -401,52 +559,96 @@ class PlanDraftService:
             return None
         if from_ids == () and not self._origin_route_matches_decision(decision, route):
             return None
+        inbound_route = PlanRouteLeg(
+            from_collection_item_ids=route.from_collection_item_ids,
+            to_collection_item_ids=route.to_collection_item_ids,
+            duration_seconds=route.duration_seconds,
+            distance_meters=route.distance_meters,
+            transport_mode=route.transport_mode,
+        )
+        risks = _item_risks(decision.price_amount)
+        return self._schedule_known_item(
+            role=role,
+            title=decision.title,
+            kind=decision.kind,
+            visit_duration_seconds=visit.visit_duration_seconds,
+            event_start_at=visit.event_start_at,
+            event_end_at=visit.event_end_at,
+            route=inbound_route,
+            price_amount=decision.price_amount,
+            source=PlanItemSource(
+                collection_item_ids=decision.collection_item_ids,
+                any_branch_collection_item_ids=decision.any_branch_collection_item_ids,
+                concrete_poi=(
+                    None if decision.poi is None else decision.poi.model_copy(deep=True)
+                ),
+                poi_queried_at=(
+                    visit.poi_queried_at if decision.any_branch_collection_item_ids else None
+                ),
+            ),
+            reason=reason,
+            earliest_departure=earliest_departure,
+            constraints=constraints,
+            end_buffer_seconds=end_buffer_seconds,
+            existing_items=existing_items,
+            risk_codes=risks,
+        )
+
+    @staticmethod
+    def _schedule_known_item(
+        *,
+        role: PlanItemRole,
+        title: str,
+        kind: CollectionKind,
+        visit_duration_seconds: int,
+        event_start_at: datetime | None,
+        event_end_at: datetime | None,
+        route: PlanRouteLeg,
+        price_amount: Decimal | None,
+        source: PlanItemSource,
+        reason: PlanSelectionReasonCode,
+        earliest_departure: datetime,
+        constraints: PlanConstraints,
+        end_buffer_seconds: int,
+        existing_items: tuple[PlanItem, ...],
+        risk_codes: tuple[PlanRiskCode, ...],
+    ) -> PlanItem | None:
+        """Schedule every collection or external item through one rule path."""
+
+        if constraints.transport_modes and route.transport_mode not in constraints.transport_modes:
+            return None
         start_at = earliest_departure + timedelta(seconds=route.duration_seconds)
-        if visit.event_start_at is not None:
-            start_at = max(start_at, visit.event_start_at)
-        end_at = start_at + timedelta(seconds=visit.visit_duration_seconds)
-        if visit.event_end_at is not None and end_at > visit.event_end_at:
+        if event_start_at is not None:
+            start_at = max(start_at, event_start_at)
+        end_at = start_at + timedelta(seconds=visit_duration_seconds)
+        if event_end_at is not None and end_at > event_end_at:
             return None
         if start_at < constraints.start_at or (
             end_at + timedelta(seconds=end_buffer_seconds) > constraints.end_at
         ):
             return None
         prices = [item.price_amount for item in existing_items]
-        prices.append(decision.price_amount)
+        prices.append(price_amount)
         if constraints.budget is not None and (
             any(price is None for price in prices)
             or sum((price for price in prices if price is not None), Decimal()) > constraints.budget
         ):
             return None
-        risks = _item_risks(decision.price_amount)
         return PlanItem(
             role=role,
-            title=decision.title,
-            kind=decision.kind,
+            title=title,
+            kind=kind,
             start_at=start_at,
             end_at=end_at,
-            visit_duration_seconds=visit.visit_duration_seconds,
-            inbound_route=PlanRouteLeg(
-                from_collection_item_ids=route.from_collection_item_ids,
-                to_collection_item_ids=route.to_collection_item_ids,
-                duration_seconds=route.duration_seconds,
-                distance_meters=route.distance_meters,
-                transport_mode=route.transport_mode,
-            ),
-            price_amount=decision.price_amount,
-            price_currency=decision.price_currency,
-            source=PlanItemSource(
-                collection_item_ids=decision.collection_item_ids,
-                any_branch_collection_item_ids=decision.any_branch_collection_item_ids,
-                concrete_poi=(None if decision.poi is None else decision.poi.model_copy(deep=True)),
-                poi_queried_at=(
-                    visit.poi_queried_at if decision.any_branch_collection_item_ids else None
-                ),
-            ),
+            visit_duration_seconds=visit_duration_seconds,
+            inbound_route=route.model_copy(deep=True),
+            price_amount=price_amount,
+            price_currency=None if price_amount is None else PRICE_CURRENCY_CNY,
+            source=source.model_copy(deep=True),
             selection_reason_code=reason,
             selection_reason=SELECTION_REASON_SUMMARIES[reason],
-            risk_codes=risks,
-            risks=tuple(RISK_SUMMARIES[risk] for risk in risks),
+            risk_codes=risk_codes,
+            risks=tuple(RISK_SUMMARIES[risk] for risk in risk_codes),
         )
 
     @staticmethod

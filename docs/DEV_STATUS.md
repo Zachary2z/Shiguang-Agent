@@ -4,14 +4,14 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-5D 收藏不足与高德补充 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-5d-external-place-supplement |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 无；M0-5C 已完成，M0-5D 前置条件已满足 |
+| 阻塞项 | 无；M0-5D 离线实现完成，等待主控独立验收 |
 
 ## 当前任务
 
-M0-4A 至 M0-4D、M0-5A、M0-5B 与 M0-5C 均已通过主控验收并集成到 `main`。当前允许开始 M0-5D 收藏不足与高德补充；M0-Gate 及后续阶段仍未开始且不得提前开发。
+M0-4A 至 M0-4D、M0-5A、M0-5B 与 M0-5C 均已通过主控验收并集成到 `main`。M0-5D 已在阶段分支完成离线实现并等待主控验收；M0-Gate 及后续阶段仍未开始且不得提前开发。
 
 ## M0 状态
 
@@ -24,7 +24,7 @@ M0-4A 至 M0-4D、M0-5A、M0-5B 与 M0-5C 均已通过主控验收并集成到 `
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
 | M0-4 URL 与截图 | 已完成 | M0-4A、M0-4B、M0-4C、M0-4D 均已通过主控验收 |
-| M0-5 计划技术验证 | 进行中 | M0-5A/B/C 已完成；M0-5D 未开始、允许开始 |
+| M0-5 计划技术验证 | 进行中 | M0-5A/B/C 已完成；M0-5D 待验收 |
 | M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
 
 状态只允许使用：未开始、进行中、待验收、已完成、阻塞。
@@ -58,7 +58,7 @@ M0-4A 至 M0-4D、M0-5A、M0-5B 与 M0-5C 均已通过主控验收并集成到 `
 
 ## 下一步
 
-从最新 `main` 创建 M0-5D 开发分支，只实现“收藏不足与高德补充”：收藏充分时不外搜，有核心收藏但缺必要环节时只读补充少量 Place，主要依赖外部地点时进入 Approval，Event 不自动外搜，拒绝后退回收藏内方案或提示继续添加。默认继续使用 Stub/Fixture，未经当前任务明确授权不得调用真实模型、高德、路线、天气、网页或其他外部/付费 API。
+主控在 `codex/m0-5d-external-place-supplement` 上独立复核收藏优先、显式 Place 缺口、Approval 绑定、拒绝/collection-only/Event 零外搜、候选消歧、外部来源与风险、M0-5C 硬约束、无收藏/数据库写入、禁网回归和迁移 head。验收通过前不合并 `main`，不开始 M0-Gate。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -1021,3 +1021,16 @@ M0-4A 至 M0-4D、M0-5A、M0-5B 与 M0-5C 均已通过主控验收并集成到 `
 - 范围、冗余与安全：没有第二套 AgentRunner、ToolRegistry、Provider、Repository、检索、草案服务、价格解析器或价格校验；人民币默认和成对校验各只有一个共享实现。未新增迁移、依赖、配置、API、前端、持久化 Plan、Approval、M0-5D 外部补充或后续能力；Git 未包含 `.env`、缓存、虚拟环境、数据库、响应快照或真实密钥
 - 外部调用与风险：未读取或打印本机 `.env`，真实模型、高德、路线、天气、网页、对象存储、消息及其他外部/付费 API 调用均为 0。当前没有未关闭 P0/P1；已知跨测试事件循环收尾 warning 保留为低风险测试基础设施观察项，不影响本次确定性业务结论
 - 下一步：M0-5C 已完成；当前允许从最新 `main` 开始 M0-5D。M0-5D 必须复用既有 MapProvider、StructuredCollectionRetrievalService、PlanDraftService 和业务审批契约，只验证收藏不足时少量只读 Place 补充、Approval 与拒绝降级，不外搜 Event，不提前实现 M0-Gate、正式确认、SSE、Worker 或前端
+
+#### 2026-07-23｜M0-5D 收藏不足与高德补充｜待主控验收
+
+- 分支与门禁：`codex/m0-5d-external-place-supplement`；开始时工作区干净，`HEAD`、`main`、`origin/main` 与 merge-base 均精确等于指定基线 `7f9edf3294fef0864a5e609806b7a3c2a346c0e7`。M0-5A/B/C 已完成并集成，M0-5D 未提前实现，Alembic 为唯一 `20260722_0006 (head)`；阶段提交随本记录创建，完整 SHA 见开发窗口最终交接报告
+- 唯一契约与编排：新增冻结的单个 `RequiredPlanGap`、与缺口完整语义哈希绑定的 Approval requirement/decision、稳定补充结果与恢复码；唯一 `ExternalPlaceSupplementService` 直接消费 M0-5B `StructuredCollectionResult`，组合既有 `PlaceMatchingService`、唯一 `MapProvider` 和唯一 `PlanDraftService.generate()/validate()`。没有自由文本扫描、Prompt、Tool Calling、第二套检索/匹配/规划/审批状态机或可变进程缓存
+- 确定性行为：无显式必要缺口且收藏草案可执行时地图调用为 0；一个明确 Place 缺口最多调用一次 `search_poi`、最多保留 3 个供应商无关候选，并最多只向主方案加入一个外部 Place。无收藏核心时未授权或授权 ID 不匹配均返回既有 `AgentRunStatus.WAITING_USER` 语义且地图调用为 0；拒绝不重发授权，只返回收藏内草案或继续添加收藏。`collection_only` 与 Event 缺口在有/无收藏时均不外搜，不因剩余时间触发补充
+- 候选与草案边界：复用地点匹配证据，不把供应商第一项直接当成功；错误城市、行政区/活动范围外、显式 include/exclude 不符、重复收藏 POI、同名歧义和无结果均不能进入草案。外部项固定为 `external_place` 和“高德补充 · 未收藏”，不含 CollectionItem ID，保留具体 POI、provider/poi_id、查询时间、补充原因、已知路线与严格 CNY 费用；未知价格和营业时间显示独立风险。半完整价格与非 CNY 继续由唯一价格契约拒绝
+- 单一排程与复核：`PlanDraftService` 只增加外部候选适配，收藏项与外部项最终进入同一个 `_schedule_known_item` 时间/路线/预算/缓冲排程规则；生成后同一个 `validate()` 重新构造并核对外部项，禁止来源伪装、同 POI 重复、多个方案重复补充、时间/路线/预算和风险篡改。若外部项因预算、时间或路线事实不能加入，返回稳定恢复结果，不把未满足显式缺口的收藏内草案误报为补充成功
+- 离线覆盖：M0-5D 聚焦 `22 passed`，覆盖收藏充分零调用、局部必要 Place、无收藏先授权及授权后一次搜索、错误 Approval ID、拒绝幂等、collection-only、Event、最多 3 个候选、同名分店、错误城市、范围外、重复 POI、空结果、搜索 timeout/rate-limit/unavailable/invalid response、路线失败/缺失、Event 核心缺 POI 时不以私人 origin 替代后续路线、搜索与路线取消、已知/未知价格和营业风险、CNY/预算、来源防伪、输入不变、重复调用，以及实际 `StructuredCollectionRetrievalService → 外部补充 → PlanDraftService` 跨阶段链路
+- 最终验证：macOS、项目受忽略 `.venv`、Python 3.13.5；editable install、`pip check`、Ruff、strict mypy（93 个源文件）均退出 0；M0-5C `43 passed`、M0-5B `42 passed`、迁移 `21 passed`。封锁 DNS、socket connect/connect_ex/create_connection 后非真实全集 `1431 passed / 1 skipped / 1 deselected`；默认全集 `1431 passed / 2 skipped`，全部退出 0
+- 测试基础设施提示：封网非真实全集在全部用例通过后出现 1 条 M0-5C 已记录的非稳定 aiosqlite worker/事件循环收尾 warning；随后默认全集无 warning，对应 M0-5B 目标用例使用 `-W error::pytest.PytestUnhandledThreadExceptionWarning` 独立复跑 `1 passed`。M0-5D 未修改数据库生命周期或通过 skip 隐藏问题，当前无已知未关闭 P0/P1
+- 迁移、依赖、配置与副作用：未新增或修改依赖、配置、ORM、Repository、数据库表或迁移，历史 `0001`–`0006` 未改，head 保持 `20260722_0006`；不创建 Approval/Plan/PlanItem/缓存表，不写 CollectionItem 或数据库，不实现正式确认/加入收藏。未读取、打印或修改本机 `.env`，未运行真实 marker；真实模型、高德、路线、天气、网页、对象存储、消息及其他外部/付费 API 调用均为 0
+- 范围、冗余与下一步：未修改 `nanobot_core`、AgentRunner、ToolRegistry、MapProvider/StubMapProvider/AmapProvider、Collection Repository、API、SSE、Worker、队列、前端、正式计划版本/确认、日历、提醒、分享、反馈、M0-Gate 或 M1。POI DTO、地点匹配、结构检索、CNY 规则、草案排程与 Run 状态保持唯一；主控应在隔离快照复核调用次数、Approval 绑定、拒绝/Event/collection-only、候选边界、外部来源/风险、20 组 M0-5C Fixture、禁网、迁移 head 和净复杂度。验收前不合并 `main`、不推送、不开始 M0-Gate
