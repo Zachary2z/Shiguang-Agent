@@ -1632,3 +1632,37 @@ Session、M1-2 Next.js 或其他后续阶段。
   授权，固定按原 01–06 顺序复测，每张 initial 最多 1 次，只有生产唯一 repair
   正常触发时最多再 1 次，总上限 12 次非流式 Chat Completions，单次总墙钟 15 秒、
   每张完整共享 20 秒、SDK/外层重试均为 0
+
+#### 2026-07-24｜M0 关闭后 Event 日期粒度修正｜待主控验收
+
+- 分支与基线：`codex/event-date-granularity` 从本地 `main`
+  `d75d62087efdf15c7cdbafb4246a6747444d2f07` 创建；该基线包含
+  `origin/main` 的 `55a9da825cffb501051c66e6065ca43b0893b11e`
+- 实现提交：`12d57f137f534eda0d00347a660e25773818e302`
+  （`fix: distinguish event dates from exact times`）；随后仅以独立文档提交记录本完整
+  SHA
+- 领域语义：唯一 EventCandidate、CollectionItem 和 CandidateField 增加
+  `event_start_date/event_end_date`；日期结束日包含当天且允许单日相等，日期顺序由
+  一份共享领域验证负责。既有 aware `event_start_at/event_end_at` 继续只表达准确
+  场次且结束严格晚于开始；date-only 不转换成午夜、时区或每日开闭馆时间
+- 正式数据链：共享文字/URL/图片结构抽取与 repair、严格 DTO、自动收藏与幂等快照、
+  CollectionItem、唯一 Repository、API 查询/PATCH 和修改清空均保留日期事实；
+  Place 拒绝 Event 日期元数据
+- 状态与计划：date-only Event 保存为 `pending_details`，不会被结构化检索纳入计划；
+  exact-time Event 的既有 `active` 行为保持。没有新增计划状态、日期转时刻逻辑或
+  M1 能力
+- 迁移：新增唯一 head `20260724_0007`，down revision 为 `20260722_0006`；
+  SQLite 临时库完成 upgrade、check、downgrade、re-upgrade，最终为
+  `20260724_0007 (head)`；已有行升级后日期列为 null，存在日期事实时拒绝有损降级
+- 验证：editable 安装和 `pip check` 通过；Ruff 通过；strict mypy 94 文件通过；
+  日期链聚焦回归 `417 passed`；正式离线全集
+  `1503 passed / 2 deselected`；仓库外插件封锁 DNS 与 socket 后抽取、统一输入、
+  收藏写入、Repository、API、检索和计划聚焦回归 `437 passed`。全部最终命令
+  0 failed、0 warning
+- 纯度与范围：真实模型、地图、网页、对象存储、消息及其他外部 API 调用为 0；
+  没有截图/标题白名单、第二套 DTO/解析/repair/Repository/计划服务、AgentRunner、
+  ToolRegistry、ModelProvider 或 M1 改动。样本 06 不作为内容正确性 Gate，样本 03
+  没有生产特例
+- 下一步：等待主控复核迁移安全、严格字段闭合、日期/时刻区分、date-only 计划排除
+  和 exact-time 回归后集成。M0 保持完成，M1-0 仍未开始；其第一项强制前置仍是
+  `IdempotencyLockRegistry` 有界生命周期修复
