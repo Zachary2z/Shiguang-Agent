@@ -14,6 +14,7 @@ import pytest
 import app.application.text_extraction as text_extraction_module
 from app.application.extraction_output import (
     EXTRACTION_SEMANTIC_RULES,
+    build_repair_messages,
     extraction_result_schema,
     parse_extraction_response,
 )
@@ -32,11 +33,14 @@ from app.domain.collections import (
     UnsupportedReason,
 )
 from nanobot_core.providers import (
+    Message,
     ModelResponse,
     ProviderError,
     ProviderErrorCode,
+    StructuredOutput,
     StructuredOutputMode,
     ToolCall,
+    ToolDefinition,
 )
 from tests.core.fakes import FakeProvider, fake_response
 
@@ -122,6 +126,26 @@ def _event_without_time() -> EventCandidate:
 
 def _result_response(result: ExtractionResult) -> ModelResponse:
     return fake_response(content=result.model_dump_json())
+
+
+class _EvidenceCheckingTextProvider(FakeProvider):
+    async def chat(
+        self,
+        *,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None,
+        response_format: StructuredOutput | None = None,
+    ) -> ModelResponse:
+        if self.calls:
+            rendered = json.dumps(messages, ensure_ascii=False)
+            assert "只修复深圳湾文化广场候选" in rendered
+            assert "深圳湾文化广场" in rendered
+            assert '"role": "assistant"' in rendered
+        return await super().chat(
+            messages=messages,
+            tools=tools,
+            response_format=response_format,
+        )
 
 
 def _recognized_price_without_currency_response(amount: Decimal) -> ModelResponse:
@@ -457,7 +481,7 @@ async def test_first_invalid_output_can_be_repaired_once() -> None:
 
 
 @pytest.mark.asyncio
-async def test_repair_receives_specific_safe_semantic_guidance_without_evidence() -> None:
+async def test_repair_preserves_text_evidence_and_specific_safe_guidance() -> None:
     secret = "private-source-and-response-value"
     invalid = json.loads(_invalid_event_time_json())
     invalid["candidates"][0]["title"] = secret
@@ -472,9 +496,37 @@ async def test_repair_receives_specific_safe_semantic_guidance_without_evidence(
     assert result == valid
     assert "event_time_order_invalid" in repair_prompt
     assert "Ensure an exact Event end is after its exact start." in repair_prompt
-    assert secret not in json.dumps(repair_messages, ensure_ascii=False)
-    assert invalid_json not in json.dumps(repair_messages, ensure_ascii=False)
-    assert [message["role"] for message in repair_messages] == ["system", "user"]
+    assert repair_messages[1] == {"role": "user", "content": secret}
+    assert repair_messages[2] == {"role": "assistant", "content": invalid_json}
+    assert [message["role"] for message in repair_messages] == [
+        "system",
+        "user",
+        "assistant",
+        "user",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repair_result_depends_on_original_text_and_prior_candidate_evidence() -> None:
+    source = "只修复深圳湾文化广场候选"
+    invalid = json.loads(
+        ExtractionResult.with_candidates(
+            (_only_name_place(title="深圳湾文化广场"),)
+        ).model_dump_json()
+    )
+    invalid["candidates"][0]["missing_fields"].append("city_hint")
+    invalid_json = json.dumps(invalid, ensure_ascii=False)
+    expected = ExtractionResult.with_candidates(
+        (_only_name_place(title="深圳湾文化广场"),)
+    )
+    provider = _EvidenceCheckingTextProvider(
+        [fake_response(content=invalid_json), _result_response(expected)]
+    )
+
+    result = await TextExtractionService(provider).extract(source)
+
+    assert result == expected
+    assert len(provider.calls) == 2
 
 
 def test_safe_validation_issues_contain_only_path_and_stable_type() -> None:
@@ -492,6 +544,27 @@ def test_safe_validation_issues_contain_only_path_and_stable_type() -> None:
     )
     assert secret not in json.dumps(issues)
     assert all(set(issue) == {"path", "type"} for issue in issues)
+
+
+def test_repair_messages_are_deep_copy_isolated_from_inputs() -> None:
+    initial_messages: list[Message] = [
+        {"role": "system", "content": {"rules": ["schema"]}},
+        {"role": "user", "content": {"parts": ["深圳湾文化广场"]}},
+    ]
+    original_messages = json.loads(json.dumps(initial_messages, ensure_ascii=False))
+    invalid_response = fake_response(content='{"outcome":"candidates"}')
+
+    repaired = build_repair_messages(
+        initial_messages,
+        invalid_response=invalid_response,
+        issues=({"path": "candidates", "type": "missing"},),
+    )
+
+    assert repaired is not None
+    repaired[0]["content"]["rules"].append("changed")
+    repaired[1]["content"]["parts"].append("changed")
+    assert initial_messages == original_messages
+    assert invalid_response.content == '{"outcome":"candidates"}'
 
 
 def test_model_invalid_outcome_is_reserved_for_the_application() -> None:

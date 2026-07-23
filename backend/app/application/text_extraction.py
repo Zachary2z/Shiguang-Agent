@@ -139,6 +139,7 @@ class TextExtractionService:
             invalid_response=first_response,
             issues=issues,
         )
+        assert repair_messages is not None
         repaired_response = await self._provider.chat(
             messages=repair_messages,
             tools=None,

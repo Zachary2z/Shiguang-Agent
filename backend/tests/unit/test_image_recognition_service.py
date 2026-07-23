@@ -47,11 +47,14 @@ from app.providers.storage import (
     StorageProviderErrorCode,
 )
 from nanobot_core.providers import (
+    Message,
     ModelResponse,
     ProviderError,
     ProviderErrorCode,
+    StructuredOutput,
     StructuredOutputMode,
     ToolCall,
+    ToolDefinition,
 )
 from tests.core.fakes import FakeProvider, fake_response
 from tests.fixtures.images import (
@@ -185,6 +188,37 @@ def _event() -> EventCandidate:
 def _response_for(*candidates: PlaceCandidate | EventCandidate) -> ModelResponse:
     payload = ExtractionResult.with_candidates(tuple(candidates)).model_dump_json()
     return fake_response(content=payload)
+
+
+def _invalid_candidate_response(title: str = "海边咖啡") -> ModelResponse:
+    payload = json.loads(
+        ExtractionResult.with_candidates((_place(title),)).model_dump_json()
+    )
+    payload["candidates"][0]["missing_fields"].append("city_hint")
+    return fake_response(content=json.dumps(payload, ensure_ascii=False))
+
+
+class _EvidenceCheckingImageProvider(FakeProvider):
+    async def chat(
+        self,
+        *,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None,
+        response_format: StructuredOutput | None = None,
+    ) -> ModelResponse:
+        if self.calls:
+            rendered = json.dumps(messages, ensure_ascii=False)
+            assert "海边咖啡" in rendered
+            assert '"role": "assistant"' in rendered
+            assert "data:image/" not in rendered
+            assert ";base64," not in rendered
+            assert FAKE_FILENAME not in rendered
+            assert "/private-images/" not in rendered
+        return await super().chat(
+            messages=messages,
+            tools=tools,
+            response_format=response_format,
+        )
 
 
 def _recognized_image_price_without_currency_response(amount: Decimal) -> ModelResponse:
@@ -831,11 +865,46 @@ async def test_storage_cancellation_propagates_with_zero_model_calls(
 
 
 @pytest.mark.asyncio
-async def test_one_structural_repair_can_succeed(tmp_path: Path) -> None:
+async def test_one_structural_repair_uses_prior_candidate_without_image_payload(
+    tmp_path: Path,
+) -> None:
+    provider = _EvidenceCheckingImageProvider(
+        [
+            _invalid_candidate_response(),
+            _response_for(_place()),
+        ]
+    )
+    service, _storage, _root = _service(tmp_path, provider)
+
+    _metadata, result = await service.recognize(
+        _stream(PNG_SCREENSHOT),
+        content_type="image/png",
+        original_filename=FAKE_FILENAME,
+    )
+
+    assert result.candidates[0].title == "海边咖啡"
+    assert len(provider.calls) == 2
+    repair_snapshot = json.dumps(provider.calls[1].messages, ensure_ascii=False)
+    assert "data:image/" not in repair_snapshot
+    assert ";base64," not in repair_snapshot
+    assert base64_marker(PNG_SCREENSHOT) not in repair_snapshot
+    assert FAKE_FILENAME not in repair_snapshot
+    assert str(_root) not in repair_snapshot
+    assert [message["role"] for message in provider.calls[1].messages] == [
+        "system",
+        "assistant",
+        "user",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_image_without_prior_candidate_evidence_rejects_new_place(
+    tmp_path: Path,
+) -> None:
     provider = FakeProvider(
         [
-            fake_response(content="not json"),
-            _response_for(_place("修复后的店")),
+            fake_response(content='{"outcome":"candidates","candidates":[]}'),
+            _response_for(_place("上一轮不存在的新地点")),
         ]
     )
     service, _storage, _root = _service(tmp_path, provider)
@@ -845,14 +914,45 @@ async def test_one_structural_repair_can_succeed(tmp_path: Path) -> None:
         content_type="image/png",
     )
 
-    assert result.candidates[0].title == "修复后的店"
-    assert len(provider.calls) == 2
-    repair_snapshot = json.dumps(provider.calls[1].messages)
-    assert "data:image/" not in repair_snapshot
-    assert [message["role"] for message in provider.calls[1].messages] == [
-        "system",
-        "user",
-    ]
+    assert result.outcome is ExtractionOutcome.MODEL_INVALID_OUTPUT
+    assert result.candidates == ()
+    assert len(provider.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "forbidden_value",
+    [
+        "data:image/png;base64,AAAA",
+        "/Users/private/source.png",
+        r"C:\private\source.jpg",
+        "private-source.webp",
+        "A" * 300,
+    ],
+)
+@pytest.mark.asyncio
+async def test_unsafe_prior_image_evidence_is_never_sent_for_repair(
+    tmp_path: Path,
+    forbidden_value: str,
+) -> None:
+    payload = json.loads(
+        ExtractionResult.with_candidates((_place(),)).model_dump_json()
+    )
+    payload["unexpected_private_value"] = forbidden_value
+    provider = FakeProvider(
+        [
+            fake_response(content=json.dumps(payload, ensure_ascii=False)),
+            _response_for(_place("不得采用的新地点")),
+        ]
+    )
+    service, _storage, _root = _service(tmp_path, provider)
+
+    _metadata, result = await service.recognize(
+        _stream(PNG_SCREENSHOT),
+        content_type="image/png",
+    )
+
+    assert result.outcome is ExtractionOutcome.MODEL_INVALID_OUTPUT
+    assert len(provider.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -874,20 +974,11 @@ async def test_image_and_text_share_semantics_and_explicit_structured_output(
     assert provider.calls[0].response_format.mode is StructuredOutputMode.JSON_SCHEMA
 
 
-@pytest.mark.parametrize(
-    "response",
-    [
-        fake_response(content="not json"),
-        fake_response(
-            tool_calls=(ToolCall(id="call-1", name="forbidden", arguments={}),)
-        ),
-    ],
-)
 @pytest.mark.asyncio
-async def test_two_invalid_or_tool_responses_return_model_invalid(
+async def test_two_invalid_candidate_responses_return_model_invalid(
     tmp_path: Path,
-    response: ModelResponse,
 ) -> None:
+    response = _invalid_candidate_response()
     provider = FakeProvider([response, response])
     service, _storage, _root = _service(tmp_path, provider)
 
@@ -900,10 +991,36 @@ async def test_two_invalid_or_tool_responses_return_model_invalid(
     assert len(provider.calls) == 2
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        fake_response(content="not json"),
+        fake_response(
+            tool_calls=(ToolCall(id="call-1", name="forbidden", arguments={}),)
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_image_response_without_safe_candidate_evidence_stops_stably(
+    tmp_path: Path,
+    response: ModelResponse,
+) -> None:
+    provider = FakeProvider([response, _response_for(_place("不得采用的新地点"))])
+    service, _storage, _root = _service(tmp_path, provider)
+
+    _metadata, result = await service.recognize(
+        _stream(PNG_SCREENSHOT),
+        content_type="image/png",
+    )
+
+    assert result.outcome is ExtractionOutcome.MODEL_INVALID_OUTPUT
+    assert len(provider.calls) == 1
+
+
 @pytest.mark.asyncio
 async def test_repair_provider_error_removes_new_file(tmp_path: Path) -> None:
     provider_error = ProviderError(code=ProviderErrorCode.TIMEOUT)
-    provider = FakeProvider([fake_response(content="not json"), provider_error])
+    provider = FakeProvider([_invalid_candidate_response(), provider_error])
     service, _storage, root = _service(tmp_path, provider)
 
     with pytest.raises(ProviderError) as exc_info:

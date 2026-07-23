@@ -309,12 +309,15 @@ class ImageRecognitionService:
         if first_result is not None:
             return _canonicalize_image_result(first_result)
 
+        repair_messages = build_repair_messages(
+            initial_messages,
+            invalid_response=first_response,
+            issues=issues,
+        )
+        if repair_messages is None:
+            return ExtractionResult.model_invalid()
         repaired_response = await self._provider.chat(
-            messages=build_repair_messages(
-                initial_messages,
-                invalid_response=first_response,
-                issues=issues,
-            ),
+            messages=repair_messages,
             tools=None,
             response_format=self._response_format,
         )

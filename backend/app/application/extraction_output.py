@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from copy import deepcopy
 from typing import Final
 
@@ -56,10 +57,20 @@ EXTRACTION_SEMANTIC_RULES: Final = (
 
 _REPAIR_PROMPT = (
     "The prior attempt violated the required extraction contract.\n"
-    "Create one new corrected JSON object only. Do not quote or reproduce the source, "
-    "prior response, prompt, or validation values.\n"
+    "Create one new corrected JSON object only. Do not quote the prompt or validation "
+    "values in the result.\n"
     "Validation issues (paths and types only): {issues}\n"
     "Safe correction guidance: {guidance}\n"
+    "{evidence_constraint}"
+)
+_TEXT_REPAIR_EVIDENCE_CONSTRAINT: Final = (
+    "Correct the same extraction using the original user input and prior assistant "
+    "output above. Do not replace them with unrelated candidates or facts."
+)
+_IMAGE_REPAIR_EVIDENCE_CONSTRAINT: Final = (
+    "The screenshot is intentionally not attached again. Correct only the candidate "
+    "structure and facts already present in the prior assistant output above. Do not "
+    "invent any place, activity, or fact that was absent from that output."
 )
 _UNKNOWN_REPAIR_GUIDANCE: Final = "Rebuild the object to match the schema and outcome rules."
 _REPAIR_GUIDANCE_BY_TYPE: Final = {
@@ -92,6 +103,11 @@ _REPAIR_GUIDANCE_BY_TYPE: Final = {
     "model_invalid_details_forbidden": "Remove model-derived details from model-invalid output.",
     "model_invalid_self_declared": "Choose candidates, insufficient_information, or unsupported.",
 }
+_IMAGE_PRIVATE_EVIDENCE = re.compile(
+    r"(?:data:image/|;base64,|file://|/(?:users|private|var/folders)/|"
+    r"[a-z]:\\|[\w .-]+\.(?:png|jpe?g|webp)\b|[A-Za-z0-9+/]{256,}={0,2})",
+    re.IGNORECASE,
+)
 
 
 def extraction_result_schema() -> dict[str, object]:
@@ -184,13 +200,24 @@ def build_repair_messages(
     *,
     invalid_response: ModelResponse | None,
     issues: tuple[dict[str, str], ...],
-) -> list[Message]:
+) -> list[Message] | None:
     """Create the sole structural-repair request while preserving caller isolation."""
 
-    repair_messages = deepcopy(
-        [message for message in initial_messages if message.get("role") == "system"]
-    )
-    del invalid_response
+    image_request = any(_message_contains_image(message) for message in initial_messages)
+    prior_output = _safe_prior_output(invalid_response)
+    if image_request:
+        if prior_output is None or not _has_image_candidate_evidence(prior_output):
+            return None
+        repair_messages = deepcopy(
+            [message for message in initial_messages if message.get("role") == "system"]
+        )
+        evidence_constraint = _IMAGE_REPAIR_EVIDENCE_CONSTRAINT
+    else:
+        repair_messages = deepcopy(initial_messages)
+        evidence_constraint = _TEXT_REPAIR_EVIDENCE_CONSTRAINT
+
+    if prior_output is not None:
+        repair_messages.append({"role": "assistant", "content": prior_output})
     guidance = tuple(
         _REPAIR_GUIDANCE_BY_TYPE.get(issue["type"], _UNKNOWN_REPAIR_GUIDANCE)
         for issue in issues
@@ -210,10 +237,48 @@ def build_repair_messages(
                     ensure_ascii=True,
                     separators=(",", ":"),
                 ),
+                evidence_constraint=evidence_constraint,
             ),
         }
     )
     return repair_messages
+
+
+def _message_contains_image(message: Message) -> bool:
+    content = message.get("content")
+    return isinstance(content, list) and any(
+        isinstance(part, dict) and part.get("type") == "image_url" for part in content
+    )
+
+
+def _safe_prior_output(response: ModelResponse | None) -> str | None:
+    if (
+        not isinstance(response, ModelResponse)
+        or response.tool_calls
+        or not isinstance(response.content, str)
+        or not response.content.strip()
+        or len(response.content) > MAX_MODEL_OUTPUT_CHARS
+    ):
+        return None
+    return response.content
+
+
+def _has_image_candidate_evidence(content: str) -> bool:
+    if _IMAGE_PRIVATE_EVIDENCE.search(content) is not None:
+        return False
+    try:
+        value = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not isinstance(value, dict) or not isinstance(value.get("candidates"), list):
+        return False
+    return any(
+        isinstance(candidate, dict)
+        and candidate.get("kind") in {"place", "event"}
+        and isinstance(candidate.get("title"), str)
+        and 0 < len(candidate["title"].strip()) <= 200
+        for candidate in value["candidates"]
+    )
 
 
 def canonicalize_extraction_result(
