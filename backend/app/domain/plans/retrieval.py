@@ -8,7 +8,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.domain.collections import CollectionKind
+from app.domain.collections import CollectionKind, validate_cny_price_pair
 from app.domain.identifiers import validate_collection_item_id
 from app.domain.places import CityScope, Coordinate, Poi, PoiProvider
 
@@ -269,6 +269,7 @@ class CollectionCandidateDecision(RetrievalContract):
             raise ValueError("candidate reasons must be unique")
         if self.poi is not None and self.kind is not CollectionKind.PLACE:
             raise ValueError("only Place decisions may carry a POI")
+        validate_cny_price_pair(self.price_amount, self.price_currency)
         branch_ids = tuple(
             validate_collection_item_id(item)
             for item in self.any_branch_collection_item_ids

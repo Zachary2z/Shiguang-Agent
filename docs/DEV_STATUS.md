@@ -986,13 +986,25 @@ M0-4A 至 M0-4D、M0-5A 与 M0-5B 均已通过主控验收并集成到 `main`。
 - 已知风险与主控复测：当前仅验证 macOS/Python 3.13.5、不可变内存契约和固定离线事实，未验证 Python 3.11/3.12、Windows、PostgreSQL 或真实路线/天气数据采集；后者不在本阶段授权范围。主控应重点复测 Event 到达起止等号、两类缓冲最小/最大与结束等号、已知预算加总、未知费用、缺少地点间路线的单地点降级、任意分店具体 POI/查询时间/来源标记、篡改校验、20 组 Fixture、输入隔离、重复调用、禁网、迁移 head、唯一实现和上述 aiosqlite warning
 - 下一步：等待主控独立验收；M0-5C 保持待验收，M0-5D 保持未开始。本分支不合并 `main`、不推送、不执行任何真实或付费调用
 
-#### 2026-07-23｜M0-5C 主控验收未知价格 P1 修复｜待主控复验
+#### 2026-07-23｜M0-5C 主控验收未知价格 P1 修复｜已由下一条价格契约修复收敛
 
 - 分支与门禁：修复直接追加在 `codex/m0-5-planning` 的待修复提交 `9afb408d178eea6a39c9299460fe66ceb28eedc2` 上；开始时工作区干净、分支和 HEAD 精确一致，`main` 与 `origin/main` 均为指定基线 `952c94bdf0a7d9b4465e30d85f1b7c74d78e5ff9` 且是当前提交祖先。未 amend、rebase、reset、合并或推送
 - 根因与唯一价格门禁：M0-5B 的 `_candidate_decision()` 原先在预算判断前无条件把金额或币种缺失标为 `PRICE_UNKNOWN`，使候选进入 `verification_required`，导致只消费 `StructuredCollectionResult.included` 的 M0-5C 无法触达既有价格风险。现将价格可比较性检查收敛到 `constraints.budget is not None` 分支：无预算时不因缺金额、缺币种或非 CNY 过滤；有预算时这些事实仍为 `PRICE_UNKNOWN/verification_required`，已知 CNY 超预算仍为 `BUDGET_EXCEEDED/excluded`
-- 草案与原始事实：`PlanDraftService` 继续严格只消费 `included`，没有读取或放宽 `verification_required`；候选决策和 PlanItem 草案快照可原样携带部分未知的金额/币种，费用总计保持 `None`，不伪造为 0。既有价格风险生成与生成后复核收敛到同一个 `_item_risks()`，缺金额、缺币种和非 CNY 均稳定输出 `PlanRiskCode.PRICE_UNKNOWN`
+- 当时的草案兼容（已撤销）：该提交让候选决策和 PlanItem 携带半完整金额/币种，并让缺金额、缺币种和非 CNY 统一输出 `PRICE_UNKNOWN`；这部分不符合正式领域契约，已由下一条人民币价格契约修复删除。`PlanDraftService` 始终只消费 `included`，从未读取或放宽 `verification_required`
 - 跨阶段自动化：在真实 `StructuredCollectionRetrievalService → StructuredCollectionResult → PlanDraftService` 链路增加参数化测试，覆盖完整未知、缺金额、缺币种、非 CNY 四种价格事实；逐项证明无预算时 M0-5B included、M0-5C generated 且总费用未知并带风险，有预算时保持 verification_required 且不进入草案。另覆盖无预算的已知 500 CNY 不排除、已知 CNY 超预算继续排除、输入不变以及检索和草案重复调用结果一致
 - 验证环境与结果：macOS、项目受忽略 `.venv`、Python 3.13.5；editable 安装和 `pip check` 退出 0，Ruff 退出 0，strict mypy 对 91 个源文件无问题。M0-5B 聚焦 `45 passed`，M0-5C 聚焦 `40 passed`，迁移 `21 passed`；正式非真实全集 `1403 passed / 2 deselected`，默认全集 `1403 passed / 2 skipped`，全部退出 0。临时 QA 插件同时封锁 socket connect/connect_ex/create_connection 和 DNS 后，非真实全集再次 `1403 passed / 2 deselected`
 - 既有环境提示：部分非真实、默认和封网全量运行在所有测试通过后报告 1 条既有 aiosqlite worker 于事件循环关闭后的 `PytestUnhandledThreadExceptionWarning`，落点在不同 M0-5B 用例，和前次 M0-5C 交接记录一致；最终默认全集复跑以及 M0-5B/M0-5C 聚焦、迁移测试均无 warning。本修复没有修改数据库生命周期或增加静默 skip
 - 迁移、范围与冗余：Alembic 仍只有 `20260722_0006 (head)`；未新增或修改迁移、ORM、Repository、依赖、配置、API、前端、Provider、重试、M0-5D 或后续能力。生产变化只有一个既有价格门禁、两个不可变传递契约和一个被生成/复核共用的风险函数；`StructuredCollectionRetrievalService`、`PlanDraftService`、价格判断和风险映射各保持唯一，没有第二套过滤、测试专用生产分支或白名单
 - 安全与下一步：Git 未包含 `.env`、密钥、数据库、缓存或虚拟环境；未读取本机 `.env`，真实模型、高德、路线、天气、网页、DNS、消息及其他外部/付费 API 调用均为 0。M0-5C 继续保持待主控复验，M0-5D 保持未开始；主控重点复测四种未知价格形态的预算有/无分支、原始字段保留、总费用 `None`、`PRICE_UNKNOWN` 风险、已知超预算、输入不变、重复调用、禁网和唯一实现
+
+#### 2026-07-23｜M0-5C 人民币价格契约修复｜待主控复验
+
+- 分支与门禁：修复直接追加在 `codex/m0-5-planning` 的提交 `7606f977db577db5160f7837ff1544739b7bd18a` 上；开始时工作区干净、分支和 HEAD 精确一致，`main` 与 `origin/main` 均为指定阶段基线 `952c94bdf0a7d9b4465e30d85f1b7c74d78e5ff9` 且是当前提交祖先。未 amend、rebase、reset、合并或推送
+- 产品语义与契约收敛：当前产品只支持中国场景和人民币，用户无需输入或选择币种。正式金额只允许 `None + None`（未知）或 `Decimal + CNY`（已知）两种状态；`Decimal + None`、`None + CNY` 和非 CNY 均由同一领域校验拒绝。数据库 `price_currency` 字段继续保留为内部金额单位，不代表多币种功能；本阶段没有汇率换算、Currency Repository、汇率 Provider、币种选择或外币支持
+- 唯一人民币默认入口：文字、URL 正文和图片继续复用既有 `parse_extraction_response()` 共享抽取边界；只有当模型已明确输出 `price_amount` 且缺少 `price_currency` 时，进入严格候选契约前统一补为 `CNY`。共享规则不会扫描原文数字或建立第二套价格解析器；明确免费可表示为 `Decimal("0") + CNY`，无法确认价格时保持 `None + None` 和既有 PRICE 不确定性。文字与图片 Prompt 复用同一人民币规则片段
+- 收藏修改：既有唯一 `CollectionWriteService.patch()` 流程继续使用 `CollectionItemPatch`；只提交 `price_amount` 时自动配对 `CNY`，显式清空金额时同步清空币种。CollectionItem、数据库写入模型、M0-5B 候选决策、PlanItem 和方案总费用均未放宽为半完整价格
+- 删除的错误兼容：撤销上一修复为生产数据无法产生的缺金额、缺币种和非 CNY 状态所增加的草案兼容分支，恢复 CollectionCandidateDecision、PlanItem 和 PlanOption 的严格金额/币种不变量；删除跨阶段测试中通过 `model_copy` 制造 `None + CNY`、`Decimal + None` 和非 CNY 候选的用例。M0-5B 不再需要判断半完整币种：有预算时仅完整未知价格进入 `PRICE_UNKNOWN/verification_required`，已知 CNY 超预算仍排除；无预算的 `None + None` 仍 included，M0-5C 仍生成总费用 `None` 且展示 `PRICE_UNKNOWN`
+- 自动化覆盖：抽取契约、文字、图片和收藏写入聚焦 `144 passed`；M0-5B→M0-5C 应用链路 `85 passed`；收藏写入集成 `17 passed`。覆盖已识别“人均 50”式金额和免费补 CNY、不相关数字不猜价格、未知价格、两种半完整状态与外币拒绝、金额单字段修改、清空价格、预算有/无、已知加总和超预算、输入不变及重复调用一致
+- 完整验证：Python 3.13.5；`pip check`、Ruff 和 strict mypy（91 个源文件）均退出 0。正式非真实全集 `1409 passed / 2 deselected`，默认全集 `1409 passed / 2 skipped`，全部退出 0。非真实全集出现 1 条既有 aiosqlite worker 在事件循环关闭后的 warning，默认全集、聚焦测试和写入集成均无 warning；本轮未修改数据库生命周期
+- 迁移、范围与复杂度：Alembic 唯一 head 仍为 `20260722_0006`，未新增或修改迁移、ORM、Repository、依赖、配置、API、前端、Provider、重试、M0-5D 或后续能力。一个共享抽取入口、一个人民币默认函数、一个正式成对校验、一个收藏修改入口和一个 PlanDraftService 保持唯一；本轮以删除半完整兼容判断为主，没有为测试新增生产特例、白名单或平行价格规则
+- 安全与下一步：未读取本机 `.env`，未启用真实 marker；真实模型、高德、路线、天气、网页、DNS、对象存储、消息及其他真实/付费 API 调用均为 0。原未知价格 P1 保持关闭，半完整价格契约已恢复严格；M0-5C 继续待主控复验，M0-5D 保持未开始。主控重点复测共享抽取补 CNY、明确免费、无关数字不推断、修改/清空价格、严格 DTO、无预算未知价格跨阶段链路、已知加总/超预算、输入隔离、幂等、迁移 head 与唯一实现

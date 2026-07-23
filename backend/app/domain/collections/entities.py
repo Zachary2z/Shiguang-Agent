@@ -11,7 +11,11 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.domain.collections.candidate_metadata import CandidateField, Uncertainty
+from app.domain.collections.candidate_metadata import (
+    CandidateField,
+    Uncertainty,
+    validate_cny_price_pair,
+)
 from app.domain.collections.extraction import (
     ExtractionOutcome,
     ExtractionReasonCode,
@@ -549,8 +553,7 @@ class CollectionItem(DomainModel):
                     raise ValueError("pending selection cannot carry a confirmed Place target")
             if self.status is CollectionStatus.PENDING_DETAILS and self.place_target is not None:
                 raise ValueError("pending details cannot carry a confirmed Place target")
-        if (self.price_amount is None) is not (self.price_currency is None):
-            raise ValueError("price amount and currency must be provided together")
+        validate_cny_price_pair(self.price_amount, self.price_currency)
 
         missing = set(self.missing_fields)
         uncertain = {item.field for item in self.uncertainties}

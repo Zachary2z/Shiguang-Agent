@@ -100,6 +100,24 @@ def test_patch_contract_allowlists_only_editable_fields_and_tracks_explicit_null
             CollectionItemPatch.model_validate({forbidden: "forbidden"})
 
 
+def test_patch_defaults_known_price_to_cny_and_clears_the_pair() -> None:
+    priced = CollectionItemPatch(price_amount=Decimal("50"))
+    cleared = CollectionItemPatch(price_amount=None)
+
+    assert priced.updates() == {
+        "price_amount": Decimal("50"),
+        "price_currency": "CNY",
+    }
+    assert cleared.updates() == {
+        "price_amount": None,
+        "price_currency": None,
+    }
+    with pytest.raises(ValidationError):
+        CollectionItemPatch(price_amount=Decimal("50"), price_currency="USD")
+    with pytest.raises(ValidationError):
+        CollectionItemPatch(price_currency="CNY")
+
+
 @pytest.mark.parametrize("field", ["title", "tags", "missing_fields", "uncertainties"])
 def test_patch_contract_rejects_null_for_nonnullable_editable_fields(field: str) -> None:
     with pytest.raises(ValidationError):

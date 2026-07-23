@@ -9,7 +9,7 @@ from typing import Self
 
 from pydantic import Field, field_validator, model_validator
 
-from app.domain.collections import CollectionKind
+from app.domain.collections import CollectionKind, validate_cny_price_pair
 from app.domain.identifiers import validate_collection_item_id
 from app.domain.places import Poi, TransportMode
 from app.domain.plans.contracts import PlanContract
@@ -261,6 +261,7 @@ class PlanItem(PlanContract):
     def validate_display_fields(self) -> Self:
         if self.end_at <= self.start_at:
             raise ValueError("plan item end must be after start")
+        validate_cny_price_pair(self.price_amount, self.price_currency)
         if self.selection_reason != SELECTION_REASON_SUMMARIES[self.selection_reason_code]:
             raise ValueError("selection reason does not match its code")
         if self.risks != tuple(RISK_SUMMARIES[code] for code in self.risk_codes):
@@ -290,8 +291,7 @@ class PlanOption(PlanContract):
             raise ValueError("single-item options do not have a switch buffer")
         if len(self.items) == 2 and self.switch_buffer_seconds is None:
             raise ValueError("two-item options require a switch buffer")
-        if (self.total_cost_amount is None) is not (self.total_cost_currency is None):
-            raise ValueError("total amount and currency must be provided together")
+        validate_cny_price_pair(self.total_cost_amount, self.total_cost_currency)
         if self.risks != tuple(RISK_SUMMARIES[code] for code in self.risk_codes):
             raise ValueError("option risk summaries do not match their codes")
         return self

@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from unicodedata import normalize
 
-from app.domain.collections import CollectionKind
+from app.domain.collections import PRICE_CURRENCY_CNY, CollectionKind
 from app.domain.plans import PlanConstraints, PlanPace
 from app.domain.plans.drafts import (
     FAILURE_SUMMARIES,
@@ -49,17 +49,14 @@ def _identity(value: str) -> str:
 
 
 def _option_cost(items: tuple[PlanItem, ...]) -> tuple[Decimal | None, str | None]:
-    if any(item.price_amount is None or item.price_currency is None for item in items):
-        return (None, None)
-    currencies = {item.price_currency for item in items}
-    if currencies != {"CNY"}:
+    if any(item.price_amount is None for item in items):
         return (None, None)
     return (
         sum(
             (item.price_amount for item in items if item.price_amount is not None),
             Decimal(),
         ),
-        "CNY",
+        PRICE_CURRENCY_CNY,
     )
 
 
@@ -70,9 +67,8 @@ def _option_risks(items: tuple[PlanItem, ...]) -> tuple[PlanRiskCode, ...]:
 
 def _item_risks(
     price_amount: Decimal | None,
-    price_currency: str | None,
 ) -> tuple[PlanRiskCode, ...]:
-    if price_amount is None or price_currency != "CNY":
+    if price_amount is None:
         return (PlanRiskCode.PRICE_UNKNOWN,)
     return ()
 
@@ -335,7 +331,6 @@ class PlanDraftService:
                     violations.add(PlanDraftViolationCode.RISK_INVALID)
                 if item.risk_codes != _item_risks(
                     item.price_amount,
-                    item.price_currency,
                 ):
                     violations.add(PlanDraftViolationCode.RISK_INVALID)
                 previous_end = item.end_at
@@ -420,12 +415,10 @@ class PlanDraftService:
         prices.append(decision.price_amount)
         if constraints.budget is not None and (
             any(price is None for price in prices)
-            or any(item.price_currency != "CNY" for item in existing_items)
-            or decision.price_currency != "CNY"
             or sum((price for price in prices if price is not None), Decimal()) > constraints.budget
         ):
             return None
-        risks = _item_risks(decision.price_amount, decision.price_currency)
+        risks = _item_risks(decision.price_amount)
         return PlanItem(
             role=role,
             title=decision.title,

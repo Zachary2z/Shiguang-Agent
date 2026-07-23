@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterable
 from datetime import datetime, timedelta
-from typing import ClassVar, Final
+from typing import ClassVar
 from unicodedata import normalize
 
 from app.application.place_matching import PlaceMatchingService
@@ -44,8 +44,6 @@ from app.domain.plans.retrieval import (
     outcome_for_reasons,
 )
 from app.providers.map import MapProviderError
-
-_CNY: Final[str] = "CNY"
 
 
 class StructuredCollectionRetrievalError(RuntimeError):
@@ -223,7 +221,7 @@ def _candidate_decision(
         reasons.add(CandidateReasonCode.EXCLUDED_BY_USER)
 
     if constraints.budget is not None:
-        if item.price_amount is None or item.price_currency != _CNY:
+        if item.price_amount is None:
             reasons.add(CandidateReasonCode.PRICE_UNKNOWN)
         elif item.price_amount > constraints.budget:
             reasons.add(CandidateReasonCode.BUDGET_EXCEEDED)

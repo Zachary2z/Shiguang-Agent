@@ -13,10 +13,19 @@ from app.domain.collections import (
     ExtractionReasonCode,
     ExtractionResult,
     UnsupportedReason,
+    default_cny_for_known_price,
 )
 from nanobot_core.providers import Message, ModelResponse
 
 MAX_MODEL_OUTPUT_CHARS: Final = 50_000
+PRICE_EXTRACTION_PROMPT_RULES: Final = (
+    "- Shiguang currently uses renminbi only; users do not choose a currency.\n"
+    "- When a local price is clear but no currency is written, emit price_amount and "
+    'price_currency "CNY" together. This includes an explicit free price as amount 0.\n'
+    "- Never treat unrelated numbers as prices. If a price cannot be identified, leave "
+    "both price_amount and price_currency null and mark PRICE missing or uncertain.\n"
+    "- Foreign currencies and exchange-rate conversion are unsupported.\n"
+)
 
 _REPAIR_PROMPT = (
     "The previous response did not match the required JSON structure.\n"
@@ -42,13 +51,39 @@ def parse_extraction_response(
         return None, ({"path": "$", "type": "output_too_long"},)
 
     try:
-        parsed = ExtractionResult.model_validate_json(content)
+        raw_result = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return None, ({"path": "$", "type": "json_invalid"},)
+
+    try:
+        normalized_json = json.dumps(
+            _default_candidate_price_currencies(raw_result),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        parsed = ExtractionResult.model_validate_json(normalized_json)
     except ValidationError as exc:
         return None, _safe_validation_issues(exc)
 
     if parsed.outcome is ExtractionOutcome.MODEL_INVALID_OUTPUT:
         return None, ({"path": "outcome", "type": "self_declared_model_invalid"},)
     return parsed, ()
+
+
+def _default_candidate_price_currencies(raw_result: object) -> object:
+    if not isinstance(raw_result, dict):
+        return raw_result
+    normalized = dict(raw_result)
+    candidates = normalized.get("candidates")
+    if not isinstance(candidates, list):
+        return normalized
+    normalized["candidates"] = [
+        default_cny_for_known_price(candidate)
+        if isinstance(candidate, dict)
+        else candidate
+        for candidate in candidates
+    ]
+    return normalized
 
 
 def build_repair_messages(
@@ -141,6 +176,7 @@ def _safe_validation_issues(exc: ValidationError) -> tuple[dict[str, str], ...]:
 
 __all__ = [
     "MAX_MODEL_OUTPUT_CHARS",
+    "PRICE_EXTRACTION_PROMPT_RULES",
     "build_repair_messages",
     "canonicalize_extraction_result",
     "parse_extraction_response",

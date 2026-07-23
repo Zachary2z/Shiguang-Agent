@@ -15,6 +15,7 @@ from typing import Final
 from PIL import Image, UnidentifiedImageError
 
 from app.application.extraction_output import (
+    PRICE_EXTRACTION_PROMPT_RULES,
     build_repair_messages,
     canonicalize_extraction_result,
     parse_extraction_response,
@@ -78,6 +79,7 @@ _SYSTEM_PROMPT = (
     "insufficient_information. Never guess.\n"
     "- Screenshot prices are unconfirmed clues. Include PRICE uncertainty whenever a "
     "price is present.\n"
+    f"{PRICE_EXTRACTION_PROMPT_RULES}"
     "- city_hint, district, address, business district, landmark, and metro station are "
     "unconfirmed screenshot clues only. Mark every present one uncertain. Never emit a "
     "formal city code, POI, provider, coordinates, or confirmed location.\n"

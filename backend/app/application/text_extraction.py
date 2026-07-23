@@ -10,6 +10,7 @@ from typing import Final
 
 from app.application.extraction_output import (
     MAX_MODEL_OUTPUT_CHARS,
+    PRICE_EXTRACTION_PROMPT_RULES,
     build_repair_messages,
     canonicalize_extraction_result,
     parse_extraction_response,
@@ -88,6 +89,7 @@ _SYSTEM_PROMPT = (
     "candidates. Multi-city multi-day planning requests remain unsupported.\n"
     "- Never invent an address, district, price, tag, or Event time. Every absent "
     "core field must be listed as missing or uncertain.\n"
+    f"{PRICE_EXTRACTION_PROMPT_RULES}"
     "- Event times use timezone-aware ISO 8601 values. Preserve incomplete time "
     "wording only in event_start_clue/event_end_clue and mark the exact field "
     "missing or uncertain.\n"

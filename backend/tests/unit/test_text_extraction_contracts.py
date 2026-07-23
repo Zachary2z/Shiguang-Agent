@@ -151,6 +151,7 @@ def test_candidate_rejects_empty_and_overlong_titles(title: str) -> None:
         {"price_amount": Decimal("1.001")},
         {"price_amount": None, "price_currency": "CNY"},
         {"price_amount": Decimal("10.00"), "price_currency": None},
+        {"price_amount": Decimal("10.00"), "price_currency": "USD"},
         {"price_currency": "cny"},
         {"price_currency": "CN"},
         {"tags": ("室内", "室内")},

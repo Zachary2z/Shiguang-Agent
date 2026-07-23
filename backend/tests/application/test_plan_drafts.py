@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from app.application import PlanDraftService
 from app.domain.collections import CollectionKind, PlanCity
@@ -313,6 +314,32 @@ def test_unknown_price_is_never_rewritten_as_zero() -> None:
         facts=facts,
     )
     assert PlanDraftViolationCode.RISK_INVALID in validation.violations
+
+
+@pytest.mark.parametrize(
+    ("price_amount", "price_currency"),
+    [(None, "CNY"), (Decimal("35"), None), (Decimal("35"), "USD")],
+)
+def test_retrieval_decisions_and_plan_items_reject_noncanonical_price_pairs(
+    price_amount: Decimal | None,
+    price_currency: str | None,
+) -> None:
+    decision_payload = _decision(1).model_dump(mode="python")
+    decision_payload.update(
+        price_amount=price_amount,
+        price_currency=price_currency,
+    )
+    with pytest.raises(ValidationError):
+        CollectionCandidateDecision.model_validate(decision_payload)
+
+    draft, _, _, _ = _generate((_decision(1),))
+    item_payload = draft.options[0].items[0].model_dump(mode="python")
+    item_payload.update(
+        price_amount=price_amount,
+        price_currency=price_currency,
+    )
+    with pytest.raises(ValidationError):
+        type(draft.options[0].items[0]).model_validate(item_payload)
 
 
 def test_excluded_and_verification_required_candidates_never_enter_options() -> None:

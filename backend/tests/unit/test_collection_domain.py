@@ -336,6 +336,7 @@ def test_provider_independent_place_event_fields_version_price_and_tags() -> Non
         {"version": 0},
         {"price_amount": Decimal("10"), "price_currency": None},
         {"price_amount": None, "price_currency": "CNY"},
+        {"price_amount": Decimal("10"), "price_currency": "USD"},
         {"tags": ("室内", "室内")},
         {"event_start_at": NOW, "event_end_at": NOW + timedelta(hours=1)},
     ):

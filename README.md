@@ -66,6 +66,12 @@ python -m pytest -q tests/application/test_plan_drafts.py
 
 测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
 
+### 价格与人民币契约
+
+拾光当前只支持中国本地场景，用户无需填写或选择币种。文字、URL 正文和图片共用 `parse_extraction_response()` 抽取信任边界：模型已经明确识别出的本地金额若未写币种，会在进入严格候选契约前统一补为内部单位 `CNY`；系统不会扫描原文数字或自行猜测价格。明确免费保存为 `Decimal("0") + CNY`，无法确认价格时金额和币种都保持 `None` 并标记价格缺失、不确定或计划风险。
+
+所有正式领域对象只接受 `None + None` 或 `Decimal + CNY`，半完整价格与外币均被拒绝。收藏修改只提交金额时自动配对 CNY，清空金额时同时清空币种。数据库 `price_currency` 列暂时保留，仅表示内部金额单位，不代表币种选择、多币种计划、外汇换算、汇率 Provider 或相关功能已经实现。
+
 ### M0-5A PlanConstraints
 
 `app.domain.plans.PlanConstraints` 是唯一完整计划约束契约。调用方必须显式传入 `PlanCity.SHENZHEN`；通过 `city_scope` 可转换为既有 `CityScope`，不依赖全局当前城市。契约复用既有 `Coordinate` 和 `TransportMode`（公共交通值保持 `transit`），要求一个 aware 且不超过 24 小时的连续时间段，以及粗粒度 `ActivityArea` 或敏感 `origin` 二者之一。
@@ -80,7 +86,7 @@ python -m pytest -q tests/application/test_plan_drafts.py
 
 调用 `retrieve()` 必须显式传入确定性的 aware `now`。入口先复用 `PlanConstraints.is_active()` 校验 `[created_at, expires_at)`，过期或非法时间分别通过同一个安全错误类型返回 `PLAN_CONSTRAINTS_EXPIRED` 或 `INVALID_RETRIEVAL_TIME`，并在 Repository、地点匹配和 MapProvider 之前停止。路线期限规则只有一份：普通 Place 必须在计划结束前到达，Event 还必须严格早于其结束时间到达；到达时刻等于期限也会排除。
 
-路线、天气、营业和 Event 正式位置通过冻结的 `PlanningFactSnapshot` 注入；未知、离线失败和明确冲突分别保留不同结论，不把未知路线、天气或营业状态伪造成通过。结果只有 `included`、`excluded` 和 `verification_required` 三种稳定结论，并携带固定安全摘要。预算为 `None` 时完全不按价格过滤，缺金额、缺币种或非 CNY 的原始价格事实可进入草案并由 M0-5C 标记 `PRICE_UNKNOWN`；用户提供预算时，费用未知或无法按 CNY 比较的候选仍进入 `verification_required`，已知 CNY 超预算候选继续排除。
+路线、天气、营业和 Event 正式位置通过冻结的 `PlanningFactSnapshot` 注入；未知、离线失败和明确冲突分别保留不同结论，不把未知路线、天气或营业状态伪造成通过。结果只有 `included`、`excluded` 和 `verification_required` 三种稳定结论，并携带固定安全摘要。预算为 `None` 时不按价格过滤，正式的完全未知价格 `None + None` 可以进入草案并由 M0-5C 标记 `PRICE_UNKNOWN`；用户提供预算时，完全未知价格仍进入 `verification_required`，已知 CNY 超预算候选继续排除。
 
 `any_branch` 在本次请求中只用已确认 `BrandIdentity` 作为匹配身份，计划城市、单一行政区和精确 origin 仅来自本次 `PlanConstraints`。原收藏残留的旧分店 district、address、business_district、landmark、metro_station 和描述不会复制到动态分店匹配候选；原收藏本身不被清空、改绑或写回。无候选、证据不足、Provider 失败和没有满足硬约束的分店均有独立原因码。品牌收藏与精确收藏解析到同一 `provider + poi_id` 时合并为一个候选，同时保留全部 `collection_item_ids` 和任意分店来源 ID，供后续 M0-5C 解释；本阶段没有 Plan、PlanItem 或草案代码。
 

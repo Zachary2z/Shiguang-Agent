@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from decimal import Decimal
 from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+PRICE_CURRENCY_CNY = "CNY"
 _SENSITIVE_TEXT = re.compile(
     r"(?:authorization\s*[:=]|set-cookie\s*:|cookie\s*[:=]|bearer\s+\S+|"
     r"api[-_ ]?key\s*[:=]|\bsk-[a-z0-9]{8,})",
@@ -45,6 +49,30 @@ class Uncertainty(BaseModel):
             value,
             field_name="uncertainty reason",
         )
+
+
+def default_cny_for_known_price(values: Mapping[str, Any]) -> dict[str, Any]:
+    """Copy values and pair an already-recognized local amount with internal CNY."""
+
+    normalized = dict(values)
+    if (
+        normalized.get("price_amount") is not None
+        and normalized.get("price_currency") is None
+    ):
+        normalized["price_currency"] = PRICE_CURRENCY_CNY
+    return normalized
+
+
+def validate_cny_price_pair(
+    price_amount: Decimal | None,
+    price_currency: str | None,
+) -> None:
+    """Enforce the sole formal price representation used by the China-only product."""
+
+    if (price_amount is None) is not (price_currency is None):
+        raise ValueError("price amount and currency must be provided together")
+    if price_currency is not None and price_currency != PRICE_CURRENCY_CNY:
+        raise ValueError("price currency must be CNY")
 
 
 def normalize_required_candidate_text(value: str, *, field_name: str) -> str:

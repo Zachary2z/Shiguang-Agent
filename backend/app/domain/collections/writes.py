@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -19,7 +20,12 @@ from pydantic import (
     model_validator,
 )
 
-from app.domain.collections.candidate_metadata import CandidateField, Uncertainty
+from app.domain.collections.candidate_metadata import (
+    CandidateField,
+    Uncertainty,
+    default_cny_for_known_price,
+    validate_cny_price_pair,
+)
 from app.domain.collections.entities import CollectionItem
 from app.domain.collections.extraction import EventCandidate, PlaceCandidate
 from app.domain.collections.statuses import CollectionStatus
@@ -143,6 +149,18 @@ class CollectionItemPatch(BaseModel):
     missing_fields: tuple[CandidateField, ...] | None = None
     uncertainties: tuple[Uncertainty, ...] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_price_update(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        normalized = default_cny_for_known_price(value)
+        if "price_currency" in normalized and "price_amount" not in normalized:
+            raise ValueError("price updates must provide price_amount")
+        if "price_amount" in normalized and normalized["price_amount"] is None:
+            normalized["price_currency"] = None
+        return normalized
+
     @model_validator(mode="after")
     def reject_null_required_values(self) -> Self:
         if "title" in self.model_fields_set and self.title is None:
@@ -153,6 +171,7 @@ class CollectionItemPatch(BaseModel):
             raise ValueError("missing_fields cannot be null")
         if "uncertainties" in self.model_fields_set and self.uncertainties is None:
             raise ValueError("uncertainties cannot be null")
+        validate_cny_price_pair(self.price_amount, self.price_currency)
         return self
 
     def updates(self) -> dict[str, Any]:

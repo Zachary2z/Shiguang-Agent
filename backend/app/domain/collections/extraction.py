@@ -14,6 +14,7 @@ from app.domain.collections.candidate_metadata import (
     Uncertainty,
     normalize_optional_candidate_text,
     normalize_required_candidate_text,
+    validate_cny_price_pair,
 )
 from app.domain.collections.types import CollectionKind
 from app.domain.time import require_aware_utc
@@ -135,8 +136,7 @@ class _CandidateBase(ExtractionDomainModel):
 
     @model_validator(mode="after")
     def validate_common_semantics(self) -> Self:
-        if (self.price_amount is None) is not (self.price_currency is None):
-            raise ValueError("price amount and currency must be provided together")
+        validate_cny_price_pair(self.price_amount, self.price_currency)
 
         missing = set(self.missing_fields)
         if len(missing) != len(self.missing_fields):

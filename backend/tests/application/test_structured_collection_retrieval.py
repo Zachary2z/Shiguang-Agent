@@ -775,30 +775,10 @@ async def test_budget_null_does_not_filter_known_high_price_and_budget_still_exc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("price_amount", "price_currency"),
-    [
-        (None, None),
-        (None, "CNY"),
-        (Decimal("35"), None),
-        (Decimal("35"), "USD"),
-    ],
-    ids=("missing-price", "missing-amount", "missing-currency", "non-cny"),
-)
-async def test_price_completeness_flows_from_retrieval_into_draft_by_budget_state(
-    price_amount: Decimal | None,
-    price_currency: str | None,
-) -> None:
+async def test_unknown_price_flows_from_retrieval_into_draft_by_budget_state() -> None:
     user_id = generate_user_id()
-    poi = _poi(f"poi_price_{price_amount}_{price_currency}")
-    valid_item = _place(user_id, title="价格待确认地点", poi=poi, price=Decimal("35"))
-    item = valid_item.model_copy(
-        update={
-            "price_amount": price_amount,
-            "price_currency": price_currency,
-        },
-        deep=True,
-    )
+    poi = _poi("poi_price_unknown")
+    item = _place(user_id, title="价格待确认地点", poi=poi, price=None)
     service, repository = _service([item])
     before = copy.deepcopy(repository.items)
     planning_facts = PlanningFactSnapshot(pois=(_known_poi_facts(poi),))
@@ -827,8 +807,8 @@ async def test_price_completeness_flows_from_retrieval_into_draft_by_budget_stat
     assert first == repeated
     assert len(first.included) == 1
     decision = first.included[0]
-    assert decision.price_amount == price_amount
-    assert decision.price_currency == price_currency
+    assert decision.price_amount is None
+    assert decision.price_currency is None
     assert decision.reason_codes == ()
     assert with_budget.verification_required[0].reason_codes == (
         CandidateReasonCode.PRICE_UNKNOWN,
@@ -863,8 +843,8 @@ async def test_price_completeness_flows_from_retrieval_into_draft_by_budget_stat
     assert draft == repeated_draft
     assert draft.outcome is PlanDraftOutcome.GENERATED
     plan_item = draft.options[0].items[0]
-    assert plan_item.price_amount == price_amount
-    assert plan_item.price_currency == price_currency
+    assert plan_item.price_amount is None
+    assert plan_item.price_currency is None
     assert plan_item.risk_codes == (PlanRiskCode.PRICE_UNKNOWN,)
     assert draft.options[0].total_cost_amount is None
     assert draft.options[0].total_cost_currency is None

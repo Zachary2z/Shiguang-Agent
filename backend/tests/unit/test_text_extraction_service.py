@@ -113,6 +113,49 @@ def _result_response(result: ExtractionResult) -> ModelResponse:
     return fake_response(content=result.model_dump_json())
 
 
+def _recognized_price_without_currency_response(amount: Decimal) -> ModelResponse:
+    payload = json.loads(
+        ExtractionResult.with_candidates((_full_place(),)).model_dump_json()
+    )
+    payload["candidates"][0]["price_amount"] = str(amount)
+    payload["candidates"][0].pop("price_currency")
+    return fake_response(content=json.dumps(payload, ensure_ascii=False))
+
+
+@pytest.mark.parametrize("amount", [Decimal("50"), Decimal("0")])
+@pytest.mark.asyncio
+async def test_recognized_local_price_without_currency_defaults_to_cny(
+    amount: Decimal,
+) -> None:
+    response = _recognized_price_without_currency_response(amount)
+    provider = FakeProvider([response, response])
+    service = TextExtractionService(provider)
+
+    first = await service.extract("人均 50" if amount else "明确免费")
+    repeated = await service.extract("人均 50" if amount else "明确免费")
+
+    assert first == repeated
+    assert first.candidates[0].price_amount == amount
+    assert first.candidates[0].price_currency == "CNY"
+    system_prompt = provider.calls[0].messages[0]["content"]
+    assert "renminbi only" in system_prompt
+    assert 'price_currency "CNY"' in system_prompt
+    assert "unrelated numbers" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_unrelated_number_is_not_inferred_as_price() -> None:
+    provider = FakeProvider(
+        [_result_response(ExtractionResult.with_candidates((_only_name_place(),)))]
+    )
+
+    result = await TextExtractionService(provider).extract("14 号线旁边的 M Stand")
+
+    assert result.candidates[0].price_amount is None
+    assert result.candidates[0].price_currency is None
+    assert CandidateField.PRICE in result.candidates[0].missing_fields
+
+
 @pytest.mark.asyncio
 async def test_explicit_shenzhen_place_uses_one_provider_call() -> None:
     provider = FakeProvider([_result_response(ExtractionResult.with_candidates((_full_place(),)))])

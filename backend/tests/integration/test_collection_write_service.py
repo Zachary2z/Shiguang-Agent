@@ -815,7 +815,6 @@ async def test_patch_all_allowed_fields_version_conflict_noop_and_domain_validat
                 event_start_clue="明日上午",
                 event_end_clue="明日中午",
                 price_amount=Decimal("0.00"),
-                price_currency="CNY",
                 tags=("免费", "室内"),
                 missing_fields=(),
                 uncertainties=(
@@ -827,6 +826,8 @@ async def test_patch_all_allowed_fields_version_conflict_noop_and_domain_validat
         assert updated.city_hint == "上海"
         assert updated.title == "新展览"
         assert updated.tags == ("免费", "室内")
+        assert updated.price_amount == Decimal("0.00")
+        assert updated.price_currency == "CNY"
         noop = await service.patch(
             user_id=user.id,
             collection_item_id=item.id,
@@ -865,6 +866,15 @@ async def test_patch_all_allowed_fields_version_conflict_noop_and_domain_validat
                     event_end_at=NOW + timedelta(days=1),
                 ),
             )
+        cleared = await service.patch(
+            user_id=user.id,
+            collection_item_id=item.id,
+            expected_version=2,
+            patch=CollectionItemPatch(price_amount=None),
+        )
+        assert cleared.price_amount is None
+        assert cleared.price_currency is None
+        assert cleared.version == 3
     await database.close()
 
 

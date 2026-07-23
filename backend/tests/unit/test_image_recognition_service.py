@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import random
 import struct
@@ -175,6 +176,14 @@ def _event() -> EventCandidate:
 def _response_for(*candidates: PlaceCandidate | EventCandidate) -> ModelResponse:
     payload = ExtractionResult.with_candidates(tuple(candidates)).model_dump_json()
     return fake_response(content=payload)
+
+
+def _recognized_image_price_without_currency_response(amount: Decimal) -> ModelResponse:
+    payload = json.loads(
+        ExtractionResult.with_candidates((_place(price=amount),)).model_dump_json()
+    )
+    payload["candidates"][0].pop("price_currency")
+    return fake_response(content=json.dumps(payload, ensure_ascii=False))
 
 
 def _assert_no_storage_residue(root: Path) -> None:
@@ -449,6 +458,29 @@ async def test_price_and_all_location_clues_are_forced_uncertain(tmp_path: Path)
     assert "poi_id" not in public
     assert "coordinates" not in public
     assert "opening_hours" not in public
+
+
+@pytest.mark.asyncio
+async def test_image_price_uses_shared_cny_default_and_prompt(tmp_path: Path) -> None:
+    provider = FakeProvider(
+        [_recognized_image_price_without_currency_response(Decimal("50"))]
+    )
+    service, _storage, _root = _service(tmp_path, provider)
+
+    _metadata, result = await service.recognize(
+        _stream(PNG_SCREENSHOT),
+        content_type="image/png",
+    )
+
+    candidate = result.candidates[0]
+    assert candidate.price_amount == Decimal("50")
+    assert candidate.price_currency == "CNY"
+    assert CandidateField.PRICE in {
+        uncertainty.field for uncertainty in candidate.uncertainties
+    }
+    system_prompt = provider.calls[0].messages[0]["content"]
+    assert "renminbi only" in system_prompt
+    assert 'price_currency "CNY"' in system_prompt
 
 
 @pytest.mark.parametrize(
