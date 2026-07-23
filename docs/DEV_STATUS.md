@@ -5,9 +5,9 @@
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-Gate 技术验证总验收 |
 | 状态 | 阻塞 |
-| 当前分支 | codex/m0-gate-structure-json-object-retest |
+| 当前分支 | codex/m0-gate-fixed-repair-semantics |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 百炼官方 json_object 已真实可用，但固定 repair 仅 1/3 通过；重定向网页真实链和最小 Dockerfile 仍未收尾 |
+| 阻塞项 | 固定 repair 语义已离线修复、等待 3 个 Fixture 有限真实复测；重定向网页真实链和最小 Dockerfile 仍未收尾 |
 
 ## 当前任务
 
@@ -1278,3 +1278,45 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
   文本观测 P95 占 8 秒约 83.7% 和图片双调用余量未获真实覆盖继续作为超时校准风险，
   不混入结构 P1。未合并、未推送、未进入 M1；真实重定向链、Dockerfile、锁注册表
   和 aiosqlite 均未处理
+
+#### 2026-07-23｜M0-Gate 固定 repair 语义收敛｜待真实复测
+
+- 分支与门禁：`codex/m0-gate-fixed-repair-semantics` 从指定基线
+  `ae659bc4c799a629228ef90d8488f144b2c27bea` 创建；开始时工作区干净，`main` 与
+  `origin/main` 均为 `0ace869ae2708608d238b77b3ade3153b1307549`，Alembic 唯一
+  head 为 `20260722_0006`。没有读取 `.env`，没有调用真实 API
+- 生产提交：`5bcdb9ca302f9298da7a425b7f5deb2805ae7b8b`
+  (`fix: strengthen extraction repair semantic checklist`)；只修改共享 repair
+  guidance 和对应文字抽取测试，没有修改图片服务、Provider、领域 DTO、Parser、
+  canonicalization、调用上限、迁移、依赖或配置
+- 根因与净变化：本地非法 JSON 稳定产生 `$/json_invalid`，但该 type 未进入专用
+  guidance，唯一 repair 只收到通用“按 Schema 重建”要求；system 规则虽包含严格
+  语义，却没有要求重建时逐候选完成字段闭合审计。生产净变化为共享模块增加
+  `json_invalid` 固定 guidance，并把字段闭合片段同时复用于初次规则与 repair
+- 规则唯一性：Place/Event 字段名从既有唯一 `CandidateField` 枚举生成；新增文本
+  只指导模型输出，不执行校验。`ExtractionResult`、候选 DTO 及其 validator 仍是
+  唯一业务规则执行点，没有第二套 Schema、Parser、DTO、Provider 或 repair 服务
+- 安全与边界：guidance 固定且无样本值，明确 Place 8 类字段、Event 额外两个时间
+  字段、missing/uncertain 互斥、价格成对、Place/Event 时间边界、候选 outcome、
+  禁止自报 model-invalid 和禁止发明事实；安全 issue 仍只有 path/type。repair
+  仍最多一次，遗漏字段仍稳定 `model_invalid_output`，图片不重传 Base64 的既有
+  行为未改
+- 离线结果：Python `3.13.5`、mypy `1.20.2`；`pip check`、Ruff、93 文件 strict
+  mypy 通过。core `120 passed`、Provider `39 passed`、ExtractionResult 契约
+  `31 passed`、文字 `66 passed`、图片 `61 passed`、配置 `125 passed`。非真实
+  全集 `1464 passed / 1 skipped / 1 deselected`，默认全集
+  `1464 passed / 2 skipped`
+- 封网结果：首次仓库外插件把 `connect/connect_ex` 错写为模块属性，setup 阶段
+  退出 1，项目测试未执行；修正为封锁 `socket.socket.connect/connect_ex` 以及
+  `socket.getaddrinfo/create_connection` 后，非真实全集为
+  `1464 passed / 1 skipped / 1 deselected`。临时插件目录已删除
+- 既有提示：普通非真实全集与默认全集各出现一次已记录的 aiosqlite worker/事件
+  循环收尾 warning，封网全集无 warning；本任务未处理或掩盖该独立 P2
+- 真实结论：新增真实请求、Token、费用均为 0；第 16 节文本 `2/2`、图片 `2/2`
+  的既有真实结论保持不变。固定 repair P1 状态为“离线修复完成，等待有限真实
+  复测”，不能提前关闭；文本 8 秒余量和图片双调用 20 秒余量继续作为独立超时
+  校准风险
+- 下一步：另开真实复测窗口，只使用相同 3 个固定非法 Fixture，每个样本最多一次
+  `json_object` repair，总上限 3 次请求，SDK `max_retries=0`、外层重试 0、模型
+  单次 8 秒；不得结转旧额度，不复测文本、图片、Tool Calling、高德或网页。需等待
+  用户新授权。本分支不合并、不推送、不进入下一 Gate 项或 M1

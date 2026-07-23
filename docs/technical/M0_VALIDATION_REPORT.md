@@ -1028,3 +1028,121 @@ repair，因此“不重传 Base64”继续由离线生产测试证明，本轮�
 > M0_VALIDATION_REPORT.md 与 DEV_STATUS.md。若需再次真实复测，另行给出三类独立
 > 请求上限、8 秒模型单次时限和 20 秒图片外层预算，等待新授权；不得结转本轮剩余
 > 3 次额度。
+
+## 17. 固定 repair 缺失字段分类语义离线收敛
+
+### 17.1 门禁与根因
+
+- 工作分支 `codex/m0-gate-fixed-repair-semantics` 精确从
+  `ae659bc4c799a629228ef90d8488f144b2c27bea` 创建；开始工作区干净，`main` 与
+  `origin/main` 均为 `0ace869ae2708608d238b77b3ade3153b1307549`，Alembic 唯一
+  head 为 `20260722_0006`
+- 第 16 节三个固定 Fixture 的本地非法 initial 均由唯一
+  `parse_extraction_response()` 归类为 `$/json_invalid`。该 type 原先不在
+  `_REPAIR_GUIDANCE_BY_TYPE`，因此走固定 unknown guidance，只要求“按 Schema 和
+  outcome 规则重建对象”
+- repair 实际仍收到初始 system、原始文字证据、安全长度的 prior assistant 输出及
+  仅含 path/type 的 issue；`EXTRACTION_SEMANTIC_RULES` 也已覆盖候选字段。但当
+  initial 完全非法时，通用重建指令没有要求模型在唯一 repair 内依次完成 outcome、
+  Place/Event 判别和逐字段闭合审计
+- 唯一领域 DTO 要求 Place 的 `city_hint`、`district`、`address`、
+  `business_district`、`landmark`、`metro_station`、`price`、`tags`，以及 Event
+  额外的 `event_start_at`、`event_end_at`，分别处于“有值 / missing / uncertain”
+  三种合法状态之一。第 16 节第一、第三样本正是在这一严格边界留下
+  `absent_field_not_classified`
+- 第二次 repair 会突破“最多一次结构修复”；默认填 missing 会把未知事实分类成
+  缺失并掩盖不确定性；放宽 DTO 会破坏 PRD 的“不确定即标记、不得编造”规则。因此
+  修复只能收敛现有共享 repair 契约
+
+### 17.2 最小生产修复与安全设计
+
+生产提交为 `5bcdb9ca302f9298da7a425b7f5deb2805ae7b8b`
+（`fix: strengthen extraction repair semantic checklist`）。
+
+`extraction_output.py` 为 `json_invalid` 增加固定、供应商无关 guidance，要求唯一
+repair 在输出前：
+
+1. 重建单个完整 JSON 对象，选择合法 outcome，并区分每个 Place/Event；
+2. 对 Place 的 8 类字段以及 Event 额外的 2 个时间字段执行闭合审计；
+3. 对每个 absent field 准确选择 missing 或 uncertain，禁止重叠，禁止把 present
+   field 标为 missing；
+4. 保持价格 amount/currency 成对、Place 不带 Event 时间元数据、Event 缺失时间
+   必须分类、candidates 不带 result-level error metadata；
+5. 不得自报 `model_invalid_output`，不得发明源证据中不存在的事实。
+
+字段列表从既有唯一 `CandidateField` 枚举生成；同一闭合文本同时进入初次
+`EXTRACTION_SEMANTIC_RULES` 与 `json_invalid` repair guidance。它只指导模型，不
+验证或改写候选；正式校验仍仅由既有 `ExtractionResult`、`PlaceCandidate`、
+`EventCandidate` 执行。因此净变化不是第二套业务规则，也没有增加 Schema、Parser、
+DTO、Provider、repair 服务、fallback 或模型调用。
+
+guidance 固定且不包含样本输入、Pydantic input/value、异常文本、完整无效响应、
+密钥、Header、Cookie、路径、文件名或 Base64；公开 issue 继续只有安全 path/type。
+文字 repair 继续使用原始证据和安全 prior output，图片 repair 的既有“不重传图片”
+边界未修改。
+
+### 17.3 证据型离线覆盖
+
+- 自定义 repair Stub 在返回结果前检查第二次请求的原始证据身份、`json_invalid`
+  专用 guidance、Place 字段清单和 Event 时间字段；固定非法 Place/Event initial
+  各只消耗 1 次 repair 等价 Provider 调用，并形成通过唯一 parser/DTO 的证据一致
+  候选
+- 专门验证 `json_invalid` 不再走 unknown guidance，且静态 guidance 不含私人哨兵、
+  Pydantic value 或异常文本
+- repair 若仍遗漏 absent field，继续稳定返回 `model_invalid_output`，不发生第三
+  次调用
+- 既有回归继续覆盖 missing/uncertain 重叠、present 标 missing、absent 未分类、
+  价格成对、Place/Event 时间与 outcome 规则、初次成功零 repair、图片 candidates/
+  insufficient、图片 repair 无 Base64/路径、普通 Provider 与 Tool Calling、
+  json_object/tools 互斥、Schema/messages/response_format 深拷贝、ProviderError、
+  取消、超长响应、非法 tool_calls、重复及并发隔离
+
+### 17.4 离线验证结果
+
+环境为项目既有 `.venv`：Python `3.13.5`、mypy `1.20.2`。所有最终规定命令退出
+码均为 0：
+
+| 验证 | 结果 |
+|---|---|
+| `python -m pip check` | 通过 |
+| `python -m ruff check .` | 通过 |
+| `python -m mypy app migrations nanobot_core` | 通过，93 个源文件 |
+| `pytest -q tests/core` | `120 passed` |
+| `pytest -q tests/unit/test_openai_compatible_provider.py` | `39 passed` |
+| `pytest -q tests/unit/test_text_extraction_contracts.py` | `31 passed` |
+| `pytest -q tests/unit/test_text_extraction_service.py` | `66 passed` |
+| `pytest -q tests/unit/test_image_recognition_service.py` | `61 passed` |
+| `pytest -q tests/test_config.py` | `125 passed` |
+| 非真实全集 | `1464 passed, 1 skipped, 1 deselected` |
+| 默认全集 | `1464 passed, 2 skipped` |
+| 封锁 DNS、connect、connect_ex、create_connection 后非真实全集 | `1464 passed, 1 skipped, 1 deselected` |
+
+第一次封网命令因仓库外临时插件把 `connect/connect_ex` 错写为 `socket` 模块属性，
+在 setup 阶段退出 1，项目测试未执行；修正为 `socket.socket` 方法后完整重跑并得到
+上表结果，临时目录随后删除。普通非真实全集与默认全集各出现一次第 9.2 节既有的
+aiosqlite worker/事件循环收尾 warning，封网全集无 warning；本任务未修改数据库
+生命周期、warning 策略、sleep 或 skip。
+
+`git diff --check` 通过。没有新增迁移、依赖、配置、Provider、Parser、DTO、repair
+服务、数据库、图片或响应快照；Alembic head 保持 `20260722_0006`。
+
+### 17.5 Gate 状态与待授权真实复测
+
+本任务未读取 `.env`，未运行真实 marker，未调用模型、高德、网页、对象存储、消息
+或其他外部服务；真实请求数、Token 和费用均为 0。第 16 节文本 `2/2`、图片 `2/2`
+的既有真实结论保持不变，不复测也不修改图片产品行为。
+
+固定 repair P1 当前状态为：**离线修复完成，等待有限真实复测**。它不能在真实
+复测前关闭。文本观测 P95 占 8 秒约 `83.7%`、图片 initial + repair 的 20 秒完整
+链余量仍是独立超时校准风险，本修复不调整或提前关闭。
+
+下一轮只复测第 16 节相同 3 个固定 repair Fixture：
+
+- initial 均使用本地固定非法 JSON；
+- 每个样本最多 1 次真实 repair，总上限 3 次模型请求；
+- 唯一模式为 `json_object`，SDK `max_retries=0`，外层重试 0；
+- 模型单次时限 8 秒，不结转上一轮剩余额度；
+- 不复测已通过的文本或图片，不测试 Tool Calling、高德或网页，不扩大样本。
+
+必须在新的真实复测窗口取得用户明确授权后才能读取调用所需配置并执行。本分支不
+合并、不推送、不处理重定向网页、Dockerfile、锁注册表、aiosqlite 或 M1。
