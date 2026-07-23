@@ -5,9 +5,9 @@
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-Gate 技术验证总验收 |
 | 状态 | 阻塞 |
-| 当前分支 | codex/m0-gate-conservative-missing-normalization |
+| 当前分支 | codex/m0-gate-conservative-missing-real-retest |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 固定 repair 保守归一化离线修复完成，等待有限真实复测；重定向网页真实链和最小 Dockerfile 仍未收尾 |
+| 阻塞项 | 真实结构兼容性 P1 已关闭；重定向网页真实链和最小 Dockerfile 仍未收尾 |
 
 ## 当前任务
 
@@ -25,7 +25,7 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
 | M0-4 URL 与截图 | 已完成 | M0-4A、M0-4B、M0-4C、M0-4D 均已通过主控验收 |
 | M0-5 计划技术验证 | 已完成 | M0-5A、M0-5B、M0-5C、M0-5D 均已通过主控验收 |
-| M0-Gate 阶段验收 | 阻塞 | 离线 Gate、真实 Tool/高德/普通网页通过；结构 outcome 已补证但可用率不足，重定向真实链仍未建立 |
+| M0-Gate 阶段验收 | 阻塞 | 离线 Gate、真实 Tool/高德/普通网页通过；固定 repair 保守归一化真实复测 3/3 通过并关闭结构 P1，重定向真实链仍未建立 |
 
 状态只允许使用：未开始、进行中、待验收、已完成、阻塞。
 
@@ -59,7 +59,7 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
 
 ## 下一步
 
-从最新 `main` 创建独立 M0-Gate 验收分支，先执行完整离线、迁移、结构化样本、安全、幂等、硬约束与新环境运行检查。真实模型、高德、网页和图片延迟取样必须在 Gate 当前任务中逐类取得用户明确授权，并预先限定请求数和费用；未获授权不得调用。Gate 通过前不开始 M1。
+真实结构兼容性 P1 已关闭，文字 `2/2`、图片 `2/2` 和固定 repair `3/3` 的既有真实结论保留。下一项是重定向网页真实验收；必须另开独立任务并重新取得用户明确授权，不能结转本轮模型请求额度。最小 Dockerfile、幂等锁注册表和 aiosqlite 收尾 warning 仍按既有风险处理。Gate 通过前不开始 M1。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -1401,3 +1401,44 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
   全为本地固定非法 JSON，每样本最多一次 `json_object` repair，总上限 3 请求，
   SDK/外层零重试、单次 8 秒、发送前熔断、不结转旧额度；不复测文本、图片、Tool
   Calling、高德或网页，不扩大样本。本分支不合并、不推送
+
+#### 2026-07-23｜M0-Gate 保守缺失归一化最终真实复测｜结构 P1 已关闭
+
+- 分支与门禁：`codex/m0-gate-conservative-missing-real-retest` 精确从
+  `60092a9045ab7cf33bd1389513e12aa95393fa84` 创建；开始工作区干净，`main` 与
+  `origin/main` 均为 `0ace869ae2708608d238b77b3ade3153b1307549`，生产修复
+  `6b318f58f91304f6d95a87db6840463e1b250a90` 在提交链且其后只有两份文档变化，
+  Alembic 唯一 head 为 `20260722_0006`
+- 离线门禁：项目 `.venv` 的 `pip check`、Ruff、93 文件 strict mypy 通过；指定
+  core、Provider、ExtractionResult、文字、图片和配置聚焦组合为 `459 passed`
+- 授权原文：“授权本窗口保守缺失归一化固定 repair 真实复测：使用相同 3 个固定
+  Fixture，每个最多一次真实 repair，总上限 3 次模型请求；唯一模式 json_object；
+  SDK 和外层均 0 重试；模型单次时限 8 秒；本轮不设费用上限。不得切换模式、模型、
+  endpoint、样本或追加调用。”
+- 配置与工具：授权后只读确认配置完整、8 秒、`json_object` 和既有官方支持范围；
+  仓库外工具从唯一历史 manifest 恢复相同三项清单并核对身份哈希，三个 initial
+  均为本地固定非法 JSON 且安全 issue 为 `$/json_invalid`。工具复用生产
+  `OpenAICompatibleProvider`、`TextExtractionService`、repair messages、唯一
+  Parser、保守归一化、严格 DTO 和 canonicalization；发送前总熔断为 3
+- 真实结果：实际请求 `3/3`，三个样本各只执行一次真实 repair；Provider 均为正式
+  contract、`finish_reason=stop`、有 content、无 tool_calls。三个 outcome 均为
+  `candidates`，候选数均为 1，身份一致与来源事实一致均为 true；归一化后均通过
+  严格 DTO 与 canonicalization，没有 `absent_field_not_classified`、generic
+  `value_error`、ProviderError、超时、重试、fallback、额外调用或无证据事实
+- 保守归一化：三个 repair 响应都经过唯一解析边界；空且无显式 uncertainty 的适用
+  字段由应用保守登记为 missing，已有事实不变，显式 uncertainty 不被改写，Place/
+  Event 适用字段边界继续由既有 DTO 决定。安全工具不保存完整响应或字段值
+- 延迟与资源：三个样本模型/端到端分别为
+  `5.359/5.360s`、`4.846/4.847s`、`3.694/3.695s`；模型 P50/观测
+  P95/最大为 `4.846/5.308/5.359s`，端到端为
+  `4.847/5.309/5.360s`。n=3 的 P95 只为观测插值，不具有统计验证意义。Token
+  输入 `7,226`、输出 `533`、总计 `7,759`；费率未知，费用无法确认；超时率与
+  重试率均为 `0%`
+- 回归：真实命令级进程配置结束且 `.env` 未修改。Ruff、93 文件 strict mypy
+  通过；非真实全集 `1481 passed / 1 skipped / 1 deselected`，默认全集
+  `1481 passed / 2 skipped`，仓库外插件封锁 DNS、connect、connect_ex 和
+  create_connection 后非真实全集仍为 `1481 passed / 1 skipped / 1 deselected`
+- 结论与下一步：固定 repair 达到 `3/3`，真实结构兼容性 P1 关闭；第 16 节文字
+  `2/2`、图片 `2/2` 的既有真实结论保留。下一项是重定向网页真实验收。最小
+  Dockerfile、幂等锁注册表、aiosqlite 收尾 warning、文本 8 秒余量和图片双调用
+  20 秒余量风险均保留；未处理或开始这些事项，也未进入 M1。本分支不合并、不推送

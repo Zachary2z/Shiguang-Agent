@@ -1375,3 +1375,95 @@ uncertainty，不再要求模型可靠维护全部内部 missing 账目。必要
 
 未获新授权前不得读取调用配置或执行真实请求。M0-Gate 仍阻塞，不进入重定向网页、
 Dockerfile、锁注册表、aiosqlite 或 M1。
+
+## 20. 保守缺失归一化最终真实复测
+
+### 20.1 门禁、授权与执行边界
+
+- 工作分支 `codex/m0-gate-conservative-missing-real-retest` 精确从
+  `60092a9045ab7cf33bd1389513e12aa95393fa84` 创建；开始工作区干净，`main` 与
+  `origin/main` 均为 `0ace869ae2708608d238b77b3ade3153b1307549`
+- 生产修复 `6b318f58f91304f6d95a87db6840463e1b250a90` 在提交链中，其后只有
+  `docs/DEV_STATUS.md` 与本报告两份文档变化；Alembic 唯一 head 为
+  `20260722_0006`
+- 授权前没有读取真实配置或调用外部服务。项目 `.venv` 的 `pip check`、Ruff、
+  93 文件 strict mypy 全部通过，指定聚焦测试为 `459 passed`
+- 用户授权原文：
+
+> 授权本窗口保守缺失归一化固定 repair 真实复测：使用相同 3 个固定 Fixture，
+> 每个最多一次真实 repair，总上限 3 次模型请求；唯一模式 json_object；SDK 和
+> 外层均 0 重试；模型单次时限 8 秒；本轮不设费用上限。不得切换模式、模型、
+> endpoint、样本或追加调用。
+
+授权后只读确认配置完整、模型单次 8 秒、唯一模式 `json_object` 及既有官方支持
+范围，不输出配置值。仓库外工具从唯一历史 manifest 恢复第 16–19 节完全相同的三项
+清单，并核对数量与身份哈希；没有重建、替换或新增样本。三个 initial 全部使用同一
+本地固定非法 JSON，在网络前由生产 Parser 确认为 `$/json_invalid`。
+
+工具复用生产 `OpenAICompatibleProvider`、`TextExtractionService`、
+`build_repair_messages()`、`parse_extraction_response()`、保守归一化、严格
+`ExtractionResult` 与 canonicalization。SDK `max_retries=0`，外层重试 0，每项
+最多一次真实发送，总计数在发送前超过 3 即熔断；没有 capability 探测、fallback、
+模型/endpoint/模式切换或额外请求。
+
+### 20.2 outcome、身份与安全结果
+
+| 匿名样本 | 请求 | Provider / finish / 载荷 | outcome | 候选 | 身份 / 证据一致 | initial path/type | repair issue |
+|---|---:|---|---|---:|---|---|---|
+| 1 | 1 | contract / stop / content 有、tool_calls 无 | `candidates` | 1 | true / true | `$/json_invalid` | 无 |
+| 2 | 1 | contract / stop / content 有、tool_calls 无 | `candidates` | 1 | true / true | `$/json_invalid` | 无 |
+| 3 | 1 | contract / stop / content 有、tool_calls 无 | `candidates` | 1 | true / true | `$/json_invalid` | 无 |
+
+实际请求为 `3/3`，三个 Fixture 各只执行一次真实 repair。三个响应都形成证据一致
+候选，并通过同一严格 DTO 与 canonicalization；没有
+`absent_field_not_classified`、generic `value_error`、ProviderError、超时、重试、
+fallback、额外调用、模式切换或无证据事实。
+
+### 20.3 保守归一化与安全记录
+
+三个 repair 响应都经过第 19 节唯一模型输出规范化边界：
+
+- 空且没有 explicit uncertainty 的适用字段由应用保守登记进 `missing_fields`；
+- 已有标题和其他来源事实保持不变，身份与事实证据核对均为 true；
+- 显式 uncertainty 及原因不被改写，也不会与 missing 重叠；
+- Place 不获得 Event 时间分类，Event 继续包含自身适用时间字段；
+- 规范化后仍通过严格候选 DTO、outcome validator 和 canonicalization。
+
+一次性工具只输出匿名编号、计数、Provider 安全状态、finish、载荷存在性、outcome、
+候选数、身份/证据布尔值、安全 path/type、延迟和 Token。没有保存或输出完整请求、
+响应、样本、Prompt、Schema、模型名、endpoint、密钥、Header、Cookie、Pydantic
+input/value 或异常链。`.env` 未修改，真实配置只存在于已结束的命令级进程。
+
+### 20.4 延迟、Token 与费用
+
+| 样本 | 模型单次 | 端到端 | 输入 Token | 输出 Token | 总 Token |
+|---|---:|---:|---:|---:|---:|
+| 1 | `5.359s` | `5.360s` | 2,405 | 201 | 2,606 |
+| 2 | `4.846s` | `4.847s` | 2,410 | 192 | 2,602 |
+| 3 | `3.694s` | `3.695s` | 2,411 | 140 | 2,551 |
+| 合计 | — | — | 7,226 | 533 | 7,759 |
+
+模型单次 P50 / 观测 P95 / 最大为 `4.846 / 5.308 / 5.359s`；端到端为
+`4.847 / 5.309 / 5.360s`。三次模型请求均低于 8 秒，观测 P95 约占硬时限
+`66.4%`。由于 n=3，P95 只是小样本线性插值，不具有统计验证意义。超时率 `0%`，
+重试率 `0%`。费率未知，费用无法确认；本轮按授权不设费用上限。
+
+### 20.5 复测后回归与 Gate 结论
+
+真实进程结束并清除命令级配置后，所有规定命令退出码均为 0：
+
+| 验证 | 结果 |
+|---|---|
+| `python -m ruff check .` | 通过 |
+| `python -m mypy app migrations nanobot_core` | 通过，93 个源文件 |
+| 非真实全集 | `1481 passed, 1 skipped, 1 deselected` |
+| 默认全集 | `1481 passed, 2 skipped` |
+| 仓库外插件封锁 DNS、connect、connect_ex、create_connection 后非真实全集 | `1481 passed, 1 skipped, 1 deselected` |
+
+固定 repair 达到要求的 `3/3`，因此真实结构兼容性 P1 **关闭**。第 16 节文字
+`2/2`、图片 `2/2` 的既有真实结论及模糊图片正确恢复结论保持不变。
+
+M0-Gate 仍未整体关闭：下一项是重定向网页真实验收。最小 Dockerfile、幂等锁
+注册表、aiosqlite 收尾 warning、文本 8 秒余量和图片 initial + repair 在 20 秒内
+的完整链余量仍按既有风险保留。本窗口没有复测或修改文字、图片、Tool Calling、
+高德、网页、Dockerfile、锁注册表、aiosqlite 或 M1，也不开始下一项。
