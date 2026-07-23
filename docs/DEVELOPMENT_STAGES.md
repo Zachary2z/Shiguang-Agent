@@ -8,7 +8,7 @@
 | 日期 | 2026-07-23 |
 | 状态 | 后续开发执行基线 |
 | 仓库 | /Users/zhangzihao/Documents/Shiguang_Nanobot |
-| 当前阶段 | M0-5D 收藏不足与高德补充（允许开始） |
+| 当前阶段 | M0-Gate 技术验证总验收（允许开始） |
 
 ---
 

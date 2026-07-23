@@ -3,15 +3,15 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-5D 收藏不足与高德补充 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-5d-external-place-supplement |
+| 当前子阶段 | M0-Gate 技术验证总验收 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 无；M0-5D 离线实现完成，等待主控独立验收 |
+| 阻塞项 | 无；全部 M0 子阶段已完成，M0-Gate 前置条件满足 |
 
 ## 当前任务
 
-M0-4A 至 M0-4D、M0-5A、M0-5B 与 M0-5C 均已通过主控验收并集成到 `main`。M0-5D 已在阶段分支完成离线实现并等待主控验收；M0-Gate 及后续阶段仍未开始且不得提前开发。
+M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。当前允许开始 M0-Gate 技术验证总验收；M1 及后续阶段仍未开始且不得提前开发。
 
 ## M0 状态
 
@@ -24,8 +24,8 @@ M0-4A 至 M0-4D、M0-5A、M0-5B 与 M0-5C 均已通过主控验收并集成到 `
 | M0-2 文字收藏 | 已完成 | M0-2A、M0-2B、M0-2C、M0-2D 均已通过主控验收 |
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
 | M0-4 URL 与截图 | 已完成 | M0-4A、M0-4B、M0-4C、M0-4D 均已通过主控验收 |
-| M0-5 计划技术验证 | 进行中 | M0-5A/B/C 已完成；M0-5D 待验收 |
-| M0-Gate 阶段验收 | 未开始 | 依赖全部 M0 阶段 |
+| M0-5 计划技术验证 | 已完成 | M0-5A、M0-5B、M0-5C、M0-5D 均已通过主控验收 |
+| M0-Gate 阶段验收 | 未开始 | 全部前置阶段已完成，当前允许开始 |
 
 状态只允许使用：未开始、进行中、待验收、已完成、阻塞。
 
@@ -55,10 +55,11 @@ M0-4A 至 M0-4D、M0-5A、M0-5B 与 M0-5C 均已通过主控验收并集成到 `
 - M0-4D 已完成：文字、URL 与图片已进入唯一 Message、Source、AgentRun/ToolRun、结构抽取和收藏写入流水线；MIME 幂等、可恢复状态重放、取消清理、用户/Session 隔离和统一约束已通过主控验收。
 - M0-5B 已完成：唯一结构化收藏检索入口、正式城市和状态边界、硬约束过滤、动态事实、请求级任意分店解析、同 POI 去重、安全错误及只读幂等均已通过主控验收。
 - M0-5C 已完成：唯一确定性草案生成与复核入口、主方案及最多两个备选、交通与结束缓冲、费用/来源/风险、任意分店快照、20 组零硬约束违反 Fixture，以及中国场景下严格的 `None + None` 或 `Decimal + CNY` 价格契约均已通过主控验收。
+- M0-5D 已完成：收藏优先、显式 Place 缺口、外部补充 Approval、拒绝/collection-only/Event 零外搜、候选消歧、外部来源与风险、统一排程和已知/未知 CNY 费用均已通过主控验收。
 
 ## 下一步
 
-主控在 `codex/m0-5d-external-place-supplement` 上独立复核收藏优先、显式 Place 缺口、Approval 绑定、拒绝/collection-only/Event 零外搜、候选消歧、外部来源与风险、M0-5C 硬约束、无收藏/数据库写入、禁网回归和迁移 head。验收通过前不合并 `main`，不开始 M0-Gate。
+从最新 `main` 创建独立 M0-Gate 验收分支，先执行完整离线、迁移、结构化样本、安全、幂等、硬约束与新环境运行检查。真实模型、高德、网页和图片延迟取样必须在 Gate 当前任务中逐类取得用户明确授权，并预先限定请求数和费用；未获授权不得调用。Gate 通过前不开始 M1。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -1045,3 +1046,14 @@ M0-4A 至 M0-4D、M0-5A、M0-5B 与 M0-5C 均已通过主控验收并集成到 `
 - 完整验证：Python 3.13.5；editable install、`pip check`、Ruff、strict mypy（93 个源文件）均退出 0；M0-5D `27 passed`、M0-5C `43 passed`、M0-5B `42 passed`、迁移 `21 passed`。非真实全集 `1436 passed / 1 skipped / 1 deselected`，默认全集 `1436 passed / 2 skipped`，全部退出 0
 - 已知测试提示：两轮全量测试各报告 1 条此前 M0-5C/M0-5D 已记录的非稳定 aiosqlite worker/事件循环收尾 warning，目标落点为不同的既有 M0-5B 测试且所有用例均通过；本修复未修改数据库生命周期、测试跳过或 warning 策略
 - 范围与下一步：没有修改评分阈值、复制匹配/排序/价格/规划逻辑，未新增代理层、迁移、依赖、配置、API、前端或 M0-Gate 功能；未读取或修改 `.env`，未调用真实高德、模型、网页或其他外部/付费 API。M0-5D 保持待主控验收，不合并 `main`、不推送、不开始 M0-Gate
+
+#### 2026-07-23｜M0-5D｜已完成（主控验收）
+
+- 提交与集成：阶段实现提交 `a87bdd3838b4d03a59d8b14c0a60e73725dd7483`、候选与费用修复提交 `28b6c1a31fa39b3a1f527e1278f907adff53f2e6`；二者直接建立在指定基线 `7f9edf3294fef0864a5e609806b7a3c2a346c0e7` 上。主控确认工作区干净，`main` 与 `origin/main` 均为该基线，并以 `--ff-only` 纯快进集成到 `main`，无冲突或额外代码变化
+- 缺陷关闭：外部地点匹配继续复用唯一 `PlaceMatchingService` 的状态和原始顺序；唯一首选存在较弱候选时仍使用首选，首选被收藏去重或范围硬约束过滤时不自动晋升后续候选且路线调用为 0。外部地点作为唯一核心时复用 `_option_cost()`，已知 `20 CNY` 正确进入方案总费用，预算不足继续由唯一排程规则拒绝。上一轮仓库外独立探针由 `3 failed` 变为 `3 passed`
+- 隔离验证：从最终修复 commit 创建仓库外 `git archive` 和全新 Python 3.13.5 虚拟环境；editable 安装、`pip check`、Ruff、strict mypy（93 个源文件）和 Alembic 唯一 head `20260722_0006` 均通过。M0-5D `27 passed`、M0-5C `43 passed`、M0-5B `42 passed`、迁移 `21 passed`
+- 全量与禁网：非真实全集 `1436 passed / 1 skipped / 1 deselected`，默认全集 `1436 passed / 2 skipped`；封锁 DNS、socket connect/connect_ex 和 create_connection 后非真实全集仍为 `1436 passed / 1 skipped / 1 deselected`。封网运行出现一次历史已记录的 aiosqlite 事件循环收尾 warning，对应测试以 warning-as-error 单独复跑 `1 passed`
+- 合并后复核：纯快进后代码树与验收 commit 一致；`main` 上 Ruff、strict mypy、M0-5D `27 passed` 和非真实全集 `1436 passed / 1 skipped / 1 deselected` 再次通过。合并后全量同样只出现上述非稳定 aiosqlite 收尾 warning
+- 范围、复杂度与安全：实现严格限于 M0-5D，不包含 M0-Gate、正式确认、API、前端、SSE、Worker、队列、日历、提醒、分享、反馈或 M1。AgentRunner、ToolRegistry、MapProvider、PlaceMatchingService、StructuredCollectionRetrievalService、PlanDraftService、候选范围规则和 CNY 费用规则均保持唯一；修复没有新增评分、排序、价格特例、代理或测试专用生产分支
+- 迁移与真实调用：未新增依赖、配置、ORM、Repository、数据库表或迁移，Alembic 仍为 `20260722_0006 (head)`。Git 未跟踪 `.env`、数据库、缓存、虚拟环境、响应快照或真实密钥；主控未读取或修改本机 `.env`，未调用真实模型、高德、路线、天气、网页、对象存储、消息或其他外部/付费 API
+- 验收结论与下一步：上一轮两个 P1 和 README P2 均已关闭，没有未关闭的 P0/P1；M0-5D 与整个 M0-5 完成标准满足。M0-Gate 前置条件已满足，允许从本次文档提交后的最新 `main` 开始总验收；真实延迟取样仍须逐类取得当次授权，Gate 通过前不得开始 M1
