@@ -68,6 +68,15 @@ def _option_risks(items: tuple[PlanItem, ...]) -> tuple[PlanRiskCode, ...]:
     return tuple(code for code in PlanRiskCode if code in selected)
 
 
+def _item_risks(
+    price_amount: Decimal | None,
+    price_currency: str | None,
+) -> tuple[PlanRiskCode, ...]:
+    if price_amount is None or price_currency != "CNY":
+        return (PlanRiskCode.PRICE_UNKNOWN,)
+    return ()
+
+
 class PlanDraftService:
     """Generate and validate plans through one deterministic business-rule path."""
 
@@ -324,6 +333,11 @@ class PlanDraftService:
                     violations.add(PlanDraftViolationCode.FACTS_MISSING_OR_MISMATCHED)
                 if item.risks != tuple(RISK_SUMMARIES[risk] for risk in item.risk_codes):
                     violations.add(PlanDraftViolationCode.RISK_INVALID)
+                if item.risk_codes != _item_risks(
+                    item.price_amount,
+                    item.price_currency,
+                ):
+                    violations.add(PlanDraftViolationCode.RISK_INVALID)
                 previous_end = item.end_at
                 previous_ids = item.source.collection_item_ids
 
@@ -411,11 +425,7 @@ class PlanDraftService:
             or sum((price for price in prices if price is not None), Decimal()) > constraints.budget
         ):
             return None
-        risks = (
-            (PlanRiskCode.PRICE_UNKNOWN,)
-            if decision.price_amount is None or decision.price_currency != "CNY"
-            else ()
-        )
+        risks = _item_risks(decision.price_amount, decision.price_currency)
         return PlanItem(
             role=role,
             title=decision.title,

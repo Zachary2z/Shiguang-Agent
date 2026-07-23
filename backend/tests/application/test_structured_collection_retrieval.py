@@ -15,6 +15,7 @@ from alembic.config import Config
 
 from app.application import (
     PlaceMatchingService,
+    PlanDraftService,
     StructuredCollectionRetrievalError,
     StructuredCollectionRetrievalService,
 )
@@ -49,9 +50,17 @@ from app.domain.places import (
     PoiSearchResult,
     PoiType,
     SearchPoiRequest,
+    TransportMode,
     normalize_brand_name,
 )
 from app.domain.plans import ActivityArea, PlanConstraints
+from app.domain.plans.drafts import (
+    DraftCandidateFacts,
+    DraftRouteFacts,
+    PlanDraftFactSnapshot,
+    PlanDraftOutcome,
+    PlanRiskCode,
+)
 from app.domain.plans.retrieval import (
     AvailabilityAssessment,
     CandidateOutcome,
@@ -269,6 +278,30 @@ def _known_event_facts(
         route_duration_seconds=duration,
         weather=WeatherAssessment.COMPATIBLE,
         availability=AvailabilityAssessment.AVAILABLE,
+    )
+
+
+def _draft_facts(
+    *,
+    collection_item_ids: tuple[str, ...],
+    route_duration_seconds: int,
+    route_distance_meters: int,
+) -> PlanDraftFactSnapshot:
+    return PlanDraftFactSnapshot(
+        candidates=(
+            DraftCandidateFacts(
+                collection_item_ids=collection_item_ids,
+                visit_duration_seconds=60 * 60,
+            ),
+        ),
+        routes=(
+            DraftRouteFacts(
+                to_collection_item_ids=collection_item_ids,
+                duration_seconds=route_duration_seconds,
+                distance_meters=route_distance_meters,
+                transport_mode=TransportMode.TRANSIT,
+            ),
+        ),
     )
 
 
@@ -714,15 +747,13 @@ async def test_district_area_tags_keywords_include_and_exclude_are_hard_rules() 
 
 
 @pytest.mark.asyncio
-async def test_budget_null_does_not_filter_known_price_and_unknown_price_is_never_zero() -> None:
+async def test_budget_null_does_not_filter_known_high_price_and_budget_still_excludes() -> None:
     user_id = generate_user_id()
-    known_poi, unknown_poi = _poi("poi_known"), _poi("poi_unknown")
+    known_poi = _poi("poi_known")
     known = _place(user_id, title="known", poi=known_poi, price=Decimal("500"))
-    unknown = _place(user_id, title="unknown", poi=unknown_poi, price=None)
-    service, _ = _service([known, unknown])
-    facts = PlanningFactSnapshot(
-        pois=(_known_poi_facts(known_poi), _known_poi_facts(unknown_poi))
-    )
+    service, repository = _service([known])
+    before = copy.deepcopy(repository.items)
+    facts = PlanningFactSnapshot(pois=(_known_poi_facts(known_poi),))
 
     no_budget = await service.retrieve(
         user_id=user_id,
@@ -737,15 +768,113 @@ async def test_budget_null_does_not_filter_known_price_and_unknown_price_is_neve
         now=NOW,
     )
 
-    no_budget_by_title = {item.title: item for item in no_budget.decisions}
-    budget_by_title = {item.title: item for item in with_budget.decisions}
-    assert no_budget_by_title["known"].outcome is CandidateOutcome.INCLUDED
-    assert CandidateReasonCode.BUDGET_EXCEEDED not in no_budget_by_title["known"].reason_codes
-    assert budget_by_title["known"].outcome is CandidateOutcome.EXCLUDED
-    assert CandidateReasonCode.BUDGET_EXCEEDED in budget_by_title["known"].reason_codes
-    assert no_budget_by_title["unknown"].price_amount is None
-    assert no_budget_by_title["unknown"].outcome is CandidateOutcome.VERIFICATION_REQUIRED
-    assert CandidateReasonCode.PRICE_UNKNOWN in no_budget_by_title["unknown"].reason_codes
+    assert no_budget.included[0].price_amount == Decimal("500")
+    assert no_budget.included[0].price_currency == "CNY"
+    assert with_budget.excluded[0].reason_codes == (CandidateReasonCode.BUDGET_EXCEEDED,)
+    assert repository.items == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("price_amount", "price_currency"),
+    [
+        (None, None),
+        (None, "CNY"),
+        (Decimal("35"), None),
+        (Decimal("35"), "USD"),
+    ],
+    ids=("missing-price", "missing-amount", "missing-currency", "non-cny"),
+)
+async def test_price_completeness_flows_from_retrieval_into_draft_by_budget_state(
+    price_amount: Decimal | None,
+    price_currency: str | None,
+) -> None:
+    user_id = generate_user_id()
+    poi = _poi(f"poi_price_{price_amount}_{price_currency}")
+    valid_item = _place(user_id, title="价格待确认地点", poi=poi, price=Decimal("35"))
+    item = valid_item.model_copy(
+        update={
+            "price_amount": price_amount,
+            "price_currency": price_currency,
+        },
+        deep=True,
+    )
+    service, repository = _service([item])
+    before = copy.deepcopy(repository.items)
+    planning_facts = PlanningFactSnapshot(pois=(_known_poi_facts(poi),))
+    no_budget_constraints = _constraints()
+    budget_constraints = _constraints(budget=Decimal("100"))
+
+    first = await service.retrieve(
+        user_id=user_id,
+        constraints=no_budget_constraints,
+        facts=planning_facts,
+        now=NOW,
+    )
+    repeated = await service.retrieve(
+        user_id=user_id,
+        constraints=no_budget_constraints,
+        facts=planning_facts,
+        now=NOW,
+    )
+    with_budget = await service.retrieve(
+        user_id=user_id,
+        constraints=budget_constraints,
+        facts=planning_facts,
+        now=NOW,
+    )
+
+    assert first == repeated
+    assert len(first.included) == 1
+    decision = first.included[0]
+    assert decision.price_amount == price_amount
+    assert decision.price_currency == price_currency
+    assert decision.reason_codes == ()
+    assert with_budget.verification_required[0].reason_codes == (
+        CandidateReasonCode.PRICE_UNKNOWN,
+    )
+    blocked_draft = PlanDraftService().generate(
+        constraints=budget_constraints,
+        collections=with_budget,
+        facts=PlanDraftFactSnapshot(),
+    )
+    assert blocked_draft.outcome is not PlanDraftOutcome.GENERATED
+    assert blocked_draft.options == ()
+
+    assert decision.route_duration_seconds is not None
+    assert decision.route_distance_meters is not None
+    draft_facts = _draft_facts(
+        collection_item_ids=decision.collection_item_ids,
+        route_duration_seconds=decision.route_duration_seconds,
+        route_distance_meters=decision.route_distance_meters,
+    )
+    draft_service = PlanDraftService()
+    draft = draft_service.generate(
+        constraints=no_budget_constraints,
+        collections=first,
+        facts=draft_facts,
+    )
+    repeated_draft = draft_service.generate(
+        constraints=no_budget_constraints,
+        collections=repeated,
+        facts=draft_facts,
+    )
+
+    assert draft == repeated_draft
+    assert draft.outcome is PlanDraftOutcome.GENERATED
+    plan_item = draft.options[0].items[0]
+    assert plan_item.price_amount == price_amount
+    assert plan_item.price_currency == price_currency
+    assert plan_item.risk_codes == (PlanRiskCode.PRICE_UNKNOWN,)
+    assert draft.options[0].total_cost_amount is None
+    assert draft.options[0].total_cost_currency is None
+    assert draft_service.validate(
+        draft=draft,
+        constraints=no_budget_constraints,
+        collections=first,
+        facts=draft_facts,
+    ).is_valid
+    assert repository.items == before
 
 
 @pytest.mark.asyncio

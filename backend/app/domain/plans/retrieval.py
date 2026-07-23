@@ -269,8 +269,6 @@ class CollectionCandidateDecision(RetrievalContract):
             raise ValueError("candidate reasons must be unique")
         if self.poi is not None and self.kind is not CollectionKind.PLACE:
             raise ValueError("only Place decisions may carry a POI")
-        if (self.price_amount is None) is not (self.price_currency is None):
-            raise ValueError("price amount and currency must be provided together")
         branch_ids = tuple(
             validate_collection_item_id(item)
             for item in self.any_branch_collection_item_ids

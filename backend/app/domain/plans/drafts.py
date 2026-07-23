@@ -261,8 +261,6 @@ class PlanItem(PlanContract):
     def validate_display_fields(self) -> Self:
         if self.end_at <= self.start_at:
             raise ValueError("plan item end must be after start")
-        if (self.price_amount is None) is not (self.price_currency is None):
-            raise ValueError("price amount and currency must be provided together")
         if self.selection_reason != SELECTION_REASON_SUMMARIES[self.selection_reason_code]:
             raise ValueError("selection reason does not match its code")
         if self.risks != tuple(RISK_SUMMARIES[code] for code in self.risk_codes):

@@ -985,3 +985,14 @@ M0-4A 至 M0-4D、M0-5A 与 M0-5B 均已通过主控验收并集成到 `main`。
 - 范围、冗余与安全：未修改 `nanobot_core`、AgentRunner、ToolRegistry、Provider、Collection Repository、M0-5B 检索/去重或地点匹配；没有 M0-5D 外部地点补充、Approval、Prompt、Tool Calling、API、SSE、Worker、队列、前端、正式确认/调整、日历、提醒、分享或反馈。PlanDraftService、草案契约和事实快照各只有一份正式实现，没有为测试复制生产算法，当前无已知未关闭 P0/P1
 - 已知风险与主控复测：当前仅验证 macOS/Python 3.13.5、不可变内存契约和固定离线事实，未验证 Python 3.11/3.12、Windows、PostgreSQL 或真实路线/天气数据采集；后者不在本阶段授权范围。主控应重点复测 Event 到达起止等号、两类缓冲最小/最大与结束等号、已知预算加总、未知费用、缺少地点间路线的单地点降级、任意分店具体 POI/查询时间/来源标记、篡改校验、20 组 Fixture、输入隔离、重复调用、禁网、迁移 head、唯一实现和上述 aiosqlite warning
 - 下一步：等待主控独立验收；M0-5C 保持待验收，M0-5D 保持未开始。本分支不合并 `main`、不推送、不执行任何真实或付费调用
+
+#### 2026-07-23｜M0-5C 主控验收未知价格 P1 修复｜待主控复验
+
+- 分支与门禁：修复直接追加在 `codex/m0-5-planning` 的待修复提交 `9afb408d178eea6a39c9299460fe66ceb28eedc2` 上；开始时工作区干净、分支和 HEAD 精确一致，`main` 与 `origin/main` 均为指定基线 `952c94bdf0a7d9b4465e30d85f1b7c74d78e5ff9` 且是当前提交祖先。未 amend、rebase、reset、合并或推送
+- 根因与唯一价格门禁：M0-5B 的 `_candidate_decision()` 原先在预算判断前无条件把金额或币种缺失标为 `PRICE_UNKNOWN`，使候选进入 `verification_required`，导致只消费 `StructuredCollectionResult.included` 的 M0-5C 无法触达既有价格风险。现将价格可比较性检查收敛到 `constraints.budget is not None` 分支：无预算时不因缺金额、缺币种或非 CNY 过滤；有预算时这些事实仍为 `PRICE_UNKNOWN/verification_required`，已知 CNY 超预算仍为 `BUDGET_EXCEEDED/excluded`
+- 草案与原始事实：`PlanDraftService` 继续严格只消费 `included`，没有读取或放宽 `verification_required`；候选决策和 PlanItem 草案快照可原样携带部分未知的金额/币种，费用总计保持 `None`，不伪造为 0。既有价格风险生成与生成后复核收敛到同一个 `_item_risks()`，缺金额、缺币种和非 CNY 均稳定输出 `PlanRiskCode.PRICE_UNKNOWN`
+- 跨阶段自动化：在真实 `StructuredCollectionRetrievalService → StructuredCollectionResult → PlanDraftService` 链路增加参数化测试，覆盖完整未知、缺金额、缺币种、非 CNY 四种价格事实；逐项证明无预算时 M0-5B included、M0-5C generated 且总费用未知并带风险，有预算时保持 verification_required 且不进入草案。另覆盖无预算的已知 500 CNY 不排除、已知 CNY 超预算继续排除、输入不变以及检索和草案重复调用结果一致
+- 验证环境与结果：macOS、项目受忽略 `.venv`、Python 3.13.5；editable 安装和 `pip check` 退出 0，Ruff 退出 0，strict mypy 对 91 个源文件无问题。M0-5B 聚焦 `45 passed`，M0-5C 聚焦 `40 passed`，迁移 `21 passed`；正式非真实全集 `1403 passed / 2 deselected`，默认全集 `1403 passed / 2 skipped`，全部退出 0。临时 QA 插件同时封锁 socket connect/connect_ex/create_connection 和 DNS 后，非真实全集再次 `1403 passed / 2 deselected`
+- 既有环境提示：部分非真实、默认和封网全量运行在所有测试通过后报告 1 条既有 aiosqlite worker 于事件循环关闭后的 `PytestUnhandledThreadExceptionWarning`，落点在不同 M0-5B 用例，和前次 M0-5C 交接记录一致；最终默认全集复跑以及 M0-5B/M0-5C 聚焦、迁移测试均无 warning。本修复没有修改数据库生命周期或增加静默 skip
+- 迁移、范围与冗余：Alembic 仍只有 `20260722_0006 (head)`；未新增或修改迁移、ORM、Repository、依赖、配置、API、前端、Provider、重试、M0-5D 或后续能力。生产变化只有一个既有价格门禁、两个不可变传递契约和一个被生成/复核共用的风险函数；`StructuredCollectionRetrievalService`、`PlanDraftService`、价格判断和风险映射各保持唯一，没有第二套过滤、测试专用生产分支或白名单
+- 安全与下一步：Git 未包含 `.env`、密钥、数据库、缓存或虚拟环境；未读取本机 `.env`，真实模型、高德、路线、天气、网页、DNS、消息及其他外部/付费 API 调用均为 0。M0-5C 继续保持待主控复验，M0-5D 保持未开始；主控重点复测四种未知价格形态的预算有/无分支、原始字段保留、总费用 `None`、`PRICE_UNKNOWN` 风险、已知超预算、输入不变、重复调用、禁网和唯一实现

@@ -294,11 +294,25 @@ def test_known_budget_rejects_over_budget_combination_but_keeps_legal_single_opt
 
 def test_unknown_price_is_never_rewritten_as_zero() -> None:
     decision = _decision(1, price=None)
-    draft, _, _, _ = _generate((decision,), constraints=_constraints(budget=None))
+    draft, collections, constraints, facts = _generate(
+        (decision,),
+        constraints=_constraints(budget=None),
+    )
     item = draft.options[0].items[0]
     assert item.price_amount is None
     assert draft.options[0].total_cost_amount is None
     assert item.risk_codes == (PlanRiskCode.PRICE_UNKNOWN,)
+
+    tampered_item = item.model_copy(update={"risk_codes": (), "risks": ()})
+    tampered_option = draft.options[0].model_copy(update={"items": (tampered_item,)})
+    tampered = draft.model_copy(update={"options": (tampered_option,)})
+    validation = PlanDraftService().validate(
+        draft=tampered,
+        constraints=constraints,
+        collections=collections,
+        facts=facts,
+    )
+    assert PlanDraftViolationCode.RISK_INVALID in validation.violations
 
 
 def test_excluded_and_verification_required_candidates_never_enter_options() -> None:

@@ -222,15 +222,11 @@ def _candidate_decision(
     if any(_matches_term(term, searchable) for term in constraints.exclude):
         reasons.add(CandidateReasonCode.EXCLUDED_BY_USER)
 
-    if item.price_amount is None or item.price_currency is None:
-        reasons.add(CandidateReasonCode.PRICE_UNKNOWN)
-    elif constraints.budget is not None and (
-        item.price_currency != _CNY or item.price_amount > constraints.budget
-    ):
-        if item.price_currency == _CNY:
-            reasons.add(CandidateReasonCode.BUDGET_EXCEEDED)
-        else:
+    if constraints.budget is not None:
+        if item.price_amount is None or item.price_currency != _CNY:
             reasons.add(CandidateReasonCode.PRICE_UNKNOWN)
+        elif item.price_amount > constraints.budget:
+            reasons.add(CandidateReasonCode.BUDGET_EXCEEDED)
 
     if apply_dynamic_facts:
         reasons.update(_dynamic_reasons(facts, is_place=item.kind is CollectionKind.PLACE))
