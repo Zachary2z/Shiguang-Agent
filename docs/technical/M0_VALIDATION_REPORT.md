@@ -2,9 +2,9 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 报告状态 | 阻塞：安全诊断已收敛到严格业务语义兼容性与修复反馈/structured-output 集成；重定向网页样本仍未完成 |
-| 验收分支 | `codex/m0-gate-structure-diagnostic` |
-| 当前证据提交 | `27c47bbdab255f45e91bc9dab4c50b2de9599278` |
+| 报告状态 | 阻塞：结构兼容性离线修复已完成，等待七个失败样本的独立真实复测授权；重定向网页和 Dockerfile 仍未完成 |
+| 验收分支 | `codex/m0-gate-structure-fix` |
+| 当前证据提交 | `7660fb0aa2e7607b67e89358930d7ddea4609f53` |
 | 生产代码基线（`main` / `origin/main`） | 均为 `0ace869ae2708608d238b77b3ade3153b1307549` |
 | 验收日期 | 2026-07-23 |
 | 是否允许进入 M1 | 否；真实 Gate 未完整通过 |
@@ -559,3 +559,124 @@ P1，修改范围应集中在上述契约桥接，不增加第二套 Parser、DT
 > 每样本 20 秒。只记录同一安全白名单。验收要求：不再重复 generic
 > `value_error`；7 个样本形成符合语义的 candidates/insufficient/unsupported，
 > 或以新的安全 path/type 明确证明剩余最小问题。不得复测 Tool Calling、高德或网页。
+
+## 13. 真实结构兼容性离线修复
+
+### 13.1 门禁与范围
+
+- 工作分支 `codex/m0-gate-structure-fix` 从指定诊断基线
+  `bfdaefb0d69bb3562523c58773e5a59c8d31dc5c` 创建；开始工作区干净。
+- `main` 与 `origin/main` 均保持
+  `0ace869ae2708608d238b77b3ade3153b1307549`，后端生产树在修复前与该提交一致。
+- Alembic 唯一 head 保持 `20260722_0006`；没有新增迁移、依赖、Provider、
+  Parser、DTO、AgentRunner、ToolRegistry 或 M1 实现。
+- 修复提交为 `7660fb0aa2e7607b67e89358930d7ddea4609f53`。范围只包含
+  ExtractionResult 的稳定语义错误、共享 Prompt/Schema/repair 桥接、可选
+  structured-output 请求契约、显式 capability 配置及对应离线测试。
+
+### 13.2 修复设计
+
+1. Pydantic 跨字段校验继续只在唯一领域模型中执行一次；原有业务规则未放宽。
+   `PydanticCustomError` 只把通用 `value_error` 收敛成稳定、无值的规则身份。
+2. `extraction_output.py` 成为文字与图片共享的契约桥接：Schema 仍只来自
+   `ExtractionResult.model_json_schema()`，每次向调用方返回深拷贝；两类 Prompt
+   复用同一语义片段，不维护第二份手写 Schema。
+3. repair 仍最多一次，只消费安全 `path/type`。固定 type 映射只给模型提供纠正说明，
+   不重新验证对象；未知 type 使用固定通用说明。repair 消息只保留系统契约与安全
+   issue，不再携带 source text、图片/Base64 或完整原始模型响应。
+4. 唯一 `ModelProvider.chat()` 增加可选、供应商无关的 `StructuredOutput` 请求。
+   `OpenAICompatibleProvider` 映射 `json_schema` 与 `json_object`；未提供时请求体与
+   历史行为一致。structured output 与 tools 的非法组合在网络前拒绝，不存在
+   fallback、能力探测、模型名白名单、额外请求或自动重试。
+5. 新配置 `MODEL_STRUCTURED_OUTPUT_MODE` 默认 `none`，只有明确设置
+   `json_schema` 或 `json_object` 才启用。该配置表达已验证 capability，不根据 SDK、
+   endpoint、供应商或模型名称猜测能力。
+
+主要修改文件：
+
+- `backend/app/domain/collections/extraction.py`
+- `backend/app/domain/collections/candidate_metadata.py`
+- `backend/app/application/extraction_output.py`
+- `backend/app/application/text_extraction.py`
+- `backend/app/application/image_recognition.py`
+- `backend/nanobot_core/providers/base.py`
+- `backend/app/providers/openai_compatible.py`
+- `backend/app/config.py`、`backend/app/api/router.py`、`.env.example`
+- 对应 core、文字、图片、Provider、配置、API 与运行跟踪测试
+
+### 13.3 稳定安全错误类型
+
+离线测试已直接覆盖以下稳定 type：
+
+- `price_pair_incomplete`
+- `price_currency_unsupported`
+- `missing_and_uncertain_conflict`
+- `present_field_marked_missing`
+- `absent_field_not_classified`
+- `duplicate_missing_field`
+- `duplicate_uncertainty_field`
+- `place_has_event_metadata`
+- `event_time_order_invalid`
+- `event_time_absent_not_classified`
+- `candidates_required`
+- `candidates_forbidden_for_outcome`
+- `reason_code_invalid_for_outcome`
+- `unsupported_reason_invalid`
+- `insufficient_fields_required`
+- `recovery_suggestions_required`
+- `model_invalid_self_declared`
+
+另对候选 outcome 携带错误元数据、unsupported 携带字段缺口及 model-invalid 携带模型
+派生详情使用独立稳定 type。`_safe_validation_issues()` 仍只输出 `path/type`，测试
+证明不包含 `msg`、`ctx`、`input`、`url` 或业务值。
+
+### 13.4 离线验证结果
+
+| 验证 | 结果 |
+|---|---|
+| `python -m ruff check .` | 通过 |
+| `python -m mypy app migrations nanobot_core` | 通过，93 个源文件 |
+| 指定文字、图片、Provider 与 core 聚焦组合 | `304 passed` |
+| 含配置测试的扩大聚焦组合 | `429 passed` |
+| `pytest -m "not real_provider and not real_map"` | `1451 passed, 1 skipped, 1 deselected` |
+| 默认 `pytest -q` | `1451 passed, 2 skipped` |
+| 仓库外插件封锁 DNS、connect、connect_ex、create_connection 后非真实全集 | `1451 passed, 1 skipped, 1 deselected` |
+
+默认全集与封网全集各观察到一次第 9.2 节已记录的 aiosqlite worker/事件循环收尾
+warning，落点不同且所有功能断言通过。本修复未修改数据库生命周期、过滤 warning、
+增加 sleep 或跳过测试；该既有 P2 分类不变。
+
+离线覆盖包括三种成功 outcome、应用保留的 model-invalid、全部稳定语义 type、安全
+repair、initial/repair 不同及相同问题、最多两次请求、ProviderError、取消、超长
+响应、unexpected tool call、文字/图片共享契约、图片清理、输入快照、并发隔离、
+普通回复、Tool Calling、json_schema/json_object 请求体、Schema 深拷贝、非法配置
+网络前拒绝、零 SDK 重试、错误不 fallback 及安全 repr。
+
+### 13.5 真实能力、调用与 Gate 结论
+
+- 本修复任务未读取 `.env`，未调用真实模型、高德、网页或其他外部服务；新增真实
+  请求数、Token 和费用均为 0，未产生新的延迟或 outcome 数据。
+- 远端 endpoint/model 的 `json_schema` 与 `json_object` capability 均未验证。
+  默认配置因此保持 `none`，不能将本机 SDK 类型或离线请求映射视为远端支持证据。
+- 七个原失败样本尚未复测，因此结构兼容性 P1 只能标记为“离线修复完成、等待真实
+  复测”，不能关闭。重定向网页验收 P1 与最小 Dockerfile P2 也仍未关闭。
+- 当前 P0：无。当前未关闭 P1：结构真实复测、真实重定向链。当前 P2：最小
+  Dockerfile、幂等锁注册表、偶发 aiosqlite 收尾 warning。
+- 结论：仍不允许进入 M1，也不允许关闭 M0-Gate。
+
+### 13.6 待授权真实复测计划
+
+只有取得本任务新的、分别明确授权后，才读取完成调用所需的 `.env` 设置并执行：
+
+1. 两个原文本失败样本：每样本最多 initial + repair，合计最多 4 次模型请求；
+2. 三个固定结构修复样本：首响应为本地固定非法 Fixture，每样本最多 1 次真实
+   repair，合计最多 3 次模型请求；
+3. 两个原图片失败 Fixture：每样本最多 initial + repair，合计最多 4 次模型请求，
+   每样本外层总预算 20 秒。
+
+总上限 `11` 次，SDK `max_retries=0`，外层重试为 0；请求计数在发送前熔断。不得复测
+已成功文本/图片、Tool Calling、高德或网页。执行前必须确认
+`MODEL_STRUCTURED_OUTPUT_MODE` 对应的远端 capability；若不支持，记录单次稳定
+Provider/capability 结果并停止该类别，不切换协议、不追加探测。只记录 initial/repair、
+outcome、候选数、安全 `path/type`、耗时、Token、费用和图片清理结果，不记录模型名、
+endpoint、请求正文、完整响应、图片、路径或密钥。

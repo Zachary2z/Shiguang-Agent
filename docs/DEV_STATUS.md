@@ -5,9 +5,9 @@
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-Gate 技术验证总验收 |
 | 状态 | 阻塞 |
-| 当前分支 | codex/m0-gate-structure-diagnostic |
+| 当前分支 | codex/m0-gate-structure-fix |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 结构安全诊断确认 Prompt/Schema/repair/structured-output 契约桥接 P1；重定向网页真实链和最小 Dockerfile 仍未收尾 |
+| 阻塞项 | 结构契约桥接离线修复已完成但七个失败样本尚未获授权真实复测；重定向网页真实链和最小 Dockerfile 仍未收尾 |
 
 ## 当前任务
 
@@ -1117,3 +1117,43 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
 - 范围与下一步：本任务只更新两份文档并创建文档原子提交；不修改生产代码，不追加
   调用，不复测网页，不创建 Dockerfile，不开始 M1，不合并 `main`，不推送。下一
   修复窗口按第 12.6 节 Prompt 先完成离线修复，再另行授权只复测本轮 7 个失败样本
+
+#### 2026-07-23｜M0-Gate 真实结构兼容性离线修复｜待真实复测
+
+- 分支与门禁：`codex/m0-gate-structure-fix` 从指定诊断基线
+  `bfdaefb0d69bb3562523c58773e5a59c8d31dc5c` 创建；开始工作区干净，`main` 与
+  `origin/main` 均保持 `0ace869ae2708608d238b77b3ade3153b1307549`，修复前后端
+  生产树与该基线一致，Alembic 唯一 head 保持 `20260722_0006`
+- 生产提交：`7660fb0aa2e7607b67e89358930d7ddea4609f53`
+  (`fix: bridge extraction structured output contract`)；生产修复和对应测试为一个
+  原子提交，本文档结果另行提交
+- 稳定语义：保留唯一 `ExtractionResult` 和全部 PRD 规则，使用 Pydantic
+  `PydanticCustomError` 将价格、missing/uncertain、Place/Event、时间、outcome、
+  reason、恢复建议与应用保留 model-invalid 等跨字段失败收敛为稳定无值 type；
+  `_safe_validation_issues()` 仍只输出 `path/type`
+- Prompt、Schema 与 repair：文字和图片复用 `extraction_output.py` 的单一语义
+  片段和同一份 `ExtractionResult.model_json_schema()` 生成结果；没有平行 Schema。
+  repair 仍最多一次，只按安全 type 映射固定纠正说明，不执行第二次业务判定，并移除
+  source text、图片/Base64 和完整原始响应
+- structured output：唯一 `ModelProvider.chat()` 增加可选 `StructuredOutput`；
+  唯一 `OpenAICompatibleProvider` 离线证明缺省请求不变、`json_schema`/
+  `json_object` 映射、Schema 深拷贝、非法 tools 组合网络前拒绝、Provider 错误不
+  fallback、SDK 零重试。`MODEL_STRUCTURED_OUTPUT_MODE` 默认 `none`，只作为显式
+  capability 配置，不使用模型名/供应商白名单或额外探测
+- 离线验证：Ruff 通过；strict mypy 对 93 个源文件通过；指定聚焦组合
+  `304 passed`，扩大聚焦组合 `429 passed`；非真实全集
+  `1451 passed / 1 skipped / 1 deselected`；默认全集
+  `1451 passed / 2 skipped`；仓库外插件封锁 DNS、socket connect/connect_ex 与
+  create_connection 后非真实全集仍为 `1451 passed / 1 skipped / 1 deselected`
+- 既有测试提示：默认与封网全集各观察到一次历史已记录的 aiosqlite worker/事件循环
+  收尾 warning，所有功能断言通过且落点不同；本修复未修改数据库生命周期、过滤
+  warning、增加 sleep 或 skip，该 P2 分类不变
+- 真实调用与安全：本任务未读取 `.env`，未调用真实模型、高德、网页或其他外部服务；
+  新增真实请求、Token、费用均为 0，未保存完整响应或临时图片。远端
+  `json_schema/json_object` capability 未验证，默认不启用
+- 状态与风险：结构兼容性 P1 已完成离线修复，但七个原失败样本未获当前任务真实复测
+  授权，因此仍不能关闭；真实重定向链 P1、最小 Dockerfile P2、幂等锁注册表 P2 和
+  aiosqlite 收尾 P2 仍在。没有已知 P0，不允许进入 M1 或关闭 M0-Gate
+- 下一步：主控先复核生产提交、文档提交与净复杂度；随后另行分别授权只复测 2 个
+  文本、3 个固定修复和 2 个图片失败样本，总请求上限 `4 + 3 + 4 = 11`，SDK 和
+  外层零重试。未获授权前不得读取 `.env`、探测 capability 或发起真实请求
