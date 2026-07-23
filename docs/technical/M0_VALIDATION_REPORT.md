@@ -2,12 +2,12 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 报告状态 | 待最终收口：当前没有未关闭的 P0/P1，最小 Dockerfile P2 已关闭 |
-| 验收分支 | `codex/m0-gate-dockerfile` |
-| 本次起始证据提交 | `632c9c2dd585b185a1511ddd4849565d5ab81cf8` |
-| 生产代码基线（`main` / `origin/main`） | 均为 `0ace869ae2708608d238b77b3ade3153b1307549` |
+| 报告状态 | 已完成：M0-Gate 通过，当前没有未关闭的 P0/P1 |
+| 验收分支 | `codex/m0-regression` |
+| 最终候选提交 | `41a640b60ec47db0ce1cfaee5c6bba62083ae38b` |
+| 初始生产代码基线（`main` / `origin/main`） | 均为 `0ace869ae2708608d238b77b3ade3153b1307549` |
 | 验收日期 | 2026-07-23 |
-| 是否允许进入 M1 | 否；等待主控完成最终 Gate 复核、状态收口与集成 |
+| 是否允许进入 M1 | 是；M1-0 可在本报告收口提交集成并推送后开始 |
 
 ## 1. 范围与授权边界
 
@@ -1660,3 +1660,117 @@ Docker 验收后重复静态、完整、聚焦和封网回归，全部退出 0�
 warning、文本 8 秒余量和图片 initial + repair 双调用 20 秒余量继续作为已知风险。
 下一窗口只执行主控最终 Gate 复核、状态文档收口、`--ff-only` 合并和推送，不扩展
 业务或 M1 范围。
+
+## 23. M0-Gate 最终主控收口
+
+### 23.1 Git、范围与复杂度
+
+- 最终主控从干净的 `codex/m0-gate-dockerfile` 和精确候选
+  `41a640b60ec47db0ce1cfaee5c6bba62083ae38b` 开始；首次与最终文档修改前的
+  `git fetch origin main` 均确认本地 `main` 和真实 `origin/main` 为
+  `0ace869ae2708608d238b77b3ade3153b1307549`。
+- `main..41a640b` 恰好 18 个单父提交，无 merge commit；提交顺序、作者时间和
+  文件范围逐项复核。`codex/m0-regression` 原 HEAD
+  `fb7929e1e0e3510198dd060451399fddeeb7c47a` 是候选祖先，并已通过
+  `git merge --ff-only codex/m0-gate-dockerfile` 纯快进到最终候选。
+- 最终差异只包含共享结构输出契约与兼容性修复、唯一抽取/repair 路径及对应测试、
+  配置、最小 Dockerfile、`.dockerignore`、README 和 Gate 状态文档；没有
+  PostgreSQL、Job、Worker、APScheduler、SSE、Next.js、Docker Compose 或其他
+  M1 实现。
+- `AgentRunner`、`ToolRegistry`、`ModelProvider`、结构抽取 Parser/规范化/repair、
+  Web Provider、地点匹配、结构检索、计划草案和外部补充均各只有一个正式入口。
+  文字与图片复用同一 `parse_extraction_response()`、同一 Schema 和同一 repair
+  构造；百炼 Gate 的唯一实际结构输出模式为 `json_object`，没有
+  `json_schema` 生产默认或失败 fallback。
+- 保守缺失归一化只在唯一不可信模型 JSON 边界登记可证明为空的适用字段，不改写
+  已有事实或显式 uncertainty，最终仍经严格 DTO；没有样本标题白名单、测试专用
+  分支、第二套校验或为通过测试追加的代理层。净复杂度与模块归属可接受。
+- Git 与最终差异没有 `.env`、数据库、缓存、临时图片、虚拟环境、QA 响应、真实
+  密钥、Authorization、Cookie、完整模型响应或实际本机私人路径。测试中的
+  `/Users/private/source.png` 仅为脱敏拒绝规则的固定伪路径 Fixture。
+
+### 23.2 最终隔离离线验收
+
+验收使用候选提交的仓库外 `git archive`、全新虚拟环境和全新安装。环境为
+macOS `26.5.1`（arm64）、Python `3.13.5`、pip `25.1.1`；`pip install -e
+"<快照>/backend[dev]"` 与 `pip check` 均退出 0。所有 pytest 均显式设置
+`APP_ENV=test`、`RUN_REAL_MODEL_TESTS=0` 和 `RUN_REAL_MAP_TESTS=0`。
+
+| 命令 | 退出码与结果 |
+|---|---|
+| `python -m ruff check .` | 0，全部通过 |
+| `python -m mypy app migrations nanobot_core` | 0，93 个源文件无问题 |
+| `python -m pytest -q -m "not real_provider and not real_map"` | 0，`1481 passed / 1 skipped / 1 deselected` |
+| `python -m pytest -q -m "not real_provider and not real_map_provider"` | 0，`1481 passed / 2 deselected` |
+| `python -m pytest -q` | 0，`1481 passed / 2 skipped` |
+| `python -m pytest -q tests/core` | 0，`120 passed` |
+| `python -m pytest -q tests/integration/test_migrations.py` | 0，`21 passed` |
+| `python -m pytest -q tests/contract/test_m0_4d_unified_input.py` | 0，`19 passed` |
+| `python -m pytest -q tests/application/test_structured_collection_retrieval.py` | 0，`42 passed` |
+| `python -m pytest -q tests/application/test_plan_drafts.py` | 0，`43 passed` |
+| `python -m pytest -q tests/application/test_external_place_supplement.py` | 0，`27 passed` |
+| 仓库外插件硬封 DNS、`connect`、`connect_ex`、`create_connection` 后正式非真实全集 | 0，`1481 passed / 2 deselected` |
+
+以上运行的 failed、warning 均为 0。默认全集的 2 个 skip 是显式关闭的真实模型和
+真实地图入口；封网全集的 2 个 deselected 是同一组真实 marker，不属于缺陷。本轮
+没有复现 aiosqlite worker 收尾 warning，因此没有目标用例需要
+`PytestUnhandledThreadExceptionWarning` warning-as-error 复跑。
+
+### 23.3 迁移、本地启动与容器
+
+- 仓库外临时 SQLite 的 `alembic heads`、`upgrade head`、`current`、`check`、
+  `downgrade base`、再次 `upgrade head` 和 `current` 全部退出 0；唯一 head 为
+  `20260722_0006`，没有迁移分叉或 `create_all()` 替代路径。
+- 现有 `python -m uvicorn app.main:app` 在随机本地端口正常启动；携带安全伪
+  query、Authorization 和 Cookie 的 `/healthz` 请求返回 HTTP 200、固定 JSON
+  `{"status":"ok"}` 并回显 `X-Request-ID`。日志只包含 request ID、method、path、
+  status 和 duration，不含 query、Header、Cookie、Authorization 或正文；进程
+  正常关闭且端口无残留监听。
+- Docker Client/Server 均为 `29.6.1`，Linux/arm64 daemon 可用。精确快照构建
+  `shiguang-m0-gate-final:41a640b` 成功，基础镜像仍解析为
+  `python:3.13-slim@sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91`。
+- 容器 Python `3.13.14`、UID `10001`，`pip check`、Alembic
+  `heads/upgrade/current/check` 全部通过。API 容器 HEALTHCHECK 为 `healthy`，
+  随机宿主端口的 `/healthz` 返回固定响应，日志继续脱敏；容器正常停止并以 0
+  退出。
+- 镜像不含 `.env`、Git、tests、docs、缓存、数据库、字节码或本机路径；启动命令
+  继续唯一指向 `app.main:app`。没有 Compose、PostgreSQL、Worker、SSE、M1 或
+  外部 Provider 调用。本任务创建的容器、镜像标签、临时数据库和 QA 文件已清理，
+  没有触碰用户原有 Docker 资源。
+
+### 23.4 真实 API 历史证据与时限结论
+
+本最终主控窗口新增真实模型、高德、网页、图片、对象存储或其他外部 API 调用均为
+**0**，也没有读取本机 `.env`。历史真实调用均来自报告前述逐次明确授权，最终通过
+证据汇总如下；诊断阶段的失败与修复链仍按第 8–21 节原样保留，不以最终汇总覆盖。
+
+| 类别 | 最终通过范围 | 延迟与时限结论 | Token / 费用 |
+|---|---|---|---|
+| 文本 `json_object` | 2 个原失败样本，`2/2`；实际 3 次模型请求，零重试 | 单次 P50/观测 P95/max `6.318/6.699/6.741s`；P95 约占 8 秒 `83.7%`，余量偏紧 | `8,200` Token；费率未知 |
+| 固定 repair | 3 个固定非法 Fixture，最终 `3/3`；实际 3 次模型请求，零重试 | 单次 P50/观测 P95/max `4.846/5.308/5.359s`；P95 约占 8 秒 `66.4%` | `7,759` Token；费率未知 |
+| 图片 `json_object` | 清晰与模糊样本 `2/2`；实际 2 次模型请求，零重试 | 单次 P50/观测 P95/max `2.785/3.033/3.060s`；未覆盖 initial + repair 双调用 | `6,569` Token；费率未知 |
+| 模型 → Tool → 模型 | 1 个纯内存加法工具样本 `1/1`；2 次模型、1 次本地 Tool | 端到端 `3.052s`，占 Agent 60 秒约 5% | `842` Token；费率未知 |
+| 高德 | 搜索、详情、路线等 5 个只读逻辑样本 `5/5`，5 次 HTTP、零重试 | P50/观测 P95/max `176/300/304ms`，低于 5 秒 | N/A；计入配额 |
+| 网页 | 普通页 `2/2`；重定向一跳/两跳 `2/2`，后者共 5 次 HTTP | 重定向端到端最大 `1.700s`，占 20 秒 `8.502%`；真实最多五跳未覆盖 | N/A；费用未知 |
+
+所有 P95 都是 1–5 个小样本的观测插值，不具有统计验证意义；费用因模型费率未配置
+而无法确认，不推测供应商账单。文本 8 秒余量、图片完整双调用和真实五跳网页继续按
+下节监测，不以无限提高超时掩盖架构问题。
+
+### 23.5 保留风险与最终结论
+
+1. `IdempotencyLockRegistry` 无界增长保持 P2：100,000 个唯一键约占 24.7 MB。
+   它不影响 M0 单进程及数据库唯一约束正确性，但必须作为 M1-0 第一项前置修复，
+   采用有界生命周期或引用计数清理，覆盖同 key、不同 key、高基数、异常和取消；
+   不新增第二套锁或幂等服务。
+2. aiosqlite 偶发收尾 warning 保持 P2，本轮未复现。若连续复现、伴随功能/数据
+   失败或进程不能退出，升级 P1；不得用 sleep、skip 或放宽 warning 掩盖。
+3. 文本 8 秒的观测 P95 占比 `83.7%`，样本太少，保留超时校准风险；图片 initial
+   + repair 的 20 秒完整真实链未覆盖，保留独立校准风险。
+4. 网页真实验收只覆盖一跳与两跳；最多五跳由完整离线测试证明，不宣称真实五跳
+   统计覆盖。
+
+最终范围、安全、幂等、迁移、结构兼容、错误恢复、Docker 和代码冗余审查全部通过；
+当前没有未关闭的 P0/P1。M0-Gate 允许关闭，M0 正式完成；在本报告收口提交完成
+`--ff-only` 集成并推送后，当前允许阶段切换为 M1-0。除以上登记风险外没有 Gate
+阻塞项，本窗口未实现任何 M1 功能。

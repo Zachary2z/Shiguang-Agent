@@ -8,7 +8,7 @@
 | 日期 | 2026-07-23 |
 | 状态 | 后续开发执行基线 |
 | 仓库 | /Users/zhangzihao/Documents/Shiguang_Nanobot |
-| 当前阶段 | M0-Gate 技术验证总验收（允许开始） |
+| 当前阶段 | M1-0 PostgreSQL 与任务基础（允许开始） |
 
 ---
 
@@ -910,6 +910,13 @@ M0 只验证草案，不实现完整正式确认、分享和提醒。
 
 ### 10.9 M0-Gate：技术验证总验收
 
+#### 当前状态
+
+**已通过。** 最终主控已完成完整提交链、离线/封网全集、迁移、本地启动、真实链
+历史证据、Docker、安全、幂等和代码冗余复核；当前没有未关闭 P0/P1，M0 正式完成。
+保留的 P2 与校准风险记录在 `docs/technical/M0_VALIDATION_REPORT.md`，其中
+`IdempotencyLockRegistry` 无界增长必须作为 M1-0 第一项前置修复。
+
 #### 必须通过
 
 1. Fake Provider 普通测试全通过。
@@ -958,6 +965,13 @@ M0-Gate 未通过时不得以开发页面掩盖底层链路问题。
 M1 的目标是不用微信也能完成完整 C 端闭环。正式前端参考 UX HTML，但不直接把原型脚本作为生产代码。
 
 ### 11.1 M1-0：PostgreSQL 与任务基础
+
+#### 启动前置
+
+在开始 PostgreSQL、Job、Worker、APScheduler、Docker Compose 或 SSE 前，先在
+本阶段内解决 `IdempotencyLockRegistry` 无界增长 P2：建立有界生命周期或引用计数
+清理，保持数据库唯一约束为跨进程最终一致性边界，覆盖相同 key 并发、不同 key、
+高基数、异常和取消。不得新增第二套锁或幂等服务。
 
 #### 任务
 

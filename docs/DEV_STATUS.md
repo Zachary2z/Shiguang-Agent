@@ -2,16 +2,19 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 当前总阶段 | M0 技术验证 |
-| 当前子阶段 | M0-Gate 技术验证总验收 |
-| 状态 | 待验收 |
-| 当前分支 | codex/m0-gate-dockerfile |
+| 当前总阶段 | M1 Web/H5 核心闭环 |
+| 当前子阶段 | M1-0 PostgreSQL 与任务基础 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 无未关闭 P0/P1；最小 Dockerfile P2 已关闭，等待最终 Gate 收口 |
+| 阻塞项 | 无 P0/P1；IdempotencyLockRegistry 无界增长 P2 是 M1-0 第一项强制前置 |
 
 ## 当前任务
 
-M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。当前允许开始 M0-Gate 技术验证总验收；M1 及后续阶段仍未开始且不得提前开发。
+M0-0A 至 M0-5D 及 M0-Gate 均已通过主控验收。M0 正式完成；当前只允许开始
+M1-0 PostgreSQL 与任务基础，状态为未开始。进入 PostgreSQL、Job、Worker、
+APScheduler、Docker Compose 或 SSE 前，必须先在同一 M1-0 阶段解决
+`IdempotencyLockRegistry` 无界增长 P2；M1-1、M1-2 及后续阶段不得提前开发。
 
 ## M0 状态
 
@@ -25,7 +28,7 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
 | M0-4 URL 与截图 | 已完成 | M0-4A、M0-4B、M0-4C、M0-4D 均已通过主控验收 |
 | M0-5 计划技术验证 | 已完成 | M0-5A、M0-5B、M0-5C、M0-5D 均已通过主控验收 |
-| M0-Gate 阶段验收 | 待验收 | 离线、真实链和最小容器验收已通过；等待主控最终 Gate 复核与状态收口 |
+| M0-Gate 阶段验收 | 已完成 | 完整离线、封网、迁移、本地启动、真实链历史证据、容器、安全与冗余主控复核通过 |
 
 状态只允许使用：未开始、进行中、待验收、已完成、阻塞。
 
@@ -59,12 +62,12 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
 
 ## 下一步
 
-真实结构兼容性与重定向网页真实链 P1 均已关闭，最小 Dockerfile P2 也已完成容器
-验收；当前没有未关闭的 P0/P1。文字 `2/2`、图片 `2/2`、固定 repair `3/3` 及
-重定向 `2/2` 的真实结论保留。M0-Gate 现为“待最终收口”，下一步只执行主控最终
-Gate 复核、状态文档收口、ff-only 合并和推送。幂等锁注册表必须在 M1 开始前解决；
-aiosqlite 收尾 warning、文本 8 秒余量和图片双调用 20 秒余量继续按既有风险处理。
-完成最终收口前不开始 M1。
+M0-Gate 已完成，当前没有未关闭的 P0/P1。当前允许阶段为 M1-0，但尚未开始。
+M1-0 的第一项必须先解决幂等锁注册表无界增长 P2，再进入 PostgreSQL、Job、
+Worker、APScheduler、Docker Compose 和 SSE。aiosqlite 偶发收尾 warning、
+文本 8 秒余量和图片 initial + repair 双调用 20 秒余量继续作为已知风险监测；
+网页最多五跳仍只有离线覆盖。不得提前开始 M1-1 Session、M1-2 Next.js 或其他
+后续阶段。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -1527,3 +1530,47 @@ aiosqlite 收尾 warning、文本 8 秒余量和图片双调用 20 秒余量继�
   “待最终收口”，不在本窗口宣布 M0 正式关闭。锁注册表 P2 必须在 M1 开始前解决；
   aiosqlite warning、文本 8 秒余量和图片双调用 20 秒余量继续保留。下一窗口只执行
   主控最终 Gate 复核、状态文档收口、ff-only 合并和推送
+
+#### 2026-07-23｜M0-Gate 最终主控收口｜已完成
+
+- Git 与提交链：主控从候选
+  `41a640b60ec47db0ce1cfaee5c6bba62083ae38b` 和初始 `main`/`origin/main`
+  `0ace869ae2708608d238b77b3ade3153b1307549` 开始；真实远端复核无变化。
+  `main..候选` 恰好 18 个单父提交且无 merge commit；
+  `codex/m0-regression` 已从
+  `fb7929e1e0e3510198dd060451399fddeeb7c47a` 纯快进到候选，工作区干净
+- 范围、复杂度与冗余：最终差异只涉及共享结构输出兼容与 repair 修复、对应测试、
+  配置、Dockerfile/`.dockerignore`、README 与 Gate 文档。AgentRunner、
+  ToolRegistry、ModelProvider、Parser/规范化/repair、Web Provider、地点匹配、
+  检索和计划服务均保持唯一；文字和图片共用同一结构边界，没有样本白名单、测试
+  专用生产分支、第二套入口或 M1 实现
+- 最终隔离环境：macOS 26.5.1 arm64、仓库外候选 archive、全新 Python 3.13.5
+  venv、pip 25.1.1；安装、`pip check`、Ruff 和 93 文件 strict mypy 全部退出 0
+- 最终全集：`not real_provider and not real_map` 为
+  `1481 passed / 1 skipped / 1 deselected`；正式非真实全集为
+  `1481 passed / 2 deselected`；默认全集为 `1481 passed / 2 skipped`；仓库外
+  插件硬封 DNS 与三类 socket 连接后正式非真实全集仍为
+  `1481 passed / 2 deselected`，全部 failed/warning 为 0
+- 聚焦测试：core `120 passed`、迁移 `21 passed`、M0-4D `19 passed`、结构检索
+  `42 passed`、计划草案 `43 passed`、外部补充 `27 passed`
+- 迁移与本地运行：临时 SQLite 的唯一 head `20260722_0006`，upgrade/current/
+  check/downgrade base/re-upgrade 往返全部通过；现有 Uvicorn `/healthz` 返回
+  HTTP 200 和 `{"status":"ok"}`，Request ID 正常，日志不含 query、Header、
+  Cookie、Authorization 或正文，停止后端口释放
+- Docker：Docker 29.6.1、Linux arm64；精确候选快照构建成功，容器 Python
+  3.13.14、UID 10001、`pip check` 与 Alembic 通过，HEALTHCHECK healthy，
+  `/healthz` 固定响应与日志脱敏通过，停止退出码 0；镜像不含 `.env`、Git、tests、
+  docs、缓存、数据库或本机路径，本任务容器与镜像标签均已清理
+- 安全与真实调用：本最终窗口没有读取 `.env`，没有运行真实 marker；新增模型、
+  高德、网页、图片、对象存储及其他真实/付费 API 请求均为 0。历史逐次授权的文字
+  `2/2`、图片 `2/2`、固定 repair `3/3`、Tool Calling `1/1`、高德 `5/5`、
+  普通网页 `2/2` 和重定向 `2/2` 证据保留在
+  `docs/technical/M0_VALIDATION_REPORT.md`
+- 风险：锁注册表无界增长保持 P2，100,000 唯一键约 24.7 MB，必须作为 M1-0
+  第一项前置修复；aiosqlite warning 本轮未复现但继续监测；文本 8 秒观测 P95
+  占比 83.7%、图片双调用 20 秒未真实覆盖、网页真实最多五跳未覆盖均继续登记，
+  不通过无限提高超时或放宽断言处理
+- 结论与交接：当前无未关闭 P0/P1，M0-Gate 已完成，M0 正式关闭。当前允许阶段为
+  M1-0 PostgreSQL 与任务基础，状态未开始；M1-0 必须先完成锁生命周期修复，再进入
+  既定 PostgreSQL、Job、Worker、APScheduler、Docker Compose 与 SSE 范围。
+  不得提前实现 M1-1 Session、M1-2 Next.js 或其他后续阶段
