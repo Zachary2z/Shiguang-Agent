@@ -1034,3 +1034,14 @@ M0-4A 至 M0-4D、M0-5A、M0-5B 与 M0-5C 均已通过主控验收并集成到 `
 - 测试基础设施提示：封网非真实全集在全部用例通过后出现 1 条 M0-5C 已记录的非稳定 aiosqlite worker/事件循环收尾 warning；随后默认全集无 warning，对应 M0-5B 目标用例使用 `-W error::pytest.PytestUnhandledThreadExceptionWarning` 独立复跑 `1 passed`。M0-5D 未修改数据库生命周期或通过 skip 隐藏问题，当前无已知未关闭 P0/P1
 - 迁移、依赖、配置与副作用：未新增或修改依赖、配置、ORM、Repository、数据库表或迁移，历史 `0001`–`0006` 未改，head 保持 `20260722_0006`；不创建 Approval/Plan/PlanItem/缓存表，不写 CollectionItem 或数据库，不实现正式确认/加入收藏。未读取、打印或修改本机 `.env`，未运行真实 marker；真实模型、高德、路线、天气、网页、对象存储、消息及其他外部/付费 API 调用均为 0
 - 范围、冗余与下一步：未修改 `nanobot_core`、AgentRunner、ToolRegistry、MapProvider/StubMapProvider/AmapProvider、Collection Repository、API、SSE、Worker、队列、前端、正式计划版本/确认、日历、提醒、分享、反馈、M0-Gate 或 M1。POI DTO、地点匹配、结构检索、CNY 规则、草案排程与 Run 状态保持唯一；主控应在隔离快照复核调用次数、Approval 绑定、拒绝/Event/collection-only、候选边界、外部来源/风险、20 组 M0-5C Fixture、禁网、迁移 head 和净复杂度。验收前不合并 `main`、不推送、不开始 M0-Gate
+
+#### 2026-07-23｜M0-5D 主控验收候选与费用修复｜待主控验收
+
+- 分支与门禁：修复直接追加在 `codex/m0-5d-external-place-supplement` 的待修复提交 `a87bdd3838b4d03a59d8b14c0a60e73725dd7483` 上；开始时分支与 HEAD 精确一致，工作区干净，指定阶段基线 `7f9edf3294fef0864a5e609806b7a3c2a346c0e7` 是当前提交祖先。修复提交随本记录创建，完整 SHA 见开发窗口最终交接报告
+- 候选选择边界：`ExternalPlaceSupplementService` 继续直接复用 `PlaceMatchingService` 的 `MatchStatus` 和原始候选顺序。`MATCHED` 只允许采用原始首选；首选通过城市、行政区、活动范围、include/exclude 与收藏去重时直接采用，不再因较弱候选存在而重新判歧义；首选被任一硬约束过滤时不自动晋升后续候选，只返回经过范围过滤的安全选择或稳定恢复结果，并保持路线调用为 0。`AMBIGUOUS/NEEDS_CONTEXT` 仍只返回最多 3 个过滤后候选
+- 单地点费用：外部地点作为唯一核心时复用既有 `_option_cost()` 汇总 `PlanOption`；已知 `20 CNY` 输出 `20 + CNY`，未知价格保持 `None + None` 与 `PRICE_UNKNOWN`。有预算时继续由既有 `_schedule_external_item()`/`_schedule_known_item()` 统一排程和预算规则决定是否生成，没有新增金额、币种或预算分支
+- 回归覆盖：M0-5D 聚焦由原 22 项增至 `27 passed`，新增外部单地点已知费用、预算不足、原唯一高分首选与较弱候选共存、首选因收藏去重被过滤、首选因活动范围硬约束被过滤，并强化未知费用断言；主控临时复现文件 `/tmp/test_m05d_independent_qa.py` 为 `3 passed`。既有输入不变/重复调用、Event、collection-only、拒绝和零搜索边界继续通过
+- 文档：README 已将 M0-5C 的 20 组 Fixture 与其草案测试入口独立说明，并把 M0-5D 聚焦入口修正为 `tests/application/test_external_place_supplement.py`
+- 完整验证：Python 3.13.5；editable install、`pip check`、Ruff、strict mypy（93 个源文件）均退出 0；M0-5D `27 passed`、M0-5C `43 passed`、M0-5B `42 passed`、迁移 `21 passed`。非真实全集 `1436 passed / 1 skipped / 1 deselected`，默认全集 `1436 passed / 2 skipped`，全部退出 0
+- 已知测试提示：两轮全量测试各报告 1 条此前 M0-5C/M0-5D 已记录的非稳定 aiosqlite worker/事件循环收尾 warning，目标落点为不同的既有 M0-5B 测试且所有用例均通过；本修复未修改数据库生命周期、测试跳过或 warning 策略
+- 范围与下一步：没有修改评分阈值、复制匹配/排序/价格/规划逻辑，未新增代理层、迁移、依赖、配置、API、前端或 M0-Gate 功能；未读取或修改 `.env`，未调用真实高德、模型、网页或其他外部/付费 API。M0-5D 保持待主控验收，不合并 `main`、不推送、不开始 M0-Gate

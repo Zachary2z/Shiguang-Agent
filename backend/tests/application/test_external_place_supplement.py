@@ -373,6 +373,48 @@ async def test_known_cny_price_is_preserved_and_shared_budget_rule_can_reject_it
 
 
 @pytest.mark.asyncio
+async def test_approved_external_only_known_price_uses_shared_option_cost() -> None:
+    calls: list[object] = []
+    gap = _place_gap(price=Decimal("20"))
+
+    result = await _generate(
+        _service(_provider(calls, origin=CORE_COORDINATE)),
+        constraints=_constraints(origin=CORE_COORDINATE),
+        collections=StructuredCollectionResult(),
+        facts=PlanDraftFactSnapshot(),
+        gap=gap,
+        decision=_approval(gap, ExternalApprovalDecision.APPROVED),
+    )
+
+    assert result.outcome is ExternalSupplementOutcome.DRAFT
+    assert result.draft is not None
+    assert result.draft.outcome is PlanDraftOutcome.GENERATED
+    assert result.draft.options[0].total_cost_amount == Decimal("20")
+    assert result.draft.options[0].total_cost_currency == "CNY"
+    assert [type(call) for call in calls] == [SearchPoiRequest, RouteRequest]
+
+
+@pytest.mark.asyncio
+async def test_approved_external_only_known_price_respects_shared_budget_rule() -> None:
+    calls: list[object] = []
+    gap = _place_gap(price=Decimal("20"))
+
+    result = await _generate(
+        _service(_provider(calls, origin=CORE_COORDINATE)),
+        constraints=_constraints(origin=CORE_COORDINATE, budget=Decimal("19")),
+        collections=StructuredCollectionResult(),
+        facts=PlanDraftFactSnapshot(),
+        gap=gap,
+        decision=_approval(gap, ExternalApprovalDecision.APPROVED),
+    )
+
+    assert result.outcome is ExternalSupplementOutcome.RECOVERY_REQUIRED
+    assert result.recovery_code is ExternalRecoveryCode.NO_EXECUTABLE_DRAFT
+    assert result.draft is None
+    assert [type(call) for call in calls] == [SearchPoiRequest, RouteRequest]
+
+
+@pytest.mark.asyncio
 async def test_no_collection_requires_approval_before_any_map_call_then_searches_once() -> None:
     calls: list[object] = []
     origin = CORE_COORDINATE
@@ -404,6 +446,9 @@ async def test_no_collection_requires_approval_before_any_map_call_then_searches
     assert [type(call) for call in calls] == [SearchPoiRequest, RouteRequest]
     assert approved.draft is not None
     assert approved.draft.options[0].items[0].source.kind is PlanItemSourceKind.EXTERNAL_PLACE
+    assert approved.draft.options[0].total_cost_amount is None
+    assert approved.draft.options[0].total_cost_currency is None
+    assert PlanRiskCode.PRICE_UNKNOWN in approved.draft.options[0].risk_codes
 
 
 @pytest.mark.asyncio
@@ -497,6 +542,118 @@ async def test_ambiguous_branches_return_at_most_three_candidates_without_route_
     assert result.outcome is ExternalSupplementOutcome.NEEDS_SELECTION
     assert result.recovery_code is ExternalRecoveryCode.PLACE_AMBIGUOUS
     assert 1 < len(result.candidates) <= 3
+    assert [type(call) for call in calls] == [SearchPoiRequest]
+
+
+@pytest.mark.asyncio
+async def test_matched_original_top_is_used_even_with_a_weaker_candidate() -> None:
+    calls: list[object] = []
+    weaker = EXTERNAL_POI.model_copy(
+        update={
+            "poi_id": "external-cafe-weaker",
+            "name": "明确咖啡店分店",
+        },
+        deep=True,
+    )
+
+    result = await _generate(
+        _service(_provider(calls, pois=(EXTERNAL_POI, weaker))),
+        gap=_place_gap(),
+    )
+
+    assert result.outcome is ExternalSupplementOutcome.DRAFT
+    assert result.draft is not None
+    external = result.draft.options[0].items[1]
+    assert external.source.concrete_poi is not None
+    assert external.source.concrete_poi.poi_id == EXTERNAL_POI.poi_id
+    assert [type(call) for call in calls] == [SearchPoiRequest, RouteRequest]
+
+
+@pytest.mark.asyncio
+async def test_filtered_original_top_is_not_replaced_by_a_weaker_candidate() -> None:
+    calls: list[object] = []
+    title = "重复核心地点"
+    existing_top = CORE_POI.model_copy(update={"name": title}, deep=True)
+    weaker = EXTERNAL_POI.model_copy(
+        update={
+            "poi_id": "external-weaker",
+            "name": f"{title}分店",
+        },
+        deep=True,
+    )
+    provider = StubMapProvider(
+        search_results={
+            _search_request(title): PoiSearchResult(
+                city_code="shenzhen",
+                pois=(existing_top, weaker),
+            )
+        },
+        route_results={_route_request(): _route_result()},
+        call_hook=lambda request: _record(calls, request),
+    )
+
+    result = await _generate(
+        _service(provider),
+        gap=_place_gap(title),
+    )
+
+    assert result.outcome is ExternalSupplementOutcome.NEEDS_SELECTION
+    assert tuple(candidate.poi_id for candidate in result.candidates) == (
+        weaker.poi_id,
+    )
+    assert [type(call) for call in calls] == [SearchPoiRequest]
+
+
+@pytest.mark.asyncio
+async def test_out_of_scope_original_top_is_not_replaced_by_a_weaker_candidate() -> None:
+    calls: list[object] = []
+    title = "范围地点"
+    outside_top = EXTERNAL_POI.model_copy(
+        update={
+            "poi_id": "outside-original-top",
+            "name": title,
+            "business_area": "会展中心",
+        },
+        deep=True,
+    )
+    in_scope_weaker = EXTERNAL_POI.model_copy(
+        update={
+            "poi_id": "in-scope-weaker",
+            "name": f"{title}分店",
+            "business_area": "市民中心",
+        },
+        deep=True,
+    )
+    constraints = _constraints().model_copy(
+        update={
+            "area": ActivityArea(
+                districts=("福田区",),
+                labels=("市民中心",),
+            )
+        },
+        deep=True,
+    )
+    provider = StubMapProvider(
+        search_results={
+            _search_request(title): PoiSearchResult(
+                city_code="shenzhen",
+                pois=(outside_top, in_scope_weaker),
+            )
+        },
+        route_results={_route_request(): _route_result()},
+        call_hook=lambda request: _record(calls, request),
+    )
+
+    result = await _generate(
+        _service(provider),
+        constraints=constraints,
+        gap=_place_gap(title),
+    )
+
+    assert result.outcome is ExternalSupplementOutcome.NEEDS_SELECTION
+    assert tuple(candidate.poi_id for candidate in result.candidates) == (
+        in_scope_weaker.poi_id,
+    )
     assert [type(call) for call in calls] == [SearchPoiRequest]
 
 

@@ -186,12 +186,15 @@ class PlanDraftService:
                 existing_items=(),
             )
             if external_item is not None:
+                total_amount, total_currency = _option_cost((external_item,))
                 risks = _option_risks((external_item,))
                 options.append(
                     PlanOption(
                         role=PlanOptionRole.MAIN,
                         items=(external_item,),
                         end_buffer_seconds=end_buffer,
+                        total_cost_amount=total_amount,
+                        total_cost_currency=total_currency,
                         risk_codes=risks,
                         risks=tuple(RISK_SUMMARIES[risk] for risk in risks),
                     )

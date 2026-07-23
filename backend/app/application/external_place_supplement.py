@@ -143,7 +143,7 @@ class ExternalPlaceSupplementService:
             for decision in collections.included
             if decision.poi_identity is not None
         }
-        candidates = tuple(
+        eligible_candidates = tuple(
             item
             for item in match.candidates
             if item.identity not in existing_pois
@@ -152,24 +152,47 @@ class ExternalPlaceSupplementService:
                 constraints,
             )
         )[:3]
-        if match.status is MatchStatus.NOT_FOUND or not candidates:
+        if match.status is MatchStatus.MATCHED:
+            preferred = match.candidates[0]
+            if any(
+                candidate.identity == preferred.identity
+                for candidate in eligible_candidates
+            ):
+                selected = preferred
+            elif eligible_candidates:
+                return ExternalPlaceSupplementResult(
+                    outcome=ExternalSupplementOutcome.NEEDS_SELECTION,
+                    run_status=AgentRunStatus.SUCCEEDED,
+                    draft=self._base(base_draft),
+                    candidates=eligible_candidates,
+                    recovery_code=ExternalRecoveryCode.PLACE_AMBIGUOUS,
+                    recovery_summary=RECOVERY_SUMMARIES[
+                        ExternalRecoveryCode.PLACE_AMBIGUOUS
+                    ],
+                )
+            else:
+                return self._recovery(
+                    ExternalRecoveryCode.PLACE_NOT_FOUND,
+                    draft=self._base(base_draft),
+                )
+        elif match.status is MatchStatus.NOT_FOUND or not eligible_candidates:
             return self._recovery(
                 ExternalRecoveryCode.PLACE_NOT_FOUND,
                 draft=self._base(base_draft),
             )
-        if match.status is not MatchStatus.MATCHED or len(candidates) != 1:
+        else:
             return ExternalPlaceSupplementResult(
                 outcome=ExternalSupplementOutcome.NEEDS_SELECTION,
                 run_status=AgentRunStatus.SUCCEEDED,
                 draft=self._base(base_draft),
-                candidates=candidates,
+                candidates=eligible_candidates,
                 recovery_code=ExternalRecoveryCode.PLACE_AMBIGUOUS,
                 recovery_summary=RECOVERY_SUMMARIES[
                     ExternalRecoveryCode.PLACE_AMBIGUOUS
                 ],
             )
 
-        poi = poi_from_match_candidate(candidates[0])
+        poi = poi_from_match_candidate(selected)
         route_origin, from_ids = self._route_origin(base_draft, constraints)
         if route_origin is None:
             return self._recovery(
