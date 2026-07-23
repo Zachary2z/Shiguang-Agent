@@ -4,10 +4,10 @@
 |---|---|
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-Gate 技术验证总验收 |
-| 状态 | 阻塞 |
-| 当前分支 | codex/m0-gate-redirect-real-retest |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-gate-dockerfile |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 真实结构兼容性与重定向网页真实链 P1 均已关闭；最小 Dockerfile 仍未收尾 |
+| 阻塞项 | 无未关闭 P0/P1；最小 Dockerfile P2 已关闭，等待最终 Gate 收口 |
 
 ## 当前任务
 
@@ -25,7 +25,7 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
 | M0-3 地点匹配 | 已完成 | M0-3A、M0-3B、M0-3C、M0-3D 均已通过主控验收 |
 | M0-4 URL 与截图 | 已完成 | M0-4A、M0-4B、M0-4C、M0-4D 均已通过主控验收 |
 | M0-5 计划技术验证 | 已完成 | M0-5A、M0-5B、M0-5C、M0-5D 均已通过主控验收 |
-| M0-Gate 阶段验收 | 阻塞 | 离线 Gate、真实 Tool/高德/普通网页通过；结构 P1 与重定向网页真实链 P1 均已关闭，最小 Dockerfile 尚未验收 |
+| M0-Gate 阶段验收 | 待验收 | 离线、真实链和最小容器验收已通过；等待主控最终 Gate 复核与状态收口 |
 
 状态只允许使用：未开始、进行中、待验收、已完成、阻塞。
 
@@ -59,11 +59,12 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
 
 ## 下一步
 
-真实结构兼容性与重定向网页真实链 P1 均已关闭，没有未关闭的真实链路 P1；文字
-`2/2`、图片 `2/2`、固定 repair `3/3` 及本次重定向 `2/2` 的真实结论保留。
-M0-Gate 下一项为“最小 Dockerfile 补齐与容器验收”。幂等锁注册表、aiosqlite
-收尾 warning、文本 8 秒余量和图片双调用 20 秒余量仍按既有风险处理。M0 尚未整体
-关闭，Gate 通过前不开始 M1。
+真实结构兼容性与重定向网页真实链 P1 均已关闭，最小 Dockerfile P2 也已完成容器
+验收；当前没有未关闭的 P0/P1。文字 `2/2`、图片 `2/2`、固定 repair `3/3` 及
+重定向 `2/2` 的真实结论保留。M0-Gate 现为“待最终收口”，下一步只执行主控最终
+Gate 复核、状态文档收口、ff-only 合并和推送。幂等锁注册表必须在 M1 开始前解决；
+aiosqlite 收尾 warning、文本 8 秒余量和图片双调用 20 秒余量继续按既有风险处理。
+完成最终收口前不开始 M1。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -1485,3 +1486,44 @@ M0-Gate 下一项为“最小 Dockerfile 补齐与容器验收”。幂等锁注
   关闭，没有未关闭的真实链路 P1。M0-Gate 尚未整体关闭，下一项为“最小
   Dockerfile 补齐与容器验收”；锁注册表、aiosqlite warning、文本 8 秒余量和图片
   双调用 20 秒余量继续保留。本任务未修改生产代码/测试，未合并、未推送、未进入 M1
+
+#### 2026-07-23｜M0-Gate 最小 Dockerfile 与容器验收｜待最终收口
+
+- 分支与提交：`codex/m0-gate-dockerfile` 从指定提交
+  `632c9c2dd585b185a1511ddd4849565d5ab81cf8` 创建；`main` 与 `origin/main`
+  均保持 `0ace869ae2708608d238b77b3ade3153b1307549`。首个原子提交为
+  `0f9b48e74adaee240b2f55f32b8acdc92f40571b`
+- 实现范围：新增根目录唯一 Dockerfile 与 `.dockerignore`，README 增加最小
+  build、显式 Alembic 迁移、运行时变量注入、`/healthz` 和 SQLite/M1 边界。只
+  安装 `backend/pyproject.toml` 正式依赖，复用 `app.main:app`，UID `10001`
+  非 root 运行；没有自动迁移、第二套入口、Compose、PostgreSQL、Worker、SSE 或 M1
+- 环境与构建：Docker Client/Server `29.6.1`、Docker Desktop arm64；官方
+  `python:3.13-slim` 实际解析摘要为 `sha256:6771159c...e1a91`。工作树首次
+  `--pull` 构建 56.07 秒，精确首提交 archive 重建 35.69 秒，最终镜像
+  `69,961,884 bytes`
+- 镜像内容：容器 Python `3.13.14`、UID `10001`、工作目录 `/app`；`pip check`
+  和 app/nanobot_core/app.main import 通过。六个 revision 与 Alembic 配置可读，
+  唯一 head `20260722_0006`；`.env`、Git、tests、缓存、数据库、日志和本机路径
+  不存在，pytest/mypy/ruff 未安装，配置与 history 敏感扫描无命中
+- 迁移与运行：临时 SQLite 显式 `upgrade head/current/check` 通过，current 为
+  `20260722_0006 (head)` 且 check 无待生成操作。API 只绑定宿主
+  `127.0.0.1` 随机端口，不使用 `--env-file`；容器 running、Docker HEALTHCHECK
+  healthy，自动和显式 Request ID 的 `/healthz` 均为 HTTP 200 与
+  `{"status":"ok"}`，显式 ID 回显，日志不含 query/Header/Cookie/Authorization/
+  正文，外部 Provider 调用为 0
+- 停止与清理：精确提交容器 0.52 秒内正常停止、退出码 0，停止后端口关闭；临时
+  迁移/API 容器与容器内数据库已删除。任务镜像标签、archive、venv、QA 插件和
+  `/tmp` 日志在最终交接前统一清理，不触碰用户原有容器、镜像或缓存
+- 隔离基线：起始提交 archive 的全新 Python 3.13.5 venv 中安装与 `pip check`
+  通过；Ruff、93 文件 mypy、非真实 `1481 passed/2 deselected`、默认
+  `1481 passed/2 skipped`、封网非真实 `1481 passed/2 deselected` 均通过
+- 修改后回归：Ruff、93 文件 mypy、非真实与默认全集同上；core `120 passed`、
+  migrations `21 passed`、M0-4D `19 passed`、结构检索 `42 passed`、计划草案
+  `43 passed`、外部补充 `27 passed`，再次封网非真实 `1481 passed/2
+  deselected`。全部运行无 aiosqlite warning，历史 P2 不变
+- 安全与边界：没有读取、打印或复制 `.env`，没有真实或付费 API 调用，没有修改
+  生产 Python、测试、迁移、依赖范围或 `.env.example`；未合并、未推送
+- 结论与下一步：最小 Dockerfile P2 已关闭，当前没有未关闭 P0/P1；M0-Gate 仅为
+  “待最终收口”，不在本窗口宣布 M0 正式关闭。锁注册表 P2 必须在 M1 开始前解决；
+  aiosqlite warning、文本 8 秒余量和图片双调用 20 秒余量继续保留。下一窗口只执行
+  主控最终 Gate 复核、状态文档收口、ff-only 合并和推送

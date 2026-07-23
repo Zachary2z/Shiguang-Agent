@@ -2,12 +2,12 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 报告状态 | 阻塞：真实结构兼容性与重定向网页真实链 P1 均已关闭；最小 Dockerfile 仍未完成 |
-| 验收分支 | `codex/m0-gate-redirect-real-retest` |
-| 本次起始证据提交 | `ebeac0ba157e7195dc2c676a0a183ea853570708` |
+| 报告状态 | 待最终收口：当前没有未关闭的 P0/P1，最小 Dockerfile P2 已关闭 |
+| 验收分支 | `codex/m0-gate-dockerfile` |
+| 本次起始证据提交 | `632c9c2dd585b185a1511ddd4849565d5ab81cf8` |
 | 生产代码基线（`main` / `origin/main`） | 均为 `0ace869ae2708608d238b77b3ade3153b1307549` |
 | 验收日期 | 2026-07-23 |
-| 是否允许进入 M1 | 否；真实 Gate 未完整通过 |
+| 是否允许进入 M1 | 否；等待主控完成最终 Gate 复核、状态收口与集成 |
 
 ## 1. 范围与授权边界
 
@@ -232,12 +232,14 @@
 
 > 在最新 `main` 上独立调查全套 pytest 结束时偶发的 aiosqlite worker 向已关闭事件循环回调问题。不要修改结构检索业务规则，不要过滤 warning、增加固定 sleep、放宽 pytest 配置或堆叠重复 close。先用资源跟踪、事件循环与线程诊断定位哪个 Database/engine/session/fixture 未在所属 loop 中完成关闭；构造可重复的最小顺序测试。修复唯一的资源所有权或 fixture 生命周期边界，并删除被替代的旧清理路径。验证 `Database.close()` 的幂等、启动失败、session 异常、取消和多 loop 行为。至少多轮运行完整非真实全集及封网全集，并使用 `-W error::pytest.PytestUnhandledThreadExceptionWarning`；报告复现率、根因、线程/连接收尾证据和净复杂度。
 
-### 9.3 P2 / M0 关闭前必须解决：最小 Dockerfile 仍未落地
+### 9.3 已关闭 P2：最小 Dockerfile
 
 - 位置：`docs/DEVELOPMENT_STAGES.md:452`、`README.md:11`。
-- 实际：仓库没有 Dockerfile；README 的原生 Python 安装、迁移、测试和健康检查路径已在全新环境验证通过。
-- 预期：在进入依赖 Compose 的 M1 前，明确决定并实现最小 API Dockerfile，或在 M1-0 的单一容器化任务中正式接管，不继续悬空。
-- 影响：不影响本轮原生新环境 Gate；会影响 M1 Docker Compose 的可交付性。
+- 原问题：仓库没有 Dockerfile；README 的原生 Python 安装、迁移、测试和健康检查路径已在全新环境验证通过，但容器交付仍悬空。
+- 关闭证据：2026-07-23 在独立 `codex/m0-gate-dockerfile` 分支补充根目录唯一
+  Dockerfile 与 `.dockerignore`，并从精确首提交 archive 完成正式依赖安装、迁移、
+  非 root 启动、Docker HEALTHCHECK、请求日志、停止和镜像内容复验；详见第 22 节。
+- 后续边界：PostgreSQL、Docker Compose、Worker、SSE 与其他 M1 能力仍未实现。
 
 完整修复 Prompt：
 
@@ -1557,3 +1559,104 @@ M0-Gate 尚未整体关闭，下一项更新为“最小 Dockerfile 补齐与容
 注册表、aiosqlite 收尾 warning、文本 8 秒余量和图片 initial + repair 在 20 秒内
 的完整链余量继续按既有风险保留。本窗口没有修改生产代码或测试，没有处理
 Dockerfile，没有合并、推送或进入 M1。
+
+## 22. 最小 Dockerfile 与容器验收
+
+### 22.1 门禁、环境与实现范围
+
+- 本窗口从指定提交 `632c9c2dd585b185a1511ddd4849565d5ab81cf8` 创建
+  `codex/m0-gate-dockerfile`；开始时工作区干净，`main` 与 `origin/main` 均为
+  `0ace869ae2708608d238b77b3ade3153b1307549`。
+- Alembic 只有一个 head `20260722_0006` 和六个单链 revision；真实结构兼容性与
+  重定向网页真实链 P1 均已关闭。开始时没有 Dockerfile、`.dockerignore` 或
+  Docker Compose。
+- Docker Client / Server 均为 `29.6.1`，Docker Desktop、`overlayfs`、Linux
+  `arm64`。官方基础镜像标签为 `python:3.13-slim`，构建时实际解析为
+  `sha256:6771159cd4fa5d9bba1258caf0b82e6b73458c694d178ad97c5e925c2d0e1a91`。
+- 新增根目录唯一 Dockerfile 和 `.dockerignore`，README 增加最小构建、显式
+  Alembic 迁移、运行时环境注入、健康检查与 SQLite/M1 边界。没有修改
+  `backend/app`、`nanobot_core`、迁移、测试、`pyproject.toml`、`.env.example`
+  或产品文档。
+- Dockerfile 只从现有 `backend/pyproject.toml` 安装正式依赖，继续使用唯一
+  `app.main:app` 和 exec-form
+  `python -m uvicorn app.main:app --host 0.0.0.0 --port 8000`；没有启动脚本、
+  第二套入口或自动迁移。最终用户固定为 UID `10001`，`/app/data` 可写。
+- `.dockerignore` 排除 Git、`.env`/`.env.*`、虚拟环境、缓存、测试、SQLite/
+  数据库、日志、临时文件、IDE/系统文件、docs、prototypes 和构建产物。任务没有
+  读取、打印或复制本机 `.env`。
+
+### 22.2 修改前离线基线与修改后回归
+
+指定起始提交的仓库外 `git archive`、全新 venv 和 Python `3.13.5` 中，
+`pip install -e "<快照>/backend[dev]"` 与 `pip check` 通过。修改前结果：
+
+| 验证 | 结果 |
+|---|---|
+| Ruff | 通过 |
+| strict mypy | 通过，93 个源文件 |
+| 非真实全集 | `1481 passed, 2 deselected` |
+| 默认全集 | `1481 passed, 2 skipped` |
+| 仓库外插件封锁 DNS、connect、connect_ex、create_connection 后非真实全集 | `1481 passed, 2 deselected` |
+
+Docker 验收后重复静态、完整、聚焦和封网回归，全部退出 0：
+
+| 验证 | 结果 |
+|---|---|
+| Ruff / strict mypy | 通过 / 93 个源文件无问题 |
+| 非真实全集 / 默认全集 | `1481 passed, 2 deselected` / `1481 passed, 2 skipped` |
+| `tests/core` | `120 passed` |
+| migration / M0-4D unified input | `21 passed` / `19 passed` |
+| structured retrieval / plan drafts / external supplement | `42 passed` / `43 passed` / `27 passed` |
+| 再次封锁 DNS 与三类 socket 连接后的非真实全集 | `1481 passed, 2 deselected` |
+
+上述修改前、修改后、默认、聚焦与封网运行均未观察到 aiosqlite worker/事件循环
+收尾 warning，因此没有可指定的目标用例需要 warning-as-error 复跑。历史 P2
+保持登记；若后续连续复现、伴随测试/数据失败或进程无法退出，仍按既定条件升级 P1。
+
+### 22.3 构建与镜像内容
+
+- 首次工作树命令 `docker build --pull -t shiguang-backend:m0-gate-qa .` 退出 0，
+  耗时 `56.07s`，用于拉取并解析官方基础镜像。
+- 首个原子提交
+  `0f9b48e74adaee240b2f55f32b8acdc92f40571b` 的独立 archive 使用
+  `docker build -t shiguang-backend:m0-gate-commit-qa <快照>` 再次退出 0，
+  耗时 `35.69s`；最终复验镜像大小 `69,961,884 bytes`。
+- 容器 Python 为 `3.13.14`；`python -m pip check`、`import app`、
+  `import nanobot_core` 和 `import app.main` 全部通过。当前 UID `10001`，
+  工作目录 `/app`。
+- 镜像可读取 Alembic 配置和六个 revision，唯一 head 为 `20260722_0006`。
+  `/app` 内不存在 `.env`、Git、tests、pytest/mypy/ruff 缓存、数据库或日志；
+  `pytest`、`mypy`、`ruff` 均未安装。镜像只包含正式依赖。
+- 镜像配置和完整 history 对 `Authorization`、`Cookie`、模型/高德密钥变量、
+  本机用户路径、学习目录路径和 `.env` 的扫描无命中。没有第二套
+  AgentRunner、Provider、Repository 或启动脚本。
+
+### 22.4 迁移、启动、健康与停止
+
+- 临时非 root 容器显式执行
+  `python -m alembic upgrade head`、`current`、`check`；current 精确为
+  `20260722_0006 (head)`，check 为 `No new upgrade operations detected`。
+  应用启动过程没有自动迁移，也没有调用 `create_all()`。
+- API 容器只绑定宿主 `127.0.0.1` 的 Docker 随机端口，仅注入
+  `APP_ENV=production` 和容器内临时 SQLite `DATABASE_URL`，没有
+  `--env-file`、模型或高德配置、私人目录挂载。
+- 容器进入 running，Docker HEALTHCHECK 最终为 `healthy`，运行 UID 为 `10001`。
+  自动 Request ID 与显式安全 Request ID 两次 `GET /healthz` 均返回 HTTP 200
+  和精确 JSON `{"status":"ok"}`；显式 ID 原样回显。
+- 日志只有启动摘要及 request ID、method、path、status、duration；携带安全 query
+  marker 的请求没有把 query 写入日志，日志中也没有 Header、Cookie、
+  Authorization 或正文。健康链没有构造或调用任何外部 Provider。
+- 精确提交复验容器使用 `docker stop --timeout 10` 在 `0.52s` 内退出，退出码 0；
+  停止后宿主端口不可连接，临时容器和容器内 SQLite 随容器删除。
+
+### 22.5 结论与剩余 Gate 范围
+
+最小 Dockerfile P2 已关闭，当前没有未关闭的 P0/P1。M0-Gate 只标记为
+**待最终收口**，本窗口不宣布 M0 正式关闭。真实或付费 API 调用为 0；没有读取
+`.env`，没有实现 Docker Compose、PostgreSQL、Worker、SSE 或 M1，也没有合并或
+推送。
+
+幂等锁注册表无界增长 P2 继续登记为“M1 开始前必须解决”；aiosqlite 偶发收尾
+warning、文本 8 秒余量和图片 initial + repair 双调用 20 秒余量继续作为已知风险。
+下一窗口只执行主控最终 Gate 复核、状态文档收口、`--ff-only` 合并和推送，不扩展
+业务或 M1 范围。
