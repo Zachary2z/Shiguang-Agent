@@ -1268,3 +1268,110 @@ M0-Gate 继续阻塞：除该固定 repair 结构 P1 外，真实重定向链、
 > json_object，SDK/外层均 0 重试，模型单次 8 秒，发送前熔断，不结转旧额度；
 > 必须等待新的逐字明确授权，不得自行读取配置、调用、切换模式/模型/endpoint、
 > 补样本或追加 capability 探测。
+
+## 19. 保守缺失归一化离线修复
+
+### 19.1 产品决定与职责边界
+
+用户明确批准：模型输出中值为空、且未明确标为 uncertain 的适用字段，在唯一模型
+响应解析边界归入 `missing_fields`；不得修改已有值、显式 uncertainty 或其他业务
+事实，并删除被替代的 Prompt 补丁。
+
+本轮据此收敛职责：
+
+- 模型继续负责提取来源事实与表达明确歧义的 uncertainty；
+- 应用只把“没有值、没有 explicit uncertainty、也尚未登记 missing”的适用字段
+  记录为 missing；
+- `ExtractionResult`、`PlaceCandidate`、`EventCandidate` 继续作为唯一严格业务
+  DTO，负责拒绝冲突、重复、非法类型、非法枚举、价格、时间、kind 和 outcome；
+- missing 是应用派生的状态登记，不会生成地址、区域、价格、标签、时间或其他事实。
+
+### 19.2 唯一解析边界与精确算法
+
+生产提交 `6b318f58f91304f6d95a87db6840463e1b250a90`
+（`fix: normalize absent model fields conservatively`）只在
+`parse_extraction_response()` 的 `json.loads()` 与
+`ExtractionResult.model_validate_json()` 之间增加一个模型输出规范化阶段，并把
+既有“已识别本地金额补内部 CNY”纳入同一阶段。
+
+该阶段先深拷贝完整 JSON 对象，再逐候选处理：
+
+1. kind 必须是现有 Place/Event；非法 kind 原样交给 DTO 拒绝；
+2. `missing_fields` 与 `uncertainties` 的结构、枚举、唯一性和互斥关系必须完整；
+   任何非法、重复、未知或冲突都不纠正，原样交给 DTO；
+3. 适用字段顺序只来自唯一 `CandidateField` 枚举，并通过现有
+   `PlaceCandidate.model_fields` / `EventCandidate.model_fields` 决定 Place/Event
+   范围；仅 price 使用既有 amount/currency 对应关系；
+4. 非空值不改变、不加入 missing；空值若有 explicit uncertainty 则保留原 field
+   与 reason，不加入 missing；已经 missing 的字段保持原顺序；
+5. 仅空且未分类的字段按稳定枚举顺序追加。Place 不包含 Event 时间字段；Event
+   额外包含 `event_start_at`、`event_end_at`；
+6. 规范化结果仍依次经过唯一严格 DTO、全部既有 model validator、自报
+   `model_invalid_output` 拒绝和 canonicalization。
+
+### 19.3 Prompt 删除、严格性与安全
+
+删除了 `5bcdb9c` 引入的逐字段闭合 checklist、Place/Event 字段目录和专用长
+`json_invalid` guidance；`json_invalid` 恢复通用“按 Schema 与 outcome 重建”
+说明。文字、图片和共享 Prompt 只要求无证据事实留空、来源明确歧义才写
+uncertainty，不再要求模型可靠维护全部内部 missing 账目。必要的 JSON、证据绑定、
+图片不重传、价格成对、Place/Event 安全边界和既有 structured-output 说明保留。
+
+自动化测试证明：
+
+- 现有值、候选标题与顺序、显式 uncertainty field/reason 均逐值保持；
+- 有值同时标 missing、missing/uncertain 冲突、重复 missing、重复 uncertainty、
+  非法分类类型/结构、未知 `CandidateField`、非法 kind 继续被拒绝；
+- price 半完整、Event 时间倒序、非 candidate outcome 携带 candidates 和模型自报
+  invalid 继续被拒绝；
+- 直接构造缺失分类不完整的 Place/Event 仍由领域 DTO 拒绝，领域构造语义未修改；
+- 输入 JSON、messages、Schema 与 response format 保持隔离；重复、多候选和并发
+  调用没有共享状态污染；
+- 安全 issue 仍只包含 path/type，没有增加日志、异常值、Prompt、Schema、原始响应、
+  图片/Base64、路径、Authorization、Cookie 或异常链。
+
+没有新增 Parser、DTO、Schema、Provider、repair 服务、fallback、第三次调用、迁移
+或依赖；普通 Provider、Tool Calling、`json_object`/tools 互斥、最多一次 repair、
+图片 repair 不重传 Base64 和既有 CNY 规范化回归均通过。
+
+### 19.4 离线验证
+
+环境为项目 `.venv`：Python `3.13.5`、mypy `1.20.2`。最终规定命令均退出 0：
+
+| 验证 | 结果 |
+|---|---|
+| `python -m pip check` | 通过 |
+| `python -m ruff check .` | 通过 |
+| `python -m mypy app migrations nanobot_core` | 通过，93 个源文件 |
+| core | `120 passed` |
+| OpenAI-compatible Provider | `39 passed` |
+| ExtractionResult 契约 | `31 passed` |
+| 文字抽取 | `83 passed` |
+| 图片识别 | `61 passed` |
+| 配置 | `125 passed` |
+| 非真实全集 | `1481 passed, 1 skipped, 1 deselected` |
+| 默认全集 | `1481 passed, 2 skipped` |
+| 仓库外插件封锁 DNS、connect、connect_ex、create_connection 后非真实全集 | `1481 passed, 1 skipped, 1 deselected` |
+
+`git diff --check` 通过；Alembic 唯一 head 仍为 `20260722_0006`。没有新增迁移、
+依赖、数据库、图片、响应快照或测试生成物。本任务未读取 `.env`，未运行真实 marker，
+未调用模型、高德、网页、对象存储、消息或其他外部服务；真实请求数、Token 和费用
+均为 0。
+
+### 19.5 Gate 状态与下一轮计划
+
+固定 repair P1 状态更新为：**保守归一化离线修复完成，等待有限真实复测**。第 16
+节文本 `2/2`、图片 `2/2` 的既有真实结论不变；模糊图片的正确
+`insufficient_information` 恢复结论不变。文本 8 秒余量与图片 initial + repair
+在 20 秒内的完整链余量仍是独立超时校准风险，本轮未调整或关闭。
+
+下一轮只允许在新的明确授权后复测第 16–18 节相同 3 个固定 Fixture：
+
+- initial 全部为本地固定非法 JSON；
+- 每样本最多一次真实 repair，总上限 3 次模型请求；
+- 唯一模式 `json_object`，SDK `max_retries=0`，外层重试 0；
+- 单次模型时限 8 秒，发送前计数熔断，不结转旧额度；
+- 不复测文本、图片、Tool Calling、高德或网页，不扩大样本。
+
+未获新授权前不得读取调用配置或执行真实请求。M0-Gate 仍阻塞，不进入重定向网页、
+Dockerfile、锁注册表、aiosqlite 或 M1。

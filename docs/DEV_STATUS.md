@@ -5,9 +5,9 @@
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-Gate 技术验证总验收 |
 | 状态 | 阻塞 |
-| 当前分支 | codex/m0-gate-fixed-repair-real-retest |
+| 当前分支 | codex/m0-gate-conservative-missing-normalization |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 固定 repair 最终真实复测首样本仍为 absent_field_not_classified，结构 P1 不关闭；重定向网页真实链和最小 Dockerfile 仍未收尾 |
+| 阻塞项 | 固定 repair 保守归一化离线修复完成，等待有限真实复测；重定向网页真实链和最小 Dockerfile 仍未收尾 |
 
 ## 当前任务
 
@@ -1353,3 +1353,51 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
   固定 repair 未达到 `3/3`，结构 P1 不关闭；文本 `2/2`、图片 `2/2` 既有结论
   保留。完整独立修复 Prompt 已写入 M0 验证报告第 18.6 节。M0-Gate 仍有该结构
   P1、真实重定向链、Dockerfile 与三个既有 P2；本分支不合并、不推送、不进入下一项
+
+#### 2026-07-23｜M0-Gate 保守缺失归一化｜待有限真实复测
+
+- 分支与门禁：`codex/m0-gate-conservative-missing-normalization` 精确从
+  `f067d31c43f8f95c87d7d5f3f6024aca7f77d729` 创建；开始工作区干净，`main` 与
+  `origin/main` 均为 `0ace869ae2708608d238b77b3ade3153b1307549`，`5bcdb9c`
+  在提交链且其后只有两次文档提交。Alembic 唯一 head 为 `20260722_0006`
+- 产品决定：用户明确批准在唯一模型响应解析边界，把“值为空、未明确 uncertain、
+  也未登记 missing”的适用候选字段保守加入 `missing_fields`。这只是应用派生状态
+  记账，不生成地址、区域、价格、标签、时间或其他事实；已有值、显式 uncertainty
+  及原因和其他业务事实均不修改
+- 生产提交：`6b318f58f91304f6d95a87db6840463e1b250a90`
+  (`fix: normalize absent model fields conservatively`)；在唯一
+  `parse_extraction_response()` 中深拷贝 JSON，把既有已知金额补 CNY 与缺失状态
+  归一化收敛为同一阶段，随后仍经过唯一严格 DTO、全部 validator、自报 invalid
+  拒绝与 canonicalization
+- 字段与严格边界：稳定顺序来自唯一 `CandidateField`，适用范围由现有
+  Place/Event DTO 字段生成，Place 不含 Event 时间、Event 额外含两个时间字段。
+  非空、explicit uncertainty、已有 missing 均保留；冲突、重复、非法类型/结构、
+  未知字段、非法 kind、price pair、Event 时间、outcome 继续由 DTO 拒绝。直接
+  构造缺失分类不完整的领域候选仍失败
+- Prompt 收敛：删除 `5bcdb9c` 的逐字段闭合 checklist、Place/Event 字段目录和
+  专用长 `json_invalid` guidance；恢复简洁通用 JSON repair。文字、图片与共享
+  Prompt 改为无证据事实留空、来源明确歧义才写 uncertainty，不再要求模型可靠维护
+  全部 missing 账目；保留证据绑定、图片不重传、安全 path/type、价格与类型边界
+- 覆盖与隔离：新增/更新测试覆盖 Place/Event 稳定顺序、Place 无 Event 时间、
+  uncertainty 原因保持、已有 missing、有值事实、全部非法分类、未知字段/kind、
+  price/time/outcome、自报 invalid、原对象不变、重复幂等、多候选顺序、并发隔离和
+  三个固定 repair 响应。普通 Provider、Tool Calling、json_object/tools 互斥、
+  最多一次 repair、图片行为/Cleanup/CNY 和 Schema/messages/response_format 隔离
+  均回归通过
+- 最终验证：Python `3.13.5`、mypy `1.20.2`；`pip check`、Ruff、93 文件 strict
+  mypy 通过。core `120 passed`、Provider `39 passed`、ExtractionResult
+  `31 passed`、文字 `83 passed`、图片 `61 passed`、配置 `125 passed`；非真实
+  全集 `1481 passed / 1 skipped / 1 deselected`，默认全集
+  `1481 passed / 2 skipped`，封锁 DNS、connect、connect_ex、create_connection
+  后非真实全集仍为 `1481 passed / 1 skipped / 1 deselected`
+- 范围与安全：没有新增迁移、依赖、Parser、DTO、Schema、Provider、repair 服务、
+  fallback、第三次调用、数据库、图片或响应快照；未处理重定向网页、Dockerfile、
+  锁注册表、aiosqlite 或 M1。未读取 `.env`，未运行真实 marker，真实模型、高德、
+  网页、消息及其他外部请求均为 0
+- Gate 状态：固定 repair P1 为“保守归一化离线修复完成，等待有限真实复测”。
+  文本 `2/2`、图片 `2/2` 既有真实结论与模糊图片正确恢复不变；文本 8 秒余量和
+  图片双调用 20 秒余量仍是独立超时校准风险
+- 下一步：等待新的明确授权，只复测第 16–18 节相同 3 个固定 Fixture；initial
+  全为本地固定非法 JSON，每样本最多一次 `json_object` repair，总上限 3 请求，
+  SDK/外层零重试、单次 8 秒、发送前熔断、不结转旧额度；不复测文本、图片、Tool
+  Calling、高德或网页，不扩大样本。本分支不合并、不推送
