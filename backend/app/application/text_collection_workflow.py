@@ -833,6 +833,8 @@ class TextCollectionWorkflow:
                 else:
                     candidate_data.update(
                         {
+                            "event_start_date": item.event_start_date,
+                            "event_end_date": item.event_end_date,
                             "event_start_at": item.event_start_at,
                             "event_end_at": item.event_end_at,
                             "event_start_clue": item.event_start_clue,

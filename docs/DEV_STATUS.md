@@ -1666,3 +1666,30 @@ Session、M1-2 Next.js 或其他后续阶段。
 - 下一步：等待主控复核迁移安全、严格字段闭合、日期/时刻区分、date-only 计划排除
   和 exact-time 回归后集成。M0 保持完成，M1-0 仍未开始；其第一项强制前置仍是
   `IdempotencyLockRegistry` 有界生命周期修复
+
+#### 2026-07-24｜Event 日期粒度幂等重放 P1 修复｜待主控复测
+
+- 分支与基线：继续使用 `codex/event-date-granularity`，从待修复 HEAD
+  `6911a7c7b8353cb34e7e659abac9ab6adbf02251` 开始；未改写、变基、压缩或 amend
+  既有提交
+- 缺陷复现：新增公开文字消息入口回归后，修复前 date-only Event 首次请求为 200，
+  同 Session、相同输入和 idempotency key 的第二次重放为 422，稳定命中
+  `event_date_absent_not_classified`；目标用例为 `1 failed`
+- 修复：只在 `TextCollectionWorkflow._extraction_from_source()` 现有 EventCandidate
+  重建映射中补回 `item.event_start_date` 与 `item.event_end_date`，没有新增服务、
+  DTO、转换器、fallback、Prompt、repair、Repository、状态或 M1 能力
+- 回归：date-only Event 两次均成功，第二次 `replayed=true`，两次 CollectionItem
+  ID、日期和完整公开收藏结果一致，精确 datetime 仍为 null，状态仍为
+  `pending_details`；该请求 Provider 只调用 1 次且数据库仍只有 1 条对应收藏
+- 兼容与纯度：同一公开测试同时确认 exact-time Event 重放继续为 `active` 且准确
+  datetime 不变，Place 重放的 Event 日期与时间字段均为 null；请求 payload 与首次
+  持久化 CollectionItem 快照在重放后不变。三个首次请求合计 Provider 3 次，各自
+  重放均无额外调用
+- 验证：修复后目标用例 `1 passed`；规定聚焦集 `80 passed`；正式离线全集
+  `1504 passed / 2 deselected`；仓库外插件封锁 DNS、connect、connect_ex 和
+  create_connection 后统一输入 `23 passed`。`pip check`、Ruff、94 文件 strict
+  mypy 全部通过；临时 SQLite 的 Alembic 唯一 head 仍为 `20260724_0007`，
+  `alembic check` 无待生成操作
+- 安全与下一步：所有命令显式使用测试环境；未读取 `.env`，真实模型、地图、网页、
+  对象存储、消息及其他真实/付费 API 调用为 0。等待主控重点复测 date-only 重放、
+  exact-time/Place 边界和零重复收藏后集成；M0 状态与 M1-0 前置不变

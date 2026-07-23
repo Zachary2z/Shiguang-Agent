@@ -170,6 +170,36 @@ def _date_response(title: str):
     )
 
 
+def _replay_date_event() -> EventCandidate:
+    return _date_event("夏季展览").model_copy(
+        update={
+            "event_start_date": date(2026, 6, 13),
+            "event_end_date": date(2026, 7, 31),
+        }
+    )
+
+
+def _exact_time_event() -> EventCandidate:
+    return EventCandidate(
+        title="准确场次",
+        city_hint="深圳",
+        district="南山区",
+        address="海上世界文化艺术中心",
+        business_district="海上世界",
+        landmark="海上世界文化艺术中心",
+        metro_station="海上世界站",
+        price_amount=Decimal("0.00"),
+        price_currency="CNY",
+        tags=("展览",),
+        event_start_at=datetime(2026, 7, 31, 6, 0, tzinfo=UTC),
+        event_end_at=datetime(2026, 7, 31, 9, 0, tzinfo=UTC),
+        missing_fields=(
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
+        ),
+    )
+
+
 def _web_success() -> WebPageContent:
     return WebPageContent(
         normalized_url="https://example.com/article?a=1&b=2",
@@ -339,6 +369,105 @@ async def test_text_url_and_image_preserve_date_only_events_without_inventing_ti
     assert {item["event_start_at"] for item in collections} == {None}
     assert {item["event_end_at"] for item in collections} == {None}
     assert {item["status"] for item in collections} == {"pending_details"}
+
+
+@pytest.mark.asyncio
+async def test_public_text_replay_preserves_event_dates_and_existing_candidate_boundaries(
+    test_settings: Settings,
+) -> None:
+    candidates = (_replay_date_event(), _exact_time_event(), _place("Replay place"))
+    provider = FakeProvider(
+        [
+            fake_response(
+                content=ExtractionResult.with_candidates((candidate,)).model_dump_json()
+            )
+            for candidate in candidates
+        ]
+    )
+    payloads = [
+        {
+            "type": "text",
+            "idempotency_key": f"replay-{index}",
+            "text": f"immutable input {index}",
+        }
+        for index in range(len(candidates))
+    ]
+    payload_snapshots = [dict(payload) for payload in payloads]
+    first_results: list[httpx.Response] = []
+    replay_results: list[httpx.Response] = []
+    saved_snapshots: list[dict[str, object]] = []
+
+    async with _client(test_settings, provider) as (api, client, _storage):
+        session_id = await _demo(client)
+        for payload in payloads:
+            first = await client.post(
+                f"/api/v1/sessions/{session_id}/messages",
+                json=payload,
+            )
+            first_results.append(first)
+            item_id = str(first.json()["collections"][0]["id"])
+            async with api.state.database.session() as session:
+                repository = SqlAlchemyCollectionRepository(session)
+                saved = await repository.get_collection_item(
+                    user_id=DEMO_USER_ID,
+                    collection_item_id=item_id,
+                )
+                assert saved is not None
+                saved_snapshots.append(saved.model_dump(mode="python"))
+
+            replay_results.append(
+                await client.post(
+                    f"/api/v1/sessions/{session_id}/messages",
+                    json=payload,
+                )
+            )
+            assert len(provider.calls) == len(first_results)
+
+        async with api.state.database.session() as session:
+            repository = SqlAlchemyCollectionRepository(session)
+            stored = await repository.list_collection_items(
+                user_id=DEMO_USER_ID,
+                include_inactive=True,
+            )
+
+    assert payloads == payload_snapshots
+    assert len(provider.calls) == 3
+    assert len(stored) == 3
+    assert all(result.status_code == 200 for result in (*first_results, *replay_results))
+    assert all(result.json()["replayed"] is True for result in replay_results)
+    for first, replay, saved_snapshot in zip(
+        first_results,
+        replay_results,
+        saved_snapshots,
+        strict=True,
+    ):
+        assert replay.json()["collections"] == first.json()["collections"]
+        assert replay.json()["collections"][0]["id"] == first.json()["collections"][0]["id"]
+        matching_item = next(
+            item for item in stored if item.id == first.json()["collections"][0]["id"]
+        )
+        assert matching_item.model_dump(mode="python") == saved_snapshot
+
+    date_item = replay_results[0].json()["collections"][0]
+    assert date_item["event_start_date"] == "2026-06-13"
+    assert date_item["event_end_date"] == "2026-07-31"
+    assert date_item["event_start_at"] is None
+    assert date_item["event_end_at"] is None
+    assert date_item["status"] == "pending_details"
+
+    exact_item = replay_results[1].json()["collections"][0]
+    assert exact_item["event_start_date"] is None
+    assert exact_item["event_end_date"] is None
+    assert exact_item["event_start_at"] == "2026-07-31T06:00:00Z"
+    assert exact_item["event_end_at"] == "2026-07-31T09:00:00Z"
+    assert exact_item["status"] == "active"
+
+    place_item = replay_results[2].json()["collections"][0]
+    assert place_item["kind"] == "place"
+    assert place_item["event_start_date"] is None
+    assert place_item["event_end_date"] is None
+    assert place_item["event_start_at"] is None
+    assert place_item["event_end_at"] is None
 
 
 @pytest.mark.asyncio
