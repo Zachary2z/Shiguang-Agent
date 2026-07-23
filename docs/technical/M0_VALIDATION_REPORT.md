@@ -2,9 +2,9 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 报告状态 | 阻塞：结构兼容性离线修复已完成，等待七个失败样本的独立真实复测授权；重定向网页和 Dockerfile 仍未完成 |
-| 验收分支 | `codex/m0-gate-structure-fix` |
-| 当前证据提交 | `7660fb0aa2e7607b67e89358930d7ddea4609f53` |
+| 报告状态 | 阻塞：真实结构兼容性与重定向网页真实链 P1 均已关闭；最小 Dockerfile 仍未完成 |
+| 验收分支 | `codex/m0-gate-redirect-real-retest` |
+| 本次起始证据提交 | `ebeac0ba157e7195dc2c676a0a183ea853570708` |
 | 生产代码基线（`main` / `origin/main`） | 均为 `0ace869ae2708608d238b77b3ade3153b1307549` |
 | 验收日期 | 2026-07-23 |
 | 是否允许进入 M1 | 否；真实 Gate 未完整通过 |
@@ -203,7 +203,8 @@
 
 ## 9. 未解决风险与缺陷分级
 
-当前没有已确认的生产 P0/P1；存在两个阻塞 Gate 的验收 P1。以下 P2 和验收 P1 都不通过生产特例、白名单、代理、重复校验或放宽断言处理。
+当前没有未关闭的生产或真实链路 P0/P1。以下历史验收 P1 保留原始失败证据和关闭
+记录；P2 不通过生产特例、白名单、代理、重复校验或放宽断言处理。
 
 ### 9.1 P2 / M1 入口前必须解决：进程内幂等锁注册表不淘汰
 
@@ -257,13 +258,16 @@
 
 > 在新的 M0-Gate 复测任务中，先读取本报告并取得用户对文字抽取最多 6 次模型请求、结构修复最多 3 次、图片识别最多 6 次的重新授权。修复仓库外 QA 脚本，使其使用生产枚举 `ExtractionOutcome.MODEL_INVALID_OUTPUT`；在任何真实调用前，用 FakeProvider 覆盖 candidates、insufficient、unsupported、model-invalid 四种 outcome 并验证汇总器。脚本只记录 outcome、候选数量、调用次数、延迟、Token、费用和稳定错误码，不保存完整请求/响应或图片。随后严格按原三个样本逐类复测，模型零重试，不增加样本，不重复 Tool、高德或网页。报告每类成功率、结构结果和恢复次数。
 
-### 9.5 P1（外部验收）：重定向网页真实成功链路未建立
+### 9.5 已关闭 P1（外部验收）：重定向网页真实成功链路未建立
 
 - 位置：真实网页验收的两个公开重定向目标；生产 `HttpxWebContentProvider` 离线 redirect/SSRF 契约仍全部通过。
 - 实际：两个样本均在首个 HTTP 请求读取响应头时超时，分别稳定恢复为 `WEB_TIMEOUT`；实际 redirect hop 数为 0。
 - 预期：至少一个普通重定向和一个相对或多 hop 重定向在 20 秒外层预算内成功，并记录总 hop 与端到端耗时。
 - 影响：本轮证明了失败恢复和 20 秒外层终止，但不能完成真实重定向链及“20 秒覆盖全部 hop”的校准；当前无法区分目标站点、网络路径和生产 Provider 的真实兼容性。
 - 复测范围：只复测两个由用户重新批准、无登录/无 Cookie/无副作用的受控重定向目标；合计 HTTP 上限应在执行前明确，零重试，不复测其他五类。
+- 关闭证据：2026-07-23 使用两个固定 httpbingo 匿名 GET 样本完成真实一跳与两跳
+  重定向；实际 HTTP 请求恰好 `5/5`，每跳均重新执行生产 URL、DNS 与 SSRF 校验，
+  两个样本均在 20 秒总预算内返回公开 HTML，详见第 21 节。
 
 完整复测 Prompt：
 
@@ -1467,3 +1471,89 @@ M0-Gate 仍未整体关闭：下一项是重定向网页真实验收。最小 Do
 注册表、aiosqlite 收尾 warning、文本 8 秒余量和图片 initial + repair 在 20 秒内
 的完整链余量仍按既有风险保留。本窗口没有复测或修改文字、图片、Tool Calling、
 高德、网页、Dockerfile、锁注册表、aiosqlite 或 M1，也不开始下一项。
+
+## 21. 重定向网页真实复测
+
+### 21.1 门禁、授权与执行边界
+
+- 分支 `codex/m0-gate-redirect-real-retest` 从
+  `ebeac0ba157e7195dc2c676a0a183ea853570708` 创建；开始时工作区干净，
+  `main` 与 `origin/main` 均为
+  `0ace869ae2708608d238b77b3ade3153b1307549`，Alembic 唯一 head 为
+  `20260722_0006`。第 20 节已明确关闭真实结构兼容性 P1。
+- 用户在本窗口独立授权两个固定、公开、匿名、GET-only、无登录、无 Cookie 的
+  httpbingo 重定向样本：A 为普通单跳，B 为相对两跳；合计最多 5 次外部 HTTP
+  请求，所有层均 0 重试。没有结转第 8 节原 `4/14` 网页调用记录。
+- 复测使用生产 `WebFetchConfig`、`create_web_http_client`、
+  `HttpxWebContentProvider`、`SystemHostResolver`、URL/DNS/SSRF 与显式重定向
+  校验。配置为 connect 5 秒、read 10 秒、每样本总预算 20 秒、
+  `follow_redirects=False`、`trust_env=False`、`retries=0`、
+  `max_redirects=5`、无 keepalive、`Connection: close`。
+- 仓库外 `CountingTransport` 委托生产形态的 `AsyncHTTPTransport`，每次发送前
+  计数，第 6 次会在委托前硬拒绝。离线自检实际尝试 6 次、底层只委托 5 次并退出
+  0。真实工具只输出样本编号、hop、状态类别、脱敏耗时与布尔安全结论，不保存或
+  输出完整 query、Header、Cookie、正文、响应头或异常原文。
+
+### 21.2 离线门禁
+
+仓库外 `git archive` 快照和全新虚拟环境使用 Python 3.13.5。安装
+`backend[dev]` 与 `pip check` 均退出 0。真实请求前结果如下，全部无 warning：
+
+| 命令 | 退出码与结果 |
+|---|---|
+| `python -m ruff check .` | 0，全部通过 |
+| `python -m mypy app migrations nanobot_core` | 0，93 个源文件无问题 |
+| `tests/unit/test_httpx_web_content_provider.py` | 0，`114 passed` |
+| `tests/unit/test_web_url_security.py` | 0，`59 passed` |
+| `tests/contract/test_web_content_provider_contract.py` | 0，`22 passed` |
+| `tests/contract/test_m0_4d_unified_input.py` | 0，`19 passed` |
+| 非真实全集 | 0，`1481 passed, 1 skipped, 1 deselected` |
+| 封锁 DNS、connect、connect_ex、create_connection 后非真实全集 | 0，`1481 passed, 1 skipped, 1 deselected` |
+
+### 21.3 真实结果与逐跳安全
+
+| 样本 | 实际链 | HTTP 请求 | DNS/SSRF 校验 | 单 hop 耗时 | 端到端 | 20 秒占比 |
+|---|---|---:|---:|---|---:|---:|
+| A | `3xx → 2xx`，`redirect_count=1` | 2 | 2 | `828.457 / 692.671 ms` | `1700.369 ms` | `8.502%` |
+| B | `3xx → 3xx → 2xx`，`redirect_count=2` | 3 | 3 | `579.096 / 513.655 / 526.016 ms` | `1663.756 ms` | `8.319%` |
+
+两个样本均由生产 Provider 返回 `WebPageContent`、公开 HTML，标题或清理正文非空，
+并落到固定公开 HTML 终点。每次初始请求与重定向后的请求都重新经过生产 URL
+规范化、DNS 解析、全部解析地址 SSRF 校验和连接 IP 绑定；A 共 2 次、B 共 3 次，
+与实际 HTTP 请求一一对应。B 的两个相对重定向都没有绕过逐跳校验。
+
+实际外部 HTTP 请求恰好 `5/5`，样本成功率 `2/2 = 100%`，请求成功率
+`5/5 = 100%`，超时率 `0%`，重试率 `0%`。没有触发恢复路径；既有第 8 节
+首 hop 超时与安全恢复历史保持不变。Cookie 在每个样本后均为空，没有认证、代理或
+环境变量注入。真实进程只调用网页 Provider，没有初始化数据库，也没有 Message、
+Source、收藏、AgentRun 或 ToolRun 写入。
+
+五个单 hop 的 P50 / 观测 P95 / 最大为
+`579.096 / 801.300 / 828.457 ms`；两个端到端样本为
+`1682.062 / 1698.538 / 1700.369 ms`。P95 仅为 n=5 hop 与 n=2 样本的线性
+插值观测值，不具有统计验证意义。最大端到端占 20 秒预算 `8.502%`，当前一跳与
+两跳真实链余量充足；生产最多五次重定向仍只由离线测试证明，本轮没有宣称真实五跳
+均已覆盖。Token 为 `N/A`，费用未知。
+
+### 21.4 清理、回归与 Gate 结论
+
+真实进程退出后先删除 `/tmp/shiguang_redirect_real_probe.py`、旧封网插件及对应
+字节码，再执行回归；封网复跑后删除新插件、整个临时快照和虚拟环境。最终精确检查
+确认探针、插件和 `/tmp/shiguang-m0-redirect.UtdgIH` 均不存在。没有读取或修改
+`.env`，没有调用模型、高德、图片、对象存储、Tool Calling、消息或其他外部服务。
+
+| 回归 | 退出码与结果 |
+|---|---|
+| `python -m ruff check .` | 0，全部通过 |
+| `python -m mypy app migrations nanobot_core` | 0，93 个源文件无问题 |
+| 非真实全集 | 0，`1481 passed, 1 skipped, 1 deselected` |
+| 默认全集 | 0，`1481 passed, 2 skipped` |
+| 再次封锁 DNS、connect、connect_ex、create_connection 后非真实全集 | 0，`1481 passed, 1 skipped, 1 deselected` |
+
+本轮真实样本与全部回归均通过，因此第 9.5 节“真实重定向网页链未建立”P1
+**关闭**。真实结构兼容性和真实重定向链均已关闭，没有未关闭的真实链路 P1。
+
+M0-Gate 尚未整体关闭，下一项更新为“最小 Dockerfile 补齐与容器验收”。幂等锁
+注册表、aiosqlite 收尾 warning、文本 8 秒余量和图片 initial + repair 在 20 秒内
+的完整链余量继续按既有风险保留。本窗口没有修改生产代码或测试，没有处理
+Dockerfile，没有合并、推送或进入 M1。
