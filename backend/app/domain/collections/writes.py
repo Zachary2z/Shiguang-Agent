@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Any, Self
@@ -139,6 +139,8 @@ class CollectionItemPatch(BaseModel):
     business_district: str | None = None
     landmark: str | None = None
     metro_station: str | None = None
+    event_start_date: date | None = Field(default=None, strict=False)
+    event_end_date: date | None = Field(default=None, strict=False)
     event_start_at: datetime | None = None
     event_end_at: datetime | None = None
     event_start_clue: str | None = None

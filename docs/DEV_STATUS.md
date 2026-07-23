@@ -3,17 +3,17 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 关闭后校准窗口 |
-| 当前子阶段 | 真实截图超时校准修复 |
+| 当前子阶段 | Event 日期粒度修正 |
 | 状态 | 待验收 |
-| 当前分支 | codex/m0-timeout-calibration |
+| 当前分支 | codex/event-date-granularity |
 | 最近更新 | 2026-07-24 |
 | 阻塞项 | 本修复待主控集成；M1-0 仍未开始，IdempotencyLockRegistry 无界增长 P2 仍是其第一项强制前置 |
 
 ## 当前任务
 
 M0-0A 至 M0-5D 及 M0-Gate 均已通过主控验收，M0 仍保持正式完成。本窗口只处理
-M0 关闭后、M1-0 开始前的模型单次请求与图片整链路超时校准；不重新打开 M0
-功能范围，也不开始 M1-0。修复集成后仍须另行启动 M1-0，并先解决
+M0 关闭后、M1-0 开始前的 Event 有效日期与准确场次时间通用领域语义；不重新打开
+M0 功能范围，也不开始 M1-0。修复集成后仍须另行启动 M1-0，并先解决
 `IdempotencyLockRegistry` 无界增长 P2；PostgreSQL、Job、Worker、APScheduler、
 Docker Compose、SSE、M1-1、M1-2 及后续阶段均未开始。
 
@@ -60,16 +60,17 @@ Docker Compose、SSE、M1-1、M1-2 及后续阶段均未开始。
 - M0-5B 已完成：唯一结构化收藏检索入口、正式城市和状态边界、硬约束过滤、动态事实、请求级任意分店解析、同 POI 去重、安全错误及只读幂等均已通过主控验收。
 - M0-5C 已完成：唯一确定性草案生成与复核入口、主方案及最多两个备选、交通与结束缓冲、费用/来源/风险、任意分店快照、20 组零硬约束违反 Fixture，以及中国场景下严格的 `None + None` 或 `Decimal + CNY` 价格契约均已通过主控验收。
 - M0-5D 已完成：收藏优先、显式 Place 缺口、外部补充 Approval、拒绝/collection-only/Event 零外搜、候选消歧、外部来源与风险、统一排程和已知/未知 CNY 费用均已通过主控验收。
+- M0 关闭后 Event 日期粒度修正待验收：有效自然日期与准确场次时间使用独立字段，
+  date-only Event 可收藏但保持待补充且不进入计划；没有样本白名单或第二套解析链。
 
 ## 下一步
 
-M0-Gate 已完成。当前先由主控集成本超时校准修复：单次 Provider SDK 调用总墙钟
-暂定为 15 秒，图片/URL 完整流程继续共享既有 20 秒总预算。集成后需重新取得明确
-授权，按固定 01–06 顺序完成真实六图复测；本窗口真实 API 调用为 0。M1-0 尚未
-开始，其第一项仍必须先解决幂等锁注册表无界增长 P2，再进入 PostgreSQL、Job、
-Worker、APScheduler、Docker Compose 和 SSE。aiosqlite 偶发收尾 warning与网页
-真实最多五跳未覆盖继续监测。不得提前开始 M1-1 Session、M1-2 Next.js 或其他
-后续阶段。
+M0-Gate 已完成。当前先由主控集成 Event 日期粒度修正；样本 06 已由用户决定不作为
+内容正确性 Gate，本任务也没有为样本 03 增加任何生产特例。所有验证保持离线，真实
+API 调用为 0。M1-0 尚未开始，其第一项仍必须先解决幂等锁注册表无界增长 P2，再进入
+PostgreSQL、Job、Worker、APScheduler、Docker Compose 和 SSE。aiosqlite 偶发收尾
+warning、文本/图片超时余量与网页真实最多五跳未覆盖继续监测。不得提前开始 M1-1
+Session、M1-2 Next.js 或其他后续阶段。
 
 ## 已确认 M0-Gate 延迟与超时校准
 

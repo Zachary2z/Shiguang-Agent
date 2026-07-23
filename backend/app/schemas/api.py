@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
@@ -101,6 +101,8 @@ class CollectionItemResponse(ApiModel):
     business_district: str | None
     landmark: str | None
     metro_station: str | None
+    event_start_date: date | None
+    event_end_date: date | None
     event_start_at: datetime | None
     event_end_at: datetime | None
     event_start_clue: str | None
@@ -130,6 +132,8 @@ class CollectionItemResponse(ApiModel):
             business_district=item.business_district,
             landmark=item.landmark,
             metro_station=item.metro_station,
+            event_start_date=item.event_start_date,
+            event_end_date=item.event_end_date,
             event_start_at=item.event_start_at,
             event_end_at=item.event_end_at,
             event_start_clue=item.event_start_clue,

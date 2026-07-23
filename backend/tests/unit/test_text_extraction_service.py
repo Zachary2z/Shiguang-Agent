@@ -7,7 +7,7 @@ import asyncio
 import inspect
 import json
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -106,6 +106,10 @@ def _full_event(
         event_end_at=START + timedelta(hours=3),
         event_start_clue="7月25日14:00",
         event_end_clue="7月25日17:00",
+        missing_fields=(
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
+        ),
     )
 
 
@@ -122,12 +126,62 @@ def _event_without_time() -> EventCandidate:
         price_currency="CNY",
         tags=("市集", "周末"),
         event_start_clue="周六下午",
-        missing_fields=(CandidateField.EVENT_START_AT, CandidateField.EVENT_END_AT),
+        missing_fields=(
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
+    )
+
+
+def _date_only_event() -> EventCandidate:
+    return EventCandidate(
+        title="夏季展览",
+        city_hint="深圳",
+        district="南山区",
+        address="海上世界文化艺术中心",
+        business_district="海上世界",
+        landmark="海上世界文化艺术中心",
+        metro_station="海上世界站",
+        price_amount=Decimal("0.00"),
+        price_currency="CNY",
+        tags=("展览",),
+        event_start_date=date(2026, 6, 13),
+        event_end_date=date(2026, 7, 31),
+        missing_fields=(
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
     )
 
 
 def _result_response(result: ExtractionResult) -> ModelResponse:
     return fake_response(content=result.model_dump_json())
+
+
+@pytest.mark.asyncio
+async def test_date_only_text_extraction_preserves_calendar_dates_without_midnight() -> None:
+    response = _result_response(ExtractionResult.with_candidates((_date_only_event(),)))
+    provider = FakeProvider(
+        [
+            response,
+            _result_response(ExtractionResult.with_candidates((_date_only_event(),))),
+        ]
+    )
+    service = TextExtractionService(provider)
+
+    first = await service.extract("展期：2026.6.13–7.31")
+    second = await service.extract("展期：2026.6.13–7.31")
+
+    assert first == second
+    candidate = first.candidates[0]
+    assert isinstance(candidate, EventCandidate)
+    assert candidate.event_start_date == date(2026, 6, 13)
+    assert candidate.event_end_date == date(2026, 7, 31)
+    assert candidate.event_start_at is None
+    assert candidate.event_end_at is None
+    assert "T00:00:00" not in first.model_dump_json()
 
 
 class _EvidenceCheckingTextProvider(FakeProvider):
@@ -552,6 +606,8 @@ def test_event_adds_time_fields_without_changing_explicit_uncertainty() -> None:
         CandidateField.BUSINESS_DISTRICT,
         CandidateField.LANDMARK,
         CandidateField.METRO_STATION,
+        CandidateField.EVENT_START_DATE,
+        CandidateField.EVENT_END_DATE,
         CandidateField.EVENT_START_AT,
         CandidateField.EVENT_END_AT,
         CandidateField.PRICE,

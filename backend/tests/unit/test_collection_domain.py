@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -323,6 +323,8 @@ def test_provider_independent_place_event_fields_version_price_and_tags() -> Non
         user_id=USER_ID,
         kind=CollectionKind.EVENT,
         title="设计展",
+        event_start_date=date(2026, 7, 25),
+        event_end_date=date(2026, 7, 31),
         event_start_at=NOW,
         event_end_at=NOW + timedelta(hours=2),
         status=CollectionStatus.PENDING_DETAILS,
@@ -330,6 +332,8 @@ def test_provider_independent_place_event_fields_version_price_and_tags() -> Non
         updated_at=NOW,
     )
     assert event.kind is CollectionKind.EVENT
+    assert event.event_start_date == date(2026, 7, 25)
+    assert event.event_end_date == date(2026, 7, 31)
     assert not can_collection_enter_plan(event.status)
 
     for update in (
@@ -338,6 +342,7 @@ def test_provider_independent_place_event_fields_version_price_and_tags() -> Non
         {"price_amount": None, "price_currency": "CNY"},
         {"price_amount": Decimal("10"), "price_currency": "USD"},
         {"tags": ("室内", "室内")},
+        {"event_start_date": date(2026, 7, 25)},
         {"event_start_at": NOW, "event_end_at": NOW + timedelta(hours=1)},
     ):
         payload = place.model_dump()
@@ -357,6 +362,11 @@ def test_provider_independent_place_event_fields_version_price_and_tags() -> Non
     assert CollectionItem.model_validate(
         {**place.model_dump(), "city_hint": "上海"}
     ).city_hint == "上海"
+
+    invalid_event = event.model_dump()
+    invalid_event["event_end_date"] = date(2026, 7, 24)
+    with pytest.raises(ValidationError, match="event_date_order_invalid"):
+        CollectionItem.model_validate(invalid_event)
 
     invalid_event = event.model_dump()
     invalid_event["event_end_at"] = NOW

@@ -8,7 +8,7 @@ import os
 import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -93,6 +93,31 @@ def _event(*, title: str = "上海周末设计展", city_hint: str = "上海") -
         tags=("展览", "室内"),
         event_start_at=EVENT_START,
         event_end_at=EVENT_START + timedelta(hours=3),
+        missing_fields=(
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
+        ),
+    )
+
+
+def _date_only_event() -> EventCandidate:
+    return EventCandidate(
+        title="夏季展览",
+        city_hint="深圳",
+        district="南山区",
+        address="海上世界文化艺术中心",
+        business_district="海上世界",
+        landmark="海上世界文化艺术中心",
+        metro_station="海上世界站",
+        price_amount=Decimal("0.00"),
+        price_currency="CNY",
+        tags=("展览",),
+        event_start_date=date(2026, 6, 13),
+        event_end_date=date(2026, 7, 31),
+        missing_fields=(
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
     )
 
 
@@ -570,6 +595,55 @@ async def test_patch_reuses_domain_validation_and_noop_keeps_version(
     assert forbidden.status_code == 422
     assert invalid_place_schedule.status_code == 422
     assert invalid_price.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_date_only_event_api_serializes_modifies_and_clears_calendar_dates(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider([_response(_date_only_event())])
+    async with _client(test_settings, provider) as (_api, client):
+        session_id = await _demo(client)
+        created = await _submit(
+            client,
+            session_id,
+            key="date-only-api",
+            content="展期：2026.6.13–7.31",
+        )
+        item = created.json()["collections"][0]
+        changed = await client.patch(
+            f"/api/v1/collections/{item['id']}",
+            json={
+                "expected_version": item["version"],
+                "changes": {
+                    "event_start_date": "2026-06-14",
+                    "event_end_date": "2026-08-01",
+                },
+            },
+        )
+        cleared = await client.patch(
+            f"/api/v1/collections/{item['id']}",
+            json={
+                "expected_version": changed.json()["version"],
+                "changes": {
+                    "event_start_date": None,
+                    "event_end_date": None,
+                },
+            },
+        )
+
+    assert created.status_code == 200
+    assert item["event_start_date"] == "2026-06-13"
+    assert item["event_end_date"] == "2026-07-31"
+    assert item["event_start_at"] is None
+    assert item["event_end_at"] is None
+    assert item["status"] == "pending_details"
+    assert changed.status_code == 200
+    assert changed.json()["event_start_date"] == "2026-06-14"
+    assert changed.json()["event_end_date"] == "2026-08-01"
+    assert cleared.status_code == 200
+    assert cleared.json()["event_start_date"] is None
+    assert cleared.json()["event_end_date"] is None
 
 
 @pytest.mark.asyncio

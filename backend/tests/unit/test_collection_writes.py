@@ -1,6 +1,6 @@
 """Deterministic M0-2C write contracts and status mapping."""
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -40,17 +40,36 @@ def test_status_mapping_never_fakes_poi_selection_and_requires_exact_event_time(
         **_common_candidate_fields(),
         event_start_at=NOW,
         event_end_at=NOW.replace(hour=11),
+        missing_fields=(
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
+        ),
     )
     clue_event = EventCandidate(
         **_common_candidate_fields(),
         event_start_clue="周六上午",
         event_end_clue="中午前",
-        missing_fields=(CandidateField.EVENT_START_AT, CandidateField.EVENT_END_AT),
+        missing_fields=(
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
+    )
+    date_only_event = EventCandidate(
+        **_common_candidate_fields(),
+        event_start_date=date(2026, 6, 13),
+        event_end_date=date(2026, 7, 31),
+        missing_fields=(
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
     )
 
     assert status_for_extraction_candidate(place) is CollectionStatus.PENDING_DETAILS
     assert status_for_extraction_candidate(exact_event) is CollectionStatus.ACTIVE
     assert status_for_extraction_candidate(clue_event) is CollectionStatus.PENDING_DETAILS
+    assert status_for_extraction_candidate(date_only_event) is CollectionStatus.PENDING_DETAILS
     assert CollectionStatus.PENDING_SELECTION not in {
         status_for_extraction_candidate(place),
         status_for_extraction_candidate(exact_event),
@@ -67,6 +86,8 @@ def test_patch_contract_allowlists_only_editable_fields_and_tracks_explicit_null
         business_district="中心区",
         landmark="市民中心",
         metro_station="市民中心站",
+        event_start_date=date(2026, 7, 25),
+        event_end_date=date(2026, 7, 26),
         event_start_at=NOW,
         event_end_at=NOW.replace(hour=11),
         event_start_clue="上午",

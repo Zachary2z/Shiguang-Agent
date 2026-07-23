@@ -126,7 +126,10 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前 HEAD revision 是 `20260722_0006`。M0-4D、M0-5A、M0-5B、M0-5C 与 M0-5D 均未新增迁移；现有 Message、Source、AgentRun/ToolRun、收藏、地点目标和幂等表继续作为检索的唯一持久数据来源。应用不会在导入或启动时自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+当前 HEAD revision 是 `20260724_0007`。该迁移为 Event 增加 nullable 的
+`event_start_date/event_end_date` DATE 列；现有 Message、Source、AgentRun/ToolRun、
+收藏、地点目标和幂等表继续作为检索的唯一持久数据来源。应用不会在导入或启动时
+自动执行迁移，也不使用 `create_all()` 代替 Alembic。
 
 ### 启动 API
 
@@ -230,7 +233,7 @@ Runner 在同一执行循环中保证：最多执行 8 次绝对 Tool Call；第
 
 ### M0-2A/B/C 文字收藏、结构化抽取与可逆写入
 
-`app.domain.collections` 是 User、Session、Message、Source、CollectionItem、CollectionSource、Place/Event 类型和收藏状态的唯一应用层契约。实体 ID 使用命名空间加 128 位随机值，服务端时间统一为 UTC；稳定的所有权、状态、版本、Source 抓取时间和 Event 时间使用独立数据库列。Source 元数据使用字段白名单，不接受 Header、Cookie、原始正文或凭证。
+`app.domain.collections` 是 User、Session、Message、Source、CollectionItem、CollectionSource、Place/Event 类型和收藏状态的唯一应用层契约。实体 ID 使用命名空间加 128 位随机值，服务端时间统一为 UTC；稳定的所有权、状态、版本、Source 抓取时间和 Event 时间使用独立数据库列。Event 的 `event_start_date/event_end_date` 是不带时区、结束日包含当天的有效自然日期；`event_start_at/event_end_at` 只保存来源明确到钟点的 aware 场次时间。date-only 事实不会转换成午夜、推断时区或每日开闭馆时间。Source 元数据使用字段白名单，不接受 Header、Cookie、原始正文或凭证。
 
 `SqlAlchemyCollectionRepository` 的所有公开读写方法都显式要求 `user_id`。Message 通过用户拥有的 Session 查询；CollectionSource 在 Repository 与复合外键两层保证 Source 和 CollectionItem 属于同一用户；跨用户资源与不存在资源采用同一安全结果。默认收藏查询排除 `recognizing`、`failed`、`archived` 和 `deleted`，只有 `active` 具备后续进入计划的状态资格。
 
@@ -238,7 +241,7 @@ Runner 在同一执行循环中保证：最多执行 8 次绝对 Tool Call；第
 
 唯一 `CollectionWriteService` 将候选、共享 Source、CollectionSource、幂等记录和 Undo 关联放在同一事务中。`user_id + idempotency_key` 与 `user_id + source_id` 的数据库唯一约束覆盖重复消息、并发提交和同来源重试；请求只持久化规范化 SHA-256 指纹。首次成功返回 10 分钟 Undo Token，数据库只保存 Token 哈希，重试不再次返回明文。Undo 只把本次操作创建的条目逻辑删除，不删除 Source 或其他收藏。
 
-`CollectionItemPatch` 只开放标题、城市线索、位置/时间线索、Event 时间、价格、标签、缺失字段和不确定项。成功变更使用 `expected_version` 并递增版本；无实际变化不生成新版本，旧版本不会覆盖新数据。默认查询立即隐藏 `deleted`，内部 `include_inactive` 仍可复核。M0-3 前 Place 自动保存为 `pending_details`，不会伪造 POI 候选、正式城市或计划资格；精确起止时间完整的 Event 才映射为 `active`。
+`CollectionItemPatch` 只开放标题、城市线索、位置/时间线索、Event 日期与准确时间、价格、标签、缺失字段和不确定项。成功变更使用 `expected_version` 并递增版本；无实际变化不生成新版本，旧版本不会覆盖新数据。默认查询立即隐藏 `deleted`，内部 `include_inactive` 仍可复核。M0-3 前 Place 自动保存为 `pending_details`，不会伪造 POI 候选、正式城市或计划资格；只有日期范围的 Event 也保持 `pending_details` 且不进入正式计划，精确起止时间完整的 Event 才映射为 `active`。
 
 ### M0-2D 最小 HTTP API
 

@@ -12,8 +12,10 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-HEAD_REVISION = "20260722_0006"
-PREVIOUS_REVISION = "20260721_0005"
+HEAD_REVISION = "20260724_0007"
+PREVIOUS_REVISION = "20260722_0006"
+M03D_REVISION = "20260722_0006"
+M03D_PREVIOUS_REVISION = "20260721_0005"
 M02C_REVISION = "20260721_0005"
 M02C_PREVIOUS_REVISION = "20260721_0004"
 CITY_REVISION = "20260721_0004"
@@ -26,11 +28,13 @@ PREVIOUS_TABLES = {
     "collection_write_operation_items",
     "collection_write_operations",
     "messages",
+    "place_selection_operations",
     "sessions",
     "sources",
     "tool_runs",
     "users",
 }
+M03D_PREVIOUS_TABLES = PREVIOUS_TABLES - {"place_selection_operations"}
 HEAD_TABLES = {
     "agent_runs",
     "alembic_version",
@@ -848,13 +852,13 @@ def test_0006_preserves_legacy_collection_and_round_trips_to_0005(
     alembic_config = _alembic_config(monkeypatch, database_path)
     user_id = "usr_66666666666666666666666666666666"
     item_id = "col_66666666666666666666666666666666"
-    command.upgrade(alembic_config, PREVIOUS_REVISION)
+    command.upgrade(alembic_config, M03D_PREVIOUS_REVISION)
     with sqlite3.connect(database_path) as connection:
         _insert_user(connection, user_id)
         _insert_collection_item(connection, item_id=item_id, user_id=user_id)
         connection.commit()
 
-    command.upgrade(alembic_config, "head")
+    command.upgrade(alembic_config, M03D_REVISION)
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT place_scope, place_target_json, candidate_count "
@@ -862,17 +866,17 @@ def test_0006_preserves_legacy_collection_and_round_trips_to_0005(
             (item_id,),
         ).fetchone() == (None, None, 0)
 
-    command.downgrade(alembic_config, PREVIOUS_REVISION)
-    assert current_revision(database_path) == PREVIOUS_REVISION
-    assert table_names(database_path) == PREVIOUS_TABLES
+    command.downgrade(alembic_config, M03D_PREVIOUS_REVISION)
+    assert current_revision(database_path) == M03D_PREVIOUS_REVISION
+    assert table_names(database_path) == M03D_PREVIOUS_TABLES
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT id, title, status FROM collection_items WHERE id = ?",
             (item_id,),
         ).fetchone() == (item_id, "fixture", "active")
 
-    command.upgrade(alembic_config, "head")
-    assert current_revision(database_path) == HEAD_REVISION
+    command.upgrade(alembic_config, M03D_REVISION)
+    assert current_revision(database_path) == M03D_REVISION
 
 
 @pytest.mark.parametrize("incompatible_kind", ["target", "snapshot", "operation"])
@@ -886,7 +890,7 @@ def test_0006_incompatible_downgrade_fails_before_schema_or_data_change(
     user_id = "usr_77777777777777777777777777777777"
     source_id = "src_77777777777777777777777777777777"
     item_id = "col_77777777777777777777777777777777"
-    command.upgrade(alembic_config, "head")
+    command.upgrade(alembic_config, M03D_REVISION)
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA ignore_check_constraints=ON")
@@ -933,9 +937,9 @@ def test_0006_incompatible_downgrade_fails_before_schema_or_data_change(
         ).fetchall()
 
     with pytest.raises(RuntimeError, match="cannot downgrade"):
-        command.downgrade(alembic_config, PREVIOUS_REVISION)
+        command.downgrade(alembic_config, M03D_PREVIOUS_REVISION)
 
-    assert current_revision(database_path) == HEAD_REVISION
+    assert current_revision(database_path) == M03D_REVISION
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name"
@@ -1109,6 +1113,90 @@ def test_0006_database_protects_json_and_flat_place_consistency(
         )
     assert "ck_collection_items_place_target_json_consistency" in table_sql
     assert "ck_collection_items_candidate_snapshot_json_consistency" in table_sql
+
+
+def test_0007_upgrades_legacy_rows_with_null_dates_and_round_trips_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "event-date-roundtrip.db"
+    alembic_config = _alembic_config(monkeypatch, database_path)
+    user_id = "usr_24242424242424242424242424242424"
+    item_id = "col_24242424242424242424242424242424"
+    command.upgrade(alembic_config, PREVIOUS_REVISION)
+    with sqlite3.connect(database_path) as connection:
+        _insert_user(connection, user_id)
+        _insert_collection_item(connection, item_id=item_id, user_id=user_id)
+        connection.commit()
+
+    command.upgrade(alembic_config, "head")
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT event_start_date, event_end_date FROM collection_items WHERE id = ?",
+            (item_id,),
+        ).fetchone() == (None, None)
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(collection_items)")
+        }
+    assert {"event_start_date", "event_end_date"} <= columns
+
+    command.downgrade(alembic_config, PREVIOUS_REVISION)
+    assert current_revision(database_path) == PREVIOUS_REVISION
+    with sqlite3.connect(database_path) as connection:
+        columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(collection_items)")
+        }
+        assert "event_start_date" not in columns
+        assert connection.execute(
+            "SELECT id, title FROM collection_items WHERE id = ?",
+            (item_id,),
+        ).fetchone() == (item_id, "fixture")
+
+    command.upgrade(alembic_config, "head")
+    assert current_revision(database_path) == HEAD_REVISION
+
+
+def test_0007_enforces_inclusive_date_order_and_refuses_lossy_downgrade(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "event-date-constraints.db"
+    alembic_config = _alembic_config(monkeypatch, database_path)
+    user_id = "usr_25252525252525252525252525252525"
+    item_id = "col_25252525252525252525252525252525"
+    command.upgrade(alembic_config, "head")
+    with sqlite3.connect(database_path) as connection:
+        _insert_user(connection, user_id)
+        _insert_collection_item(connection, item_id=item_id, user_id=user_id)
+        connection.execute(
+            "UPDATE collection_items SET kind = 'event', event_start_date = ?, "
+            "event_end_date = ? WHERE id = ?",
+            ("2026-06-13", "2026-07-31", item_id),
+        )
+        connection.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE collection_items SET event_end_date = ? WHERE id = ?",
+                ("2026-06-12", item_id),
+            )
+        connection.rollback()
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE collection_items SET kind = 'place' WHERE id = ?",
+                (item_id,),
+            )
+        connection.rollback()
+
+    with pytest.raises(RuntimeError, match="Event date facts exist"):
+        command.downgrade(alembic_config, PREVIOUS_REVISION)
+    assert current_revision(database_path) == HEAD_REVISION
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT event_start_date, event_end_date FROM collection_items WHERE id = ?",
+            (item_id,),
+        ).fetchone() == ("2026-06-13", "2026-07-31")
 
 
 def test_alembic_has_one_head_and_metadata_matches_head_schema(
@@ -1308,6 +1396,8 @@ def test_collection_migration_has_exact_fields_named_constraints_and_useful_inde
             "business_district",
             "landmark",
             "metro_station",
+            "event_start_date",
+            "event_end_date",
             "event_start_at",
             "event_end_at",
             "event_start_clue",

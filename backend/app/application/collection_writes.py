@@ -383,11 +383,15 @@ class CollectionWriteService:
         now: datetime,
     ) -> CollectionItem:
         timestamp = require_aware_utc(now)
+        event_start_date = None
+        event_end_date = None
         event_start_at = None
         event_end_at = None
         event_start_clue = None
         event_end_clue = None
         if isinstance(candidate, EventCandidate):
+            event_start_date = candidate.event_start_date
+            event_end_date = candidate.event_end_date
             event_start_at = candidate.event_start_at
             event_end_at = candidate.event_end_at
             event_start_clue = candidate.event_start_clue
@@ -402,6 +406,8 @@ class CollectionWriteService:
             business_district=candidate.business_district,
             landmark=candidate.landmark,
             metro_station=candidate.metro_station,
+            event_start_date=event_start_date,
+            event_end_date=event_end_date,
             event_start_at=event_start_at,
             event_end_at=event_end_at,
             event_start_clue=event_start_clue,

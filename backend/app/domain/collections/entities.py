@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any, Self
@@ -15,6 +15,7 @@ from app.domain.collections.candidate_metadata import (
     CandidateField,
     Uncertainty,
     validate_cny_price_pair,
+    validate_event_date_range,
 )
 from app.domain.collections.extraction import (
     ExtractionOutcome,
@@ -396,6 +397,8 @@ class CollectionItem(DomainModel):
     business_district: str | None = Field(default=None, max_length=100)
     landmark: str | None = Field(default=None, max_length=160)
     metro_station: str | None = Field(default=None, max_length=100)
+    event_start_date: date | None = None
+    event_end_date: date | None = None
     event_start_at: datetime | None = None
     event_end_at: datetime | None = None
     event_start_clue: str | None = Field(default=None, max_length=120)
@@ -533,11 +536,14 @@ class CollectionItem(DomainModel):
         ensure_persistable_collection_status(self.status)
         if self.updated_at < self.created_at:
             raise ValueError("updated_at cannot be before created_at")
+        validate_event_date_range(self.event_start_date, self.event_end_date)
         if self.event_start_at is not None and self.event_end_at is not None:
             if self.event_end_at <= self.event_start_at:
                 raise ValueError("event_end_at must be after event_start_at")
         if self.kind is CollectionKind.PLACE and (
-            self.event_start_at is not None
+            self.event_start_date is not None
+            or self.event_end_date is not None
+            or self.event_start_at is not None
             or self.event_end_at is not None
             or self.event_start_clue is not None
             or self.event_end_clue is not None
@@ -566,6 +572,8 @@ class CollectionItem(DomainModel):
             CandidateField.BUSINESS_DISTRICT: self.business_district is not None,
             CandidateField.LANDMARK: self.landmark is not None,
             CandidateField.METRO_STATION: self.metro_station is not None,
+            CandidateField.EVENT_START_DATE: self.event_start_date is not None,
+            CandidateField.EVENT_END_DATE: self.event_end_date is not None,
             CandidateField.EVENT_START_AT: self.event_start_at is not None,
             CandidateField.EVENT_END_AT: self.event_end_at is not None,
             CandidateField.PRICE: self.price_amount is not None,

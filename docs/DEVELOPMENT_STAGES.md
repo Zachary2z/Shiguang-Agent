@@ -5,10 +5,10 @@
 | 项目 | Shiguang_Nanobot |
 | 产品 | 拾光｜把收藏变成行动的个人生活 Agent |
 | 文档版本 | v1.0 |
-| 日期 | 2026-07-23 |
+| 日期 | 2026-07-24 |
 | 状态 | 后续开发执行基线 |
 | 仓库 | /Users/zhangzihao/Documents/Shiguang_Nanobot |
-| 当前阶段 | M1-0 PostgreSQL 与任务基础（允许开始） |
+| 当前阶段 | M0 关闭后校准窗口；M1-0 尚未开始 |
 
 ---
 
@@ -607,6 +607,9 @@ Fake Provider 可以驱动 Runner 调用工具并生成最终回答；核心测�
 
 - 定义 Place/Event 候选 Schema；
 - 抽取标题、可空 `city_hint`、区域、地址线索、类型、价格、标签和不确定项；
+- Event 的包含结束日自然日期范围使用 `event_start_date/event_end_date`；明确到钟点且
+  带时区的场次使用 `event_start_at/event_end_at`。不得把 date-only 事实转换成午夜
+  时间戳、推断时区或编造每日开闭馆时间；
 - 允许抽取和收藏其他城市的 Place/Event，不再以城市拒绝候选或维护 `OUT_OF_SCOPE_CITY`；
 - 标题/品牌中的城市词不等于正式城市；候选不持久化 `search_scope_city`；
 - 不支持内容返回明确原因；
@@ -621,6 +624,8 @@ Fake Provider 可以驱动 Runner 调用工具并生成最终回答；核心测�
 - 幂等键防止重复消息和重复收藏；
 - 同一来源重试不生成重复数据。
 - 自动保存保留 `city_hint`，不把缺失或标题中的城市词伪造成深圳；正式计划资格不由 `city_hint` 决定。
+- date-only Event 可以保存和修改，但保持 `pending_details`；准确场次时间完整前不得
+  因日期范围完整而变成 `active` 或进入正式计划。
 
 ##### M0-2D：最小接口
 
@@ -916,6 +921,11 @@ M0 只验证草案，不实现完整正式确认、分享和提醒。
 历史证据、Docker、安全、幂等和代码冗余复核；当前没有未关闭 P0/P1，M0 正式完成。
 保留的 P2 与校准风险记录在 `docs/technical/M0_VALIDATION_REPORT.md`，其中
 `IdempotencyLockRegistry` 无界增长必须作为 M1-0 第一项前置修复。
+
+M0 关闭后的 Event 日期粒度校准只修正上述通用领域语义，不重新打开 M0，也不开始
+M1-0。固定图片样本 06 已由用户决定不作为内容正确性 Gate；本校准不为样本 03 增加
+标题、截图或内容白名单等生产特例。M1-0 的第一项强制前置仍是
+`IdempotencyLockRegistry` 有界生命周期修复。
 
 #### 必须通过
 

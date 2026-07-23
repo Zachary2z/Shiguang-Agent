@@ -88,8 +88,10 @@ _SYSTEM_PROMPT = (
     "- If city_hint is absent, leave it null. Do not invent it.\n"
     "- Keep distinct objects, including objects from different cities, as separate "
     "candidates. Multi-city multi-day planning requests remain unsupported.\n"
-    "- Never invent an address, district, price, tag, or Event time. Leave unavailable "
-    "facts empty; use uncertainty only when the source itself is ambiguous.\n"
+    "- Never invent an address, district, price, tag, Event date, or Event time. A clear "
+    "date-only exhibition or activity range belongs in event_start_date/event_end_date, "
+    "not event_start_at/event_end_at. Leave unavailable facts empty; use uncertainty "
+    "only when the source itself is ambiguous.\n"
     "- Do not include source text, prompts, provider fields, credentials, headers, "
     "cookies, or raw responses.\n"
 )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Literal, Self
@@ -16,6 +16,7 @@ from app.domain.collections.candidate_metadata import (
     normalize_optional_candidate_text,
     normalize_required_candidate_text,
     validate_cny_price_pair,
+    validate_event_date_range,
 )
 from app.domain.collections.types import CollectionKind
 from app.domain.time import require_aware_utc
@@ -183,15 +184,24 @@ class PlaceCandidate(_CandidateBase):
     @model_validator(mode="after")
     def reject_event_only_metadata(self) -> Self:
         fields = set(self.missing_fields).union(item.field for item in self.uncertainties)
-        if fields.intersection({CandidateField.EVENT_START_AT, CandidateField.EVENT_END_AT}):
+        if fields.intersection(
+            {
+                CandidateField.EVENT_START_DATE,
+                CandidateField.EVENT_END_DATE,
+                CandidateField.EVENT_START_AT,
+                CandidateField.EVENT_END_AT,
+            }
+        ):
             raise _semantic_error("place_has_event_metadata")
         return self
 
 
 class EventCandidate(_CandidateBase):
-    """A user-supplied Event with ordered exact times or explicitly classified gaps."""
+    """A user-supplied Event with distinct calendar dates and exact-time facts."""
 
     kind: Literal[CollectionKind.EVENT] = CollectionKind.EVENT
+    event_start_date: date | None = Field(default=None, repr=False)
+    event_end_date: date | None = Field(default=None, repr=False)
     event_start_at: datetime | None = Field(default=None, repr=False)
     event_end_at: datetime | None = Field(default=None, repr=False)
     event_start_clue: str | None = Field(default=None, max_length=120, repr=False)
@@ -211,12 +221,21 @@ class EventCandidate(_CandidateBase):
 
     @model_validator(mode="after")
     def validate_event_schedule(self) -> Self:
+        validate_event_date_range(self.event_start_date, self.event_end_date)
         if self.event_start_at is not None and self.event_end_at is not None:
             if self.event_end_at <= self.event_start_at:
                 raise _semantic_error("event_time_order_invalid")
 
         missing = set(self.missing_fields)
         uncertain = {item.field for item in self.uncertainties}
+        for field, value in (
+            (CandidateField.EVENT_START_DATE, self.event_start_date),
+            (CandidateField.EVENT_END_DATE, self.event_end_date),
+        ):
+            if value is not None and field in missing:
+                raise _semantic_error("present_field_marked_missing")
+            if value is None and field not in missing and field not in uncertain:
+                raise _semantic_error("event_date_absent_not_classified")
         for field, value in (
             (CandidateField.EVENT_START_AT, self.event_start_at),
             (CandidateField.EVENT_END_AT, self.event_end_at),

@@ -87,6 +87,8 @@ _SYSTEM_PROMPT = (
     "formal city code, POI, provider, coordinates, or confirmed location.\n"
     "- Do not turn business opening hours into Event start/end fields and do not invent "
     "a screenshot-only opening-hours field.\n"
+    "- Ignore phone status-bar clocks and dates as interface chrome; they are not Event "
+    "dates or exact session times. Only activity content itself can support Event facts.\n"
     "- Do not use EXIF location or other hidden metadata as a confirmed place.\n"
     "- Do not include image bytes, Base64, OCR transcripts, prompts, provider fields, "
     "credentials, filenames, paths, or raw responses in the JSON.\n"

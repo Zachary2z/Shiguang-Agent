@@ -179,6 +179,8 @@ def _event() -> EventCandidate:
             CandidateField.BUSINESS_DISTRICT,
             CandidateField.LANDMARK,
             CandidateField.METRO_STATION,
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
             CandidateField.PRICE,
             CandidateField.TAGS,
         ),
@@ -408,6 +410,26 @@ async def test_clear_event_screenshot_uses_existing_event_candidate(tmp_path: Pa
         CandidateField.CITY_HINT,
         CandidateField.DISTRICT,
     }
+
+
+@pytest.mark.asyncio
+async def test_phone_status_bar_time_is_excluded_from_event_schedule_prompt(
+    tmp_path: Path,
+) -> None:
+    provider = FakeProvider([_response_for(_place("状态栏下的地点"))])
+    service, _storage, _root = _service(tmp_path, provider)
+
+    _metadata, result = await service.recognize(
+        _stream(PNG_SCREENSHOT),
+        content_type="image/png",
+    )
+
+    system_prompt = str(provider.calls[0].messages[0]["content"])
+    assert "status-bar clocks and dates" in system_prompt
+    candidate = result.candidates[0]
+    assert isinstance(candidate, PlaceCandidate)
+    assert "event_start_at" not in candidate.model_dump()
+    assert "event_start_date" not in candidate.model_dump()
 
 
 @pytest.mark.asyncio

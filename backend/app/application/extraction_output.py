@@ -60,11 +60,19 @@ EXTRACTION_SEMANTIC_RULES: Final = (
     "at most one item per field. The two sets must not overlap.\n"
     "- Leave unavailable candidate facts empty. The application records conservative "
     "missing state after the model response; explicit uncertainty must remain explicit.\n"
-    "- Place candidates must not classify Event start/end fields and must not carry Event "
-    "time semantics.\n"
-    "- Event start/end values use timezone-aware ISO 8601. If both exact times exist, end "
-    "must be after start. Keep absent exact times null; use uncertainty only when the "
-    "source contains ambiguous time evidence.\n"
+    "- Place candidates must not carry or classify Event date, exact-time, or time-clue "
+    "semantics.\n"
+    "- Event start/end effective dates and exact session times are different facts. Use "
+    "event_start_date/event_end_date as ISO calendar dates only when the source states "
+    "natural-day validity; the end date is inclusive and may equal the start date. Never "
+    "convert a date-only fact to midnight, infer a timezone, or invent daily opening or "
+    "closing hours. A compact source range may inherit its explicitly stated year within "
+    "that same range only; never infer a year from system time or metadata.\n"
+    "- Use event_start_at/event_end_at only when the source states a specific clock time. "
+    "They must be timezone-aware ISO 8601 values, and an exact end must be after its exact "
+    "start. Keep absent exact times null. Use event_start_clue/event_end_clue only for "
+    "time expressions that cannot be reliably structured, and classify the corresponding "
+    "fact uncertain.\n"
     "- Shiguang currently uses renminbi only; users do not choose a currency.\n"
     "- When a local price is clear but no currency is written, emit price_amount and "
     'price_currency "CNY" together. This includes an explicit free price as amount 0.\n'
@@ -100,7 +108,15 @@ _REPAIR_GUIDANCE_BY_TYPE: Final = {
     "absent_field_not_classified": "Classify each absent candidate field missing or uncertain.",
     "duplicate_missing_field": "List every missing field at most once.",
     "duplicate_uncertainty_field": "Give at most one uncertainty for each field.",
-    "place_has_event_metadata": "Remove Event start/end classifications from Place candidates.",
+    "place_has_event_metadata": (
+        "Remove Event date and exact-time classifications from Place candidates."
+    ),
+    "event_date_order_invalid": (
+        "Ensure the inclusive Event end date is on or after its start date."
+    ),
+    "event_date_absent_not_classified": (
+        "Classify each absent Event effective date missing or uncertain."
+    ),
     "event_time_order_invalid": "Ensure an exact Event end is after its exact start.",
     "event_time_absent_not_classified": (
         "Classify each absent exact Event time missing or uncertain."

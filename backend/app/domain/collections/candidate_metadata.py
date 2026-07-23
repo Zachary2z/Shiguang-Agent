@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from datetime import date
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
@@ -29,6 +30,8 @@ class CandidateField(StrEnum):
     BUSINESS_DISTRICT = "business_district"
     LANDMARK = "landmark"
     METRO_STATION = "metro_station"
+    EVENT_START_DATE = "event_start_date"
+    EVENT_END_DATE = "event_end_date"
     EVENT_START_AT = "event_start_at"
     EVENT_END_AT = "event_end_at"
     PRICE = "price"
@@ -79,6 +82,23 @@ def validate_cny_price_pair(
         raise PydanticCustomError(
             "price_currency_unsupported",
             "The price currency is unsupported.",
+        )
+
+
+def validate_event_date_range(
+    event_start_date: date | None,
+    event_end_date: date | None,
+) -> None:
+    """Validate the one inclusive Event calendar-date range contract."""
+
+    if (
+        event_start_date is not None
+        and event_end_date is not None
+        and event_end_date < event_start_date
+    ):
+        raise PydanticCustomError(
+            "event_date_order_invalid",
+            "The inclusive Event end date cannot be before its start date.",
         )
 
 

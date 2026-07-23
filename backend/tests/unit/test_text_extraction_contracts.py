@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -59,6 +59,10 @@ def _full_event(**updates: object) -> EventCandidate:
         "event_end_at": START + timedelta(hours=3),
         "event_start_clue": "7月25日14:00",
         "event_end_clue": "7月25日17:00",
+        "missing_fields": (
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
+        ),
     }
     payload.update(updates)
     return EventCandidate.model_validate(payload)
@@ -106,6 +110,63 @@ def test_event_rejects_invalid_time_order_and_naive_times() -> None:
         _full_event(event_end_at=START)
     with pytest.raises(ValidationError, match="timezone-aware"):
         _full_event(event_start_at=START.replace(tzinfo=None))
+
+
+@pytest.mark.parametrize(
+    ("start_date", "end_date"),
+    (
+        (date(2026, 6, 13), date(2026, 7, 31)),
+        (date(2026, 6, 13), date(2026, 6, 13)),
+        (date(2026, 12, 31), date(2027, 1, 1)),
+        (date(2028, 2, 29), date(2028, 2, 29)),
+        (date(2026, 6, 13), None),
+        (None, date(2026, 7, 31)),
+        (None, None),
+    ),
+)
+def test_event_effective_dates_are_date_only_and_allow_partial_or_missing_ranges(
+    start_date: date | None,
+    end_date: date | None,
+) -> None:
+    missing = [CandidateField.EVENT_START_AT, CandidateField.EVENT_END_AT]
+    if start_date is None:
+        missing.append(CandidateField.EVENT_START_DATE)
+    if end_date is None:
+        missing.append(CandidateField.EVENT_END_DATE)
+
+    event = _full_event(
+        event_start_date=start_date,
+        event_end_date=end_date,
+        event_start_at=None,
+        event_end_at=None,
+        event_start_clue=None,
+        event_end_clue=None,
+        missing_fields=tuple(missing),
+    )
+
+    assert event.event_start_date == start_date
+    assert event.event_end_date == end_date
+    assert event.event_start_at is None
+    assert event.event_end_at is None
+
+
+def test_event_rejects_reversed_effective_dates_and_place_rejects_event_dates() -> None:
+    with pytest.raises(ValidationError, match="event_date_order_invalid"):
+        _full_event(
+            event_start_date=date(2026, 7, 31),
+            event_end_date=date(2026, 6, 13),
+            missing_fields=(),
+        )
+
+    payload = _full_place().model_dump()
+    payload["event_start_date"] = date(2026, 6, 13)
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        PlaceCandidate.model_validate(payload)
+
+    payload = _full_place().model_dump()
+    payload["missing_fields"] = (CandidateField.EVENT_START_DATE,)
+    with pytest.raises(ValidationError, match="place_has_event_metadata"):
+        PlaceCandidate.model_validate(payload)
 
 
 def test_missing_fields_and_uncertainties_are_explicit_and_non_overlapping() -> None:
@@ -206,13 +267,21 @@ def test_event_without_exact_times_requires_explicit_gaps() -> None:
         event_end_at=None,
         event_start_clue="周六下午",
         event_end_clue=None,
-        missing_fields=(CandidateField.EVENT_START_AT, CandidateField.EVENT_END_AT),
+        missing_fields=(
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
     )
     assert event.event_start_at is None
     assert event.event_start_clue == "周六下午"
 
     payload = event.model_dump()
-    payload["missing_fields"] = ()
+    payload["missing_fields"] = (
+        CandidateField.EVENT_START_DATE,
+        CandidateField.EVENT_END_DATE,
+    )
     with pytest.raises(ValidationError, match="event_time_absent_not_classified"):
         EventCandidate.model_validate(payload)
 

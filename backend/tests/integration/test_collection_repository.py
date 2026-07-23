@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -199,6 +199,44 @@ async def test_all_entities_create_read_list_update_and_link_round_trip(
         assert pending_details_item.status is CollectionStatus.PENDING_DETAILS
         assert pending_details_item.version == 2
         assert await repository.list_collection_items(user_id=user.id) == [pending_details_item]
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_date_only_event_repository_round_trip_uses_date_columns(
+    collection_database: tuple[str, Path],
+) -> None:
+    database_url, _database_path = collection_database
+    database = Database(database_url)
+    user = _user()
+    event = CollectionItem(
+        user_id=user.id,
+        kind=CollectionKind.EVENT,
+        title="夏季展览",
+        event_start_date=date(2026, 6, 13),
+        event_end_date=date(2026, 7, 31),
+        status=CollectionStatus.PENDING_DETAILS,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        await repository.add_user(user_id=user.id, user=user)
+        assert await repository.add_collection_item(user_id=user.id, item=event) == event
+        await session.commit()
+
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        loaded = await repository.get_collection_item(
+            user_id=user.id,
+            collection_item_id=event.id,
+        )
+
+    assert loaded == event
+    assert loaded is not None
+    assert loaded.event_start_at is None
+    assert loaded.event_end_at is None
     await database.close()
 
 

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
     JSON,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -216,7 +217,13 @@ class CollectionItemModel(Base):
             name="ck_collection_items_event_time_order",
         ),
         CheckConstraint(
-            "kind <> 'place' OR (event_start_at IS NULL AND event_end_at IS NULL)",
+            "event_end_date IS NULL OR event_start_date IS NULL OR "
+            "event_end_date >= event_start_date",
+            name="ck_collection_items_event_date_order",
+        ),
+        CheckConstraint(
+            "kind <> 'place' OR (event_start_date IS NULL AND event_end_date IS NULL AND "
+            "event_start_at IS NULL AND event_end_at IS NULL)",
             name="ck_collection_items_place_without_event_time",
         ),
         CheckConstraint(
@@ -338,6 +345,8 @@ class CollectionItemModel(Base):
     business_district: Mapped[str | None] = mapped_column(String(100), nullable=True)
     landmark: Mapped[str | None] = mapped_column(String(160), nullable=True)
     metro_station: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    event_start_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
+    event_end_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
     event_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     event_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     event_start_clue: Mapped[str | None] = mapped_column(String(120), nullable=True)

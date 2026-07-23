@@ -413,13 +413,18 @@ pending → approved / rejected / expired / revoked
 | `sessions` | id、user_id、channel、status、summary、updated_at |
 | `messages` | id、session_id、role、content_type、content、trace_id、created_at |
 | `sources` | id、user_id、type、url、file_key、platform、parse_status、metadata_json |
-| `collection_items` | id、user_id、kind、title、city_hint（nullable）、place_scope（exact / any_branch）、district、address、price、tags、status、version |
+| `collection_items` | id、user_id、kind、title、city_hint（nullable）、place_scope（exact / any_branch）、district、address、event_start_date/event_end_date（nullable DATE）、event_start_at/event_end_at（nullable aware datetime）、price、tags、status、version |
 | `collection_sources` | collection_item_id、source_id、created_at |
 | `poi_references` | id、collection_item_id、provider、poi_id、city_code、coordinates、match_status、confidence、confirmed_by、queried_at |
 | `agent_runs` | id、trace_id、user_id、session_id、intent、workflow、status、usage_json、error_code |
 | `tool_runs` | id、agent_run_id、tool_name、input_summary、status、output_summary、latency_ms、error_code |
 
 M0-2 城市契约调整使用新的 `20260721_0004` 向前迁移：将用户字段明确为 `default_plan_city`，将 `collection_items.city` 调整为 nullable `city_hint`，移除收藏表“只能是 shenzhen”的检查约束，但保留用户默认计划城市的当前深圳约束。迁移既有 `shenzhen` 值时只把它视为历史线索，不提升为正式城市；downgrade 遇到旧结构无法表达的新城市数据时必须明确拒绝，不能静默改成深圳或删除数据。已经集成的 `0003` 不得改写。
+
+Event 日期粒度由 `20260724_0007` 向前迁移增加两个 nullable `DATE` 列。日期两端都存在
+时结束日必须不早于开始日，且结束日包含当天；单日活动允许相等。已有记录升级后两列
+为 null。若降级会丢失已经保存的日期事实，迁移必须明确拒绝并保留当前 revision 和
+数据，不能静默删除。
 
 ### 10.2 M1 增加的表
 
@@ -464,6 +469,14 @@ M0-2 城市契约调整使用新的 `20260721_0004` 向前迁移：将用户字�
 - `search_scope_city` 不持久化在候选或 CollectionItem 中，地点搜索范围由应用用例根据显式 `city_hint`、用户补充或当前默认计划城市传给唯一 MapProvider；
 - `collection_items.city_hint` 只供展示、补充和初步城市分类，不参与正式计划硬过滤；正式 `city_code` 只从统一地点引用或用户确认读取；
 - 在 M0-3 尚未建立正式地点引用前，其他城市收藏和城市不明确收藏可以保存，但不得错误标记为深圳或进入正式计划。
+
+Event 时间字段规则：
+
+- `event_start_date` / `event_end_date` 表示活动在哪些自然日有效，不带时区，结束日包含当天；
+- `event_start_at` / `event_end_at` 只表示来源明确到具体钟点的准确场次，必须带时区，结束时刻严格晚于开始时刻；
+- date-only 事实不得转换成 UTC 或本地午夜，不得推断时区、每日开放时间或计划时间窗；
+- 只有日期范围的 Event 继续保存为 `pending_details`，在准确到访时段核验前不进入正式计划；现有 `active` 与计划资格边界不变；
+- 文字、URL 和图片复用同一个严格候选 DTO、解析/repair、自动收藏和 Repository 链路；手机状态栏时间属于界面信息，不能成为 Event 场次时间。
 
 ### 11.2 匹配证据
 

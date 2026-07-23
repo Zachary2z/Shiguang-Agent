@@ -6,7 +6,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
 from time import monotonic
@@ -27,6 +27,7 @@ from app.application.text_collection_workflow import TextCollectionWorkflow
 from app.config import Settings
 from app.domain.collections import (
     CandidateField,
+    EventCandidate,
     ExtractionResult,
     PlaceCandidate,
     Session,
@@ -139,6 +140,33 @@ def _place(title: str = "深圳当代艺术与城市规划馆") -> PlaceCandidat
 def _response(title: str = "深圳当代艺术与城市规划馆"):
     return fake_response(
         content=ExtractionResult.with_candidates((_place(title),)).model_dump_json()
+    )
+
+
+def _date_event(title: str) -> EventCandidate:
+    return EventCandidate(
+        title=title,
+        city_hint="深圳",
+        district="南山区",
+        address="海上世界文化艺术中心",
+        business_district="海上世界",
+        landmark="海上世界文化艺术中心",
+        metro_station="海上世界站",
+        price_amount=Decimal("0.00"),
+        price_currency="CNY",
+        tags=("展览",),
+        event_start_date=date(2026, 8, 30),
+        event_end_date=date(2026, 9, 1),
+        missing_fields=(
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
+    )
+
+
+def _date_response(title: str):
+    return fake_response(
+        content=ExtractionResult.with_candidates((_date_event(title),)).model_dump_json()
     )
 
 
@@ -262,6 +290,55 @@ async def test_text_url_and_image_share_one_result_and_collection_mapping(
     database_dump = await asyncio.to_thread(database_path.read_bytes)
     assert b"RAW_WEB_PRIVATE_MARKER" not in database_dump
     assert PNG_SCREENSHOT not in database_dump
+
+
+@pytest.mark.asyncio
+async def test_text_url_and_image_preserve_date_only_events_without_inventing_times(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider(
+        [
+            _date_response("Text dates"),
+            _date_response("URL dates"),
+            _date_response("Image dates"),
+        ]
+    )
+    web = StubWebProvider(_web_success())
+    async with _client(test_settings, provider, web=web) as (_api, client, _storage):
+        session_id = await _demo(client)
+        text_result = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={"type": "text", "idempotency_key": "date-text", "text": "8月30日-9月1日"},
+        )
+        url_result = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={
+                "type": "url",
+                "idempotency_key": "date-url",
+                "url": "https://example.com/article?a=1&b=2",
+            },
+        )
+        image_result = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            content=PNG_SCREENSHOT,
+            headers={"Content-Type": "image/png", "Idempotency-Key": "date-image"},
+        )
+
+    assert all(result.status_code == 200 for result in (text_result, url_result, image_result))
+    collections = [
+        result.json()["collections"][0]
+        for result in (text_result, url_result, image_result)
+    ]
+    assert [item["title"] for item in collections] == [
+        "Text dates",
+        "URL dates",
+        "Image dates",
+    ]
+    assert {item["event_start_date"] for item in collections} == {"2026-08-30"}
+    assert {item["event_end_date"] for item in collections} == {"2026-09-01"}
+    assert {item["event_start_at"] for item in collections} == {None}
+    assert {item["event_end_at"] for item in collections} == {None}
+    assert {item["status"] for item in collections} == {"pending_details"}
 
 
 @pytest.mark.asyncio

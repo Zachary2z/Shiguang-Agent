@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -123,12 +123,33 @@ def _event(
             **values,
             event_start_clue="周六上午",
             event_end_clue="中午前",
-            missing_fields=(CandidateField.EVENT_START_AT, CandidateField.EVENT_END_AT),
+            missing_fields=(
+                CandidateField.EVENT_START_DATE,
+                CandidateField.EVENT_END_DATE,
+                CandidateField.EVENT_START_AT,
+                CandidateField.EVENT_END_AT,
+            ),
         )
     return EventCandidate(
         **values,
         event_start_at=start_at,
         event_end_at=end_at,
+        missing_fields=(
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
+        ),
+    )
+
+
+def _date_only_event() -> EventCandidate:
+    return EventCandidate(
+        **_candidate_fields(title="夏季展览"),
+        event_start_date=date(2026, 6, 13),
+        event_end_date=date(2026, 7, 31),
+        missing_fields=(
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
     )
 
 
@@ -248,6 +269,42 @@ async def test_auto_save_event_and_multiple_cross_city_candidates_share_one_sour
         ]
         assert {link[0].source_id for link in links} == {source.id}
         assert len(await repository.list_sources(user_id=user.id)) == 1
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_date_only_event_auto_save_and_replay_preserve_dates_but_stay_pending(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    source = _source(user.id)
+    candidate = _date_only_event()
+
+    async with database.session() as session:
+        service = _service(session)
+        first = await service.auto_save(
+            user_id=user.id,
+            idempotency_key="date-only-event",
+            source=source,
+            extraction_result=ExtractionResult.with_candidates((candidate,)),
+        )
+    async with database.session() as session:
+        replay = await _service(session).auto_save(
+            user_id=user.id,
+            idempotency_key="date-only-event",
+            source=source,
+            extraction_result=ExtractionResult.with_candidates((candidate,)),
+        )
+
+    assert first.items[0].status is CollectionStatus.PENDING_DETAILS
+    assert first.items[0].event_start_date == date(2026, 6, 13)
+    assert first.items[0].event_end_date == date(2026, 7, 31)
+    assert first.items[0].event_start_at is None
+    assert replay.replayed is True
+    assert replay.items == first.items
     await database.close()
 
 

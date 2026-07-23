@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -207,6 +207,8 @@ def _event(
     title: str = "周末设计展",
     start_at: datetime | None = START + timedelta(hours=1),
     end_at: datetime | None = START + timedelta(hours=3),
+    start_date: date | None = None,
+    end_date: date | None = None,
     status: CollectionStatus = CollectionStatus.ACTIVE,
     city_hint: str | None = "深圳",
     price: Decimal | None = Decimal("20"),
@@ -218,6 +220,8 @@ def _event(
         title=title,
         city_hint=city_hint,
         district="福田区",
+        event_start_date=start_date,
+        event_end_date=end_date,
         event_start_at=start_at,
         event_end_at=end_at,
         price_amount=price,
@@ -718,6 +722,35 @@ async def test_event_end_and_time_window_boundaries_are_deterministic() -> None:
     assert CandidateReasonCode.TIME_WINDOW_CONFLICT in by_title["late"].reason_codes
     assert by_title["unknown"].outcome is CandidateOutcome.VERIFICATION_REQUIRED
     assert CandidateReasonCode.EVENT_TIME_UNKNOWN in by_title["unknown"].reason_codes
+
+
+@pytest.mark.asyncio
+async def test_date_only_event_is_saved_but_never_treated_as_exact_plan_window() -> None:
+    user_id = generate_user_id()
+    date_only = _event(
+        user_id,
+        title="日期范围展览",
+        start_at=None,
+        end_at=None,
+        start_date=date(2026, 7, 25),
+        end_date=date(2026, 7, 31),
+        status=CollectionStatus.PENDING_DETAILS,
+    )
+    service, _ = _service([date_only])
+    facts = PlanningFactSnapshot(collections=(_known_event_facts(date_only),))
+
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(),
+        facts=facts,
+        now=NOW,
+    )
+
+    decision = result.decisions[0]
+    assert decision.outcome is CandidateOutcome.EXCLUDED
+    assert CandidateReasonCode.STATUS_NOT_ACTIVE in decision.reason_codes
+    assert CandidateReasonCode.EVENT_TIME_UNKNOWN in decision.reason_codes
+    assert result.included == ()
 
 
 @pytest.mark.asyncio
