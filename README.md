@@ -195,7 +195,7 @@ SQLite 只适用于 M0 和本地验证。PostgreSQL 与 Docker Compose 属于 M1
 | `MODEL_API_BASE` | 无 | OpenAI-compatible API Base，仅启用真实 Provider 时必填 |
 | `MODEL_API_KEY` | 无 | 服务端密钥，以 `SecretStr` 脱敏，仅启用真实 Provider 时必填 |
 | `MODEL_NAME` | 无 | 供应商侧模型名称，仅启用真实 Provider 时必填 |
-| `MODEL_TIMEOUT_SECONDS` | `30`（示例） | 有限正数的单次模型请求超时，仅启用真实 Provider 时必填 |
+| `MODEL_TIMEOUT_SECONDS` | `15`（暂定校准值） | 一次 Provider SDK 调用的总墙钟截止，只允许有限值 `(0, 15]`；仅启用真实 Provider 时必填 |
 | `MODEL_INPUT_PRICE_PER_MILLION_TOKENS` | 无 | `MODEL_NAME` 的每百万输入 Token Decimal 单价；非负有限值 |
 | `MODEL_OUTPUT_PRICE_PER_MILLION_TOKENS` | 无 | `MODEL_NAME` 的每百万输出 Token Decimal 单价；非负有限值 |
 | `MODEL_COST_CURRENCY` | `CNY` | 三位大写币种代码 |
@@ -335,7 +335,7 @@ python -m pytest -q tests/unit/test_image_recognition_service.py tests/unit/test
 
 `TextCollectionWorkflow` 已原位演进为唯一输入编排，不新增平行业务入口。严格冻结的 `TextInput`、`UrlInput`、`ImageInput` 进入同一 Message、Source、AgentRun 与 `CollectionWriteService`；文字旧 JSON 请求继续兼容。URL 只调用一次现有 `WebContentProvider`，成功正文有界截断后交给唯一 `TextExtractionService`，失败不调用模型并返回补充文字/截图动作。图片 API 使用原始有界请求体而非 Base64，按内容 SHA-256 幂等，只调用一次现有 `ImageRecognitionService`，Source 只保存私有 `file_key`、MIME、大小和摘要。
 
-URL 与图片整链路使用不超过 20 秒的逻辑预算。真实网页和图片步骤通过既有 AgentRun 收集器写入实际 ToolRun，模型调用继续只保存安全摘要。相同用户、Session 与 key 的重放不会重复消息、来源、Run、网页获取、模型、收藏或文件；不同 Session 隔离。图片识别后若数据库/收藏写入失败、超时或取消，只删除本次新文件。URL 查询、网页正文、图片/Base64、Prompt、模型响应、Cookie、Authorization、私有路径和异常原文不进入公开响应、运行记录或普通日志。
+URL 与图片整链路使用不超过 20 秒的共享总墙钟预算。该预算只由既有 `AgentRunService` 在统一工作流外层建立一次，覆盖上传、校验、存储、initial、唯一 repair、解析、数据库写入和清理；initial 与 repair 不会分别重置为 20 秒。模型 Provider 的 15 秒暂定单次总墙钟截止是内层不可信 SDK 调用边界，不能延长或替代外层 20 秒预算。真实网页和图片步骤通过既有 AgentRun 收集器写入实际 ToolRun，模型调用继续只保存安全摘要。相同用户、Session 与 key 的重放不会重复消息、来源、Run、网页获取、模型、收藏或文件；不同 Session 隔离。图片识别后若数据库/收藏写入失败、超时或取消，只删除本次新文件。URL 查询、网页正文、图片/Base64、Prompt、模型响应、Cookie、Authorization、私有路径和异常原文不进入公开响应、运行记录或普通日志。
 
 本阶段不新增迁移、依赖或配置。现有 Source JSON 元数据已能表达最终 URL、失败码、HTTP 状态、重定向次数、MIME、大小和 SHA-256；Alembic head 仍为 `20260722_0006`。聚焦离线验证：
 

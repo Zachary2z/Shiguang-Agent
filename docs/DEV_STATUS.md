@@ -2,19 +2,20 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 当前总阶段 | M1 Web/H5 核心闭环 |
-| 当前子阶段 | M1-0 PostgreSQL 与任务基础 |
-| 状态 | 未开始 |
-| 当前分支 | main |
-| 最近更新 | 2026-07-23 |
-| 阻塞项 | 无 P0/P1；IdempotencyLockRegistry 无界增长 P2 是 M1-0 第一项强制前置 |
+| 当前总阶段 | M0 关闭后校准窗口 |
+| 当前子阶段 | 真实截图超时校准修复 |
+| 状态 | 待验收 |
+| 当前分支 | codex/m0-timeout-calibration |
+| 最近更新 | 2026-07-24 |
+| 阻塞项 | 本修复待主控集成；M1-0 仍未开始，IdempotencyLockRegistry 无界增长 P2 仍是其第一项强制前置 |
 
 ## 当前任务
 
-M0-0A 至 M0-5D 及 M0-Gate 均已通过主控验收。M0 正式完成；当前只允许开始
-M1-0 PostgreSQL 与任务基础，状态为未开始。进入 PostgreSQL、Job、Worker、
-APScheduler、Docker Compose 或 SSE 前，必须先在同一 M1-0 阶段解决
-`IdempotencyLockRegistry` 无界增长 P2；M1-1、M1-2 及后续阶段不得提前开发。
+M0-0A 至 M0-5D 及 M0-Gate 均已通过主控验收，M0 仍保持正式完成。本窗口只处理
+M0 关闭后、M1-0 开始前的模型单次请求与图片整链路超时校准；不重新打开 M0
+功能范围，也不开始 M1-0。修复集成后仍须另行启动 M1-0，并先解决
+`IdempotencyLockRegistry` 无界增长 P2；PostgreSQL、Job、Worker、APScheduler、
+Docker Compose、SSE、M1-1、M1-2 及后续阶段均未开始。
 
 ## M0 状态
 
@@ -62,11 +63,12 @@ APScheduler、Docker Compose 或 SSE 前，必须先在同一 M1-0 阶段解决
 
 ## 下一步
 
-M0-Gate 已完成，当前没有未关闭的 P0/P1。当前允许阶段为 M1-0，但尚未开始。
-M1-0 的第一项必须先解决幂等锁注册表无界增长 P2，再进入 PostgreSQL、Job、
-Worker、APScheduler、Docker Compose 和 SSE。aiosqlite 偶发收尾 warning、
-文本 8 秒余量和图片 initial + repair 双调用 20 秒余量继续作为已知风险监测；
-网页最多五跳仍只有离线覆盖。不得提前开始 M1-1 Session、M1-2 Next.js 或其他
+M0-Gate 已完成。当前先由主控集成本超时校准修复：单次 Provider SDK 调用总墙钟
+暂定为 15 秒，图片/URL 完整流程继续共享既有 20 秒总预算。集成后需重新取得明确
+授权，按固定 01–06 顺序完成真实六图复测；本窗口真实 API 调用为 0。M1-0 尚未
+开始，其第一项仍必须先解决幂等锁注册表无界增长 P2，再进入 PostgreSQL、Job、
+Worker、APScheduler、Docker Compose 和 SSE。aiosqlite 偶发收尾 warning与网页
+真实最多五跳未覆盖继续监测。不得提前开始 M1-1 Session、M1-2 Next.js 或其他
 后续阶段。
 
 ## 已确认 M0-Gate 延迟与超时校准
@@ -1574,3 +1576,58 @@ Worker、APScheduler、Docker Compose 和 SSE。aiosqlite 偶发收尾 warning�
   M1-0 PostgreSQL 与任务基础，状态未开始；M1-0 必须先完成锁生命周期修复，再进入
   既定 PostgreSQL、Job、Worker、APScheduler、Docker Compose 与 SSE 范围。
   不得提前实现 M1-1 Session、M1-2 Next.js 或其他后续阶段
+
+#### 2026-07-24｜M0 关闭后真实截图超时校准修复｜待主控验收
+
+- 分支与门禁：`codex/m0-timeout-calibration` 从指定且 fetch 后未变化的
+  `main` / `origin/main` / `HEAD`
+  `55a9da825cffb501051c66e6065ca43b0893b11e` 创建；开始工作区干净，目标分支
+  原先不存在，Alembic 唯一 head 为 `20260722_0006`。M0 保持已完成，M1-0
+  仍未开始
+- 真实烟雾事实：固定 01–06 只执行 01–03。01 内容识别正确，但模型耗时
+  `11.561s`，超过旧 8 秒严格口径；02 在 `6.285s` 完成并通过；03 返回
+  `PROVIDER_TIMEOUT`，触发停止条件；04–06 未执行，不能记为失败。旧 8 秒值已被
+  真实样本证明余量不足
+- 根因复现：完全离线的持续分段活动 transport 令单个分段均短于 SDK 阶段 timeout，
+  但完整 SDK 调用超过配置值；修复前新增测试按预期 `1 failed`，调用在约 2.5 秒后
+  正常完成，证明 SDK/httpx timeout 不等价于总墙钟截止
+- 生产修复：唯一 `OpenAICompatibleProvider` 在实际
+  `chat.completions.create()` await 边界使用同一配置值建立一次总墙钟截止；到点
+  取消并等待活动请求结束后映射为唯一 `ProviderErrorCode.TIMEOUT`。错误映射退出
+  SDK exception handler 后统一抛出，异常链、日志、repr 和公开字典不保留响应、
+  Prompt、Base64、密钥、endpoint、Authorization 或 Request ID
+- 配置校准：`MODEL_TIMEOUT_SECONDS` 明确表示一次完整 Provider SDK 调用的总墙钟
+  截止，当前限制为有限 `(0, 15]`，`.env.example` 暂定为 `15`。15 秒只来自本轮
+  有限真实观测，不构成统计 P95，也不授权无限提高
+- 预算关系：URL/图片整链路继续只由既有 `TextCollectionWorkflow` 和
+  `AgentRunService.execute_application()` 建立一次最多 20 秒共享总预算；
+  `ImageRecognitionService` 没有新增计时器。上传、校验、存储、initial、唯一
+  repair、解析、数据库写入和清理共用该预算，initial 消耗后 repair 只能使用剩余
+  时间
+- 取消、清理与零重试：总墙钟 timeout 会取消活动 SDK 流，测试确认请求只发一次、
+  流和辅助任务终结、无后台请求且 Provider close 后 HTTP client 关闭；外部
+  `CancelledError` 原对象传播。SDK `max_retries=0`、外层重试 0、ProviderError
+  零重试不变。图片 repair 共享预算、整链路 timeout、数据库写入 timeout 与取消
+  均清理 objects、metadata、temporary、reservation 和未提交业务写入
+- 兼容与输入隔离：普通文本、Tool Calling、`json_object`、`json_schema`、多模态、
+  Token/耗时映射继续通过；messages、tools、Schema 和图片输入不被修改。没有修改
+  抽取 Prompt、候选规则、结构契约、数据库模型或迁移
+- 正式验证：项目根 `.venv` 为 Python `3.13.5`、mypy `1.20.2`、SQLAlchemy
+  `2.0.51`。editable 安装、`pip check`、Ruff、93 文件 strict mypy 均退出 0；
+  Provider+图片 `102 passed`；统一输入+文字抽取/契约 `135 passed`；正式非真实
+  全集 `1486 passed / 2 deselected`；仓库外插件硬封 DNS、connect、connect_ex、
+  create_connection 后五个聚焦文件 `237 passed`。以上正式命令均为 0 failed、
+  0 skipped、0 warning
+- 环境说明：正式安装前系统解释器的 mypy `1.14.1` / SQLAlchemy `2.0.39` 对未修改
+  的既有 Repository 报 4 个 `redundant-cast`；未改无关代码。切换到项目已验收依赖
+  环境后规定 mypy 命令通过 93 个源文件
+- 复杂度与范围：ModelProvider、OpenAICompatibleProvider、AgentRunner、
+  ImageRecognitionService、统一输入工作流和 Parser/repair 均保持唯一；新增总墙钟
+  截止只位于 Provider SDK 不可信 await 边界，20 秒预算仍只在既有统一工作流外层。
+  没有 timeout helper、第二套错误映射、重复清理、图片样本规则、M1 代码或 SDK
+  私有属性依赖
+- 外部调用与下一步：本修复没有读取 `.env`，真实模型、高德、网页、对象存储、消息
+  及其他外部 API 调用为 0。等待主控离线验收和集成；集成后必须重新取得用户明确
+  授权，固定按原 01–06 顺序复测，每张 initial 最多 1 次，只有生产唯一 repair
+  正常触发时最多再 1 次，总上限 12 次非流式 Chat Completions，单次总墙钟 15 秒、
+  每张完整共享 20 秒、SDK/外层重试均为 0

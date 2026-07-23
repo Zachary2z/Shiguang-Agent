@@ -524,11 +524,14 @@ def test_invalid_model_api_base_is_rejected_without_echoing_value(api_base: str)
     assert api_base not in str(exc_info.value)
 
 
-@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), True])
+@pytest.mark.parametrize(
+    "timeout",
+    [0, -1, 15.001, float("nan"), float("inf"), True],
+)
 def test_invalid_model_timeout_is_rejected(timeout: float) -> None:
     with pytest.raises(
         ValidationError,
-        match="MODEL_TIMEOUT_SECONDS must be a finite positive number",
+        match=r"MODEL_TIMEOUT_SECONDS must be a finite number in \(0, 15\]",
     ):
         Settings(
             _env_file=None,

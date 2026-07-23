@@ -31,6 +31,7 @@ from nanobot_core.providers import StructuredOutputMode
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = REPOSITORY_ROOT / ".env"
 DEFAULT_AMAP_BASE_URL = "https://restapi.amap.com"
+MAX_MODEL_TIMEOUT_SECONDS = 15.0
 MAX_AMAP_TIMEOUT_SECONDS = 30.0
 MAX_AMAP_RETRIES = 1
 MAX_AMAP_RETRY_AFTER_SECONDS = 5.0
@@ -50,7 +51,7 @@ class StorageConfigurationError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class ModelProviderSettings:
-    """Complete settings required to construct the real model provider."""
+    """Real-provider settings; timeout covers one complete SDK call wall clock."""
 
     api_base: str
     api_key: SecretStr
@@ -332,14 +333,24 @@ class Settings(BaseSettings):
     @classmethod
     def reject_boolean_model_timeout(cls, value: object) -> object:
         if isinstance(value, bool):
-            raise ValueError("MODEL_TIMEOUT_SECONDS must be a finite positive number")
+            raise ValueError(
+                "MODEL_TIMEOUT_SECONDS must be a finite number in "
+                f"(0, {MAX_MODEL_TIMEOUT_SECONDS:g}]"
+            )
         return value
 
     @field_validator("model_timeout_seconds")
     @classmethod
     def validate_model_timeout(cls, value: float | None) -> float | None:
-        if value is not None and (not isfinite(value) or value <= 0):
-            raise ValueError("MODEL_TIMEOUT_SECONDS must be a finite positive number")
+        if value is not None and (
+            not isfinite(value)
+            or value <= 0
+            or value > MAX_MODEL_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                "MODEL_TIMEOUT_SECONDS must be a finite number in "
+                f"(0, {MAX_MODEL_TIMEOUT_SECONDS:g}]"
+            )
         return value
 
     @field_validator(

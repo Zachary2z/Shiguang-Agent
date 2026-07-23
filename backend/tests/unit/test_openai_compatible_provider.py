@@ -8,6 +8,7 @@ import logging
 from collections import deque
 from collections.abc import AsyncIterator, Callable, Sequence
 from copy import deepcopy
+from time import monotonic
 
 import httpx
 import pytest
@@ -131,6 +132,55 @@ class OfflineProviderFactory:
     async def close(self) -> None:
         for provider in self.providers:
             await provider.close()
+
+
+class _ActiveSlowResponseStream(httpx.AsyncByteStream):
+    """Yield regular progress while the full response exceeds one request deadline."""
+
+    def __init__(
+        self,
+        payload: bytes,
+        *,
+        release_chunk: asyncio.Event,
+        chunk_size: int = 1,
+    ) -> None:
+        self._chunks = tuple(
+            payload[index : index + chunk_size]
+            for index in range(0, len(payload), chunk_size)
+        )
+        self._release_chunk = release_chunk
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self.finished = asyncio.Event()
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        self.started.set()
+        try:
+            for chunk in self._chunks:
+                await self._release_chunk.wait()
+                self._release_chunk.clear()
+                yield chunk
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        finally:
+            self.finished.set()
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+async def _keep_stream_active(
+    stream: _ActiveSlowResponseStream,
+    release_chunk: asyncio.Event,
+    *,
+    interval_seconds: float,
+) -> None:
+    await stream.started.wait()
+    while not stream.finished.is_set():
+        release_chunk.set()
+        await asyncio.sleep(interval_seconds)
 
 
 @pytest_asyncio.fixture
@@ -549,6 +599,139 @@ async def test_timeout_is_classified_without_sdk_retry(
 
     assert exc_info.value.code is ProviderErrorCode.TIMEOUT
     assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_total_wall_clock_deadline_cancels_continuously_active_sdk_request(
+    provider_factory: OfflineProviderFactory,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    response_secret = "fake-timeout-response-secret"
+    request_id = "fake-timeout-request-id"
+    prompt_secret = "fake-timeout-prompt-secret"
+    base64_secret = "data:image/png;base64,ZmFrZS10aW1lb3V0LWltYWdl"
+    release_chunk = asyncio.Event()
+    payload = json.dumps(_completion(content=response_secret)).encode()
+    stream = _ActiveSlowResponseStream(payload, release_chunk=release_chunk)
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={
+                "content-type": "application/json",
+                "x-request-id": request_id,
+            },
+            stream=stream,
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAICompatibleProvider.from_settings(
+        _settings(model_timeout_seconds=0.03),
+        http_client=http_client,
+    )
+    provider_factory.providers.append(provider)
+    provider_factory.requests.append(requests)
+
+    activity = asyncio.create_task(
+        _keep_stream_active(
+            stream,
+            release_chunk,
+            interval_seconds=0.005,
+        )
+    )
+    started_at = monotonic()
+    try:
+        with caplog.at_level(logging.DEBUG), pytest.raises(ProviderError) as exc_info:
+            await provider.chat(
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt_secret},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": base64_secret},
+                            },
+                        ],
+                    }
+                ],
+                tools=None,
+            )
+    finally:
+        await activity
+
+    await provider.close()
+
+    assert exc_info.value.code is ProviderErrorCode.TIMEOUT
+    assert monotonic() - started_at < 0.5
+    assert len(requests) == 1
+    assert stream.cancelled.is_set()
+    assert stream.finished.is_set()
+    assert stream.closed is True
+    assert activity.done()
+    assert http_client.is_closed is True
+    assert exc_info.value.__context__ is None
+    assert exc_info.value.__cause__ is None
+    public = (
+        f"{exc_info.value!s}{exc_info.value!r}"
+        f"{exc_info.value.to_public_dict()!r}{provider!r}{caplog.text}"
+    )
+    for secret in (
+        response_secret,
+        request_id,
+        prompt_secret,
+        base64_secret,
+        FAKE_API_KEY,
+        FAKE_BASE_URL,
+        "Authorization",
+    ):
+        assert secret not in public
+
+
+@pytest.mark.asyncio
+async def test_segmented_sdk_response_completes_before_total_wall_clock_deadline(
+    provider_factory: OfflineProviderFactory,
+) -> None:
+    release_chunk = asyncio.Event()
+    stream = _ActiveSlowResponseStream(
+        json.dumps(_completion(content="completed in time")).encode(),
+        release_chunk=release_chunk,
+        chunk_size=100,
+    )
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            stream=stream,
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAICompatibleProvider.from_settings(
+        _settings(model_timeout_seconds=0.2),
+        http_client=http_client,
+    )
+    provider_factory.providers.append(provider)
+    provider_factory.requests.append(requests)
+    activity = asyncio.create_task(
+        _keep_stream_active(
+            stream,
+            release_chunk,
+            interval_seconds=0.005,
+        )
+    )
+
+    result = await provider.chat(messages=[], tools=None)
+    await activity
+
+    assert result.content == "completed in time"
+    assert len(requests) == 1
+    assert stream.cancelled.is_set() is False
+    assert stream.finished.is_set()
 
 
 @pytest.mark.parametrize(

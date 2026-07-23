@@ -28,6 +28,7 @@ from openai.types.chat import (
 )
 
 from app.config import ModelProviderSettings, Settings
+from app.providers.http_logging import enforce_safe_http_client_logging
 from nanobot_core.providers import (
     FinishReason,
     Message,
@@ -63,6 +64,7 @@ class OpenAICompatibleProvider(ModelProvider):
     ) -> None:
         # The SDK's DEBUG request-options entry includes messages when extra_body is set.
         _OPENAI_SDK_LOGGER.setLevel(max(_OPENAI_SDK_LOGGER.level, logging.INFO))
+        enforce_safe_http_client_logging()
         self._client = AsyncOpenAI(
             api_key=config.api_key.get_secret_value(),
             base_url=config.api_base,
@@ -71,6 +73,7 @@ class OpenAICompatibleProvider(ModelProvider):
             http_client=http_client,
         )
         self._model = config.model_name
+        self._timeout_seconds = config.timeout_seconds
         self._clock = clock
 
     @classmethod
@@ -114,6 +117,7 @@ class OpenAICompatibleProvider(ModelProvider):
         )
         request_response_format = self._map_response_format(response_format)
         started_at = self._clock()
+        provider_error: ProviderError | None = None
 
         try:
             request: dict[str, Any] = {
@@ -126,33 +130,46 @@ class OpenAICompatibleProvider(ModelProvider):
                 request["tools"] = request_tools
             if request_response_format is not None:
                 request["response_format"] = request_response_format
-            completion = await self._client.chat.completions.create(**request)
+            completion = await asyncio.wait_for(
+                self._client.chat.completions.create(**request),
+                timeout=self._timeout_seconds,
+            )
         except asyncio.CancelledError:
             raise
+        except TimeoutError:
+            provider_error = ProviderError(code=ProviderErrorCode.TIMEOUT)
         except APITimeoutError:
-            raise ProviderError(code=ProviderErrorCode.TIMEOUT) from None
+            provider_error = ProviderError(code=ProviderErrorCode.TIMEOUT)
         except RateLimitError as exc:
-            raise ProviderError(
+            provider_error = ProviderError(
                 code=ProviderErrorCode.RATE_LIMITED,
                 retry_after_seconds=self._retry_after(exc),
-            ) from None
+            )
         except AuthenticationError:
-            raise ProviderError(code=ProviderErrorCode.AUTHENTICATION_FAILED) from None
+            provider_error = ProviderError(
+                code=ProviderErrorCode.AUTHENTICATION_FAILED
+            )
         except APIResponseValidationError:
-            raise ProviderError(code=ProviderErrorCode.INVALID_RESPONSE) from None
+            provider_error = ProviderError(code=ProviderErrorCode.INVALID_RESPONSE)
         except APIStatusError as exc:
             if exc.status_code == 429:
-                raise ProviderError(
+                provider_error = ProviderError(
                     code=ProviderErrorCode.RATE_LIMITED,
                     retry_after_seconds=self._retry_after(exc),
-                ) from None
-            if exc.status_code == 401:
-                raise ProviderError(
+                )
+            elif exc.status_code == 401:
+                provider_error = ProviderError(
                     code=ProviderErrorCode.AUTHENTICATION_FAILED
-                ) from None
-            raise ProviderError(code=ProviderErrorCode.PROVIDER_ERROR) from None
+                )
+            else:
+                provider_error = ProviderError(
+                    code=ProviderErrorCode.PROVIDER_ERROR
+                )
         except OpenAIError:
-            raise ProviderError(code=ProviderErrorCode.PROVIDER_ERROR) from None
+            provider_error = ProviderError(code=ProviderErrorCode.PROVIDER_ERROR)
+
+        if provider_error is not None:
+            raise provider_error
 
         latency_ms = max(0, int((self._clock() - started_at) * 1000))
         try:

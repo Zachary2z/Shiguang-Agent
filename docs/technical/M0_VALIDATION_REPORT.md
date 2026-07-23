@@ -1774,3 +1774,71 @@ macOS `26.5.1`（arm64）、Python `3.13.5`、pip `25.1.1`；`pip install -e
 当前没有未关闭的 P0/P1。M0-Gate 允许关闭，M0 正式完成；在本报告收口提交完成
 `--ff-only` 集成并推送后，当前允许阶段切换为 M1-0。除以上登记风险外没有 Gate
 阻塞项，本窗口未实现任何 M1 功能。
+
+## 24. 六张真实截图烟雾补测与超时校准
+
+### 24.1 补测事实与结果口径
+
+M0 关闭后的独立真实业务截图烟雾测试固定计划为 01–06，但因停止条件实际只执行
+01–03，共发送 3 次 initial，repair 为 0，SDK 和外层重试均为 0：
+
+| 样本 | 内容识别结果 | 严格时限结果 | Provider 阶段 | 20 秒整链路 | 结论 |
+|---|---|---|---|---|---|
+| 01 | 正确形成 1 个证据一致的 Place 候选 | 模型耗时 11.561 秒，超过旧 8 秒口径 | 未 timeout | 未 timeout | 内容通过，旧严格时限失败 |
+| 02 | 正确形成 1 个 Place 候选，未误绑具体分店 | 模型耗时 6.285 秒 | 未 timeout | 未 timeout | 通过 |
+| 03 | 未形成结构结果 | 不适用 | `PROVIDER_TIMEOUT` | 未 timeout | Provider timeout |
+| 04–06 | 未执行 | 未执行 | 未执行 | 未执行 | 不能记为失败 |
+
+首次 Provider timeout 触发整轮停止，因此 04–06 没有真实 outcome、候选或降级证据；
+05/06 的清晰度对照也未建立。已完成响应的观测分位数只有两个样本，三个端到端结果
+也只是小样本观测，不构成统计 P95。历史 Gate 的原结论和原始数据继续保留，不被本节
+覆盖。
+
+### 24.2 根因与校准决定
+
+旧实现只把 `MODEL_TIMEOUT_SECONDS` 交给 OpenAI SDK/httpx。该配置限制连接、读取、
+写入等网络阶段，但不是一次 `chat.completions.create()` 的总墙钟截止；持续分段活动
+可令每个阶段都未超时而完整调用超过配置值。01 的 11.561 秒正常返回和 03 较晚才映射
+为 Provider timeout 共同证明旧 8 秒既不是可靠的总墙钟边界，真实样本余量也不足。
+
+本修复只在唯一 `OpenAICompatibleProvider` 的实际 SDK await 边界建立一次总墙钟
+截止，并继续把 SDK timeout 保留为同一配置值；总墙钟到点会取消并等待活动 SDK 请求
+结束，再映射为现有唯一 `ProviderErrorCode.TIMEOUT`。`max_retries=0` 与外层重试 0
+不变，外部 `CancelledError` 继续原对象传播。
+
+`MODEL_TIMEOUT_SECONDS` 当前暂定校准为 15 秒，并限制为有限值 `(0, 15]`。15 秒来自
+本轮有限真实观测，只是暂定值，不能描述为已经统计验证的 P95，也不授权无限提高。
+
+### 24.3 单次 15 秒与完整流程 20 秒
+
+图片和 URL 的完整流程仍只使用既有 `TextCollectionWorkflow` 创建的
+`AgentRunService.execute_application()` 共享 20 秒总预算。它覆盖上传、校验、私有
+存储、initial、唯一 repair、解析、数据库写入和清理；`ImageRecognitionService`
+没有新增第二个 20 秒计时器。initial 与 repair 是同一个外层 operation 内的连续
+调用，initial 消耗的时间会减少 repair 可用的剩余预算，不会各自重新获得 20 秒。
+
+因此边界关系为：每个 Provider SDK 调用最多 15 秒，但整张图片从接收到清理的所有
+步骤合计最多 20 秒；任何内层调用都不能延长外层截止。离线受控测试已覆盖 initial
+耗尽大部分预算后 repair 只获得剩余时间，以及数据库写入阶段超时后的图片对象、
+metadata、temporary、reservation 与业务写入清理。
+
+### 24.4 安全、范围与后续真实复测
+
+本修复窗口没有读取 `.env`，没有运行真实 marker，也没有调用模型、高德、网页、
+对象存储、消息或其他外部 API；真实 API 调用为 0。离线慢 transport 先证明修复前
+持续活动的完整 SDK 调用可越过配置值，修复后证明总墙钟到点会取消请求、只发一次、
+不保留后台任务且客户端可正常关闭。普通文本、Tool Calling、`json_object`、
+`json_schema` 和多模态映射继续使用同一 Provider；messages、tools、Schema 和图片
+输入保持不变。安全错误、日志、repr 和公开字典不包含响应、Prompt、Base64、密钥、
+endpoint、Authorization 或 Request ID。
+
+正式离线验证结果为：Provider+图片 `102 passed`；统一输入+文字抽取/契约
+`135 passed`；非真实全集 `1486 passed / 2 deselected`；硬封 DNS 与三类 socket
+连接后的五文件聚焦组合 `237 passed`。editable 安装、`pip check`、Ruff 和 93 个
+源文件 strict mypy 均通过；所有正式命令均为 0 failed、0 skipped、0 warning。
+
+M1-0 仍未开始。修复集成后必须重新取得用户明确授权，使用原固定 01–06、原顺序
+完成六图复测：每张 initial 最多 1 次，只有生产唯一 repair 正常触发时最多再 1 次，
+总上限 12 次非流式 Chat Completions；SDK 和外层重试均为 0；单次模型总墙钟 15 秒，
+每张完整共享总预算 20 秒。首次鉴权、endpoint、供应商或模型能力错误立即停止。
+报告仍只写仓库外，且不记录完整请求、响应、Base64、密钥、模型名或 Request ID。

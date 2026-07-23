@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from time import monotonic
 
 import httpx
 import pytest
@@ -45,7 +46,15 @@ from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.main import create_app
 from app.providers.storage import StorageProviderError, StorageProviderErrorCode
 from app.providers.web import WebContentProvider
-from nanobot_core.providers import ModelProvider, ProviderError, ProviderErrorCode
+from nanobot_core.providers import (
+    Message,
+    ModelProvider,
+    ModelResponse,
+    ProviderError,
+    ProviderErrorCode,
+    StructuredOutput,
+    ToolDefinition,
+)
 from tests.core.fakes import FakeProvider, fake_response
 from tests.fixtures.images import JPEG_SCREENSHOT, PNG_SCREENSHOT, WEBP_SCREENSHOT
 
@@ -71,6 +80,44 @@ class BlockingWebProvider(WebContentProvider):
         del url
         self.calls += 1
         await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+class SharedBudgetImageProvider(ModelProvider):
+    """Use most of one workflow budget before blocking the sole repair call."""
+
+    def __init__(self) -> None:
+        self.initial_started = asyncio.Event()
+        self.release_initial = asyncio.Event()
+        self.repair_started = asyncio.Event()
+        self.repair_cancelled = asyncio.Event()
+        self.calls = 0
+
+    async def chat(
+        self,
+        *,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None,
+        response_format: StructuredOutput | None = None,
+    ) -> ModelResponse:
+        del messages, tools, response_format
+        self.calls += 1
+        if self.calls == 1:
+            self.initial_started.set()
+            await self.release_initial.wait()
+            return fake_response(
+                content=(
+                    '{"outcome":"candidates","candidates":['
+                    '{"kind":"place","title":"Image",'
+                    '"missing_fields":["city_hint","city_hint"]}]}'
+                )
+            )
+        self.repair_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.repair_cancelled.set()
+            raise
         raise AssertionError("unreachable")
 
 
@@ -717,6 +764,46 @@ async def test_image_provider_failure_replay_has_no_additional_side_effects(
 
 
 @pytest.mark.asyncio
+async def test_image_initial_and_repair_share_one_outer_workflow_budget(
+    test_settings: Settings,
+) -> None:
+    settings = test_settings.model_copy(update={"agent_timeout_seconds": 0.12})
+    provider = SharedBudgetImageProvider()
+    async with _client(settings, provider) as (_api, client, _storage):
+        session_id = await _demo(client)
+        request = asyncio.create_task(
+            client.post(
+                f"/api/v1/sessions/{session_id}/messages",
+                content=PNG_SCREENSHOT,
+                headers={
+                    "Content-Type": "image/png",
+                    "Idempotency-Key": "shared-image-budget",
+                },
+            )
+        )
+        await provider.initial_started.wait()
+        started_at = monotonic()
+        asyncio.get_running_loop().call_later(
+            0.08,
+            provider.release_initial.set,
+        )
+        response = await request
+
+    private_root = (
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
+        / "private"
+    )
+    assert response.status_code == 504
+    assert response.json()["error_code"] == "RUN_TIMEOUT"
+    assert provider.calls == 2
+    assert provider.repair_started.is_set()
+    assert provider.repair_cancelled.is_set()
+    assert monotonic() - started_at < 0.18
+    for directory in ("objects", "metadata", ".tmp", ".reservations"):
+        assert list((private_root / directory).iterdir()) == []
+
+
+@pytest.mark.asyncio
 async def test_cleanup_failure_is_fixed_and_does_not_leak_sensitive_context(
     test_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
@@ -863,6 +950,62 @@ async def test_image_collection_write_failure_rolls_back_and_cleans_file(
     assert counts == (0, 0, 0)
     assert run_status == "failed"
     assert list((private_root / "objects").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_image_database_write_timeout_cleans_all_private_file_state(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = test_settings.model_copy(update={"agent_timeout_seconds": 0.03})
+    provider = FakeProvider([_response("Image")])
+    write_started = asyncio.Event()
+    write_cancelled = asyncio.Event()
+
+    async def block_write(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        write_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            write_cancelled.set()
+            raise
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(CollectionWriteService, "auto_save", block_write)
+    async with _client(settings, provider) as (api, client, _storage):
+        session_id = await _demo(client)
+        response = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            content=PNG_SCREENSHOT,
+            headers={
+                "Content-Type": "image/png",
+                "Idempotency-Key": "database-write-timeout",
+            },
+        )
+        async with api.state.database.session() as session:
+            count_values: list[int] = []
+            for table in (
+                "sources",
+                "collection_items",
+                "collection_write_operations",
+            ):
+                value = await session.scalar(text(f"SELECT COUNT(*) FROM {table}"))
+                count_values.append(int(value or 0))
+            counts = tuple(count_values)
+
+    private_root = (
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
+        / "private"
+    )
+    assert response.status_code == 504
+    assert response.json()["error_code"] == "RUN_TIMEOUT"
+    assert write_started.is_set()
+    assert write_cancelled.is_set()
+    assert counts == (0, 0, 0)
+    assert len(provider.calls) == 1
+    for directory in ("objects", "metadata", ".tmp", ".reservations"):
+        assert list((private_root / directory).iterdir()) == []
 
 
 def test_input_contracts_are_frozen_and_hide_sensitive_payloads() -> None:
