@@ -8,7 +8,7 @@
 
 普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。此前真实模型和高德的单次授权均不延续到 M0-Gate；真实模型、高德、网页、对象存储及其他外部/付费调用默认未授权。M0-Gate 的真实延迟与链路验收必须逐类取得当次明确授权并预先限制请求数和费用；未获授权时只执行离线、Fixture、迁移、安全与禁网验收。
 
-Dockerfile 与本地运行完整性在 M0-Gate 复核；PostgreSQL、Worker、SSE 和 Docker Compose 仍属于 M1，不得提前实现。
+根目录提供 M0-Gate 验证用的最小 API Dockerfile；PostgreSQL、Worker、SSE 和 Docker Compose 仍属于 M1，当前尚未实现。
 
 ## 仓库目录
 
@@ -138,6 +138,41 @@ curl -i -H 'X-Request-ID: local-check-001' http://127.0.0.1:8000/healthz
 ```
 
 响应 JSON 固定为 `{"status":"ok"}`，响应头包含 `X-Request-ID`。请求日志只记录 request ID、方法、路径、状态码和耗时，不记录正文、查询字符串、Authorization 或 Cookie。
+
+### 最小容器运行
+
+以下命令从仓库根目录执行。构建上下文不使用 `.env`，镜像内不保存模型、高德或其他密钥：
+
+```bash
+docker build -t shiguang-backend:local .
+```
+
+M0 使用 SQLite 做本地和容器验证。迁移必须显式执行，应用启动不会自动迁移：
+
+```bash
+docker run --rm \
+  -v shiguang-data:/app/data \
+  -e APP_ENV=production \
+  -e DATABASE_URL=sqlite+aiosqlite:///./data/shiguang.db \
+  shiguang-backend:local \
+  python -m alembic upgrade head
+```
+
+启动 API 时只按实际启用能力注入所需环境变量；密钥应由运行环境安全注入，不写入 Dockerfile、构建参数或镜像层：
+
+```bash
+docker run --rm \
+  --name shiguang-api \
+  -p 127.0.0.1:8000:8000 \
+  -v shiguang-data:/app/data \
+  -e APP_ENV=production \
+  -e DATABASE_URL=sqlite+aiosqlite:///./data/shiguang.db \
+  shiguang-backend:local
+
+curl -i http://127.0.0.1:8000/healthz
+```
+
+SQLite 只适用于 M0 和本地验证。PostgreSQL 与 Docker Compose 属于 M1，当前仓库没有对应实现。
 
 ## 配置
 
