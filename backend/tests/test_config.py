@@ -19,6 +19,7 @@ from app.config import (
 )
 from app.main import create_app
 from app.storage_policy import MAX_STORAGE_MAX_FILE_SIZE_BYTES
+from nanobot_core.providers import StructuredOutputMode
 
 
 def test_dotenv_loading_can_be_explicitly_disabled(tmp_path: Path) -> None:
@@ -49,6 +50,30 @@ def test_explicit_settings_override_defaults() -> None:
 
     assert settings.app_timezone == "UTC"
     assert settings.log_level == "WARNING"
+
+
+def test_structured_output_capability_is_explicit_and_disabled_by_default() -> None:
+    default_settings = Settings(
+        _env_file=None,
+        app_env="test",
+        database_url="sqlite+aiosqlite:///:memory:",
+    )
+    schema_settings = default_settings.model_copy(
+        update={"model_structured_output_mode": "json_schema"}
+    )
+    object_settings = default_settings.model_copy(
+        update={"model_structured_output_mode": "json_object"}
+    )
+
+    assert default_settings.extraction_structured_output_mode() is None
+    assert (
+        schema_settings.extraction_structured_output_mode()
+        is StructuredOutputMode.JSON_SCHEMA
+    )
+    assert (
+        object_settings.extraction_structured_output_mode()
+        is StructuredOutputMode.JSON_OBJECT
+    )
 
 
 def test_test_environment_skips_configured_dotenv(

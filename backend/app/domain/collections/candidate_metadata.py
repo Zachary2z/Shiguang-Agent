@@ -9,6 +9,7 @@ from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic_core import PydanticCustomError
 
 PRICE_CURRENCY_CNY = "CNY"
 _SENSITIVE_TEXT = re.compile(
@@ -70,9 +71,15 @@ def validate_cny_price_pair(
     """Enforce the sole formal price representation used by the China-only product."""
 
     if (price_amount is None) is not (price_currency is None):
-        raise ValueError("price amount and currency must be provided together")
+        raise PydanticCustomError(
+            "price_pair_incomplete",
+            "Price amount and currency must be provided together.",
+        )
     if price_currency is not None and price_currency != PRICE_CURRENCY_CNY:
-        raise ValueError("price currency must be CNY")
+        raise PydanticCustomError(
+            "price_currency_unsupported",
+            "The price currency is unsupported.",
+        )
 
 
 def normalize_required_candidate_text(value: str, *, field_name: str) -> str:

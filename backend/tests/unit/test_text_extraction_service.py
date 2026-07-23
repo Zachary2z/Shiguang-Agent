@@ -12,6 +12,11 @@ from decimal import Decimal
 import pytest
 
 import app.application.text_extraction as text_extraction_module
+from app.application.extraction_output import (
+    EXTRACTION_SEMANTIC_RULES,
+    extraction_result_schema,
+    parse_extraction_response,
+)
 from app.application.text_extraction import (
     MAX_MODEL_OUTPUT_CHARS,
     MAX_TEXT_INPUT_CHARS,
@@ -26,7 +31,13 @@ from app.domain.collections import (
     PlaceCandidate,
     UnsupportedReason,
 )
-from nanobot_core.providers import ModelResponse, ProviderError, ProviderErrorCode, ToolCall
+from nanobot_core.providers import (
+    ModelResponse,
+    ProviderError,
+    ProviderErrorCode,
+    StructuredOutputMode,
+    ToolCall,
+)
 from tests.core.fakes import FakeProvider, fake_response
 
 START = datetime(2026, 7, 25, 6, 0, tzinfo=UTC)
@@ -443,6 +454,93 @@ async def test_first_invalid_output_can_be_repaired_once() -> None:
     repair_request = provider.calls[1].messages[-1]["content"]
     assert "json_invalid" in repair_request
     assert provider.calls[1].tools is None
+
+
+@pytest.mark.asyncio
+async def test_repair_receives_specific_safe_semantic_guidance_without_evidence() -> None:
+    secret = "private-source-and-response-value"
+    invalid = json.loads(_invalid_event_time_json())
+    invalid["candidates"][0]["title"] = secret
+    invalid_json = json.dumps(invalid, ensure_ascii=False)
+    valid = ExtractionResult.with_candidates((_full_place(),))
+    provider = FakeProvider([fake_response(content=invalid_json), _result_response(valid)])
+
+    result = await TextExtractionService(provider).extract(secret)
+
+    repair_messages = provider.calls[1].messages
+    repair_prompt = str(repair_messages[-1]["content"])
+    assert result == valid
+    assert "event_time_order_invalid" in repair_prompt
+    assert "Ensure an exact Event end is after its exact start." in repair_prompt
+    assert secret not in json.dumps(repair_messages, ensure_ascii=False)
+    assert invalid_json not in json.dumps(repair_messages, ensure_ascii=False)
+    assert [message["role"] for message in repair_messages] == ["system", "user"]
+
+
+def test_safe_validation_issues_contain_only_path_and_stable_type() -> None:
+    secret = "private-invalid-title"
+    invalid = json.loads(_invalid_event_time_json())
+    invalid["candidates"][0]["title"] = secret
+
+    result, issues = parse_extraction_response(
+        fake_response(content=json.dumps(invalid, ensure_ascii=False))
+    )
+
+    assert result is None
+    assert issues == (
+        {"path": "candidates.0.event", "type": "event_time_order_invalid"},
+    )
+    assert secret not in json.dumps(issues)
+    assert all(set(issue) == {"path", "type"} for issue in issues)
+
+
+def test_model_invalid_outcome_is_reserved_for_the_application() -> None:
+    result, issues = parse_extraction_response(
+        _result_response(ExtractionResult.model_invalid())
+    )
+
+    assert result is None
+    assert issues == (
+        {"path": "outcome", "type": "model_invalid_self_declared"},
+    )
+
+
+def test_generated_schema_and_shared_semantic_rules_stay_on_the_domain_contract() -> None:
+    schema = extraction_result_schema()
+
+    assert schema == ExtractionResult.model_json_schema()
+    assert schema is not ExtractionResult.model_json_schema()
+    assert schema["properties"]["outcome"]["description"].startswith("Selects exactly one")
+    for rule in (
+        "insufficient_information",
+        "unsupported",
+        "missing_fields",
+        "Place candidates",
+        "Event start/end",
+        "CNY",
+    ):
+        assert rule in EXTRACTION_SEMANTIC_RULES
+
+
+@pytest.mark.asyncio
+async def test_extraction_structured_output_is_explicit_and_isolated_for_both_calls() -> None:
+    valid = ExtractionResult.with_candidates((_full_place(),))
+    provider = FakeProvider([fake_response(content="not-json"), _result_response(valid)])
+
+    result = await TextExtractionService(
+        provider,
+        structured_output_mode=StructuredOutputMode.JSON_SCHEMA,
+    ).extract("深圳博物馆")
+
+    assert result == valid
+    assert len(provider.calls) == 2
+    first_format = provider.calls[0].response_format
+    second_format = provider.calls[1].response_format
+    assert first_format is not None
+    assert second_format is not None
+    assert first_format is not second_format
+    assert first_format.json_schema == ExtractionResult.model_json_schema()
+    assert second_format.json_schema == ExtractionResult.model_json_schema()
 
 
 @pytest.mark.asyncio

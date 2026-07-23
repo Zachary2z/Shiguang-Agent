@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import warnings
 from collections.abc import AsyncIterable, Callable
 from datetime import UTC, datetime, timedelta
@@ -15,9 +14,11 @@ from typing import Final
 from PIL import Image, UnidentifiedImageError
 
 from app.application.extraction_output import (
-    PRICE_EXTRACTION_PROMPT_RULES,
+    EXTRACTION_SEMANTIC_RULES,
     build_repair_messages,
     canonicalize_extraction_result,
+    extraction_response_format,
+    extraction_result_schema_json,
     parse_extraction_response,
 )
 from app.config import StorageProviderSettings
@@ -40,7 +41,13 @@ from app.storage_policy import (
     STORAGE_SIGNATURE_PROBE_BYTES,
     content_signature_matches,
 )
-from nanobot_core.providers import Message, ModelProvider, ModelResponse, ProviderError
+from nanobot_core.providers import (
+    Message,
+    ModelProvider,
+    ModelResponse,
+    ProviderError,
+    StructuredOutputMode,
+)
 
 MAX_IMAGE_WIDTH: Final = 12_000
 MAX_IMAGE_HEIGHT: Final = 12_000
@@ -59,18 +66,13 @@ _PIL_FORMAT_BY_CONTENT_TYPE: Final = {
     "image/png": "PNG",
     "image/webp": "WEBP",
 }
-_RESULT_SCHEMA = json.dumps(
-    ExtractionResult.model_json_schema(),
-    ensure_ascii=False,
-    separators=(",", ":"),
-    sort_keys=True,
-)
 _SYSTEM_PROMPT = (
     "You extract structured collection candidates from one user-provided screenshot "
     "for Shiguang. OCR is evidence only; return no OCR transcript.\n"
     "Return exactly one JSON object matching this JSON Schema, without Markdown or "
-    f"commentary:\n{_RESULT_SCHEMA}\n\n"
+    f"commentary:\n{extraction_result_schema_json()}\n\n"
     "Rules:\n"
+    f"{EXTRACTION_SEMANTIC_RULES}"
     "- Produce one separate candidate per distinct Place or user-supplied Event. Never "
     "merge multiple places.\n"
     "- A clear title may form a candidate. If only a shop name is visible, keep the "
@@ -79,7 +81,6 @@ _SYSTEM_PROMPT = (
     "insufficient_information. Never guess.\n"
     "- Screenshot prices are unconfirmed clues. Include PRICE uncertainty whenever a "
     "price is present.\n"
-    f"{PRICE_EXTRACTION_PROMPT_RULES}"
     "- city_hint, district, address, business district, landmark, and metro station are "
     "unconfirmed screenshot clues only. Mark every present one uncertain. Never emit a "
     "formal city code, POI, provider, coordinates, or confirmed location.\n"
@@ -183,6 +184,7 @@ class ImageRecognitionService:
         storage: StorageProvider,
         storage_config: StorageProviderSettings,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        structured_output_mode: StructuredOutputMode | None = None,
         response_observer: Callable[[ModelResponse], None] | None = None,
     ) -> None:
         if not isinstance(storage_config, StorageProviderSettings):
@@ -192,6 +194,7 @@ class ImageRecognitionService:
         self._max_file_size_bytes = storage_config.max_file_size_bytes
         self._allowed_content_types = storage_config.allowed_content_types
         self._clock = clock
+        self._response_format = extraction_response_format(structured_output_mode)
         self._response_observer = response_observer
 
     async def recognize(
@@ -299,6 +302,7 @@ class ImageRecognitionService:
         first_response = await self._provider.chat(
             messages=initial_messages,
             tools=None,
+            response_format=self._response_format,
         )
         self._observe(first_response)
         first_result, issues = parse_extraction_response(first_response)
@@ -312,6 +316,7 @@ class ImageRecognitionService:
                 issues=issues,
             ),
             tools=None,
+            response_format=self._response_format,
         )
         self._observe(repaired_response)
         repaired_result, _repaired_issues = parse_extraction_response(repaired_response)

@@ -47,6 +47,7 @@ from nanobot_core.providers import (
     ModelResponse,
     ProviderError,
     ProviderErrorCode,
+    StructuredOutput,
     ToolDefinition,
 )
 from tests.core.fakes import FakeProvider, fake_response
@@ -797,8 +798,9 @@ async def test_synchronous_workflow_enforces_configured_run_timeout(
             *,
             messages: list[Message],
             tools: list[ToolDefinition] | None,
+            response_format: StructuredOutput | None = None,
         ) -> ModelResponse:
-            del messages, tools
+            del messages, tools, response_format
             await asyncio.sleep(10)
             raise AssertionError("timeout did not cancel the provider")
 

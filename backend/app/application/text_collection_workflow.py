@@ -52,7 +52,7 @@ from app.domain.web.security import UrlPolicyError, validate_web_url
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.providers.storage import StorageProvider, StorageProviderError
 from app.providers.web import WebContentProvider
-from nanobot_core.providers import ModelProvider, ProviderError
+from nanobot_core.providers import ModelProvider, ProviderError, StructuredOutputMode
 
 MAX_RICH_INPUT_WORKFLOW_SECONDS = 20.0
 _RECOVERY_SUPPLY_TEXT = "supply_text"
@@ -143,6 +143,7 @@ class TextCollectionWorkflow:
         web_provider: WebContentProvider | None = None,
         storage: StorageProvider | None = None,
         storage_config: StorageProviderSettings | None = None,
+        structured_output_mode: StructuredOutputMode | None = None,
         now: Callable[[], datetime] = utc_now,
     ) -> None:
         self._session = session
@@ -153,6 +154,7 @@ class TextCollectionWorkflow:
         self._web_provider = web_provider
         self._storage = storage
         self._storage_config = storage_config
+        self._structured_output_mode = structured_output_mode
         self._now = now
         self._repository = SqlAlchemyCollectionRepository(session)
 
@@ -343,6 +345,7 @@ class TextCollectionWorkflow:
         try:
             extraction = await TextExtractionService(
                 self._provider,
+                structured_output_mode=self._structured_output_mode,
                 response_observer=observer.record_model_response,
             ).extract(input.text)
         except ProviderError:
@@ -442,6 +445,7 @@ class TextCollectionWorkflow:
         try:
             extraction = await TextExtractionService(
                 self._provider,
+                structured_output_mode=self._structured_output_mode,
                 response_observer=observer.record_model_response,
             ).extract(fetched.text[:MAX_TEXT_INPUT_CHARS])
         except ProviderError:
@@ -506,6 +510,7 @@ class TextCollectionWorkflow:
                     storage=storage,
                     storage_config=storage_config,
                     clock=self._now,
+                    structured_output_mode=self._structured_output_mode,
                     response_observer=observer.record_model_response,
                 ).recognize(
                     _single_chunk(input.payload),

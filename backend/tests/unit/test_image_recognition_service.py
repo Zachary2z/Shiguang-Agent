@@ -20,6 +20,7 @@ import pytest
 from PIL import Image
 
 import app.application.image_recognition as image_recognition_module
+from app.application.extraction_output import EXTRACTION_SEMANTIC_RULES
 from app.application.image_recognition import (
     MAX_IMAGE_WIDTH,
     MAX_MODEL_DATA_URL_CHARS,
@@ -45,7 +46,13 @@ from app.providers.storage import (
     StorageProviderError,
     StorageProviderErrorCode,
 )
-from nanobot_core.providers import ModelResponse, ProviderError, ProviderErrorCode, ToolCall
+from nanobot_core.providers import (
+    ModelResponse,
+    ProviderError,
+    ProviderErrorCode,
+    StructuredOutputMode,
+    ToolCall,
+)
 from tests.core.fakes import FakeProvider, fake_response
 from tests.fixtures.images import (
     BLURRED_PNG_SCREENSHOT,
@@ -97,6 +104,7 @@ def _service(
     provider: FakeProvider,
     *,
     max_file_size_bytes: int = 10_000_000,
+    structured_output_mode: StructuredOutputMode | None = None,
 ) -> tuple[ImageRecognitionService, LocalPrivateStorageProvider, Path]:
     root = tmp_path / "private-images"
     config = _storage_config(root, max_file_size_bytes=max_file_size_bytes)
@@ -110,6 +118,7 @@ def _service(
             storage=storage,
             storage_config=config,
             clock=lambda: FIXED_NOW,
+            structured_output_mode=structured_output_mode,
         ),
         storage,
         root,
@@ -838,6 +847,31 @@ async def test_one_structural_repair_can_succeed(tmp_path: Path) -> None:
 
     assert result.candidates[0].title == "修复后的店"
     assert len(provider.calls) == 2
+    repair_snapshot = json.dumps(provider.calls[1].messages)
+    assert "data:image/" not in repair_snapshot
+    assert [message["role"] for message in provider.calls[1].messages] == [
+        "system",
+        "user",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_image_and_text_share_semantics_and_explicit_structured_output(
+    tmp_path: Path,
+) -> None:
+    provider = FakeProvider([_response_for(_place())])
+    service, _storage, _root = _service(
+        tmp_path,
+        provider,
+        structured_output_mode=StructuredOutputMode.JSON_SCHEMA,
+    )
+
+    await service.recognize(_stream(PNG_SCREENSHOT), content_type="image/png")
+
+    system_prompt = str(provider.calls[0].messages[0]["content"])
+    assert EXTRACTION_SEMANTIC_RULES in system_prompt
+    assert provider.calls[0].response_format is not None
+    assert provider.calls[0].response_format.mode is StructuredOutputMode.JSON_SCHEMA
 
 
 @pytest.mark.parametrize(

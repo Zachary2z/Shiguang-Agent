@@ -188,6 +188,7 @@ async def create_message(
         web_provider=web_provider,
         storage=storage,
         storage_config=settings.storage_provider_settings(),
+        structured_output_mode=settings.extraction_structured_output_mode(),
     ).submit_input(
         user_id=user_id,
         session_id=session_id,

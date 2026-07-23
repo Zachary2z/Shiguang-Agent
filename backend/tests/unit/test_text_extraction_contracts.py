@@ -97,12 +97,12 @@ def test_place_candidate_forbids_event_only_fields_and_metadata() -> None:
 
     payload = _full_place().model_dump()
     payload["missing_fields"] = (CandidateField.EVENT_START_AT,)
-    with pytest.raises(ValidationError, match="Event schedule metadata"):
+    with pytest.raises(ValidationError, match="place_has_event_metadata"):
         PlaceCandidate.model_validate(payload)
 
 
 def test_event_rejects_invalid_time_order_and_naive_times() -> None:
-    with pytest.raises(ValidationError, match="event_end_at must be after"):
+    with pytest.raises(ValidationError, match="event_time_order_invalid"):
         _full_event(event_end_at=START)
     with pytest.raises(ValidationError, match="timezone-aware"):
         _full_event(event_start_at=START.replace(tzinfo=None))
@@ -132,7 +132,7 @@ def test_missing_fields_and_uncertainties_are_explicit_and_non_overlapping() -> 
 
     payload = candidate.model_dump()
     payload["missing_fields"] = (*candidate.missing_fields, CandidateField.CITY_HINT)
-    with pytest.raises(ValidationError, match="both missing and uncertain"):
+    with pytest.raises(ValidationError, match="missing_and_uncertain_conflict"):
         PlaceCandidate.model_validate(payload)
 
 
@@ -191,12 +191,12 @@ def test_city_hint_is_trimmed_bounded_and_not_a_plan_city_enum() -> None:
 def test_absent_city_hint_must_be_missing_or_uncertain_and_present_hint_is_not_missing() -> None:
     payload = _full_place().model_dump()
     payload["city_hint"] = None
-    with pytest.raises(ValidationError, match="absent city_hint"):
+    with pytest.raises(ValidationError, match="absent_field_not_classified"):
         PlaceCandidate.model_validate(payload)
 
     payload = _full_place().model_dump()
     payload["missing_fields"] = (CandidateField.CITY_HINT,)
-    with pytest.raises(ValidationError, match="present and missing"):
+    with pytest.raises(ValidationError, match="present_field_marked_missing"):
         PlaceCandidate.model_validate(payload)
 
 
@@ -213,7 +213,7 @@ def test_event_without_exact_times_requires_explicit_gaps() -> None:
 
     payload = event.model_dump()
     payload["missing_fields"] = ()
-    with pytest.raises(ValidationError, match="absent event_start_at"):
+    with pytest.raises(ValidationError, match="event_time_absent_not_classified"):
         EventCandidate.model_validate(payload)
 
 
@@ -252,14 +252,135 @@ def test_extraction_result_distinguishes_all_four_outcomes() -> None:
 
 
 def test_error_outcome_cannot_disguise_itself_as_empty_candidate_success() -> None:
-    with pytest.raises(ValidationError, match="at least one candidate"):
+    with pytest.raises(ValidationError, match="candidates_required"):
         ExtractionResult(outcome=ExtractionOutcome.CANDIDATES)
-    with pytest.raises(ValidationError, match="cannot carry candidates"):
+    with pytest.raises(ValidationError, match="candidates_forbidden_for_outcome"):
         ExtractionResult(
             outcome=ExtractionOutcome.UNSUPPORTED,
             candidates=(_full_place(),),
             reason_code=ExtractionReasonCode.INPUT_EMPTY,
         )
+
+
+def _first_error_type(
+    model: type[PlaceCandidate | EventCandidate | ExtractionResult],
+    payload: dict[str, object],
+) -> str:
+    with pytest.raises(ValidationError) as caught:
+        model.model_validate(payload)
+    return str(caught.value.errors(include_context=False, include_input=False)[0]["type"])
+
+
+def test_candidate_semantic_errors_have_stable_value_free_types() -> None:
+    payload = _full_place().model_dump()
+    payload.update(price_amount=None, price_currency="CNY")
+    assert _first_error_type(PlaceCandidate, payload) == "price_pair_incomplete"
+
+    payload = _full_place().model_dump()
+    payload["price_currency"] = "USD"
+    assert _first_error_type(PlaceCandidate, payload) == "price_currency_unsupported"
+
+    payload = _full_place().model_dump()
+    payload["missing_fields"] = (CandidateField.CITY_HINT, CandidateField.CITY_HINT)
+    assert _first_error_type(PlaceCandidate, payload) == "duplicate_missing_field"
+
+    uncertainty = Uncertainty(field=CandidateField.CITY_HINT, reason="需要确认。")
+    payload = _full_place().model_dump()
+    payload["uncertainties"] = (uncertainty, uncertainty)
+    assert _first_error_type(PlaceCandidate, payload) == "duplicate_uncertainty_field"
+
+    payload = _full_place().model_dump()
+    payload["missing_fields"] = (CandidateField.CITY_HINT,)
+    payload["uncertainties"] = (uncertainty,)
+    assert _first_error_type(PlaceCandidate, payload) == "missing_and_uncertain_conflict"
+
+    payload = _full_place().model_dump()
+    payload["missing_fields"] = (CandidateField.CITY_HINT,)
+    assert _first_error_type(PlaceCandidate, payload) == "present_field_marked_missing"
+
+    payload = _full_place().model_dump()
+    payload["city_hint"] = None
+    assert _first_error_type(PlaceCandidate, payload) == "absent_field_not_classified"
+
+    payload = _full_place().model_dump()
+    payload["missing_fields"] = (CandidateField.EVENT_START_AT,)
+    assert _first_error_type(PlaceCandidate, payload) == "place_has_event_metadata"
+
+    payload = _full_event().model_dump()
+    payload["event_end_at"] = payload["event_start_at"]
+    assert _first_error_type(EventCandidate, payload) == "event_time_order_invalid"
+
+    payload = _full_event().model_dump()
+    payload["event_start_at"] = None
+    assert _first_error_type(EventCandidate, payload) == "event_time_absent_not_classified"
+
+
+def test_outcome_semantic_errors_have_stable_value_free_types() -> None:
+    assert (
+        _first_error_type(
+            ExtractionResult,
+            {"outcome": ExtractionOutcome.CANDIDATES},
+        )
+        == "candidates_required"
+    )
+    assert (
+        _first_error_type(
+            ExtractionResult,
+            {
+                "outcome": ExtractionOutcome.UNSUPPORTED,
+                "candidates": (_full_place(),),
+                "reason_code": ExtractionReasonCode.INPUT_EMPTY,
+            },
+        )
+        == "candidates_forbidden_for_outcome"
+    )
+    assert (
+        _first_error_type(
+            ExtractionResult,
+            {
+                "outcome": ExtractionOutcome.INSUFFICIENT_INFORMATION,
+                "reason_code": ExtractionReasonCode.INPUT_EMPTY,
+                "missing_fields": (CandidateField.TITLE,),
+                "recovery_suggestions": ("请补充名称。",),
+            },
+        )
+        == "reason_code_invalid_for_outcome"
+    )
+    assert (
+        _first_error_type(
+            ExtractionResult,
+            {
+                "outcome": ExtractionOutcome.INSUFFICIENT_INFORMATION,
+                "reason_code": ExtractionReasonCode.INSUFFICIENT_INFORMATION,
+                "unsupported_reason": UnsupportedReason.OTHER,
+                "missing_fields": (CandidateField.TITLE,),
+                "recovery_suggestions": ("请补充名称。",),
+            },
+        )
+        == "unsupported_reason_invalid"
+    )
+    assert (
+        _first_error_type(
+            ExtractionResult,
+            {
+                "outcome": ExtractionOutcome.INSUFFICIENT_INFORMATION,
+                "reason_code": ExtractionReasonCode.INSUFFICIENT_INFORMATION,
+                "recovery_suggestions": ("请补充名称。",),
+            },
+        )
+        == "insufficient_fields_required"
+    )
+    assert (
+        _first_error_type(
+            ExtractionResult,
+            {
+                "outcome": ExtractionOutcome.INSUFFICIENT_INFORMATION,
+                "reason_code": ExtractionReasonCode.INSUFFICIENT_INFORMATION,
+                "missing_fields": (CandidateField.TITLE,),
+            },
+        )
+        == "recovery_suggestions_required"
+    )
 
 
 def test_candidate_count_has_a_hard_upper_bound_without_merging() -> None:

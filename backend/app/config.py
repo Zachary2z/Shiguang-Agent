@@ -26,6 +26,7 @@ from app.storage_policy import (
     SUPPORTED_STORAGE_CONTENT_TYPES,
 )
 from nanobot_core.agent.limits import MAX_RUN_TIMEOUT_SECONDS, MAX_TOOL_CALLS_PER_RUN
+from nanobot_core.providers import StructuredOutputMode
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = REPOSITORY_ROOT / ".env"
@@ -270,6 +271,11 @@ class Settings(BaseSettings):
     model_api_key: SecretStr | None = None
     model_name: str | None = None
     model_timeout_seconds: float | None = None
+    model_structured_output_mode: Literal[
+        "none",
+        "json_schema",
+        "json_object",
+    ] = "none"
     model_input_price_per_million_tokens: Decimal | None = None
     model_output_price_per_million_tokens: Decimal | None = None
     model_cost_currency: str = "CNY"
@@ -568,6 +574,13 @@ class Settings(BaseSettings):
             max_retries=self.amap_max_retries,
             retry_after_max_seconds=self.amap_retry_after_max_seconds,
         )
+
+    def extraction_structured_output_mode(self) -> StructuredOutputMode | None:
+        """Return only the explicitly configured, externally verified capability."""
+
+        if self.model_structured_output_mode == "none":
+            return None
+        return StructuredOutputMode(self.model_structured_output_mode)
 
     def place_matching_policy(self) -> PlaceMatchingPolicy:
         """Build the one validated server-side place matching policy."""

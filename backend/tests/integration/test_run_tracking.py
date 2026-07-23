@@ -28,6 +28,7 @@ from nanobot_core.providers import (
     ModelResponse,
     ProviderError,
     ProviderErrorCode,
+    StructuredOutput,
     TokenUsage,
     ToolCall,
     ToolDefinition,
@@ -485,8 +486,9 @@ class _BlockingProvider(ModelProvider):
         *,
         messages: list[Message],
         tools: list[ToolDefinition] | None,
+        response_format: StructuredOutput | None = None,
     ) -> ModelResponse:
-        del messages, tools
+        del messages, tools, response_format
         await asyncio.Event().wait()
         raise AssertionError("unreachable")
 

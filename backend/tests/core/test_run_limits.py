@@ -18,7 +18,14 @@ from nanobot_core.agent import (
     ToolCallBlocked,
     ToolCallStarted,
 )
-from nanobot_core.providers import Message, ModelProvider, ModelResponse, ToolCall, ToolDefinition
+from nanobot_core.providers import (
+    Message,
+    ModelProvider,
+    ModelResponse,
+    StructuredOutput,
+    ToolCall,
+    ToolDefinition,
+)
 from nanobot_core.tools import Tool, ToolInput, ToolRegistry, ToolResult
 from tests.core.fakes import EchoTool, FakeProvider, fake_response
 
@@ -236,8 +243,9 @@ class _BlockingProvider(ModelProvider):
         *,
         messages: list[Message],
         tools: list[ToolDefinition] | None,
+        response_format: StructuredOutput | None = None,
     ) -> ModelResponse:
-        del messages, tools
+        del messages, tools, response_format
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:

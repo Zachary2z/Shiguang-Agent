@@ -13,6 +13,7 @@ from nanobot_core.providers import (
     Message,
     ModelProvider,
     ModelResponse,
+    StructuredOutput,
     TokenUsage,
     ToolCall,
     ToolDefinition,
@@ -24,6 +25,7 @@ from nanobot_core.tools import Tool, ToolInput, ToolResult
 class ProviderCall:
     messages: list[Message] = field(repr=False)
     tools: list[ToolDefinition] | None = field(repr=False)
+    response_format: StructuredOutput | None = field(default=None, repr=False)
 
 
 class FakeProvider(ModelProvider):
@@ -38,8 +40,15 @@ class FakeProvider(ModelProvider):
         *,
         messages: list[Message],
         tools: list[ToolDefinition] | None,
+        response_format: StructuredOutput | None = None,
     ) -> ModelResponse:
-        self.calls.append(ProviderCall(deepcopy(messages), deepcopy(tools)))
+        self.calls.append(
+            ProviderCall(
+                deepcopy(messages),
+                deepcopy(tools),
+                deepcopy(response_format),
+            )
+        )
         if not self.responses:
             raise AssertionError("FakeProvider has no response left")
         outcome = self.responses.popleft()

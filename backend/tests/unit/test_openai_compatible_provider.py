@@ -17,7 +17,13 @@ from openai import APIResponseValidationError
 from app.config import Settings
 from app.providers import OpenAICompatibleProvider
 from nanobot_core.agent import AgentRunner
-from nanobot_core.providers import FinishReason, ProviderError, ProviderErrorCode
+from nanobot_core.providers import (
+    FinishReason,
+    ProviderError,
+    ProviderErrorCode,
+    StructuredOutput,
+    StructuredOutputMode,
+)
 from nanobot_core.tools import ToolRegistry
 from tests.core.fakes import EchoTool
 
@@ -164,8 +170,101 @@ async def test_maps_text_response_and_all_metadata(
     assert request_body["model"] == FAKE_MODEL
     assert request_body["messages"] == [{"role": "user", "content": "hello"}]
     assert "tools" not in request_body
+    assert "response_format" not in request_body
     assert request_body["enable_thinking"] is False
     assert request_body["stream"] is False
+
+
+@pytest.mark.asyncio
+async def test_maps_json_schema_response_format_with_isolated_schema(
+    provider_factory: OfflineProviderFactory,
+) -> None:
+    provider, requests = provider_factory.build([_response(_completion(content='{"ok":true}'))])
+    source_schema = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+    }
+    original_schema = deepcopy(source_schema)
+    response_format = StructuredOutput(
+        mode=StructuredOutputMode.JSON_SCHEMA,
+        schema_name="result_contract",
+        json_schema=source_schema,
+        strict=True,
+    )
+    source_schema["properties"] = {}
+
+    result = await provider.chat(
+        messages=[{"role": "user", "content": "return an object"}],
+        tools=None,
+        response_format=response_format,
+    )
+
+    assert result.content == '{"ok":true}'
+    body = json.loads(requests[0].content)
+    assert body["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "result_contract",
+            "strict": True,
+            "schema": original_schema,
+        },
+    }
+    assert response_format.json_schema == original_schema
+    assert "properties" not in repr(response_format)
+
+
+@pytest.mark.asyncio
+async def test_maps_json_object_response_format(
+    provider_factory: OfflineProviderFactory,
+) -> None:
+    provider, requests = provider_factory.build([_response(_completion(content="{}"))])
+
+    await provider.chat(
+        messages=[{"role": "user", "content": "return an object"}],
+        tools=None,
+        response_format=StructuredOutput(mode=StructuredOutputMode.JSON_OBJECT),
+    )
+
+    body = json.loads(requests[0].content)
+    assert body["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_rejects_tools_with_structured_output_before_network(
+    provider_factory: OfflineProviderFactory,
+) -> None:
+    provider, requests = provider_factory.build([_response(_completion())])
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        await provider.chat(
+            messages=[],
+            tools=[{"type": "function", "function": {"name": "echo"}}],
+            response_format=StructuredOutput(mode=StructuredOutputMode.JSON_OBJECT),
+        )
+
+    assert requests == []
+
+
+@pytest.mark.asyncio
+async def test_structured_output_provider_failure_has_no_fallback_request(
+    provider_factory: OfflineProviderFactory,
+) -> None:
+    provider, requests = provider_factory.build([_response(status_code=400)])
+
+    with pytest.raises(ProviderError) as caught:
+        await provider.chat(
+            messages=[{"role": "user", "content": "return an object"}],
+            tools=None,
+            response_format=StructuredOutput(
+                mode=StructuredOutputMode.JSON_SCHEMA,
+                schema_name="result",
+                json_schema={"type": "object"},
+            ),
+        )
+
+    assert caught.value.code is ProviderErrorCode.PROVIDER_ERROR
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio

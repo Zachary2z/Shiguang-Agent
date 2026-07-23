@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from app.domain.collections.candidate_metadata import (
     CandidateField,
@@ -20,6 +21,13 @@ from app.domain.collections.types import CollectionKind
 from app.domain.time import require_aware_utc
 
 MAX_EXTRACTION_CANDIDATES = 10
+
+
+def _semantic_error(error_type: str) -> PydanticCustomError:
+    return PydanticCustomError(
+        error_type,
+        "Extraction semantic contract violation.",
+    )
 
 
 class ExtractionOutcome(StrEnum):
@@ -64,6 +72,8 @@ def _normalize_optional_text(value: str | None, *, field_name: str) -> str | Non
 
 
 class _CandidateBase(ExtractionDomainModel):
+    """Shared candidate fields with explicit missing/uncertain classification."""
+
     title: str = Field(min_length=1, max_length=200, repr=False)
     city_hint: str | None = Field(default=None, max_length=100, repr=False)
     district: str | None = Field(default=None, max_length=100, repr=False)
@@ -140,12 +150,12 @@ class _CandidateBase(ExtractionDomainModel):
 
         missing = set(self.missing_fields)
         if len(missing) != len(self.missing_fields):
-            raise ValueError("missing_fields must be unique")
+            raise _semantic_error("duplicate_missing_field")
         uncertain_fields = [item.field for item in self.uncertainties]
         if len(set(uncertain_fields)) != len(uncertain_fields):
-            raise ValueError("uncertainties must contain at most one reason per field")
+            raise _semantic_error("duplicate_uncertainty_field")
         if missing.intersection(uncertain_fields):
-            raise ValueError("a field cannot be both missing and uncertain")
+            raise _semantic_error("missing_and_uncertain_conflict")
 
         present_fields = {
             CandidateField.CITY_HINT: self.city_hint is not None,
@@ -159,14 +169,14 @@ class _CandidateBase(ExtractionDomainModel):
         }
         for field, is_present in present_fields.items():
             if is_present and field in missing:
-                raise ValueError(f"{field.value} cannot be both present and missing")
+                raise _semantic_error("present_field_marked_missing")
             if not is_present and field not in missing and field not in uncertain_fields:
-                raise ValueError(f"absent {field.value} must be marked missing or uncertain")
+                raise _semantic_error("absent_field_not_classified")
         return self
 
 
 class PlaceCandidate(_CandidateBase):
-    """An any-city place candidate without Event-only schedule fields."""
+    """An any-city Place; Event schedule fields cannot be missing or uncertain metadata."""
 
     kind: Literal[CollectionKind.PLACE] = CollectionKind.PLACE
 
@@ -174,12 +184,12 @@ class PlaceCandidate(_CandidateBase):
     def reject_event_only_metadata(self) -> Self:
         fields = set(self.missing_fields).union(item.field for item in self.uncertainties)
         if fields.intersection({CandidateField.EVENT_START_AT, CandidateField.EVENT_END_AT}):
-            raise ValueError("Place candidates cannot carry Event schedule metadata")
+            raise _semantic_error("place_has_event_metadata")
         return self
 
 
 class EventCandidate(_CandidateBase):
-    """A user-supplied Event candidate with exact times or explicit gaps."""
+    """A user-supplied Event with ordered exact times or explicitly classified gaps."""
 
     kind: Literal[CollectionKind.EVENT] = CollectionKind.EVENT
     event_start_at: datetime | None = Field(default=None, repr=False)
@@ -203,7 +213,7 @@ class EventCandidate(_CandidateBase):
     def validate_event_schedule(self) -> Self:
         if self.event_start_at is not None and self.event_end_at is not None:
             if self.event_end_at <= self.event_start_at:
-                raise ValueError("event_end_at must be after event_start_at")
+                raise _semantic_error("event_time_order_invalid")
 
         missing = set(self.missing_fields)
         uncertain = {item.field for item in self.uncertainties}
@@ -212,9 +222,9 @@ class EventCandidate(_CandidateBase):
             (CandidateField.EVENT_END_AT, self.event_end_at),
         ):
             if value is not None and field in missing:
-                raise ValueError(f"{field.value} cannot be both present and missing")
+                raise _semantic_error("present_field_marked_missing")
             if value is None and field not in missing and field not in uncertain:
-                raise ValueError(f"absent {field.value} must be marked missing or uncertain")
+                raise _semantic_error("event_time_absent_not_classified")
         return self
 
 
@@ -225,29 +235,53 @@ ExtractionCandidate = Annotated[
 
 
 class ExtractionResult(ExtractionDomainModel):
-    """One safe result that never represents failures as empty successes."""
+    """One exclusive outcome: candidates, insufficient information, unsupported, or invalid."""
 
-    outcome: ExtractionOutcome
+    outcome: ExtractionOutcome = Field(
+        description=(
+            "Selects exactly one result shape. candidates requires candidates; every other "
+            "outcome forbids candidates."
+        )
+    )
     candidates: tuple[ExtractionCandidate, ...] = Field(
         default_factory=tuple,
         max_length=MAX_EXTRACTION_CANDIDATES,
+        description=(
+            "Non-empty only for the candidates outcome. Each candidate is a discriminated "
+            "Place or Event with absent fields classified as missing or uncertain."
+        ),
         repr=False,
     )
-    reason_code: ExtractionReasonCode | None = None
-    unsupported_reason: UnsupportedReason | None = None
+    reason_code: ExtractionReasonCode | None = Field(
+        default=None,
+        description="Required stable reason only for non-candidate outcomes.",
+    )
+    unsupported_reason: UnsupportedReason | None = Field(
+        default=None,
+        description="Present only with unsupported plus INPUT_UNSUPPORTED.",
+    )
     missing_fields: tuple[CandidateField, ...] = Field(
         default_factory=tuple,
         max_length=len(CandidateField),
+        description=(
+            "Result-level information gaps for insufficient_information only; unique and "
+            "disjoint from uncertainties."
+        ),
         repr=False,
     )
     uncertainties: tuple[Uncertainty, ...] = Field(
         default_factory=tuple,
         max_length=len(CandidateField),
+        description=(
+            "Result-level uncertain fields for insufficient_information only; unique by "
+            "field and disjoint from missing_fields."
+        ),
         repr=False,
     )
     recovery_suggestions: tuple[str, ...] = Field(
         default_factory=tuple,
         max_length=4,
+        description="Required for insufficient_information and safe recovery only.",
         repr=False,
     )
 
@@ -258,7 +292,7 @@ class ExtractionResult(ExtractionDomainModel):
         value: tuple[CandidateField, ...],
     ) -> tuple[CandidateField, ...]:
         if len(set(value)) != len(value):
-            raise ValueError("missing_fields must be unique")
+            raise _semantic_error("duplicate_missing_field")
         return value
 
     @field_validator("uncertainties")
@@ -269,7 +303,7 @@ class ExtractionResult(ExtractionDomainModel):
     ) -> tuple[Uncertainty, ...]:
         fields = [item.field for item in value]
         if len(set(fields)) != len(fields):
-            raise ValueError("uncertainties must contain at most one reason per field")
+            raise _semantic_error("duplicate_uncertainty_field")
         return value
 
     @field_validator("recovery_suggestions")
@@ -290,11 +324,11 @@ class ExtractionResult(ExtractionDomainModel):
     @model_validator(mode="after")
     def validate_outcome(self) -> Self:
         if set(self.missing_fields).intersection(item.field for item in self.uncertainties):
-            raise ValueError("a field cannot be both missing and uncertain")
+            raise _semantic_error("missing_and_uncertain_conflict")
 
         if self.outcome is ExtractionOutcome.CANDIDATES:
             if not self.candidates:
-                raise ValueError("candidate outcomes require at least one candidate")
+                raise _semantic_error("candidates_required")
             if (
                 self.reason_code is not None
                 or self.unsupported_reason is not None
@@ -302,21 +336,21 @@ class ExtractionResult(ExtractionDomainModel):
                 or self.uncertainties
                 or self.recovery_suggestions
             ):
-                raise ValueError("candidate outcomes cannot carry result-level errors")
+                raise _semantic_error("candidate_outcome_has_error_metadata")
             return self
 
         if self.candidates:
-            raise ValueError("non-candidate outcomes cannot carry candidates")
+            raise _semantic_error("candidates_forbidden_for_outcome")
 
         if self.outcome is ExtractionOutcome.INSUFFICIENT_INFORMATION:
             if self.reason_code is not ExtractionReasonCode.INSUFFICIENT_INFORMATION:
-                raise ValueError("insufficient outcomes require their stable reason code")
+                raise _semantic_error("reason_code_invalid_for_outcome")
             if self.unsupported_reason is not None:
-                raise ValueError("insufficient outcomes cannot carry unsupported_reason")
+                raise _semantic_error("unsupported_reason_invalid")
             if not (self.missing_fields or self.uncertainties):
-                raise ValueError("insufficient outcomes must identify an information gap")
+                raise _semantic_error("insufficient_fields_required")
             if not self.recovery_suggestions:
-                raise ValueError("insufficient outcomes require a recovery suggestion")
+                raise _semantic_error("recovery_suggestions_required")
             return self
 
         if self.outcome is ExtractionOutcome.UNSUPPORTED:
@@ -325,23 +359,23 @@ class ExtractionResult(ExtractionDomainModel):
                 ExtractionReasonCode.INPUT_UNSUPPORTED,
             }
             if self.reason_code not in allowed:
-                raise ValueError("unsupported outcomes require a stable unsupported code")
+                raise _semantic_error("reason_code_invalid_for_outcome")
             if (self.reason_code is ExtractionReasonCode.INPUT_UNSUPPORTED) is not (
                 self.unsupported_reason is not None
             ):
-                raise ValueError("unsupported_reason is required only for INPUT_UNSUPPORTED")
+                raise _semantic_error("unsupported_reason_invalid")
             if self.missing_fields or self.uncertainties:
-                raise ValueError("unsupported outcomes cannot carry candidate field gaps")
+                raise _semantic_error("unsupported_fields_forbidden")
             return self
 
         if self.outcome is ExtractionOutcome.MODEL_INVALID_OUTPUT:
             if self.reason_code is not ExtractionReasonCode.MODEL_INVALID_OUTPUT:
-                raise ValueError("model-invalid outcomes require MODEL_INVALID_OUTPUT")
+                raise _semantic_error("reason_code_invalid_for_outcome")
             if self.unsupported_reason is not None or self.missing_fields or self.uncertainties:
-                raise ValueError("model-invalid outcomes cannot carry model-derived details")
+                raise _semantic_error("model_invalid_details_forbidden")
             return self
 
-        raise ValueError("unknown extraction outcome")
+        raise _semantic_error("outcome_invalid")
 
     @classmethod
     def with_candidates(

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import StrEnum
 from math import isfinite
@@ -10,6 +12,50 @@ from typing import Any
 
 Message = dict[str, Any]
 ToolDefinition = dict[str, Any]
+
+
+class StructuredOutputMode(StrEnum):
+    """Provider-neutral structured response modes."""
+
+    JSON_SCHEMA = "json_schema"
+    JSON_OBJECT = "json_object"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StructuredOutput:
+    """An explicit structured-response request without provider-specific fields."""
+
+    mode: StructuredOutputMode
+    schema_name: str | None = None
+    json_schema: dict[str, Any] | None = field(default=None, repr=False)
+    strict: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.mode, StructuredOutputMode):
+            raise TypeError("mode must be a StructuredOutputMode")
+        if type(self.strict) is not bool:
+            raise TypeError("strict must be a boolean")
+
+        if self.mode is StructuredOutputMode.JSON_OBJECT:
+            if self.schema_name is not None or self.json_schema is not None:
+                raise ValueError("json_object does not accept a schema name or JSON Schema")
+            if not self.strict:
+                raise ValueError("json_object does not accept a strict override")
+            return
+
+        if (
+            not isinstance(self.schema_name, str)
+            or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.schema_name) is None
+        ):
+            raise ValueError("json_schema requires a safe schema name")
+        if not isinstance(self.json_schema, dict) or not self.json_schema:
+            raise ValueError("json_schema requires a non-empty JSON Schema object")
+        object.__setattr__(self, "json_schema", deepcopy(self.json_schema))
+
+    def schema_copy(self) -> dict[str, Any] | None:
+        """Return an isolated schema snapshot for one provider request."""
+
+        return deepcopy(self.json_schema)
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,5 +218,6 @@ class ModelProvider(ABC):
         *,
         messages: list[Message],
         tools: list[ToolDefinition] | None,
+        response_format: StructuredOutput | None = None,
     ) -> ModelResponse:
         """Return a response or raise ``ProviderError`` without swallowing cancellation."""

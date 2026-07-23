@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Final
 
 from app.application.extraction_output import (
+    EXTRACTION_SEMANTIC_RULES,
     MAX_MODEL_OUTPUT_CHARS,
-    PRICE_EXTRACTION_PROMPT_RULES,
     build_repair_messages,
     canonicalize_extraction_result,
+    extraction_response_format,
+    extraction_result_schema_json,
     parse_extraction_response,
     unsupported_extraction_result,
 )
@@ -22,7 +23,12 @@ from app.domain.collections import (
     ExtractionResult,
     UnsupportedReason,
 )
-from nanobot_core.providers import Message, ModelProvider, ModelResponse
+from nanobot_core.providers import (
+    Message,
+    ModelProvider,
+    ModelResponse,
+    StructuredOutputMode,
+)
 
 MAX_TEXT_INPUT_CHARS: Final = 20_000
 _GENERIC_INPUTS = frozenset(
@@ -65,17 +71,12 @@ _COMPLEX_ROUTE_EVIDENCE = re.compile(
 )
 _ROUTE_REQUEST = re.compile(r"给我|帮我|规划|制定|生成|导航|下载|怎么走")
 
-_RESULT_SCHEMA = json.dumps(
-    ExtractionResult.model_json_schema(),
-    ensure_ascii=False,
-    separators=(",", ":"),
-    sort_keys=True,
-)
 _SYSTEM_PROMPT = (
     "You extract structured collection candidates for Shiguang.\n"
     "Return exactly one JSON object matching this JSON Schema, without Markdown or "
-    f"commentary:\n{_RESULT_SCHEMA}\n\n"
+    f"commentary:\n{extraction_result_schema_json()}\n\n"
     "Rules:\n"
+    f"{EXTRACTION_SEMANTIC_RULES}"
     "- Produce one candidate object per distinct Place or user-supplied Event; never "
     "merge objects.\n"
     "- Places and user-supplied Events from any city can be collected. Products, "
@@ -89,10 +90,6 @@ _SYSTEM_PROMPT = (
     "candidates. Multi-city multi-day planning requests remain unsupported.\n"
     "- Never invent an address, district, price, tag, or Event time. Every absent "
     "core field must be listed as missing or uncertain.\n"
-    f"{PRICE_EXTRACTION_PROMPT_RULES}"
-    "- Event times use timezone-aware ISO 8601 values. Preserve incomplete time "
-    "wording only in event_start_clue/event_end_clue and mark the exact field "
-    "missing or uncertain.\n"
     "- Do not include source text, prompts, provider fields, credentials, headers, "
     "cookies, or raw responses.\n"
 )
@@ -103,9 +100,11 @@ class TextExtractionService:
         self,
         provider: ModelProvider,
         *,
+        structured_output_mode: StructuredOutputMode | None = None,
         response_observer: Callable[[ModelResponse], None] | None = None,
     ) -> None:
         self._provider = provider
+        self._response_format = extraction_response_format(structured_output_mode)
         self._response_observer = response_observer
 
     async def extract(self, text: str) -> ExtractionResult:
@@ -123,6 +122,7 @@ class TextExtractionService:
         first_response = await self._provider.chat(
             messages=deepcopy(initial_messages),
             tools=None,
+            response_format=self._response_format,
         )
         self._observe(first_response)
         first_result, issues = parse_extraction_response(first_response)
@@ -142,6 +142,7 @@ class TextExtractionService:
         repaired_response = await self._provider.chat(
             messages=repair_messages,
             tools=None,
+            response_format=self._response_format,
         )
         self._observe(repaired_response)
         repaired_result, _repaired_issues = parse_extraction_response(repaired_response)

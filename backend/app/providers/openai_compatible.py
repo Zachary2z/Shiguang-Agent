@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from copy import deepcopy
 from math import isfinite
-from typing import cast
+from typing import Any, cast
 
 import httpx
 from openai import (
@@ -35,6 +35,8 @@ from nanobot_core.providers import (
     ModelResponse,
     ProviderError,
     ProviderErrorCode,
+    StructuredOutput,
+    StructuredOutputMode,
     TokenUsage,
     ToolCall,
     ToolDefinition,
@@ -93,7 +95,15 @@ class OpenAICompatibleProvider(ModelProvider):
         *,
         messages: list[Message],
         tools: list[ToolDefinition] | None,
+        response_format: StructuredOutput | None = None,
     ) -> ModelResponse:
+        if response_format is not None and not isinstance(
+            response_format,
+            StructuredOutput,
+        ):
+            raise TypeError("response_format must be StructuredOutput or None")
+        if response_format is not None and tools is not None:
+            raise ValueError("structured output cannot be combined with tools")
         request_messages = cast(
             list[ChatCompletionMessageParam],
             deepcopy(messages),
@@ -102,24 +112,21 @@ class OpenAICompatibleProvider(ModelProvider):
             list[ChatCompletionToolParam] | None,
             deepcopy(tools),
         )
+        request_response_format = self._map_response_format(response_format)
         started_at = self._clock()
 
         try:
-            if request_tools is None:
-                completion = await self._client.chat.completions.create(
-                    model=self._model,
-                    messages=request_messages,
-                    extra_body={"enable_thinking": False},
-                    stream=False,
-                )
-            else:
-                completion = await self._client.chat.completions.create(
-                    model=self._model,
-                    messages=request_messages,
-                    tools=request_tools,
-                    extra_body={"enable_thinking": False},
-                    stream=False,
-                )
+            request: dict[str, Any] = {
+                "model": self._model,
+                "messages": request_messages,
+                "extra_body": {"enable_thinking": False},
+                "stream": False,
+            }
+            if request_tools is not None:
+                request["tools"] = request_tools
+            if request_response_format is not None:
+                request["response_format"] = request_response_format
+            completion = await self._client.chat.completions.create(**request)
         except asyncio.CancelledError:
             raise
         except APITimeoutError:
@@ -152,6 +159,26 @@ class OpenAICompatibleProvider(ModelProvider):
             return self._map_response(completion, latency_ms=latency_ms)
         except (AttributeError, IndexError, TypeError, ValueError):
             raise ProviderError(code=ProviderErrorCode.INVALID_RESPONSE) from None
+
+    @staticmethod
+    def _map_response_format(
+        response_format: StructuredOutput | None,
+    ) -> dict[str, Any] | None:
+        if response_format is None:
+            return None
+        if response_format.mode is StructuredOutputMode.JSON_OBJECT:
+            return {"type": "json_object"}
+        schema = response_format.schema_copy()
+        assert schema is not None
+        assert response_format.schema_name is not None
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": response_format.schema_name,
+                "strict": response_format.strict,
+                "schema": schema,
+            },
+        }
 
     async def close(self) -> None:
         """Close the SDK client and its underlying HTTP resources."""

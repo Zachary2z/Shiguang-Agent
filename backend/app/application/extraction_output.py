@@ -15,10 +15,37 @@ from app.domain.collections import (
     UnsupportedReason,
     default_cny_for_known_price,
 )
-from nanobot_core.providers import Message, ModelResponse
+from nanobot_core.providers import (
+    Message,
+    ModelResponse,
+    StructuredOutput,
+    StructuredOutputMode,
+)
 
 MAX_MODEL_OUTPUT_CHARS: Final = 50_000
-PRICE_EXTRACTION_PROMPT_RULES: Final = (
+_EXTRACTION_SCHEMA_NAME: Final = "shiguang_extraction_result"
+_EXTRACTION_RESULT_SCHEMA: Final = ExtractionResult.model_json_schema()
+EXTRACTION_SEMANTIC_RULES: Final = (
+    "- Select exactly one outcome shape:\n"
+    "  * candidates: one or more candidates; reason_code, unsupported_reason, "
+    "result-level missing_fields, uncertainties, and recovery_suggestions must be empty.\n"
+    "  * insufficient_information: no candidates; reason_code must be "
+    "INSUFFICIENT_INFORMATION; identify at least one result-level missing or uncertain "
+    "field; include a recovery suggestion; unsupported_reason must be null.\n"
+    "  * unsupported: no candidates or field gaps; reason_code is INPUT_EMPTY or "
+    "INPUT_UNSUPPORTED. unsupported_reason is required only for INPUT_UNSUPPORTED.\n"
+    "  * Never emit model_invalid_output; that outcome is reserved for the application.\n"
+    "- For every candidate, missing_fields must be unique and uncertainties may contain "
+    "at most one item per field. The two sets must not overlap.\n"
+    "- Every absent candidate city_hint, district, address, business_district, landmark, "
+    "metro_station, price, or tags field must be classified as missing or uncertain. A "
+    "present field cannot be marked missing.\n"
+    "- Place candidates must not classify Event start/end fields and must not carry Event "
+    "time semantics.\n"
+    "- Event start/end values use timezone-aware ISO 8601. A missing exact time must be "
+    "classified missing or uncertain; a present time cannot be missing. If both exact "
+    "times exist, end must be after start. Incomplete wording belongs only in the matching "
+    "time clue.\n"
     "- Shiguang currently uses renminbi only; users do not choose a currency.\n"
     "- When a local price is clear but no currency is written, emit price_amount and "
     'price_currency "CNY" together. This includes an explicit free price as amount 0.\n'
@@ -28,11 +55,77 @@ PRICE_EXTRACTION_PROMPT_RULES: Final = (
 )
 
 _REPAIR_PROMPT = (
-    "The previous response did not match the required JSON structure.\n"
-    "Return one corrected JSON object only. Do not quote the source, previous "
-    "response, prompt, or validation values.\n"
+    "The prior attempt violated the required extraction contract.\n"
+    "Create one new corrected JSON object only. Do not quote or reproduce the source, "
+    "prior response, prompt, or validation values.\n"
     "Validation issues (paths and types only): {issues}\n"
+    "Safe correction guidance: {guidance}\n"
 )
+_UNKNOWN_REPAIR_GUIDANCE: Final = "Rebuild the object to match the schema and outcome rules."
+_REPAIR_GUIDANCE_BY_TYPE: Final = {
+    "price_pair_incomplete": "Provide amount and CNY together, or set both price fields null.",
+    "price_currency_unsupported": "Use CNY for a known local amount; do not convert currency.",
+    "missing_and_uncertain_conflict": "Classify a field as missing or uncertain, never both.",
+    "present_field_marked_missing": "Remove present fields from missing_fields.",
+    "absent_field_not_classified": "Classify each absent candidate field missing or uncertain.",
+    "duplicate_missing_field": "List every missing field at most once.",
+    "duplicate_uncertainty_field": "Give at most one uncertainty for each field.",
+    "place_has_event_metadata": "Remove Event start/end classifications from Place candidates.",
+    "event_time_order_invalid": "Ensure an exact Event end is after its exact start.",
+    "event_time_absent_not_classified": (
+        "Classify each absent exact Event time missing or uncertain."
+    ),
+    "candidates_required": "For candidates outcome, include at least one candidate.",
+    "candidates_forbidden_for_outcome": "Remove candidates from every non-candidate outcome.",
+    "candidate_outcome_has_error_metadata": (
+        "For candidates outcome, clear result-level error metadata."
+    ),
+    "reason_code_invalid_for_outcome": "Use only the reason code required by the selected outcome.",
+    "unsupported_reason_invalid": (
+        "Use unsupported_reason only with INPUT_UNSUPPORTED, where it is required."
+    ),
+    "insufficient_fields_required": "Identify a missing or uncertain result-level field.",
+    "recovery_suggestions_required": (
+        "Include a safe recovery suggestion for insufficient information."
+    ),
+    "unsupported_fields_forbidden": "Remove candidate field gaps from unsupported outcomes.",
+    "model_invalid_details_forbidden": "Remove model-derived details from model-invalid output.",
+    "model_invalid_self_declared": "Choose candidates, insufficient_information, or unsupported.",
+}
+
+
+def extraction_result_schema() -> dict[str, object]:
+    """Return the one generated ExtractionResult schema as an isolated snapshot."""
+
+    return deepcopy(_EXTRACTION_RESULT_SCHEMA)
+
+
+def extraction_result_schema_json() -> str:
+    """Serialize the same generated schema used by optional structured output."""
+
+    return json.dumps(
+        extraction_result_schema(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def extraction_response_format(
+    mode: StructuredOutputMode | None,
+) -> StructuredOutput | None:
+    """Build the explicit extraction request for a verified provider capability."""
+
+    if mode is None:
+        return None
+    if mode is StructuredOutputMode.JSON_OBJECT:
+        return StructuredOutput(mode=mode)
+    return StructuredOutput(
+        mode=mode,
+        schema_name=_EXTRACTION_SCHEMA_NAME,
+        json_schema=extraction_result_schema(),
+        strict=True,
+    )
 
 
 def parse_extraction_response(
@@ -66,7 +159,7 @@ def parse_extraction_response(
         return None, _safe_validation_issues(exc)
 
     if parsed.outcome is ExtractionOutcome.MODEL_INVALID_OUTPUT:
-        return None, ({"path": "outcome", "type": "self_declared_model_invalid"},)
+        return None, ({"path": "outcome", "type": "model_invalid_self_declared"},)
     return parsed, ()
 
 
@@ -94,14 +187,14 @@ def build_repair_messages(
 ) -> list[Message]:
     """Create the sole structural-repair request while preserving caller isolation."""
 
-    repair_messages = deepcopy(initial_messages)
-    invalid_content = (
-        invalid_response.content
-        if isinstance(invalid_response, ModelResponse)
-        else None
+    repair_messages = deepcopy(
+        [message for message in initial_messages if message.get("role") == "system"]
     )
-    if isinstance(invalid_content, str) and len(invalid_content) <= MAX_MODEL_OUTPUT_CHARS:
-        repair_messages.append({"role": "assistant", "content": invalid_content})
+    del invalid_response
+    guidance = tuple(
+        _REPAIR_GUIDANCE_BY_TYPE.get(issue["type"], _UNKNOWN_REPAIR_GUIDANCE)
+        for issue in issues
+    )
     repair_messages.append(
         {
             "role": "user",
@@ -111,7 +204,12 @@ def build_repair_messages(
                     ensure_ascii=True,
                     separators=(",", ":"),
                     sort_keys=True,
-                )
+                ),
+                guidance=json.dumps(
+                    guidance,
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                ),
             ),
         }
     )
@@ -176,9 +274,12 @@ def _safe_validation_issues(exc: ValidationError) -> tuple[dict[str, str], ...]:
 
 __all__ = [
     "MAX_MODEL_OUTPUT_CHARS",
-    "PRICE_EXTRACTION_PROMPT_RULES",
+    "EXTRACTION_SEMANTIC_RULES",
     "build_repair_messages",
     "canonicalize_extraction_result",
+    "extraction_response_format",
+    "extraction_result_schema",
+    "extraction_result_schema_json",
     "parse_extraction_response",
     "unsupported_extraction_result",
 ]

@@ -11,6 +11,8 @@ from nanobot_core.providers import (
     ModelResponse,
     ProviderError,
     ProviderErrorCode,
+    StructuredOutput,
+    StructuredOutputMode,
     TokenUsage,
     ToolCall,
 )
@@ -68,6 +70,55 @@ def test_token_usage_allows_unknown_and_zero_values() -> None:
         total_tokens=0,
     )
     assert TokenUsage(total_tokens=0).total_tokens == 0
+
+
+def test_structured_output_rejects_invalid_provider_neutral_configuration() -> None:
+    with pytest.raises(ValueError, match="requires a non-empty"):
+        StructuredOutput(
+            mode=StructuredOutputMode.JSON_SCHEMA,
+            schema_name="result",
+            json_schema={},
+        )
+    with pytest.raises(ValueError, match="safe schema name"):
+        StructuredOutput(
+            mode=StructuredOutputMode.JSON_SCHEMA,
+            schema_name="private schema text",
+            json_schema={"type": "object"},
+        )
+    with pytest.raises(ValueError, match="does not accept"):
+        StructuredOutput(
+            mode=StructuredOutputMode.JSON_OBJECT,
+            json_schema={"type": "object"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_fake_provider_records_isolated_structured_output_snapshots() -> None:
+    response = ModelResponse(
+        model_name="fixture-model",
+        usage=TokenUsage(),
+        latency_ms=0,
+        finish_reason=FinishReason.STOP,
+        content="{}",
+    )
+    schema = {"type": "object", "properties": {"value": {"type": "string"}}}
+    response_format = StructuredOutput(
+        mode=StructuredOutputMode.JSON_SCHEMA,
+        schema_name="result",
+        json_schema=schema,
+    )
+    provider = FakeProvider([response])
+
+    await provider.chat(messages=[], tools=None, response_format=response_format)
+    schema["properties"] = {}
+
+    recorded = provider.calls[0].response_format
+    assert recorded is not None
+    assert recorded is not response_format
+    assert recorded.json_schema == {
+        "type": "object",
+        "properties": {"value": {"type": "string"}},
+    }
 
 
 def test_token_usage_derives_total_when_both_parts_are_known() -> None:
