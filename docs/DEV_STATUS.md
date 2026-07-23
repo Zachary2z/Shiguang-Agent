@@ -5,9 +5,9 @@
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-Gate 技术验证总验收 |
 | 状态 | 阻塞 |
-| 当前分支 | codex/m0-gate-structure-repair-evidence-fix |
+| 当前分支 | codex/m0-gate-structure-real-retest |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 结构 repair 业务证据补充已完成离线修复，但七个失败样本仍等待真实复测；重定向网页真实链和最小 Dockerfile 仍未收尾 |
+| 阻塞项 | 百炼 OpenAI-compatible Chat Completions 不支持本轮 json_schema 协议，七个结构样本等待使用官方 json_object 模式复测；重定向网页真实链和最小 Dockerfile 仍未收尾 |
 
 ## 当前任务
 
@@ -1198,3 +1198,47 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
 - 状态与下一步：repair 业务证据 P1 已完成离线修复，但七个原真实失败样本尚未复测，
   真实结构 P1 继续为“等待真实复测”，不得关闭；M0-Gate 仍阻塞且不得进入 M1。
   本分支不合并、不推送，完成后交回主控进行独立复核和后续授权决策
+
+#### 2026-07-23｜M0-Gate 真实结构兼容性最终复测｜阻塞
+
+- 分支与门禁：`codex/m0-gate-structure-real-retest` 精确基于
+  `0705eee61b1a5209a886e8925c90c6f7e2f1e8f3`，开始工作区干净；`main` 与
+  `origin/main` 均为 `0ace869ae2708608d238b77b3ade3153b1307549`，生产修复
+  `7660fb0`、`6d02236` 均在提交链，Alembic 唯一 head 为 `20260722_0006`
+- 环境漂移：首次系统 Python mypy 的四个 `redundant-cast` 经用户确认是验证环境
+  漂移，不修改 `collections.py` 或删除 cast。显式项目环境 Python `3.13.5`、
+  mypy `1.20.2` 下 `pip check`、Ruff、93 文件 strict mypy 与指定聚焦测试
+  `438 passed` 全部通过
+- 授权：用户分别授权文本最多 4 次、固定结构 repair 最多 3 次、图片最多 4 次，
+  三类 SDK/外层重试均为 0；唯一 structured-output 模式为 `json_schema`，不设费用
+  上限，远端不支持时计入已发请求并立即停止对应类别，禁止切换模式或追加探测
+- 实际调用：三个类别的首个真实 `json_schema` 请求均在形成 `ModelResponse` 前返回
+  安全 `PROVIDER_ERROR`，因此分别立即停止；文本 `1/4`、固定 repair `1/3`、图片
+  `1/4`，合计 `3/11`。没有 fallback、重试、追加探测、替换样本或后续样本调用
+- outcome 与证据：已尝试的三个样本均未形成生产 outcome 或候选，候选成功率为
+  `0/3`；固定类本地非法 initial 正确记录 `$/json_invalid`，唯一真实 repair 被
+  capability 拒绝。失败发生在生产 Parser、严格 DTO 与 canonicalization 之前，
+  不能据此判定业务样本、Parser 或领域规则失败，也无法验证候选身份与 generic
+  `value_error` 是否消失
+- capability：百炼 OpenAI-compatible Chat Completions 官方结构化输出采用
+  `response_format={"type":"json_object"}`；本轮唯一授权模式 `json_schema`
+  与该协议不兼容。Provider 安全边界只公开 `PROVIDER_ERROR`，未记录远端正文、
+  完整响应、请求、密钥或异常链。现有生产 Provider 已显式支持 `json_object`，
+  因此本窗口不新增生产修复
+- 延迟、Token 与费用：文本、固定 repair、图片各一个已尝试样本的端到端单点观测为
+  `1.248s`、`0.353s`、`0.490s`；P50、观测 P95、最大值均等于各自单点且不具有统计
+  意义。Provider 未返回 Token；费率未知，费用不可确认。超时率与重试率均为 0
+- 超时校准：模型单次配置 30 秒小于文本 60 秒外层预算，但不小于图片 20 秒外层硬
+  预算；本轮没有提高或修改时限，后续需独立校准，不能用 capability 快速失败证明
+  图片正常余量
+- 图片清理：首个图片失败样本的临时对象、元数据、reservation、临时文件和整个仓库外
+  私有根目录均已清理；未公开图片、Base64、文件名、路径、哈希或 OCR 正文
+- 离线回归：清除真实进程配置后，Ruff、93 文件 strict mypy 通过；非真实全集
+  `1460 passed / 1 skipped / 1 deselected`；封锁 DNS、connect、connect_ex 和
+  create_connection 后仍为 `1460 passed / 1 skipped / 1 deselected`。普通全集
+  出现一次既有 aiosqlite 收尾 warning，封网全集无 warning，该 P2 不变
+- 结论与下一步：真实结构兼容性 P1 保持“等待 `json_object` 模式真实复测”，
+  M0-Gate 继续阻塞；本任务不修改生产代码、不合并、不推送。下一窗口须重新取得
+  三类明确授权，只用官方 `json_object` 模式复测相同七个样本，不得把本轮三次
+  capability 拒绝归因于样本、Parser、DTO 或 repair；真实重定向链、Dockerfile、
+  锁注册表、aiosqlite 和 M1 均未处理

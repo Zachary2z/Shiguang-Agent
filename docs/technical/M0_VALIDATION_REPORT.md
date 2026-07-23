@@ -768,3 +768,127 @@ warning、增加 sleep 或 skip。
 仍未在当前证据修复后复测，远端 structured-output capability 也仍未验证。因此真实
 结构 P1 状态继续为“等待真实复测”，不得提前关闭；本结果不允许进入 M1，也不改变
 真实重定向链、最小 Dockerfile、幂等锁注册表和 aiosqlite warning 的既有状态。
+
+## 15. 真实结构兼容性最终复测
+
+### 15.1 门禁、环境与样本
+
+- 工作分支 `codex/m0-gate-structure-real-retest` 精确建立在
+  `0705eee61b1a5209a886e8925c90c6f7e2f1e8f3`；开始工作区干净，`main` 与
+  `origin/main` 均为 `0ace869ae2708608d238b77b3ade3153b1307549`。
+- 生产修复 `7660fb0aa2e7607b67e89358930d7ddea4609f53` 与
+  `6d02236e045fdcd923db998c15276e4b9db98b20` 均在当前提交链；没有第三个生产
+  代码提交。Alembic 唯一 head 为 `20260722_0006`。
+- 首次误用系统 Python 的 mypy `redundant-cast` 结果经用户确认属于验证环境漂移，
+  不构成生产缺陷且未修改或删除相关 cast。显式项目环境为 Python `3.13.5`、
+  mypy `1.20.2`，`pip check`、Ruff、93 文件 strict mypy 与指定聚焦组合
+  `438 passed` 全部通过。
+- 复测只使用第 12 节完全相同的两个失败文本、三个固定 repair 文本和两个图片
+  Fixture。仓库外 QA 工具在 `/private/tmp` 对齐当前 Provider 签名并增加
+  `json_schema` 强制检查、发送前硬计数、候选身份布尔核对和逐类别停止；Ruff、
+  strict mypy 与 19 项离线安全自测通过。没有修改生产代码或测试。
+
+### 15.2 授权与执行边界
+
+用户在本窗口明确授权：
+
+> 授权文本复测，最多 4 次；授权固定结构修复，最多 3 次；授权图片复测，最多 4 次。
+> 三类均为 0 重试；本轮唯一 structured-output 模式为 json_schema；可能产生模型
+> 费用，本轮不设费用上限。若远端不支持该模式，计入已经发出的请求并立即停止对应
+> 类别，不得切换 json_object、普通模式或追加探测。
+
+执行严格使用逐类 `4 + 3 + 4 = 11` 发送前硬上限、OpenAI SDK
+`max_retries=0`、外层重试 0。进程内显式设置唯一
+`MODEL_STRUCTURED_OUTPUT_MODE=json_schema`；未切换 `json_object`、普通模式，
+未 fallback、追加 capability 探测、替换样本或扩大调用。
+
+### 15.3 capability、调用与 outcome
+
+| 类别 | 样本范围 | 实际 / 上限 | 真实响应契约 | outcome / 候选 | 安全 Provider 分类 |
+|---|---:|---:|---:|---|---|
+| 原文本失败样本 | 2 | `1 / 4` | `0 / 1` | 首样本未形成 outcome；第二样本未调用 | `PROVIDER_ERROR` |
+| 固定结构修复 | 3 | `1 / 3` | `0 / 1` | 首样本本地 initial 为 `$/json_invalid`，真实 repair 未形成 outcome；其余未调用 | `PROVIDER_ERROR` |
+| 原图片失败 Fixture | 2 | `1 / 4` | `0 / 1` | 首样本未形成 outcome；第二样本未调用 | `PROVIDER_ERROR` |
+| 合计 | 7 | `3 / 11` | `0 / 3` | 候选成功 `0 / 3` 个已尝试样本 | `PROVIDER_ERROR` 3 |
+
+三个类别的首个真实请求均携带唯一 `json_schema` response format，并在进入
+`ModelResponse` 前被远端/SDK API 状态路径拒绝。每类均在该一个已计数请求后立即
+停止，没有重复成功样本，也没有触发 initial 后的真实 repair（固定类除本地非法
+initial 外，唯一真实调用就是 repair）。
+
+安全结论是：**百炼 OpenAI-compatible Chat Completions 的正式结构化输出模式为
+`response_format={"type":"json_object"}`，本轮唯一授权的 `json_schema` 与该协议
+不兼容**。官方[结构化输出文档](https://help.aliyun.com/zh/model-studio/qwen-structured-output)
+和[错误码说明](https://help.aliyun.com/en/model-studio/error-code)均要求使用
+`json_object`。生产 Provider 只公开稳定 `PROVIDER_ERROR`，不保留远端正文；三次
+安全失败与官方 capability 边界一致。该结果不是 Parser、严格 Pydantic DTO、
+canonicalization、repair 或七个业务样本内容失败；请求在这些边界产生可校验模型
+内容之前已经终止。
+
+### 15.4 延迟、Token、费用与清理
+
+| 类别 | 已尝试样本 | 端到端 P50 / 观测 P95 / 最大 | 模型单次延迟 | 超时率 | 重试率 |
+|---|---:|---|---|---:|---:|
+| 文本 | 1 | `1.248 / 1.248 / 1.248 s` | Provider 未返回，无法取得 | `0%` | `0%` |
+| 固定 repair | 1 | `0.353 / 0.353 / 0.353 s` | Provider 未返回，无法取得 | `0%` | `0%` |
+| 图片 | 1 | `0.490 / 0.490 / 0.490 s` | Provider 未返回，无法取得 | `0%` | `0%` |
+
+每类只有一个已尝试样本，P95 只是单点观测值，不具有统计验证意义。三个失败请求均
+无 Provider Token 记录，输入、输出和总 Token 均不可确认；费率未配置且拒绝请求
+是否计费无法确认，费用记录为“费率未知 / 费用不可确认”。
+
+模型 SDK 单次配置时限仍为 30 秒。文本业务外层 60 秒满足单次模型时限小于总时限；
+图片复测外层硬预算为 20 秒，当前 30 秒模型时限并不小于外层预算，嵌套预算关系仍
+未满足。该问题未造成此次超时，也未在本窗口为通过测试而提高或修改任何时限；应由
+后续独立配置校准决定，不能用本次 capability 快速失败证明 20 秒正常余量。
+
+首个图片样本结束后，生产服务失败清理和 QA 私有根检查均通过；`objects`、
+`metadata`、临时文件和 reservation 无残留，整个仓库外临时私有根目录已清理。
+报告未记录或公开图片、Base64、文件名、路径、哈希、OCR 正文、请求正文或完整响应。
+
+### 15.5 复测后离线回归
+
+真实配置只存在于已经结束的授权进程；后续命令显式清除相关进程环境：
+
+| 验证 | 结果 |
+|---|---|
+| `python -m ruff check .` | 通过 |
+| `python -m mypy app migrations nanobot_core` | 通过，93 个源文件 |
+| `pytest -q -m "not real_provider and not real_map"` | `1460 passed, 1 skipped, 1 deselected` |
+| 仓库外插件封锁 DNS、`socket.connect`、`connect_ex`、`create_connection` 后再次运行非真实全集 | `1460 passed, 1 skipped, 1 deselected` |
+
+普通非真实全集观察到一次第 9.2 节既有 aiosqlite worker/事件循环收尾 warning；
+封网全集没有该 warning。所有功能断言通过，本窗口未修改数据库生命周期、warning
+策略、sleep 或 skip，既有 P2 分类不变。
+
+### 15.6 capability 分类与 Gate 结论
+
+- 严重程度：结构兼容性 P1 继续阻塞，但本轮结果属于外部协议 capability 选择，
+  不是新的生产代码 P1。
+- 边界位置：本轮进程配置选择了百炼 OpenAI-compatible Chat Completions 不支持的
+  `json_schema`；现有 `OpenAICompatibleProvider` 和显式 capability 配置已经支持
+  官方 `json_object` 请求形态，暂不需要新增生产修复。
+- 复现：在当前基线和配置下，使用生产 `OpenAICompatibleProvider`、唯一
+  `json_schema`、SDK/外层零重试，对任一原授权样本发送首个请求；发送前计数为 1，
+  安全结果为 `PROVIDER_ERROR`，无 `ModelResponse`。
+- 实际：三类首请求均在生成可解析内容前失败，七样本业务结构、候选身份和不再出现
+  generic `value_error` 的目标无法完成验证。
+- 预期：在新的明确授权下使用官方 `json_object` 模式，初次或唯一 repair 返回
+  `ModelResponse`，再由唯一生产 Parser、严格 DTO 与 canonicalization 验证七个
+  原样本。
+
+因此“真实结构兼容性 P1”**不关闭**，状态改为“等待 `json_object` 模式真实复测”。
+本窗口不修改生产代码、不合并、不推送；M0-Gate 继续阻塞，真实重定向链、最小
+Dockerfile 和既有 P2 状态均不变。
+
+后续真实复测范围：
+
+> 另开真实复测窗口，在本报告第 12–15 节证据和当前生产实现上重新取得三类明确授权，
+> 唯一使用百炼官方 `json_object` 模式复测相同 2 个文本、3 个固定非法 Fixture 和
+> 2 个图片 Fixture。总请求上限仍为 `4 + 3 + 4 = 11`，发送前熔断、SDK/外层零
+> 重试、图片每样本 20 秒；不得把本轮剩余请求额度结转，也不得切换 `json_schema`、
+> 普通模式或增加 capability 探测。逐样本验证 production service → Parser →
+> strict DTO → canonicalization、outcome、候选数量、原证据身份、安全 path/type、
+> Provider 分类、延迟、Token、费用和图片清理；不得复测 Tool Calling、高德、网页
+> 或增加样本。只有七个样本全部通过且无 fallback、ProviderError、超时、重试、额外
+> 调用或图片残留时，才关闭结构 P1。
