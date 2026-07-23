@@ -2,8 +2,8 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 报告状态 | 阻塞：离线验收通过；真实验收已执行但证据不完整，且重定向网页样本失败 |
-| 验收分支 | `codex/m0-regression` |
+| 报告状态 | 阻塞：结构 outcome 补证完成，但真实可用结构结果率不足；重定向网页样本仍未完成 |
+| 验收分支 | `codex/m0-gate-structured-retest` |
 | 指定基线 / 验收 commit | `0ace869ae2708608d238b77b3ade3153b1307549` |
 | `main` / `origin/main` | 均与指定基线完全一致 |
 | 验收日期 | 2026-07-23 |
@@ -242,13 +242,16 @@
 
 > 在独立的 M0-Gate Dockerfile 收尾任务中，基于现有 `backend` 包建立唯一的最小 API Dockerfile；不得加入 Worker、PostgreSQL、Docker Compose、M1 业务逻辑或第二套启动入口。使用非 root 用户、固定工作目录、可缓存依赖安装、现有 Uvicorn app factory 和 `/healthz`；密钥只通过运行时环境注入，不复制 `.env`。补充 `.dockerignore`，确保 `.env`、Git、虚拟环境、数据库、缓存、测试响应和本机私有文件不进入 build context 或镜像。验证无密钥 build、容器启动、健康检查、干净关闭、镜像内容和 README 命令；更新 M0 验收报告但不宣称其他真实链已通过。完成后交回 M0-Gate 主控复验，不提前实现 Compose。
 
-### 9.4 P1（验收工具）：真实结构结果的 outcome 记录丢失
+### 9.4 已关闭 P1（验收工具）：真实结构结果的 outcome 记录丢失
 
 - 位置：仓库外一次性 QA 脚本的文本、修复和图片结果汇总表达式；生产仓库无对应改动。
 - 实际：15 次模型请求均返回 Provider 契约，相关服务也返回 `ExtractionResult`，但脚本随后访问不存在的枚举成员并只记录 `AttributeError`，丢失具体 outcome 和候选数。
 - 预期：脚本使用 `ExtractionOutcome.MODEL_INVALID_OUTPUT`，并在不保存正文的前提下记录 outcome、候选数和恢复调用次数。
 - 影响：不能证明文字、真实结构修复和图片的具体质量结果，M0-Gate 证据不完整；不是生产缺陷。
 - 复测范围：三类原样本、原请求上限、零重试、同一脱敏字段；不得重复 Tool、高德和普通网页。
+- 关闭证据：2026-07-23 补充复测已改用生产枚举
+  `ExtractionOutcome.MODEL_INVALID_OUTPUT`，9/9 原样本均记录 outcome、候选数量、主调用/
+  修复调用次数、单次与端到端耗时、Token、费用状态和稳定恢复结果；详见第 10 节。
 
 完整复测 Prompt：
 
@@ -266,16 +269,131 @@
 
 > 在新的 M0-Gate 重定向网页复测任务中，先取得用户对两个替代公开重定向样本和明确 HTTP 总上限的授权。调用前离线检查目标只允许 GET、无登录、无 Cookie、无私人 query，且 redirect 最终落到公开 HTML/text 页面；不得通过真实预请求探测。使用生产 `HttpxWebContentProvider`、生产 DNS/SSRF 校验、20 秒总预算、最多 5 hop、零重试，并在 transport 层硬计数。只记录样本序号、HTTP 状态类别、hop 数、字节数区间、单 hop/端到端耗时和稳定恢复码，不记录 URL query、正文或响应头。若再次在首 hop 超时，分类为外部目标/网络问题并停止；若进入 hop 后失败，结合离线同型 Fixture 判断是否存在生产 P1。不得重复模型、高德、普通网页或图片调用。
 
-## 10. 当前结论
+### 9.6 P1（外部验收）：真实严格结构输出兼容性不足
+
+- 位置：当前真实 ModelProvider 输出与生产 `ExtractionResult` 严格契约之间的兼容边界；
+  生产解析入口为 `backend/app/application/extraction_output.py`，文本和图片服务分别为
+  `text_extraction.py` 与 `image_recognition.py`。
+- 实际：补充复测 9 个原样本中只有 2 个返回 `candidates`；其余 7 个在主调用或唯一
+  修复后稳定返回 `MODEL_INVALID_OUTPUT`。13 次底层模型请求均成功返回 Provider
+  契约，没有 transport、鉴权、限流或超时错误。
+- 预期：三类原样本应稳定形成可用候选或语义上合理的
+  `insufficient_information` / `unsupported`，真实结构修复应能将固定非法首响应
+  修复成通过生产 parse、validate 和 canonicalize 的结果。
+- 分类：Provider 输出 / 当前模型配置与生产严格结构契约的兼容性问题；现有证据未
+  证明生产解析器错误，也不足以进一步归因到单一模型、Prompt 或配置字段。
+- 复现：使用第 10 节相同三个原样本、生产服务、固定非法 Fixture、逐类硬计数、
+  SDK 零重试和相同时限；不得保存模型正文或增加样本。
+- 下一步：不追加真实调用。先由 M0-Gate 主控决定是否增加只保留校验路径和类型的
+  安全诊断，再确定最小生产或配置修复范围；修复后另行取得明确授权，仅复测失败的
+  结构类别，不重复 Tool Calling、高德或普通网页。
+
+## 10. 真实结构结果补充复测
+
+### 10.1 门禁、范围与调用边界
+
+- 分支：`codex/m0-gate-structured-retest`；生产代码 merge-base、`main` 和本地
+  `origin/main` 均为 `0ace869ae2708608d238b77b3ade3153b1307549`。分支只继承上轮
+  M0-Gate 文档提交，没有生产业务代码改动。
+- 仓库外 QA 汇总器只位于 `/tmp`。真实调用前通过 Ruff、strict mypy 和 FakeProvider
+  自测，覆盖 `candidates`、`insufficient_information`、`unsupported`、
+  `model_invalid_output` 四种 outcome，并断言不存在旧成员 `MODEL_INVALID`。
+- 相关生产回归为 `172 passed / 1 deselected`，覆盖 `ExtractionResult` 契约、
+  `TextExtractionService`、`ImageRecognitionService` 和
+  `OpenAICompatibleProvider`；生产 SDK 构造仍固定 `max_retries=0`。
+- 三类均重新取得本任务明确授权。实际模型请求为文本 `5/6`、结构修复 `3/3`、
+  图片 `5/6`，合计 `13/15`；13 次均返回 Provider 契约，超时率 0%，重试率
+  0%。没有调用 Tool Calling、高德、普通网页或重定向网页。
+- 结构修复的每个样本先由本地固定非法 Fixture 提供首响应，再进行一次真实修复；
+  每个样本真实请求均为 1。QA 在内存中用生产 `parse_extraction_response`、
+  Pydantic 严格校验和 `canonicalize_extraction_result` 核对真实响应；当解析被拒绝
+  时，生产服务按契约返回 `MODEL_INVALID_OUTPUT`，没有保存模型正文或校验值。
+- 图片仍使用上轮仓库外脚本生成的三张合成素材和仓库外临时私有存储。每张图均经过
+  生产 `ImageRecognitionService`，外层总预算 20 秒；三个临时对象和整个临时私有
+  根目录均已清理，未记录 `file_key`。
+
+### 10.2 outcome、候选和调用次数
+
+“记录成功率”表示取得完整脱敏 outcome；“可用结构结果率”表示 outcome 为
+`candidates`。后者用于判断当前真实结构链是否可通过 Gate。
+
+| 类别 | 样本 | 实际 / 授权上限 | 记录成功率 | 可用结构结果率 | outcome 分布 | 候选数量 |
+|---|---:|---:|---:|---:|---|---|
+| 百炼文本抽取 | 3 | 5 / 6 | 3/3（100%） | 1/3（33.3%） | `candidates` 1；`model_invalid_output` 2 | `[1, 0, 0]` |
+| 百炼结构修复 | 3 | 3 / 3 | 3/3（100%） | 0/3（0%） | `model_invalid_output` 3 | `[0, 0, 0]` |
+| 图片识别 | 3 | 5 / 6 | 3/3（100%） | 1/3（33.3%） | `candidates` 1；`model_invalid_output` 2 | `[1, 0, 0]` |
+| 合计 | 9 | 13 / 15 | 9/9（100%） | 2/9（22.2%） | `candidates` 2；`model_invalid_output` 7 | 2 个候选 |
+
+结构修复触发情况：
+
+- 文本样本 2、3 触发唯一结构修复；样本 1 首次返回可用候选。
+- 结构修复类三个样本都由本地非法 Fixture 触发一次真实修复，不存在真实主调用。
+- 图片样本 2、3 触发唯一结构修复；样本 1 首次返回可用候选。
+
+### 10.3 单次及端到端耗时
+
+| 类别 / 样本 | 模型单次耗时 | 端到端耗时 | outcome |
+|---|---|---:|---|
+| 文本 1 | 4.071 s | 4.071 s | `candidates` |
+| 文本 2 | 3.693 s、4.017 s | 7.711 s | `model_invalid_output` |
+| 文本 3 | 4.490 s、4.571 s | 9.062 s | `model_invalid_output` |
+| 结构修复 1 | 2.903 s | 2.904 s | `model_invalid_output` |
+| 结构修复 2 | 4.253 s | 4.254 s | `model_invalid_output` |
+| 结构修复 3 | 4.232 s | 4.233 s | `model_invalid_output` |
+| 图片 1 | 5.717 s | 5.725 s | `candidates` |
+| 图片 2 | 3.955 s、4.709 s | 8.674 s | `model_invalid_output` |
+| 图片 3 | 2.557 s、2.676 s | 5.246 s | `model_invalid_output` |
+
+| 类别 | 口径 | P50 | 观测 P95 | 最大 | 超时率 | 重试率 |
+|---|---|---:|---:|---:|---:|---:|
+| 文本 | 模型单次（5 次） | 4.071 s | 4.555 s | 4.571 s | 0% | 0% |
+| 文本 | 端到端（3 个样本） | 7.711 s | 8.927 s | 9.062 s | 0% | 0% |
+| 结构修复 | 模型单次（3 次） | 4.232 s | 4.251 s | 4.253 s | 0% | 0% |
+| 结构修复 | 端到端（3 个样本） | 4.233 s | 4.252 s | 4.254 s | 0% | 0% |
+| 图片 | 模型单次（5 次） | 3.955 s | 5.516 s | 5.717 s | 0% | 0% |
+| 图片 | 端到端（3 个样本） | 5.725 s | 8.379 s | 8.674 s | 0% | 0% |
+
+每类只有 3 个端到端样本，表中 P95 只是本次顺序执行下的观测插值，不具有统计验证
+意义。耗时仍明显低于文本/结构单次 30 秒、文本端到端 60 秒和图片端到端 20 秒硬
+上限；本轮阻塞原因不是超时。
+
+### 10.4 Token、费用与失败恢复
+
+| 类别 | 输入 Token | 输出 Token | 总 Token | 费用 |
+|---|---:|---:|---:|---|
+| 文本抽取 | 10,328 | 832 | 11,160 | 未配置单价，未知 |
+| 结构修复 | 6,092 | 461 | 6,553 | 未配置单价，未知 |
+| 图片识别 | 14,331 | 683 | 15,014 | 未配置单价，未知 |
+| 合计 | 30,751 | 1,976 | 32,727 | 未配置单价，未知 |
+
+- 13 次请求都没有 Provider transport、鉴权、限流或超时错误；稳定错误码为空。
+- 七个失败样本均由生产服务稳定恢复为 `MODEL_INVALID_OUTPUT`，未产生候选、持久化
+  写入或泄漏。QA 汇总器没有再丢失 outcome。
+- 文本样本 2、3 和图片样本 2、3 在主调用和唯一修复后仍不符合严格结构契约；结构
+  修复类 3/3 的唯一真实修复也不符合契约。按本任务的脱敏限制，没有保存模型正文、
+  完整异常或校验值，不能进一步从本次证据区分具体字段错误。
+- 当前分类为 **Provider 输出 / 当前模型配置与生产严格结构契约的兼容性问题**。离线
+  172 项相关回归及生产 parse/validate/fallback 路径均通过，未发现 QA 工具或生产
+  解析器再次丢失 outcome；但在安全证据不足时，也不把问题武断归因到单一模型、
+  Prompt 或配置字段。
+- 不追加真实调用，不修改生产代码掩盖结果。下一步应由 M0-Gate 主控先决定是否用
+  仅记录安全校验路径/类型的离线诊断收窄兼容性问题，再定义最小复测范围并重新取得
+  授权；不得复测已经通过的 Tool Calling、高德或普通网页。
+
+## 11. 当前结论
 
 离线功能、架构边界、迁移、幂等、固定样本、安全、新环境运行和封网行为满足 M0 Gate 的离线部分。真实 Tool Calling 和高德通过；普通网页通过；模型和图片底层调用成功且服务返回结构契约；失败恢复稳定。
 
-但真实结构结果的具体 outcome 因 QA 汇总工具 P1 丢失，两个真实重定向样本也未进入 redirect hop。按用户“不追加调用”的约束，本任务不能补测，也不能宣称 M0-Gate 通过。
+真实结构结果的 outcome 补证已完成，原 QA 汇总工具 P1 已关闭；但九个样本只有两个
+产生可用候选，七个稳定恢复为 `MODEL_INVALID_OUTPUT`。这说明当前 Provider 输出/
+模型配置与生产严格结构契约的真实兼容性仍不足。两个真实重定向样本也仍未进入
+redirect hop。
 
 因此：
 
-- 不创建 Dockerfile；
-- 不提交、不合并、不推送；
+- 本结构补测任务不创建 Dockerfile；
+- 不合并、不推送；
 - 不更新 README 或 DEVELOPMENT_STAGES 为 M0 完成；
 - 不生成 M1-0 开发窗口 Prompt；
-- M0 保持未关闭，等待新的、仅针对缺失证据的明确复测授权。
+- M0 保持未关闭；将本结果交回 M0-Gate 主控，等待结构兼容性、重定向网页和
+  Dockerfile 三项收尾决策。
