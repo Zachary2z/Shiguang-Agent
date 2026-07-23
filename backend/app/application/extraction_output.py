@@ -10,6 +10,7 @@ from typing import Final
 from pydantic import ValidationError
 
 from app.domain.collections import (
+    CandidateField,
     ExtractionOutcome,
     ExtractionReasonCode,
     ExtractionResult,
@@ -26,6 +27,27 @@ from nanobot_core.providers import (
 MAX_MODEL_OUTPUT_CHARS: Final = 50_000
 _EXTRACTION_SCHEMA_NAME: Final = "shiguang_extraction_result"
 _EXTRACTION_RESULT_SCHEMA: Final = ExtractionResult.model_json_schema()
+_COMMON_CANDIDATE_FIELDS: Final = tuple(
+    field.value
+    for field in CandidateField
+    if field
+    not in {
+        CandidateField.TITLE,
+        CandidateField.EVENT_START_AT,
+        CandidateField.EVENT_END_AT,
+    }
+)
+_EVENT_TIME_FIELDS: Final = (
+    CandidateField.EVENT_START_AT.value,
+    CandidateField.EVENT_END_AT.value,
+)
+_CANDIDATE_FIELD_CLOSURE_GUIDANCE: Final = (
+    "Before output, audit every candidate for field closure. For each Place check: "
+    f"{', '.join(_COMMON_CANDIDATE_FIELDS)}. For each Event check those fields plus: "
+    f"{', '.join(_EVENT_TIME_FIELDS)}. For every absent field choose exactly one "
+    "classification: missing_fields or uncertainties. Never put the same field in both, "
+    "and never mark a present field missing."
+)
 EXTRACTION_SEMANTIC_RULES: Final = (
     "- Select exactly one outcome shape:\n"
     "  * candidates: one or more candidates; reason_code, unsupported_reason, "
@@ -36,11 +58,9 @@ EXTRACTION_SEMANTIC_RULES: Final = (
     "  * unsupported: no candidates or field gaps; reason_code is INPUT_EMPTY or "
     "INPUT_UNSUPPORTED. unsupported_reason is required only for INPUT_UNSUPPORTED.\n"
     "  * Never emit model_invalid_output; that outcome is reserved for the application.\n"
-    "- For every candidate, missing_fields must be unique and uncertainties may contain "
-    "at most one item per field. The two sets must not overlap.\n"
-    "- Every absent candidate city_hint, district, address, business_district, landmark, "
-    "metro_station, price, or tags field must be classified as missing or uncertain. A "
-    "present field cannot be marked missing.\n"
+    f"- {_CANDIDATE_FIELD_CLOSURE_GUIDANCE}\n"
+    "- missing_fields must be unique and uncertainties may contain at most one item per "
+    "field.\n"
     "- Place candidates must not classify Event start/end fields and must not carry Event "
     "time semantics.\n"
     "- Event start/end values use timezone-aware ISO 8601. A missing exact time must be "
@@ -73,7 +93,18 @@ _IMAGE_REPAIR_EVIDENCE_CONSTRAINT: Final = (
     "invent any place, activity, or fact that was absent from that output."
 )
 _UNKNOWN_REPAIR_GUIDANCE: Final = "Rebuild the object to match the schema and outcome rules."
+_JSON_INVALID_REPAIR_GUIDANCE: Final = (
+    "Rebuild one complete JSON object from the supplied evidence. First select the outcome "
+    "and distinguish every candidate as Place or Event. "
+    f"{_CANDIDATE_FIELD_CLOSURE_GUIDANCE} "
+    "Keep price_amount and price_currency paired, using CNY only for a known local amount. "
+    "A Place must not carry Event time metadata; an Event with an absent exact start or end "
+    "must classify that time. A candidates outcome must not carry result-level error "
+    "metadata. Never emit model_invalid_output. Do not invent facts absent from the supplied "
+    "evidence."
+)
 _REPAIR_GUIDANCE_BY_TYPE: Final = {
+    "json_invalid": _JSON_INVALID_REPAIR_GUIDANCE,
     "price_pair_incomplete": "Provide amount and CNY together, or set both price fields null.",
     "price_currency_unsupported": "Use CNY for a known local amount; do not convert currency.",
     "missing_and_uncertain_conflict": "Classify a field as missing or uncertain, never both.",

@@ -148,6 +148,37 @@ class _EvidenceCheckingTextProvider(FakeProvider):
         )
 
 
+class _JsonInvalidClosureRepairProvider(FakeProvider):
+    def __init__(
+        self,
+        *,
+        source_identity: str,
+        expected: ExtractionResult,
+    ) -> None:
+        super().__init__([_result_response(expected)])
+        self._source_identity = source_identity
+
+    async def chat(
+        self,
+        *,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None,
+        response_format: StructuredOutput | None = None,
+    ) -> ModelResponse:
+        rendered = json.dumps(messages, ensure_ascii=False)
+        repair_prompt = str(messages[-1]["content"])
+        assert self._source_identity in rendered
+        assert "json_invalid" in repair_prompt
+        assert "audit every candidate for field closure" in repair_prompt
+        assert "city_hint, district, address, business_district" in repair_prompt
+        assert "event_start_at, event_end_at" in repair_prompt
+        return await super().chat(
+            messages=messages,
+            tools=tools,
+            response_format=response_format,
+        )
+
+
 def _recognized_price_without_currency_response(amount: Decimal) -> ModelResponse:
     payload = json.loads(
         ExtractionResult.with_candidates((_full_place(),)).model_dump_json()
@@ -480,6 +511,116 @@ async def test_first_invalid_output_can_be_repaired_once() -> None:
     assert provider.calls[1].tools is None
 
 
+def test_json_invalid_uses_fixed_field_closure_guidance_without_private_values() -> None:
+    private_sentinel = "private-fixture-value-must-not-enter-guidance"
+    exception_sentinel = "JSONDecodeError(private-exception-text)"
+    messages = [
+        {"role": "system", "content": f"Rules:\n{EXTRACTION_SEMANTIC_RULES}"},
+        {"role": "user", "content": private_sentinel},
+    ]
+    invalid_response = fake_response(content="{fixed-local-invalid-json")
+    result, issues = parse_extraction_response(invalid_response)
+
+    repaired = build_repair_messages(
+        messages,
+        invalid_response=invalid_response,
+        issues=issues,
+    )
+
+    assert result is None
+    assert issues == ({"path": "$", "type": "json_invalid"},)
+    assert repaired is not None
+    guidance = str(repaired[-1]["content"])
+    assert "Rebuild one complete JSON object from the supplied evidence." in guidance
+    assert "Rebuild the object to match the schema and outcome rules." not in guidance
+    for field_name in (
+        "city_hint",
+        "district",
+        "address",
+        "business_district",
+        "landmark",
+        "metro_station",
+        "price",
+        "tags",
+        "event_start_at",
+        "event_end_at",
+    ):
+        assert field_name in guidance
+    for invariant in (
+        "price_amount and price_currency paired",
+        "Place must not carry Event time metadata",
+        "Event with an absent exact start or end must classify that time",
+        "candidates outcome must not carry result-level error metadata",
+        "Never emit model_invalid_output",
+        "Do not invent facts",
+    ):
+        assert invariant in guidance
+    assert private_sentinel not in guidance
+    assert exception_sentinel not in guidance
+    assert "input" not in json.dumps(issues)
+    assert "value" not in json.dumps(issues)
+
+
+@pytest.mark.parametrize(
+    ("source_identity", "candidate"),
+    [
+        ("固定地点证据身份", _only_name_place(title="固定地点证据身份")),
+        (
+            "固定活动证据身份",
+            EventCandidate(
+                title="固定活动证据身份",
+                missing_fields=(
+                    CandidateField.CITY_HINT,
+                    CandidateField.DISTRICT,
+                    CandidateField.ADDRESS,
+                    CandidateField.BUSINESS_DISTRICT,
+                    CandidateField.LANDMARK,
+                    CandidateField.METRO_STATION,
+                    CandidateField.EVENT_START_AT,
+                    CandidateField.EVENT_END_AT,
+                    CandidateField.PRICE,
+                    CandidateField.TAGS,
+                ),
+            ),
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_fixed_invalid_fixture_uses_one_evidence_bound_repair_call(
+    source_identity: str,
+    candidate: PlaceCandidate | EventCandidate,
+) -> None:
+    expected = ExtractionResult.with_candidates((candidate,))
+    initial_messages: list[Message] = [
+        {"role": "system", "content": f"Rules:\n{EXTRACTION_SEMANTIC_RULES}"},
+        {"role": "user", "content": source_identity},
+    ]
+    invalid_response = fake_response(content="{fixed-local-invalid-json")
+    _result, issues = parse_extraction_response(invalid_response)
+    repair_messages = build_repair_messages(
+        initial_messages,
+        invalid_response=invalid_response,
+        issues=issues,
+    )
+    assert repair_messages is not None
+    provider = _JsonInvalidClosureRepairProvider(
+        source_identity=source_identity,
+        expected=expected,
+    )
+
+    repaired_response = await provider.chat(
+        messages=repair_messages,
+        tools=None,
+        response_format=None,
+    )
+    repaired_result, repaired_issues = parse_extraction_response(repaired_response)
+
+    assert repaired_result == expected
+    assert repaired_issues == ()
+    assert len(provider.calls) == 1
+    assert provider.calls[0].tools is None
+
+
 @pytest.mark.asyncio
 async def test_repair_preserves_text_evidence_and_specific_safe_guidance() -> None:
     secret = "private-source-and-response-value"
@@ -627,6 +768,25 @@ async def test_two_invalid_outputs_stop_at_two_calls_with_stable_result() -> Non
     assert result.outcome is ExtractionOutcome.MODEL_INVALID_OUTPUT
     assert result.reason_code is ExtractionReasonCode.MODEL_INVALID_OUTPUT
     assert result.candidates == ()
+    assert len(provider.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_repair_still_rejects_unclassified_absent_field_without_third_call() -> None:
+    invalid_repair = json.loads(
+        ExtractionResult.with_candidates((_only_name_place(),)).model_dump_json()
+    )
+    invalid_repair["candidates"][0]["missing_fields"].remove("address")
+    provider = FakeProvider(
+        [
+            fake_response(content="{fixed-local-invalid-json"),
+            fake_response(content=json.dumps(invalid_repair, ensure_ascii=False)),
+        ]
+    )
+
+    result = await TextExtractionService(provider).extract("M Stand")
+
+    assert result.outcome is ExtractionOutcome.MODEL_INVALID_OUTPUT
     assert len(provider.calls) == 2
 
 
