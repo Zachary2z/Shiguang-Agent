@@ -1146,3 +1146,125 @@ aiosqlite worker/事件循环收尾 warning，封网全集无 warning；本任�
 
 必须在新的真实复测窗口取得用户明确授权后才能读取调用所需配置并执行。本分支不
 合并、不推送、不处理重定向网页、Dockerfile、锁注册表、aiosqlite 或 M1。
+
+## 18. 固定 repair 最终真实复测
+
+### 18.1 门禁、授权与执行边界
+
+- 工作分支 `codex/m0-gate-fixed-repair-real-retest` 精确从
+  `fa077e1ef62f8f60fcad606e5464b1e0afd07cc2` 创建；开始工作区干净，`main` 与
+  `origin/main` 均为 `0ace869ae2708608d238b77b3ade3153b1307549`
+- 生产修复 `5bcdb9ca302f9298da7a425b7f5deb2805ae7b8b` 在提交链中，Alembic 唯一
+  head 为 `20260722_0006`；相对修复前基线没有其他生产代码变化
+- 授权前未读取 `.env`、未调用外部服务。离线门禁使用项目 `.venv` 的 Python
+  `3.13.5`、mypy `1.20.2`：`pip check`、Ruff、93 文件 strict mypy 均通过，
+  指定聚焦测试为 `442 passed`
+- 用户授权原文：
+
+> 授权本窗口固定 repair 真实复测：相同 3 个 Fixture，每个最多 1 次真实 repair，
+> 总上限 3 次模型请求；唯一模式 json_object；SDK 和外层均 0 重试；模型单次时限
+> 8 秒；本轮不设费用上限。不得切换模式、模型、endpoint、样本或追加调用。
+
+授权后仅只读确认调用配置完整，不输出模型、endpoint、密钥或任何配置值。仓库外
+一次性 QA 工具复用生产 `OpenAICompatibleProvider`、`TextExtractionService`、
+`build_repair_messages()`、唯一 Parser、严格 `ExtractionResult` 和
+canonicalization；三个 initial 均为第 16、17 节相同的本地固定非法 JSON，并在
+网络前确认安全 issue 为 `$/json_invalid`。每次发送前硬计数，总计超过 3 即在网络
+前熔断；强制 `json_object`、SDK `max_retries=0`、外层重试 0、模型单次 8 秒。
+工具不保存完整请求、响应、样本、Prompt 或 Schema，真实进程结束后已清除进程配置
+并删除仓库外工具，未修改 `.env`。
+
+### 18.2 真实结果
+
+| 匿名样本 | 实际请求 | Provider / finish / 载荷 | outcome | 候选数 | 身份一致 | 安全 path/type |
+|---|---:|---|---|---:|---|---|
+| 1 | 1 | contract / stop / content 有、tool_calls 无 | `model_invalid_output` | 0 | 否（未形成候选） | initial `$/json_invalid`；repair `candidates.0.place/absent_field_not_classified` |
+| 2 | 0 | 未执行 | 未执行 | — | 不适用 | — |
+| 3 | 0 | 未执行 | 未执行 | — | 不适用 | — |
+
+实际请求数为 `1/3`。样本 1 只执行一次真实 repair，Provider 返回正式契约，没有
+ProviderError、超时、重试或 fallback；唯一生产 Parser 随后在严格领域边界发现
+Place 候选仍有 absent field 未分类，安全转为 `model_invalid_output`，因此没有
+候选可进入 canonicalization 或身份/证据一致性成功判定。没有出现 generic
+`value_error`，但仍出现 `absent_field_not_classified`。依照“任一样本失败立即按
+已有上限停止、不补样本”，样本 2、3 均未发送。
+
+该失败分类为**代码 / Prompt 语义兼容性缺陷**，不是 Provider、配置或环境故障：
+Provider 已正常履约并返回 content，生产 repair guidance 仍未使首个固定样本完成
+严格字段闭合。没有发现无证据事实；因为候选未通过 DTO，不能把“无候选”误记为
+身份或证据一致。
+
+### 18.3 延迟、Token 与费用
+
+样本 1 模型单次延迟为 `4.936s`，端到端延迟为 `4.940s`。由于实际样本数仅
+`n=1`，模型单次与端到端的 P50、观测 P95、最大值分别都等于各自单点；该 P95
+不具有统计验证意义。模型观测 P95 占 8 秒硬时限约 `61.7%`，本轮没有为通过测试
+提高时限。
+
+超时率 `0%`，重试率 `0%`。Token 为输入 `2,621`、输出 `166`、合计 `2,787`。
+费率未知，费用无法确认。
+
+### 18.4 复测后离线与封网回归
+
+真实进程结束并清除进程配置后，所有规定命令退出码均为 0：
+
+| 验证 | 结果 |
+|---|---|
+| `python -m ruff check .` | 通过 |
+| `python -m mypy app migrations nanobot_core` | 通过，93 个源文件 |
+| 非真实全集 | `1464 passed, 1 skipped, 1 deselected` |
+| 默认全集 | `1464 passed, 2 skipped` |
+| 仓库外插件封锁 DNS、connect、connect_ex、create_connection 后非真实全集 | `1464 passed, 1 skipped, 1 deselected` |
+
+三轮 pytest 各出现一次第 9.2 节已记录的 aiosqlite worker/事件循环收尾 warning；
+测试仍全部通过，该独立 P2 不变，本任务未修改数据库生命周期、warning 策略、
+sleep 或 skip。
+
+### 18.5 Gate 结论
+
+固定 repair 的真实结构兼容性为 `0/1` 已执行样本通过、`1/3` 计划请求已使用，
+不满足必须 `3/3` 的关闭标准，故结构 P1 **不关闭**。第 16 节文本 `2/2`、图片
+`2/2` 的既有真实结论保持不变。本轮没有复测或修改文本、图片、Tool Calling、高德、
+网页、Dockerfile、锁注册表、aiosqlite 或 M1。
+
+M0-Gate 继续阻塞：除该固定 repair 结构 P1 外，真实重定向链、最小 Dockerfile 与
+三个既有 P2 仍未收尾。本分支只记录结果，不合并、不推送、不开始下一项。
+
+### 18.6 独立修复 Prompt
+
+> 你负责 Shiguang_Nanobot 的 M0-Gate 固定 repair 结构语义缺陷修复。以记录本次
+> 失败的最新文档提交为指定基线，创建新的 `codex/` 分支。开始前完整阅读
+> AGENTS.md、docs/DEVELOPMENT_STAGES.md、docs/DEV_STATUS.md、相关 PRD、核心用户
+> 流程、MVP 技术方案、M0_VALIDATION_REPORT.md 第 12–18 节，以及
+> extraction_output.py、text_extraction.py、ExtractionResult、Provider 和相关
+> 测试；确认工作区、提交链、main/origin/main 与 Alembic 唯一 head。
+>
+> 只修复第 16–18 节相同固定非法 Fixture 暴露的首个 Place repair 仍返回
+> `candidates.0.place/absent_field_not_classified`。先用 Fake/Stub 和固定 Fixture
+> 复现并定位：为何提交 `5bcdb9ca302f9298da7a425b7f5deb2805ae7b8b` 已增加共享
+> 字段闭合清单，真实 `json_object` repair 仍遗漏字段分类。按照仓库简洁原则，
+> 同一缺陷再次出现旁路时停止追加提示补丁，重新检查 Prompt、生成 Schema、严格
+> DTO 与唯一 repair 边界的抽象和归属；说明为何所选修复能够删除、收敛或复用现有
+> 契约。
+>
+> 保持一个生产 Parser、一个严格 ExtractionResult DTO、一份领域规则、一个
+> Provider 和最多一次 repair。不得放宽 `absent_field_not_classified`，不得增加
+> 样本/标题白名单、默认业务值、确定性代写候选、第二套 Schema/Parser/DTO/repair
+> 服务、额外模型调用或 fallback；不得编造源证据。修复必须让 Place/Event 每个
+> 候选在唯一 repair 中显式闭合所有适用字段状态，同时保持 missing/uncertain
+> 互斥、present 不得标 missing、价格成对、Place/Event 时间边界、合法 outcome、
+> 证据身份和 canonicalization。文字与图片继续共享正式契约，图片 repair 不重传
+> 图片/Base64，普通回复、Tool Calling 和 json_object/tools 互斥不得回归。
+>
+> 本任务默认完全离线：不得读取 `.env`、不得调用真实模型或其他外部服务，不处理
+> 文本/图片真实复测、网页、高德、Dockerfile、锁注册表、aiosqlite 或 M1。先以
+> 失败 Fixture 建立能证明根因与修复边界的测试，再运行 pip check、Ruff、strict
+> mypy、指定聚焦测试、非真实全集、默认全集及仓库外 socket/DNS 封网全集；不得
+> 删除测试、放宽断言或静默跳过。只更新 M0_VALIDATION_REPORT.md 与
+> DEV_STATUS.md，创建单一修复提交，不合并、不推送。
+>
+> 如离线修复通过，另行给出只复测第 16–18 节相同 3 个固定 Fixture 的真实计划：
+> initial 为本地固定非法 JSON，每样本最多一次 repair，总上限 3 次请求，唯一模式
+> json_object，SDK/外层均 0 重试，模型单次 8 秒，发送前熔断，不结转旧额度；
+> 必须等待新的逐字明确授权，不得自行读取配置、调用、切换模式/模型/endpoint、
+> 补样本或追加 capability 探测。

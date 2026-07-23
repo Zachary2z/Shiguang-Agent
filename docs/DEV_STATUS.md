@@ -5,9 +5,9 @@
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-Gate 技术验证总验收 |
 | 状态 | 阻塞 |
-| 当前分支 | codex/m0-gate-fixed-repair-semantics |
+| 当前分支 | codex/m0-gate-fixed-repair-real-retest |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 固定 repair 语义已离线修复、等待 3 个 Fixture 有限真实复测；重定向网页真实链和最小 Dockerfile 仍未收尾 |
+| 阻塞项 | 固定 repair 最终真实复测首样本仍为 absent_field_not_classified，结构 P1 不关闭；重定向网页真实链和最小 Dockerfile 仍未收尾 |
 
 ## 当前任务
 
@@ -1320,3 +1320,36 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
   `json_object` repair，总上限 3 次请求，SDK `max_retries=0`、外层重试 0、模型
   单次 8 秒；不得结转旧额度，不复测文本、图片、Tool Calling、高德或网页。需等待
   用户新授权。本分支不合并、不推送、不进入下一 Gate 项或 M1
+
+#### 2026-07-23｜M0-Gate 固定 repair 最终真实复测｜阻塞
+
+- 分支与门禁：`codex/m0-gate-fixed-repair-real-retest` 精确基于
+  `fa077e1ef62f8f60fcad606e5464b1e0afd07cc2`；开始工作区干净，`main` 与
+  `origin/main` 均为 `0ace869ae2708608d238b77b3ade3153b1307549`，生产修复
+  `5bcdb9ca302f9298da7a425b7f5deb2805ae7b8b` 在提交链，Alembic 唯一 head 为
+  `20260722_0006`，没有其他生产代码变化
+- 离线门禁：项目 `.venv` 为 Python `3.13.5`、mypy `1.20.2`；`pip check`、
+  Ruff、93 文件 strict mypy 通过，指定聚焦测试 `442 passed`
+- 授权与边界：授权后才只读检查配置完整性；只使用第 16、17 节相同 3 个固定非法
+  Fixture，`json_object`、SDK/外层零重试、模型单次 8 秒、发送前总计数熔断。
+  仓库外工具复用生产 Provider、repair messages、Parser、严格 DTO 与
+  canonicalization，不保存完整请求、响应、样本、Prompt 或 Schema
+- 真实结果：实际请求 `1/3`。匿名样本 1 的唯一 repair 返回 Provider 契约，
+  finish_reason 为 stop、有 content、无 tool_calls，但 outcome 为
+  `model_invalid_output`、候选数 0；initial 为 `$/json_invalid`，repair 安全
+  issue 为 `candidates.0.place/absent_field_not_classified`。未形成候选，身份与
+  证据一致性不成立；没有 generic `value_error`、ProviderError、超时、重试、
+  fallback 或无证据事实。按失败即停规则，样本 2、3 未发送
+- 延迟与资源：样本 1 模型/端到端延迟 `4.936/4.940s`；n=1 时 P50、观测 P95、
+  最大值均等于单点，P95 不具统计意义。模型观测 P95 占 8 秒约 `61.7%`；超时率、
+  重试率均为 0。Token 输入 `2,621`、输出 `166`、总计 `2,787`；费率未知，费用
+  无法确认
+- 回归：真实进程配置已清除且 `.env` 未修改。Ruff、93 文件 strict mypy 通过；
+  非真实全集 `1464 passed / 1 skipped / 1 deselected`，默认全集
+  `1464 passed / 2 skipped`，封锁 DNS、connect、connect_ex、create_connection
+  后非真实全集仍为 `1464 passed / 1 skipped / 1 deselected`。三轮均仅有一次
+  已记录的 aiosqlite 收尾 warning，该 P2 不变
+- 结论：失败分类为代码 / Prompt 语义兼容性缺陷，不是 Provider、配置或环境故障。
+  固定 repair 未达到 `3/3`，结构 P1 不关闭；文本 `2/2`、图片 `2/2` 既有结论
+  保留。完整独立修复 Prompt 已写入 M0 验证报告第 18.6 节。M0-Gate 仍有该结构
+  P1、真实重定向链、Dockerfile 与三个既有 P2；本分支不合并、不推送、不进入下一项
