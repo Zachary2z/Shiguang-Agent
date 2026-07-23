@@ -892,3 +892,139 @@ Dockerfile 和既有 P2 状态均不变。
 > Provider 分类、延迟、Token、费用和图片清理；不得复测 Tool Calling、高德、网页
 > 或增加样本。只有七个样本全部通过且无 fallback、ProviderError、超时、重试、额外
 > 调用或图片残留时，才关闭结构 P1。
+
+## 16. 百炼官方 json_object 真实结构兼容性复测
+
+### 16.1 基线、门禁与 capability
+
+- 分支 `codex/m0-gate-structure-json-object-retest` 精确从
+  `bcd61dfae2be80dca9aa0fc80796a405bae02eee` 创建；开始工作区干净，`main` 与
+  `origin/main` 均为 `0ace869ae2708608d238b77b3ade3153b1307549`。
+- `7660fb0`、`6d02236` 与 `bcd61df` 均在提交链；Alembic 唯一 head 仍为
+  `20260722_0006`，没有生产代码、迁移、依赖或 M1 变化。
+- 项目环境为 Python `3.13.5`、mypy `1.20.2`。`pip check`、Ruff、93 文件 strict
+  mypy 与指定聚焦组合 `438 passed` 全部通过。
+- 百炼官方结构化输出文档确认 OpenAI-compatible Chat Completions 使用
+  `response_format={"type":"json_object"}`，且消息必须包含大小写不敏感的 JSON
+  关键词。授权后只读检查的真实配置完整，当前模型类型位于官方列出的支持范围；未
+  输出模型、endpoint、密钥或任何配置值。
+
+### 16.2 授权、QA 工具与安全边界
+
+用户在本窗口明确授权文本最多 `4` 次、固定结构 repair 最多 `3` 次、图片最多 `4`
+次，合计最多 `11` 次；SDK 与外层重试均为 `0`，唯一 structured-output 模式为
+`json_object`，模型单次超时固定为 `8` 秒，图片每样本外层总预算保持 `20` 秒。
+禁止切换 `json_schema`、普通模式、模型或 endpoint，也禁止 capability 探测、补充
+样本或调用。
+
+仓库外 QA 工具从第 15 节工具机械切换为 `json_object`，保留三类独立发送前计数并
+增加总上限 `11` 熔断；原清单从既有任务记录中唯一恢复，没有猜测、重建或替换。
+图片继续使用相同生成配方。工具 Ruff、strict mypy 和 19 项离线安全自测通过后才
+启动真实请求。真实进程及其清单、结果、图片、私有存储和临时对象均已清理，仓库内
+没有保存 QA 工具或结果快照。
+
+### 16.3 调用、outcome 与身份一致性
+
+| 类别 | 样本 | 实际 / 上限 | 通过样本 | production outcome | 身份一致性 |
+|---|---:|---:|---:|---|---|
+| 原文本失败样本 | 2 | `3 / 4` | `2 / 2` | `candidates` 2 | `2 / 2` |
+| 固定结构 repair | 3 | `3 / 3` | `1 / 3` | `candidates` 1；`model_invalid_output` 2 | `1 / 3` |
+| 原图片失败 Fixture | 2 | `2 / 4` | `2 / 2` | `candidates` 1；`insufficient_information` 1 | 候选 `1 / 1`；恢复样本 N/A |
+| 合计 | 7 | `8 / 11` | `5 / 7` | 候选成功 4；正确恢复 1 | 候选 `4 / 4`；恢复样本 N/A |
+
+两个文本样本分别得到 1、2 个候选，身份均与原证据一致；第二个文本 initial 出现两个
+稳定 `absent_field_not_classified`，唯一 repair 后通过。三个固定 Fixture 的本地
+initial 均为 `$/json_invalid`；第二个真实 repair 形成 1 个证据一致候选，第一、第三
+个 repair 分别在 `candidates.0.place` 与 `candidates.0.event` 留下
+`absent_field_not_classified`，最终为 `model_invalid_output`。没有再出现 generic
+`value_error`。
+
+清晰图片形成 1 个证据一致候选；模糊图片安全返回 `insufficient_information` 和
+0 个候选。后者符合当前生产 Prompt 中“模糊、不可读或信息不足时不得猜测”的规则，
+也满足原始 Gate“形成结构化结果或正确恢复”的验收口径，因此判定为正确恢复并通过；
+该样本不产生候选，候选身份一致性记为不适用，不能为追求 candidates 要求模型猜测。
+
+全部 8 个真实响应均为 `finish_reason=stop`、存在 content、没有 tool calls。无
+ProviderError、鉴权失败、超时、重试、fallback、额外调用或模式切换。图片没有进入
+repair，因此“不重传 Base64”继续由离线生产测试证明，本轮没有新增真实 repair
+证据。
+
+### 16.4 延迟、Token、费用与预算
+
+| 类别 | 模型单次 P50 / 观测 P95 / 最大 | 端到端 P50 / 观测 P95 / 最大 |
+|---|---|---|
+| 文本 | `6.318 / 6.699 / 6.741 s` | `8.761 / 12.631 / 13.061 s` |
+| 固定结构 repair | `4.048 / 4.520 / 4.572 s` | `4.048 / 4.521 / 4.573 s` |
+| 图片 | `2.785 / 3.033 / 3.060 s` | `2.794 / 3.042 / 3.069 s` |
+
+以上 P95 仅为 2–3 次调用的观测插值，不具有统计验证意义。文本观测 P95 为 8 秒硬
+超时的约 `83.7%`，高于建议的 60%–75%；固定 repair 约 `56.5%`，图片约 `37.9%`。
+所有单次请求均低于 8 秒，文字端到端均低于 60 秒，图片端到端均低于 20 秒。由于两
+个图片 initial 都直接形成合法非错误结果，本轮没有实际覆盖“图片 initial + repair
+以及上传、存储、校验和清理”在 20 秒内完成，只能确认 `8 + 8 < 20` 的配置嵌套关系，
+不能宣称两调用图片链已有真实余量证据。
+
+| 类别 | 输入 Token | 输出 Token | 总 Token | 费用 |
+|---|---:|---:|---:|---|
+| 文本 | 7,437 | 763 | 8,200 | 费率未知 |
+| 固定结构 repair | 7,304 | 504 | 7,808 | 费率未知 |
+| 图片 | 6,400 | 169 | 6,569 | 费率未知 |
+| 合计 | 21,141 | 1,436 | 22,577 | 费率未知 |
+
+三类超时率、重试率均为 `0%`。图片生产对象、元数据、reservation、临时文件和整个
+仓库外私有根均已清理。
+
+### 16.5 复测后离线与封网回归
+
+| 验证 | 结果 |
+|---|---|
+| `python -m ruff check .` | 通过 |
+| `python -m mypy app migrations nanobot_core` | 通过，93 个源文件 |
+| `pytest -q -m "not real_provider and not real_map"` | `1460 passed, 1 skipped, 1 deselected` |
+| `pytest -q` | `1460 passed, 2 skipped` |
+| 封锁 DNS、connect、connect_ex、create_connection 后非真实全集 | `1460 passed, 1 skipped, 1 deselected` |
+
+三轮 pytest 各观察到一次既有 aiosqlite worker/事件循环收尾 warning，功能断言全部
+通过；本窗口未修改数据库生命周期、warning 策略、sleep 或 skip，既有 P2 不变。
+
+### 16.6 缺陷分类与 Gate 结论
+
+- P0：无。
+- P1：真实结构兼容性继续阻塞。官方 `json_object` transport、Provider、Parser、
+  严格 DTO 与 canonicalization 已得到部分真实证据，但固定 repair 只有 `1/3`
+  通过，未达到七样本全通过。
+- 图片结论：清晰图片候选和模糊图片 `insufficient_information` 分别构成结构成功
+  与正确恢复，图片 `2/2` 通过；安全产品规则与原始 Gate 口径一致。
+- P1：真实重定向网页链仍未处理。
+- P2：最小 Dockerfile、幂等锁注册表与 aiosqlite 收尾 warning 均未处理。
+- 超时校准风险：文本观测 P95 占 8 秒硬时限约 `83.7%`，图片 initial + repair
+  双调用完整链未获真实覆盖；两项不属于本次结构 P1。
+
+因此真实结构兼容性 P1 **不关闭**，本分支不合并、不推送，M0-Gate 继续阻塞且不得
+进入 M1。此次失败不是 `json_object` capability、鉴权、Provider transport、JSON
+语法、generic Pydantic 错误、图片正确恢复或临时文件清理问题；唯一剩余结构阻塞是
+两个固定 repair 仍未满足缺失字段分类语义。
+
+### 16.7 独立修复任务 Prompt
+
+> 你负责 Shiguang_Nanobot 的 M0-Gate 结构语义收敛，只处理第 16 节两个固定
+> repair 暴露的 `absent_field_not_classified`。指定基线为本次文档提交，创建新的
+> `codex/` 分支。开始前完整阅读
+> AGENTS.md、阶段/状态文档、PRD、核心用户流程、MVP 技术方案、M0 验证报告第
+> 12–16 节、共享 extraction output、文字/图片 service、ExtractionResult 领域契约、
+> OpenAI-compatible Provider 及全部相关测试。先运行项目 `.venv` 的离线门禁。
+>
+> 第一项先做只读诊断：用现有固定非法 Fixture 和 Fake/Stub 证明为什么唯一 repair
+> 仍会遗漏 absent field 分类。保持一个 Parser、一个严格 DTO、一份领域规则和最多
+> 一次 repair；不得放宽 `absent_field_not_classified`，不得添加样本标题白名单、
+> 默认业务值、确定性代写候选、第二套 Schema/Parser/repair 服务或额外模型调用。
+> 优先收敛共享 Prompt/repair guidance，使模型能从生成 Schema 与稳定 path/type
+> 得知必须分类全部缺失字段；同时证明文字与图片共享同一契约、普通回复和 Tool
+> Calling 不回归、json_object 不与 tools 混用、图片 repair 不重传图片/Base64。
+>
+> 默认只做离线修复和测试，不读取 `.env`、不调用真实模型、不测试网页、高德、
+> Tool Calling 真实链、Dockerfile、锁注册表、aiosqlite 或 M1。完成后运行 Ruff、
+> strict mypy、聚焦测试、非真实全集、默认全集和 socket/DNS 封网全集，更新
+> M0_VALIDATION_REPORT.md 与 DEV_STATUS.md。若需再次真实复测，另行给出三类独立
+> 请求上限、8 秒模型单次时限和 20 秒图片外层预算，等待新授权；不得结转本轮剩余
+> 3 次额度。

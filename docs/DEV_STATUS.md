@@ -5,9 +5,9 @@
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-Gate 技术验证总验收 |
 | 状态 | 阻塞 |
-| 当前分支 | codex/m0-gate-structure-real-retest |
+| 当前分支 | codex/m0-gate-structure-json-object-retest |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 百炼 OpenAI-compatible Chat Completions 不支持本轮 json_schema 协议，七个结构样本等待使用官方 json_object 模式复测；重定向网页真实链和最小 Dockerfile 仍未收尾 |
+| 阻塞项 | 百炼官方 json_object 已真实可用，但固定 repair 仅 1/3 通过；重定向网页真实链和最小 Dockerfile 仍未收尾 |
 
 ## 当前任务
 
@@ -1242,3 +1242,39 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
   三类明确授权，只用官方 `json_object` 模式复测相同七个样本，不得把本轮三次
   capability 拒绝归因于样本、Parser、DTO 或 repair；真实重定向链、Dockerfile、
   锁注册表、aiosqlite 和 M1 均未处理
+
+#### 2026-07-23｜M0-Gate 百炼 json_object 真实结构复测｜阻塞
+
+- 分支与门禁：`codex/m0-gate-structure-json-object-retest` 精确基于
+  `bcd61dfae2be80dca9aa0fc80796a405bae02eee`；开始工作区干净，`main` 与
+  `origin/main` 均为 `0ace869ae2708608d238b77b3ade3153b1307549`，提交链和
+  Alembic 唯一 head `20260722_0006` 均符合要求
+- capability 与授权：官方确认 OpenAI-compatible 结构模式为 `json_object`；
+  授权后只读确认配置完整、模型类型在官方支持范围。用户授权文本 `4`、固定 repair
+  `3`、图片 `4`，SDK/外层零重试，单次模型 8 秒、图片外层 20 秒，禁止模式、模型、
+  endpoint、样本或调用切换
+- QA 门禁：原样本清单从既有记录唯一恢复，图片配方保持不变；仓库外工具增加三类和
+  总计数发送前熔断，Ruff、strict mypy、19 项安全自测通过。工具、样本、结果和图片
+  临时对象均未写入仓库并已清理
+- 真实结果：实际文本 `3/4`、固定 repair `3/3`、图片 `2/4`，总计 `8/11`；文本
+  `2/2` 通过，均为证据一致 `candidates`；固定 repair `1/3` 通过，另两个稳定为
+  `absent_field_not_classified` 后的 `model_invalid_output`；图片 `2/2` 通过，
+  清晰图片为证据一致 `candidates`，模糊图片安全返回
+  `insufficient_information`，身份一致性不适用。总计 `5/7` 样本通过
+- 安全与资源：8 个响应均为 stop、有 content、无 tool calls；ProviderError、超时、
+  重试、fallback、额外调用和图片残留均为 0。Token 合计输入 `21,141`、输出
+  `1,436`、总计 `22,577`；费率未知
+- 延迟：模型单次文本 P50/观测 P95/最大 `6.318/6.699/6.741s`，固定 repair
+  `4.048/4.520/4.572s`，图片 `2.785/3.033/3.060s`；小样本 P95 不具统计意义。
+  文本观测 P95 占 8 秒约 83.7%，高于建议区间；图片本轮未触发 repair，20 秒内双
+  调用完整链余量仍未取得真实证据
+- 离线回归：Ruff、93 文件 strict mypy 通过；非真实全集
+  `1460 passed / 1 skipped / 1 deselected`，默认全集 `1460 passed / 2 skipped`，
+  封网非真实全集 `1460 passed / 1 skipped / 1 deselected`。三轮各有一次既有
+  aiosqlite 收尾 warning，P2 不变
+- 结论：结构兼容性 P1 不关闭，唯一剩余结构阻塞为固定 repair 的语义遵循仅
+  `1/3` 通过。模糊图片的 `insufficient_information` 符合生产“不猜测”规则，也
+  满足原始 Gate“形成结构化结果或正确恢复”的验收口径，不构成缺陷或产品冲突。
+  文本观测 P95 占 8 秒约 83.7% 和图片双调用余量未获真实覆盖继续作为超时校准风险，
+  不混入结构 P1。未合并、未推送、未进入 M1；真实重定向链、Dockerfile、锁注册表
+  和 aiosqlite 均未处理
