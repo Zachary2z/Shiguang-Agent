@@ -2,10 +2,10 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 报告状态 | 阻塞：结构 outcome 补证完成，但真实可用结构结果率不足；重定向网页样本仍未完成 |
-| 验收分支 | `codex/m0-gate-structured-retest` |
-| 指定基线 / 验收 commit | `0ace869ae2708608d238b77b3ade3153b1307549` |
-| `main` / `origin/main` | 均与指定基线完全一致 |
+| 报告状态 | 阻塞：安全诊断已收敛到严格业务语义兼容性与修复反馈/structured-output 集成；重定向网页样本仍未完成 |
+| 验收分支 | `codex/m0-gate-structure-diagnostic` |
+| 当前证据提交 | `27c47bbdab255f45e91bc9dab4c50b2de9599278` |
+| 生产代码基线（`main` / `origin/main`） | 均为 `0ace869ae2708608d238b77b3ade3153b1307549` |
 | 验收日期 | 2026-07-23 |
 | 是否允许进入 M1 | 否；真实 Gate 未完整通过 |
 
@@ -280,8 +280,8 @@
 - 预期：三类原样本应稳定形成可用候选或语义上合理的
   `insufficient_information` / `unsupported`，真实结构修复应能将固定非法首响应
   修复成通过生产 parse、validate 和 canonicalize 的结果。
-- 分类：Provider 输出 / 当前模型配置与生产严格结构契约的兼容性问题；现有证据未
-  证明生产解析器错误，也不足以进一步归因到单一模型、Prompt 或配置字段。
+- 分类：真实结构兼容性 P1，根因待安全诊断；Prompt、Schema、模型输出、解析器和
+  配置均未排除。
 - 复现：使用第 10 节相同三个原样本、生产服务、固定非法 Fixture、逐类硬计数、
   SDK 零重试和相同时限；不得保存模型正文或增加样本。
 - 下一步：不追加真实调用。先由 M0-Gate 主控决定是否增加只保留校验路径和类型的
@@ -367,15 +367,14 @@
 | 合计 | 30,751 | 1,976 | 32,727 | 未配置单价，未知 |
 
 - 13 次请求都没有 Provider transport、鉴权、限流或超时错误；稳定错误码为空。
-- 七个失败样本均由生产服务稳定恢复为 `MODEL_INVALID_OUTPUT`，未产生候选、持久化
-  写入或泄漏。QA 汇总器没有再丢失 outcome。
+- 七个失败样本均由生产服务稳定恢复为 `MODEL_INVALID_OUTPUT`，未产生候选或业务
+  收藏写入；图片流程产生的临时私有对象均已清理。QA 汇总器没有再丢失 outcome。
 - 文本样本 2、3 和图片样本 2、3 在主调用和唯一修复后仍不符合严格结构契约；结构
   修复类 3/3 的唯一真实修复也不符合契约。按本任务的脱敏限制，没有保存模型正文、
   完整异常或校验值，不能进一步从本次证据区分具体字段错误。
-- 当前分类为 **Provider 输出 / 当前模型配置与生产严格结构契约的兼容性问题**。离线
-  172 项相关回归及生产 parse/validate/fallback 路径均通过，未发现 QA 工具或生产
-  解析器再次丢失 outcome；但在安全证据不足时，也不把问题武断归因到单一模型、
-  Prompt 或配置字段。
+- 当前分类为 **真实结构兼容性 P1，根因待安全诊断；Prompt、Schema、模型输出、
+  解析器和配置均未排除。** 离线 172 项相关回归及生产
+  parse/validate/fallback 路径均通过，未发现 QA 工具或生产解析器再次丢失 outcome。
 - 不追加真实调用，不修改生产代码掩盖结果。下一步应由 M0-Gate 主控先决定是否用
   仅记录安全校验路径/类型的离线诊断收窄兼容性问题，再定义最小复测范围并重新取得
   授权；不得复测已经通过的 Tool Calling、高德或普通网页。
@@ -385,9 +384,9 @@
 离线功能、架构边界、迁移、幂等、固定样本、安全、新环境运行和封网行为满足 M0 Gate 的离线部分。真实 Tool Calling 和高德通过；普通网页通过；模型和图片底层调用成功且服务返回结构契约；失败恢复稳定。
 
 真实结构结果的 outcome 补证已完成，原 QA 汇总工具 P1 已关闭；但九个样本只有两个
-产生可用候选，七个稳定恢复为 `MODEL_INVALID_OUTPUT`。这说明当前 Provider 输出/
-模型配置与生产严格结构契约的真实兼容性仍不足。两个真实重定向样本也仍未进入
-redirect hop。
+产生可用候选，七个稳定恢复为 `MODEL_INVALID_OUTPUT`。第 12 节的安全诊断进一步
+证明失败集中在严格业务语义 `value_error`，而不是 JSON 形态、传输或 Provider 错误。
+两个真实重定向样本也仍未进入 redirect hop。
 
 因此：
 
@@ -397,3 +396,166 @@ redirect hop。
 - 不生成 M1-0 开发窗口 Prompt；
 - M0 保持未关闭；将本结果交回 M0-Gate 主控，等待结构兼容性、重定向网页和
   Dockerfile 三项收尾决策。
+
+## 12. 真实结构兼容性安全诊断
+
+### 12.1 门禁、工具与授权
+
+- 诊断分支从包含证据提交 `27c47bb` 的
+  `codex/m0-gate-structured-retest` 创建，开始工作区干净；没有合并 `main`。
+- 一次性 QA 工具只位于 `/tmp`，外层包装现有 `ModelProvider`，生产服务仍使用
+  `TextExtractionService`、`ImageRecognitionService`、
+  `OpenAICompatibleProvider` 和 `parse_extraction_response()`；没有复制 JSON、
+  Pydantic、`ExtractionResult`、Provider 或 DTO。
+- 工具 Ruff、strict mypy 和 19 项离线安全自测通过；自测覆盖全部指定 parser issue、
+  三种非错误 outcome、请求上限前后计数、固定非法首响应、取消/ProviderError 脱敏及
+  图片失败清理。生产 Ruff、93 文件 strict mypy 和四组指定回归通过：
+  `172 passed`，明确排除 `real_provider`。
+- 用户分别授权文本 `4`、固定结构修复 `3`、图片 `4` 次模型请求，合计最多 `11`；
+  实际严格为 `4/4 + 3/3 + 4/4 = 11/11`。SDK `max_retries=0`，外层也没有自动
+  重试、替换或新增样本；没有调用 Tool Calling、高德或网页。
+- 图片使用用户指定的 Helvetica 42、尺寸、坐标和模糊参数在仓库外内存生成；
+  `/System/Library/Fonts/Helvetica.ttc` 的字体家族校验为 Helvetica。两个成功处理后
+  的临时对象、元数据、reservation、临时文件和整个仓库外私有根目录均已清理。
+
+### 12.2 outcome、响应形态与请求结果
+
+| 类别 | 样本 | 实际 / 上限 | 最终 outcome | 候选数 | Provider 错误 | 超时 | 重试 |
+|---|---:|---:|---|---:|---:|---:|---:|
+| 文本失败样本 | 2 | 4 / 4 | `model_invalid_output` 2 | 0 | 0 | 0 | 0 |
+| 固定结构修复 | 3 | 3 / 3 | `model_invalid_output` 3 | 0 | 0 | 0 | 0 |
+| 图片失败样本 | 2 | 4 / 4 | `model_invalid_output` 2 | 0 | 0 | 0 | 0 |
+| 合计 | 7 | 11 / 11 | `model_invalid_output` 7 | 0 | 0 | 0 | 0 |
+
+十一份真实响应的 `finish_reason` 均为 `stop`，均存在 content，均没有
+`tool_calls`；模型响应字符数只记录区间。文本四次和固定修复三次均落在
+`257–1024`；第一张图片两次落在 `257–1024`，模糊图片两次落在 `1–256`。
+十一份真实响应全部可通过 JSON 解码，但均未通过生产 `ExtractionResult` 语义校验。
+没有 `json_invalid`、`missing_json_content`、`unexpected_tool_calls`、`missing`、
+`extra_forbidden`、`literal_error`、`union_tag_invalid` 或
+`self_declared_model_invalid`。
+
+### 12.3 initial / repair 安全 issue 分布
+
+| 类别与阶段 | path / type | 次数 |
+|---|---|---:|
+| 文本 initial | `candidates.0.place / value_error` | 2 |
+| 文本 initial | `candidates.1.place / value_error` | 1 |
+| 文本 repair | `candidates.0.place / value_error` | 2 |
+| 文本 repair | `candidates.1.place / value_error` | 1 |
+| 固定 Fixture initial | `$ / json_invalid` | 3 |
+| 固定修复 repair | `candidates.0.place / value_error` | 2 |
+| 固定修复 repair | `candidates.0.event / value_error` | 1 |
+| 图片 initial | `candidates.0.place / value_error` | 1 |
+| 图片 initial | `$ / value_error` | 1 |
+| 图片 repair | `candidates.0.place / value_error` | 1 |
+| 图片 repair | `$ / value_error` | 1 |
+
+文本和图片的 initial 与唯一 repair 重复相同 path/type，说明当前 repair 消息没有修复
+相应语义问题。三个固定非法首响应从 `json_invalid` 变为候选级 `value_error`，说明
+repair 改变了输出形态并形成可解析 JSON，但仍未满足契约。生产
+`build_repair_messages()` 已实际把安全 issue 加入 repair 消息；本轮没有增加第二次
+repair。
+
+### 12.4 延迟、Token 与费用
+
+| 类别 | 模型单次 P50 / 观测 P95 / 最大 | 端到端 P50 / 观测 P95 / 最大 |
+|---|---|---|
+| 文本 | `5.414 / 6.986 / 7.094 s` | `11.012 / 13.222 / 13.468 s` |
+| 固定结构修复 | `5.648 / 16.122 / 17.286 s` | `5.649 / 16.125 / 17.289 s` |
+| 图片 | `3.376 / 4.147 / 4.150 s` | `6.699 / 8.135 / 8.294 s` |
+
+以上 P95 只是 2–4 次调用的观测插值，不具有统计意义。所有真实调用低于模型 30 秒
+单次时限；两个图片样本均低于 20 秒外层预算。
+
+| 类别 | 输入 Token | 输出 Token | 总 Token | 费用 |
+|---|---:|---:|---:|---|
+| 文本 | 8,484 | 944 | 9,428 | 未配置单价，未知 |
+| 固定结构修复 | 6,092 | 580 | 6,672 | 未配置单价，未知 |
+| 图片 | 11,531 | 420 | 11,951 | 未配置单价，未知 |
+| 合计 | 26,107 | 1,944 | 28,051 | 未配置单价，未知 |
+
+### 12.5 根因归类
+
+安全证据支持以下结论：
+
+1. **已经排除本轮 transport/Provider 契约故障。** 11/11 请求返回
+   `ModelResponse`，无鉴权、限流、超时、供应商错误、SDK 重试、意外 Tool Call 或
+   非 JSON 真实响应。`OpenAICompatibleProvider` 的映射和稳定错误边界不是本轮失败点。
+2. **失败集中在 JSON 可解析后的严格业务语义。** 候选级 `value_error` 对应
+   `backend/app/domain/collections/extraction.py:137-218` 的价格成对、缺失项/
+   不确定项一致性、Place/Event 元数据和 Event 时间语义；根 `$ / value_error`
+   对应 `:290-344` 的 outcome 互斥、稳定 reason code、信息缺口和恢复建议语义。
+3. **这些规则与 PRD 一致，不应放宽。** PRD 和核心流程要求不确定字段明确标记、
+   不编造地点/价格/时间、错误结果不能伪装为空成功、模型结构错误最多修复一次。
+   因此当前证据不支持把生产 parser 严格度或领域 DTO 判为缺陷。
+4. **JSON Schema 与运行时语义存在表达缺口。** 文本和图片 Prompt 使用
+   `ExtractionResult.model_json_schema()`，但本机检查确认生成 Schema 不包含上述
+   Pydantic `model_validator` 跨字段语义。Prompt 虽以自然语言覆盖部分规则，模型
+   initial 与 repair 仍稳定违反同一语义。
+5. **repair 反馈粒度不足。** `extraction_output.py:165-174` 只保留 path/type；
+   对 `model_validator`，type 统一退化为 `value_error`。因此
+   `build_repair_messages()` 虽正确传入 issue，却无法告诉模型违反了哪一条安全语义
+   不变量，文本和图片 repair 复现相同问题。
+6. **当前请求未使用 structured output。** `openai_compatible.py:107-114` 只发送
+   messages、`enable_thinking=false` 和 `stream=false`，未发送
+   `response_format`。本机 OpenAI SDK 2.46.0 已提供 `json_schema` 和
+   `json_object` request 类型，但当前配置的远端 endpoint/模型是否支持及支持程度
+   未经验证；授权请求已经用尽，不能从 SDK 能力推断远端能力或追加探测。
+
+根因归类为：**Prompt / JSON Schema 表达 / repair 安全反馈 / structured-output
+配置之间的兼容性 P1**。生产解析入口是三类输入共享的唯一拒绝边界，但未发现 parser
+实现错误；领域 DTO 符合 PRD。当前没有生产 P0；存在阻塞收藏核心链路的生产可用性
+P1，修改范围应集中在上述契约桥接，不增加第二套 Parser、DTO 或 Provider。
+
+缺陷记录：
+
+- 文件与行号：`backend/app/application/text_extraction.py:68-98`、
+  `backend/app/application/image_recognition.py:62-91`、
+  `backend/app/application/extraction_output.py:89-118,165-174`、
+  `backend/app/providers/openai_compatible.py:107-114`；领域规则来源为
+  `backend/app/domain/collections/extraction.py:137-218,290-344`。
+- 实际：模型收到生成 Schema 和自然语言规则，但所有 11 份真实 JSON 在运行时语义
+  校验被拒；文本和图片 repair 只得到相同路径的 generic `value_error`，现有
+  Provider 请求也没有启用 structured output。
+- 预期：初次或唯一 repair 应形成通过同一生产 parser、领域语义和 canonicalization
+  的 `candidates`、`insufficient_information` 或 `unsupported`，且不放宽 DTO。
+- 复现：使用第 12.2 节同一 7 个失败样本、生产服务、固定非法 Fixture、逐类硬计数、
+  SDK 零重试和相同时限；只记录第 12.3 节安全 path/type。
+- 影响：文字和图片收藏核心入口在这些合法/可恢复输入上 7/7 无候选，固定结构修复
+  3/3 失败，阻塞 M0-Gate；失败恢复安全且没有业务收藏写入或临时图片残留。
+
+### 12.6 独立修复 Prompt
+
+> 在最新已集成基线上修复 M0-Gate 真实结构兼容性 P1，只处理
+> `ExtractionResult` Prompt/Schema/repair/structured-output 契约桥接，不开始
+> 重定向网页、Dockerfile 或 M1。先完整阅读阶段文档、PRD、核心流程、本报告第 12 节、
+> `extraction_output.py`、`text_extraction.py`、`image_recognition.py`、
+> `domain/collections/extraction.py`、`openai_compatible.py` 及全部相关测试。
+>
+> 保留现有唯一 `ExtractionResult`、`parse_extraction_response()`、
+> `ModelProvider` 和 `OpenAICompatibleProvider`；不得复制 Parser/DTO/Provider，
+> 不得增加默认业务值、样本白名单或第二次 repair，不得放宽价格成对、缺失/
+> 不确定项、Place/Event、outcome 和 Event 时间等 PRD 语义。将现有跨字段
+> `ValueError` 收敛为不包含 input/value 的稳定安全错误 type，使 repair 仍只接收
+> path/type 却能区分具体语义不变量；规则仍只在领域模型执行一次。让用于模型的
+> Schema/Prompt 明确表达所有运行时必需形状和跨字段不变量，避免维护与 DTO 漂移的
+> 第二份 Schema。
+>
+> 扩展现有 Provider 请求契约以支持可选 structured-output 参数，并先用离线
+> MockTransport 证明请求体、零重试、错误映射、普通 Tool Calling 和非结构调用不受
+> 影响。优先验证当前 endpoint/model 的 `json_schema` 能力；若只支持
+> `json_object`，记录能力边界并使用同一严格生产 parser 兜底，不得自动额外请求或
+> 静默降级。禁止仅根据本机 SDK 类型宣称远端支持。
+>
+> 增加离线回归：每条稳定语义 issue type、initial/repair 不同与相同问题、文本/
+> 图片共享边界、candidates/insufficient/unsupported、固定非法首响应、ProviderError、
+> 取消、超长内容、敏感 input/value 不泄漏、最多一次 repair、逐类请求计数和临时图片
+> 清理。运行 Ruff、strict mypy、四组现有聚焦测试、Provider MockTransport 测试和
+> 非真实全集。
+>
+> 离线通过后另行取得明确授权，只复测本报告第 12 节的 2 个文本失败样本、3 个固定
+> 修复样本和 2 个图片失败 Fixture；上限仍为 `4 + 3 + 4 = 11`、SDK 零重试、图片
+> 每样本 20 秒。只记录同一安全白名单。验收要求：不再重复 generic
+> `value_error`；7 个样本形成符合语义的 candidates/insufficient/unsupported，
+> 或以新的安全 path/type 明确证明剩余最小问题。不得复测 Tool Calling、高德或网页。

@@ -5,9 +5,9 @@
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-Gate 技术验证总验收 |
 | 状态 | 阻塞 |
-| 当前分支 | codex/m0-gate-structured-retest |
+| 当前分支 | codex/m0-gate-structure-diagnostic |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 真实结构 outcome 已补证，但 9 个样本仅 2 个产生候选；重定向网页真实链和最小 Dockerfile 仍未收尾 |
+| 阻塞项 | 结构安全诊断确认 Prompt/Schema/repair/structured-output 契约桥接 P1；重定向网页真实链和最小 Dockerfile 仍未收尾 |
 
 ## 当前任务
 
@@ -1077,4 +1077,43 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
 - 调用与生产路径：文本样本 2、3 和图片样本 2、3 触发唯一修复；结构修复类每个样本的首次非法响应都来自本地固定 Fixture，每个样本只消耗一次真实修复请求。QA 在内存中用生产 `parse_extraction_response`、Pydantic 严格校验和 `canonicalize_extraction_result` 核对；非法真实响应由生产服务稳定恢复为 `MODEL_INVALID_OUTPUT`
 - 延迟：文本模型单次 P50/观测 P95/max 为 `4.071/4.555/4.571s`，端到端为 `7.711/8.927/9.062s`；结构修复单次为 `4.232/4.251/4.253s`，端到端为 `4.233/4.252/4.254s`；图片单次为 `3.955/5.516/5.717s`，端到端为 `5.725/8.379/8.674s`。每类只有 3 个端到端样本，P95 只是观测插值，不具有统计验证意义
 - Token、费用与清理：文本 `10,328/832/11,160`、结构修复 `6,092/461/6,553`、图片 `14,331/683/15,014` 输入/输出/总 Token，合计 `30,751/1,976/32,727`；单价未配置，费用未知。三个图片临时对象和整个仓库外临时私有根目录均已清理，未记录图片、Base64、文件名、路径或 `file_key`
-- 分类与结论：当前分类为 Provider 输出/当前模型配置与生产严格结构契约的兼容性问题；离线回归、生产 parse/validate/fallback 和 QA outcome 记录均通过，但安全证据不足以进一步武断归因到单一模型、Prompt 或配置字段。本任务不追加调用，不修改生产代码，不关闭 M0-Gate，不合并、不推送；结果交回 M0-Gate 主控，等待结构兼容性、重定向网页和 Dockerfile 收尾决策
+- 分类与结论：真实结构兼容性 P1，根因待安全诊断；Prompt、Schema、模型输出、解析器和配置均未排除。离线回归、生产 parse/validate/fallback 和 QA outcome 记录均通过；本任务不追加调用，不修改生产代码，不关闭 M0-Gate，不合并、不推送；结果交回 M0-Gate 主控，等待结构兼容性、重定向网页和 Dockerfile 收尾决策
+
+#### 2026-07-23｜M0-Gate 真实结构兼容性安全诊断｜阻塞
+
+- 分支与基线：`codex/m0-gate-structure-diagnostic` 从包含证据提交
+  `27c47bbdab255f45e91bc9dab4c50b2de9599278` 的
+  `codex/m0-gate-structured-retest` 创建；开始工作区干净，没有合并 `main`，
+  没有生产业务代码改动
+- 离线门禁：一次性 QA 工具只位于 `/tmp`，复用生产文本/图片服务、Provider 和
+  parser；Ruff、strict mypy、19 项安全自测通过。生产 Ruff、93 文件 strict mypy
+  通过；四组指定回归明确排除 `real_provider`，结果 `172 passed`
+- 授权与调用：用户分别授权文本最多 4 次、固定结构修复最多 3 次、图片最多 4 次，
+  实际为 `4/4 + 3/3 + 4/4 = 11/11`；SDK 和外层重试均为 0，没有替换或新增样本，
+  没有调用 Tool Calling、高德、普通网页或重定向网页
+- outcome：2 个文本、3 个固定修复和 2 个图片样本全部稳定返回
+  `model_invalid_output`，候选均为 0；11/11 真实请求返回 Provider 契约，
+  `finish_reason=stop`、存在 content、无 tool_calls、无 ProviderError、无超时
+- 安全 issue：所有真实响应都可 JSON 解码；文本 initial/repair 重复
+  `candidates.0.place/value_error` 2 次和 `candidates.1.place/value_error` 1 次；
+  固定非法 Fixture initial 为 `$/json_invalid` 3 次，真实 repair 为
+  `candidates.0.place/value_error` 2 次和 `candidates.0.event/value_error` 1 次；
+  图片 initial/repair 分别重复 `candidates.0.place/value_error` 和
+  `$/value_error` 各 1 次
+- Token、费用与清理：文本 `8,484/944/9,428`、固定修复
+  `6,092/580/6,672`、图片 `11,531/420/11,951` 输入/输出/总 Token，合计
+  `26,107/1,944/28,051`；单价未配置，费用未知。Helvetica 字体身份校验通过；
+  两个图片临时对象和整个仓库外私有根目录完整清理
+- 根因：失败集中在 Pydantic `model_validator` 的严格业务语义，不是 JSON 形态、
+  transport、鉴权、限流、超时或 Provider 映射。相关缺失/不确定项、价格、
+  Place/Event、outcome 和时间规则来自 PRD，不应放宽。生成 JSON Schema 不表达这些
+  跨字段语义；repair 只得到 generic `value_error`；当前 Provider 请求未使用
+  `response_format`。本机 SDK 2.46.0 提供 json_schema/json_object 类型，但远端
+  endpoint/model 能力未验证，不能据此推断支持
+- 缺陷分级：没有生产 P0；存在阻塞收藏核心链路的生产可用性 P1，归属为
+  Prompt/Schema/repair 安全反馈/structured-output 配置的契约桥接，不归为领域 DTO
+  或生产 parser 错误。完整文件、行号、影响、最小修复方案、离线与真实复测范围及
+  独立修复 Prompt 见 `docs/technical/M0_VALIDATION_REPORT.md` 第 12 节
+- 范围与下一步：本任务只更新两份文档并创建文档原子提交；不修改生产代码，不追加
+  调用，不复测网页，不创建 Dockerfile，不开始 M1，不合并 `main`，不推送。下一
+  修复窗口按第 12.6 节 Prompt 先完成离线修复，再另行授权只复测本轮 7 个失败样本
