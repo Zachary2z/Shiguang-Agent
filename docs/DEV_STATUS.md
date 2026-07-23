@@ -5,9 +5,9 @@
 | 当前总阶段 | M0 技术验证 |
 | 当前子阶段 | M0-Gate 技术验证总验收 |
 | 状态 | 阻塞 |
-| 当前分支 | codex/m0-gate-structure-fix |
+| 当前分支 | codex/m0-gate-structure-repair-evidence-fix |
 | 最近更新 | 2026-07-23 |
-| 阻塞项 | 结构契约桥接离线修复已完成但七个失败样本尚未获授权真实复测；重定向网页真实链和最小 Dockerfile 仍未收尾 |
+| 阻塞项 | 结构 repair 业务证据补充已完成离线修复，但七个失败样本仍等待真实复测；重定向网页真实链和最小 Dockerfile 仍未收尾 |
 
 ## 当前任务
 
@@ -1157,3 +1157,44 @@ M0-4A 至 M0-4D、M0-5A 至 M0-5D 均已通过主控验收并集成到 `main`。
 - 下一步：主控先复核生产提交、文档提交与净复杂度；随后另行分别授权只复测 2 个
   文本、3 个固定修复和 2 个图片失败样本，总请求上限 `4 + 3 + 4 = 11`，SDK 和
   外层零重试。未获授权前不得读取 `.env`、探测 capability 或发起真实请求
+
+#### 2026-07-23｜M0-Gate repair 业务证据补充修复｜待真实复测
+
+- 分支与门禁：`codex/m0-gate-structure-repair-evidence-fix` 从指定基线
+  `8020f02920caf2eefa60b66b9b8b5c4b5181e099` 创建；开始时工作区干净，`main` 与
+  `origin/main` 均为 `0ace869ae2708608d238b77b3ade3153b1307549`。未开始重定向
+  网页、Dockerfile、锁注册表、aiosqlite、M1 或其他旁支
+- 生产提交：`6d02236e045fdcd923db998c15276e4b9db98b20`
+  (`fix: preserve evidence for extraction repair`)；只修改共享 repair 构建、现有
+  文字/图片调用方与对应证据型测试，没有新增 Parser、DTO、Provider 或 repair 服务
+- 原缺口：上一版 `build_repair_messages()` 只保留 system 并丢弃
+  `invalid_response`，导致唯一 repair 只有 Schema、path/type 与固定 guidance，
+  无法判断要修复的地点或活动；固定成功 Fake 队列不能证明结果与业务证据一致
+- 文字证据：第二次请求深拷贝保留初始 system、原始 user 输入，并在安全长度的普通
+  响应下增加上一轮 assistant 文本；validation feedback 继续只含 path/type 和固定
+  guidance，不含 Pydantic input/value、异常文本或堆栈。空白、缺失、超长或 Tool
+  Call 响应不会作为 assistant 复制，但原始文字仍足以支持唯一 repair
+- 图片证据：第二次请求只保留 system 与上一轮安全、可恢复候选结构文本；不再次携带
+  图片 user message、`data:image`、Base64、图片字节、文件名、`file://` 或私人/
+  存储路径。指令明确只能修复上一轮已有候选和事实；上一轮没有候选身份或含不安全
+  文件证据时不发出无证据 repair，稳定返回 `model_invalid_output`
+- 测试证明：文字和图片自定义 Stub 都会检查第二次请求的指定原始地点/上一轮候选后
+  才返回同一修复结果；图片无候选证据时，即使 Fake 队列准备了任意新地点，也只执行
+  一次调用且不会接受该候选。另覆盖两次非法响应、最多两次调用、ProviderError、
+  取消、超长输出、Tool Call、临时图片清理、messages/response_format/Schema 隔离
+- 离线验证：仓库 `.venv` 的 Python 3.13.5 下 Ruff 通过；strict mypy 对 93 个源文件
+  通过；core `120 passed`，Provider `39 passed`，ExtractionResult 契约
+  `31 passed`，文字 `62 passed`，图片 `61 passed`，配置 `125 passed`。非真实全集
+  `1460 passed / 1 skipped / 1 deselected`，默认全集
+  `1460 passed / 2 skipped`；仓库外插件封锁 DNS、connect、connect_ex 和
+  create_connection 后非真实全集仍为 `1460 passed / 1 skipped / 1 deselected`
+- 已知测试提示：默认全集与封网全集各出现一次已记录的非稳定 aiosqlite worker/
+  事件循环收尾 warning，落点不同且所有功能断言通过；本修复未修改数据库生命周期、
+  warning 策略、sleep 或 skip
+- 迁移、配置与外部调用：Alembic 仍只有 `20260722_0006` 为最新 revision；未新增
+  迁移、依赖、真实配置值或 M1 功能。未读取 `.env`，未运行 `real_provider`/
+  `real_map`，未调用模型、高德、网页、对象存储、消息或其他外部服务；真实请求数、
+  Token 和费用均为 0
+- 状态与下一步：repair 业务证据 P1 已完成离线修复，但七个原真实失败样本尚未复测，
+  真实结构 P1 继续为“等待真实复测”，不得关闭；M0-Gate 仍阻塞且不得进入 M1。
+  本分支不合并、不推送，完成后交回主控进行独立复核和后续授权决策

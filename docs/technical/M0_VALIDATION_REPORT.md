@@ -680,3 +680,91 @@ repair、initial/repair 不同及相同问题、最多两次请求、ProviderErr
 Provider/capability 结果并停止该类别，不切换协议、不追加探测。只记录 initial/repair、
 outcome、候选数、安全 `path/type`、耗时、Token、费用和图片清理结果，不记录模型名、
 endpoint、请求正文、完整响应、图片、路径或密钥。
+
+## 14. repair 业务证据补充修复
+
+### 14.1 原离线修复不足
+
+第 13 节修复了稳定语义 type、Prompt/Schema 桥接和可选 structured output，但
+`build_repair_messages()` 当时只复制 system message，并显式丢弃
+`invalid_response`。因此唯一 repair 虽然知道 Schema、错误 path/type 和固定纠正
+guidance，却不知道文字用户原始输入，也看不到上一轮模型实际产生的候选结构；图片
+repair 同样看不到上一轮候选。离线 FakeProvider 只排队一个任意合法对象，能够证明
+第二次响应可通过 Parser，却不能证明修复结果与输入证据属于同一地点或活动。
+
+该缺口允许模型生成结构合法但与业务输入无关的候选，属于阻塞真实复测的 P1。修复
+继续集中在唯一共享 `build_repair_messages()` 及两个现有调用方，没有增加 Parser、
+DTO、Provider、repair 服务、默认业务值、样本白名单或确定性代修逻辑。
+
+### 14.2 当前证据边界
+
+文字 repair：
+
+- 深拷贝保留初始 system 和原始 user message；
+- 在上一轮响应为安全长度的普通文本响应时，以 assistant message 保留该模型文本；
+- 最后只追加安全 validation path/type、固定 guidance 和“修复同一候选”的约束；
+- 上一轮为空、缺失、超长或含 Tool Call 时不复制不安全响应，但仍可依靠原始文字执行
+  唯一 repair。
+
+图片 repair：
+
+- 只保留 system 契约和上一轮安全、可解析且至少含 kind/title 候选身份的结构文本；
+- 初始多模态 user message 不进入第二次请求，因此不再次携带 `data:image`、Base64、
+  图片字节、原文件名、`file://`、本机私人路径或存储路径；
+- repair 指令明确截图不会再次附带，只能修正上一轮已有地点、活动和事实，不得发明；
+- 上一轮为空、缺失、超长、含 Tool Call、不可解析、没有候选身份或包含禁止的图片/
+  文件证据时，不发起无证据第二次请求，稳定返回 `model_invalid_output`；任意新地点
+  不会成为成功候选。
+
+共同边界保持不变：最多 initial + 一次 repair；SDK `max_retries=0`；安全 issue 仍
+只有截断后的 `path/type`，不包含 Pydantic `msg`、`ctx`、`input`、`value`、异常文本
+或堆栈。完整输入和响应只存在于受控模型请求内，不进入日志、异常、公开 DTO、文档或
+测试输出。普通首次请求、普通回复、Tool Calling 和 structured-output 映射未修改。
+
+### 14.3 证据型离线测试
+
+新增测试不使用“第二次固定成功队列即算通过”的结论：
+
+- 文字自定义 Stub 只有在第二次请求同时看到指定原始地点文本与上一轮 assistant
+  候选时才返回对应修复结果；
+- 图片自定义 Stub 只有在看到上一轮指定候选、且确认请求不含图片载荷、文件名和路径
+  时才返回同一候选；
+- 图片上一轮完全没有候选证据时，即使 Fake 队列中准备了一个新地点，也只执行一次
+  模型调用并返回 `model_invalid_output`；
+- 两次含候选证据但仍非法的响应稳定在第二次结束；
+- 覆盖 Tool Call、缺失/空白/超长输出、ProviderError、取消、临时图片清理、messages
+  深拷贝、response_format/Schema 隔离和安全 validation feedback。
+
+### 14.4 离线验证结果
+
+验证环境为仓库既有 `.venv`：Python 3.13.5、mypy 1.20.2、SQLAlchemy 2.0.51。所有
+规定命令退出码均为 0：
+
+| 验证 | 结果 |
+|---|---|
+| `python -m ruff check .` | 通过 |
+| `python -m mypy app migrations nanobot_core` | 通过，93 个源文件 |
+| `pytest -q tests/core` | `120 passed` |
+| `pytest -q tests/unit/test_openai_compatible_provider.py` | `39 passed` |
+| `pytest -q tests/unit/test_text_extraction_contracts.py` | `31 passed` |
+| `pytest -q tests/unit/test_text_extraction_service.py` | `62 passed` |
+| `pytest -q tests/unit/test_image_recognition_service.py` | `61 passed` |
+| `pytest -q tests/test_config.py` | `125 passed` |
+| `pytest -q -m "not real_provider and not real_map"` | `1460 passed, 1 skipped, 1 deselected` |
+| `pytest -q` | `1460 passed, 2 skipped` |
+| 仓库外插件封锁 DNS、connect、connect_ex、create_connection 后非真实全集 | `1460 passed, 1 skipped, 1 deselected` |
+
+默认全集和封网全集各观察到一次第 9.2、13.4 节已记录的 aiosqlite worker/事件循环
+收尾 warning，落点不同且所有功能断言通过。本修复没有修改数据库生命周期、过滤
+warning、增加 sleep 或 skip。
+
+`git diff --check` 通过；Alembic 仍只有 `20260722_0006` 为最新 revision，没有新增
+迁移、依赖、真实配置值或 M1 功能。任务未读取 `.env`，未发起模型、高德、地图、
+网页、对象存储、消息或其他外部请求，真实请求数、Token 和费用均为 0。
+
+### 14.5 Gate 结论
+
+原结构兼容性 P1 的 repair 业务证据缺口已完成离线修复，但第 12 节七个真实失败样本
+仍未在当前证据修复后复测，远端 structured-output capability 也仍未验证。因此真实
+结构 P1 状态继续为“等待真实复测”，不得提前关闭；本结果不允许进入 M1，也不改变
+真实重定向链、最小 Dockerfile、幂等锁注册表和 aiosqlite warning 的既有状态。
