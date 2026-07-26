@@ -7,6 +7,7 @@ import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from types import TracebackType
 
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -116,7 +117,8 @@ class IdempotencyLockRegistry:
     """Serialize same-process retries while database uniqueness stays authoritative."""
 
     def __init__(self) -> None:
-        self._locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._entries: dict[tuple[str, str], _IdempotencyLockEntry] = {}
+        self._registry_lock = asyncio.Lock()
 
     def lock(
         self,
@@ -124,9 +126,85 @@ class IdempotencyLockRegistry:
         user_id: str,
         session_id: str = "legacy",
         idempotency_key: str,
-    ) -> asyncio.Lock:
+    ) -> _IdempotencyLockLease:
         del session_id
-        return self._locks.setdefault((user_id, idempotency_key), asyncio.Lock())
+        return _IdempotencyLockLease(
+            registry=self,
+            key=(user_id, idempotency_key),
+        )
+
+    @property
+    def active_key_count(self) -> int:
+        """Return keys with an active holder or waiter."""
+
+        return len(self._entries)
+
+    async def _acquire(
+        self,
+        key: tuple[str, str],
+    ) -> _IdempotencyLockEntry:
+        async with self._registry_lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                entry = _IdempotencyLockEntry(lock=asyncio.Lock())
+                self._entries[key] = entry
+            entry.participants += 1
+        try:
+            await entry.lock.acquire()
+        except BaseException:
+            await self._leave(key, entry)
+            raise
+        return entry
+
+    async def _release(
+        self,
+        key: tuple[str, str],
+        entry: _IdempotencyLockEntry,
+    ) -> None:
+        entry.lock.release()
+        await self._leave(key, entry)
+
+    async def _leave(
+        self,
+        key: tuple[str, str],
+        entry: _IdempotencyLockEntry,
+    ) -> None:
+        async with self._registry_lock:
+            entry.participants -= 1
+            if entry.participants == 0:
+                assert not entry.lock.locked()
+                if self._entries.get(key) is entry:
+                    del self._entries[key]
+
+
+@dataclass(slots=True)
+class _IdempotencyLockEntry:
+    lock: asyncio.Lock
+    participants: int = 0
+
+
+@dataclass(slots=True)
+class _IdempotencyLockLease:
+    registry: IdempotencyLockRegistry
+    key: tuple[str, str]
+    entry: _IdempotencyLockEntry | None = None
+
+    async def __aenter__(self) -> None:
+        if self.entry is not None:
+            raise RuntimeError("idempotency lock lease cannot be reused")
+        self.entry = await self.registry._acquire(self.key)
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_type, exc_value, traceback
+        entry, self.entry = self.entry, None
+        if entry is None:
+            raise RuntimeError("idempotency lock lease was not acquired")
+        await self.registry._release(self.key, entry)
 
 
 class TextCollectionWorkflow:
