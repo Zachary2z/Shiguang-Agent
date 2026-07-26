@@ -82,6 +82,13 @@ def test_concurrent_run_events_are_monotonic_and_trace_isolated(
 
             await asyncio.gather(*(publish(index) for index in range(20)))
             async with database.session() as session:
+                await RunEventService(session).publish(
+                    user_id=OTHER_USER_ID,
+                    trace_id=OTHER_TRACE_ID,
+                    event_type=RunEventType.RUN_STARTED,
+                    summary={"status": "running"},
+                )
+            async with database.session() as session:
                 service = RunEventService(session)
                 events = await service.list_after(
                     user_id=DEMO_USER_ID,
@@ -102,7 +109,9 @@ def test_concurrent_run_events_are_monotonic_and_trace_isolated(
             assert [event.sequence for event in events] == list(range(1, 21))
             assert len({event.sequence for event in events}) == 20
             assert wrong_user == []
-            assert other_trace == []
+            assert len(other_trace) == 1
+            assert other_trace[0].trace_id == OTHER_TRACE_ID
+            assert other_trace[0].sequence == 1
             assert all(event.trace_id == TRACE_ID for event in events)
         finally:
             await database.close()

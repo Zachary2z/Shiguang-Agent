@@ -5,16 +5,16 @@
 ## 当前阶段
 
 **M0 技术验证已正式完成。** M0-0A 至 M0-5D 和 M0-Gate 均已通过主控验收；
-当前允许开始 **M1-0 PostgreSQL 与任务基础**，但 M1 尚未实现。
+**M1-0 PostgreSQL 与任务基础已实现，当前待主控验收。** M1-1 及后续阶段尚未开始。
 
 普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。M0 历史真实验收的
 逐次授权不延续到 M1；真实模型、高德、网页、对象存储及其他外部/付费调用仍默认
 未授权，必须在当前任务中重新取得明确授权并限制请求范围。
 
-根目录提供已通过 Gate 验收的最小 API Dockerfile，当前仍以 SQLite 支持本地与
-适合的单元测试。M1-0 的第一项必须先解决 `IdempotencyLockRegistry` 无界增长 P2，
-再实现 PostgreSQL、Job、Worker、APScheduler、Docker Compose 和 SSE；这些 M1
-能力当前尚未实现。
+正式运行使用 PostgreSQL；SQLite 继续支持适合的单元测试。根目录 Dockerfile 和
+`compose.yaml` 提供 PostgreSQL、唯一 API 入口与唯一 Worker 入口。M1-0 已先修复
+`IdempotencyLockRegistry` 无界增长 P2，再加入持久化 Job、只负责创建 Job 的
+APScheduler 适配、租约恢复、SSE 持久化与 `Last-Event-ID` 重放。
 
 M0 关闭后的 Event 日期粒度与富输入截止校准也已完成。固定截图样本 03 在 60 秒
 应用层共享截止、75 秒 Provider 异常安全上限下约 47.1 秒成功，展期日期被保留且
@@ -34,6 +34,7 @@ Shiguang_Nanobot/
 │   └── pyproject.toml
 ├── docs/                       # 正式产品、技术、阶段与状态文档
 ├── prototypes/ux/              # 静态 UX/UI 评审原型
+├── compose.yaml                # PostgreSQL、API、Worker 本地开发栈
 ├── .env.example                # 无敏感信息的配置示例
 └── README.md
 ```
@@ -75,7 +76,30 @@ python -m pytest -q tests/application/test_structured_collection_retrieval.py
 python -m pytest -q tests/application/test_plan_drafts.py
 ```
 
-测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；测试只使用临时 SQLite 数据库，不调用网络或付费 API。
+测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；普通测试使用临时
+SQLite。显式设置 `TEST_POSTGRESQL_URL` 后可运行标记为 `postgresql` 的一次性数据库
+测试；这些测试只连接授权的本地 PostgreSQL，不调用网络 Provider 或付费 API。
+
+```bash
+TEST_POSTGRESQL_URL='postgresql+asyncpg://USER:PASSWORD@127.0.0.1:5432/ADMIN_DB' \
+python -m pytest -q -m postgresql
+```
+
+### M1-0 PostgreSQL、Job 与运行事件
+
+`JobQueue` 是唯一任务契约，`PostgresJobQueue` 是唯一正式实现。任务状态为
+`queued/running/succeeded/failed/cancelled`，使用 PostgreSQL 行锁和
+`SKIP LOCKED` 领取；同用户幂等键有唯一约束。Worker 只通过该契约领取、完成、失败、
+取消和恢复任务。失败最多执行三次，重试间隔固定为 5 秒和 30 秒；运行中任务使用
+60 秒租约，服务重启后由 Worker 恢复。APScheduler 只负责按时间调用
+`JobQueue.create()`，不直接执行业务。
+
+`run_events` 是现有 `AgentRun` 的子记录，不是第二套运行主表。每个 trace 的 sequence
+单调递增，公开类型包括 `run.started`、`stage.changed`、`tool.completed`、
+`approval.required`、`result.updated`、`run.completed` 和 `run.failed`。订阅入口为
+`GET /api/v1/agent-runs/{trace_id}/events`；`Last-Event-ID` 表示客户端已经确认的
+sequence，服务只返回更大的持久化事件。摘要与 Job payload 共用一个安全边界，拒绝
+密钥、Authorization、Cookie、Prompt、完整模型响应、Base64 和私人路径。
 
 ### 价格与人民币契约
 
@@ -131,10 +155,10 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前 HEAD revision 是 `20260724_0007`。该迁移为 Event 增加 nullable 的
-`event_start_date/event_end_date` DATE 列；现有 Message、Source、AgentRun/ToolRun、
-收藏、地点目标和幂等表继续作为检索的唯一持久数据来源。应用不会在导入或启动时
-自动执行迁移，也不使用 `create_all()` 代替 Alembic。
+当前唯一 HEAD revision 是 `20260726_0009`。`0008` 增加持久化
+`scheduled_jobs`，`0009` 增加现有 AgentRun 的 `run_events` 子记录。正式运行使用
+`postgresql+asyncpg`；SQLite 继续用于适合的测试。应用导入和普通启动不使用
+`create_all()`；Compose 的 API 启动命令会在 Uvicorn 前显式执行 Alembic 升级。
 
 ### 启动 API
 
@@ -155,38 +179,30 @@ curl -i -H 'X-Request-ID: local-check-001' http://127.0.0.1:8000/healthz
 
 ### 最小容器运行
 
-以下命令从仓库根目录执行。构建上下文不使用 `.env`，镜像内不保存模型、高德或其他密钥：
+以下命令从仓库根目录执行。Compose 不复制 `.env`，镜像内不保存模型、高德或其他密钥：
 
 ```bash
-docker build -t shiguang-backend:local .
-```
-
-M0 使用 SQLite 做本地和容器验证。迁移必须显式执行，应用启动不会自动迁移：
-
-```bash
-docker run --rm \
-  -v shiguang-data:/app/data \
-  -e APP_ENV=production \
-  -e DATABASE_URL=sqlite+aiosqlite:///./data/shiguang.db \
-  shiguang-backend:local \
-  python -m alembic upgrade head
-```
-
-启动 API 时只按实际启用能力注入所需环境变量；密钥应由运行环境安全注入，不写入 Dockerfile、构建参数或镜像层：
-
-```bash
-docker run --rm \
-  --name shiguang-api \
-  -p 127.0.0.1:8000:8000 \
-  -v shiguang-data:/app/data \
-  -e APP_ENV=production \
-  -e DATABASE_URL=sqlite+aiosqlite:///./data/shiguang.db \
-  shiguang-backend:local
-
+docker compose up --build -d
+docker compose ps
 curl -i http://127.0.0.1:8000/healthz
 ```
 
-SQLite 只适用于 M0 和本地验证。PostgreSQL 与 Docker Compose 属于 M1，当前仓库没有对应实现。
+API 等 PostgreSQL 健康后执行迁移并启动既有 `app.main:app`；Worker 再等 API 健康后
+从同一 PostgreSQL 队列领取任务。API 和 Worker 都继承 Dockerfile 的非 root 用户。
+如需验证两个 Worker 竞争，可临时扩容：
+
+```bash
+docker compose up -d --scale worker=2
+```
+
+停止并清除本地 Compose 数据：
+
+```bash
+docker compose down --volumes
+```
+
+Compose 中的数据库口令是仅供本机开发的默认值，可通过 shell 环境变量
+`POSTGRES_PASSWORD` 覆盖；不要把生产口令写入 Compose、`.env.example` 或 Git。
 
 ## 配置
 
@@ -198,7 +214,7 @@ SQLite 只适用于 M0 和本地验证。PostgreSQL 与 Docker Compose 属于 M1
 | `APP_VERSION` | `0.1.0` | API 版本 |
 | `APP_ENV` | `development` | `development`、`test` 或 `production` |
 | `APP_TIMEZONE` | `Asia/Shanghai` | 有效 IANA 时区 |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./data/shiguang.db` | M0 异步 SQLite URL |
+| `DATABASE_URL` | `postgresql+asyncpg://...` | 正式运行 PostgreSQL URL；测试可使用异步 SQLite |
 | `LOG_LEVEL` | `INFO` | 标准 Python 日志级别 |
 | `MODEL_API_BASE` | 无 | OpenAI-compatible API Base，仅启用真实 Provider 时必填 |
 | `MODEL_API_KEY` | 无 | 服务端密钥，以 `SecretStr` 脱敏，仅启用真实 Provider 时必填 |
@@ -210,6 +226,7 @@ SQLite 只适用于 M0 和本地验证。PostgreSQL 与 Docker Compose 属于 M1
 | `MODEL_PRICING_SOURCE` | `configured_model_rates` | 可审计的价格配置来源标签 |
 | `AGENT_MAX_TOOL_CALLS` | `8` | 单次 Run 绝对工具调用上限，只允许 `1..8` |
 | `AGENT_TIMEOUT_SECONDS` | `60` | 单次 Run 总时限，只允许有限值 `(0, 60]` |
+| `WORKER_POLL_SECONDS` | `1` | Worker 空队列轮询间隔，只允许有限值 `(0, 60]` |
 | `RUN_REAL_MODEL_TESTS` | `0` | 只有精确设为 `1` 才授权真实 Provider 测试 |
 | `AMAP_API_KEY` | 无 | 高德 Web 服务 Key，以 `SecretStr` 脱敏；只在显式构造真实地图 Provider 时必填 |
 | `AMAP_BASE_URL` | `https://restapi.amap.com` | 固定高德 Web 服务官方 origin；只允许可规范化的末尾 `/`，拒绝其他域名、端口、路径、凭证、查询和 fragment |

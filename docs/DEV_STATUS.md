@@ -4,17 +4,17 @@
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-0 PostgreSQL 与任务基础 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待主控验收 |
+| 当前分支 | codex/m1-0-postgresql-jobs |
 | 最近更新 | 2026-07-26 |
-| 阻塞项 | 无未关闭 P0/P1；IdempotencyLockRegistry 无界增长 P2 必须作为 M1-0 第一项前置修复 |
+| 阻塞项 | 无开发阻塞；等待主控集成与 QA 验收 |
 
 ## 当前任务
 
 M0-0A 至 M0-5D、M0-Gate、Event 日期粒度和富输入截止策略均已通过主控验收，M0
-保持正式完成。当前允许开始 M1-0，但尚未实现任何 M1 功能。M1-0 必须先解决
-`IdempotencyLockRegistry` 无界增长 P2，再进入 PostgreSQL、Job、Worker、
-APScheduler、Docker Compose 和 SSE；M1-1、M1-2 及后续阶段均未开始。
+保持正式完成。M1-0 已按门禁先解决 `IdempotencyLockRegistry` 无界增长 P2，再完成
+PostgreSQL、持久化 JobQueue、Worker、APScheduler、RunEvent/SSE replay 和最小
+Docker Compose，当前待主控验收。M1-1、M1-2 及后续阶段均未开始。
 
 ## M0 状态
 
@@ -30,7 +30,15 @@ APScheduler、Docker Compose 和 SSE；M1-1、M1-2 及后续阶段均未开始�
 | M0-5 计划技术验证 | 已完成 | M0-5A、M0-5B、M0-5C、M0-5D 均已通过主控验收 |
 | M0-Gate 阶段验收 | 已完成 | 完整离线、封网、迁移、本地启动、真实链历史证据、容器、安全与冗余主控复核通过 |
 
-状态只允许使用：未开始、进行中、待验收、已完成、阻塞。
+## M1 状态
+
+| 阶段 | 状态 | 说明 |
+|---|---|---|
+| M1-0 PostgreSQL 与任务基础 | 待主控验收 | 锁 P2、PostgreSQL、JobQueue/Worker/APScheduler、SSE replay、Compose 已实现 |
+| M1-1 Web Session | 未开始 | 不在本阶段范围 |
+| M1-2 Next.js 前端 | 未开始 | 不在本阶段范围 |
+
+状态只允许使用：未开始、进行中、待验收、待主控验收、已完成、阻塞。
 
 ## 已完成
 
@@ -64,15 +72,18 @@ APScheduler、Docker Compose 和 SSE；M1-1、M1-2 及后续阶段均未开始�
 - 富输入截止策略收敛已完成：URL/图片只使用 60 秒应用层共享硬截止，
   Provider/transport 使用 75 秒异常安全上限；固定样本 03 在约 47.1 秒成功返回，
   正确保留展期日期并保持精确时刻为空，实际 1 次请求、0 repair、0 重试。
+- M1-0 开发实现已完成：幂等锁注册表可在最后参与者退出后安全淘汰；正式运行支持
+  PostgreSQL；唯一 JobQueue、Worker 和 APScheduler 创建适配已建立；既有 AgentRun
+  增加持久化安全事件和 SSE 断线重放；本地 Compose 提供 PostgreSQL、API、Worker。
 
 ## 下一步
 
-M0-Gate 及关闭后的两项校准均已完成，当前允许启动 M1-0。第一项必须先解决幂等锁
-注册表无界增长 P2，再进入 PostgreSQL、Job、Worker、APScheduler、Docker Compose
-和 SSE。样本 03 的 47.1 秒结果超过 20 秒非阻断性能观察目标，仍是小样本性能风险；
-若后续真实同步请求达到 60 秒，不继续提高时限，改由 M1 后台 Job 承载。
-aiosqlite 偶发收尾 warning 与网页真实最多五跳未覆盖继续监测。不得提前开始 M1-1
-Session、M1-2 Next.js 或其他后续阶段。
+主控应在当前分支复核提交边界、迁移、PostgreSQL 并发、SSE、Compose、安全和净
+复杂度，并由 QA 独立复现 `docs/technical/M1_0_HANDOFF.md`。样本 03 的 47.1 秒结果
+超过 20 秒非阻断性能观察目标，仍是小样本性能风险；若后续真实同步请求达到 60 秒，
+不继续提高时限，改由已建立的 M1 Job 基础承载。aiosqlite 偶发收尾 warning 本轮在
+升级为 error 的全量测试中未复现，继续监测。验收前不得开始 M1-1 Session、M1-2
+Next.js 或其他后续阶段。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -1802,3 +1813,51 @@ Session、M1-2 Next.js 或其他后续阶段。
   真实门禁通过。47.1 秒超过 20 秒性能观察目标且样本量不足，继续作为性能风险；
   若达到 60 秒则转 M1 后台 Job，不再放宽同步时限。当前允许开始 M1-0，首项仍是
   `IdempotencyLockRegistry` 有界生命周期修复
+
+#### 2026-07-26｜M1-0 PostgreSQL 与任务基础｜待主控验收
+
+- 分支与门禁：`codex/m1-0-postgresql-jobs` 从指定基线
+  `6dbdbbaa49c8493b425870e2ea74682c6f2c0ca6` 创建；开始时 HEAD、`main` 和
+  `origin/main` 均精确等于基线，工作区干净，M0 已完成，Alembic 唯一 head 为
+  `20260724_0007`
+- 提交：锁修复
+  `6bd3d71f2b763e8e4543291aa2517275f084b847`；PostgreSQL
+  `8ea7bc454546b35646c62f01ec359d5a16ae91d9`；Job/Worker
+  `d86c9f02c0b95048cf5be0af11f0d0c2b912f960`；SSE/Compose
+  `61db0b2ff4469d7e311a7fe4b6b117da1da81b9a`；文档提交及最终 HEAD 的完整 SHA
+  以最终交接输出和 `git rev-parse HEAD` 为准
+- 锁前置：永久锁字典替换为单注册表互斥下的参与者计数生命周期；同用户/键共享
+  一把锁，最后持有者/等待者在正常、异常、取消和淘汰竞态后清除。没有 TTL、LRU、
+  sleep、后台清扫或第二套幂等服务；10,000 个高基数请求结束后注册表计数为 0
+- PostgreSQL 与迁移：正式配置支持 `postgresql+asyncpg` 且 production 拒绝
+  SQLite；历史迁移同时兼容 SQLite/PostgreSQL。`0008` 新增 `scheduled_jobs`，
+  `0009` 新增既有 AgentRun 子表 `run_events`；唯一 head 为 `20260726_0009`，
+  全新升级、current/check、降级 base 和重新升级在 PostgreSQL 16 通过
+- Job/Worker/Scheduler：唯一 `JobQueue` 和 `PostgresJobQueue` 使用
+  `FOR UPDATE SKIP LOCKED`；支持 queued/running/succeeded/failed/cancelled、用户
+  幂等键、5/30 秒有界重试、最多三次执行、取消和 60 秒租约恢复。
+  `python -m app.worker` 是唯一 Worker 入口；APScheduler 只创建持久化 Job
+- SSE：RunEvent 写入锁定既有 AgentRun 后分配 trace 内 sequence；支持七种公开事件，
+  安全摘要不含思维链；`GET /api/v1/agent-runs/{trace_id}/events` 支持
+  `Last-Event-ID`。20 个并发事件得到连续唯一的 1..20；重连只补发未确认 sequence；
+  跨用户/trace 统一隔离
+- 安全：Job payload、结果和 RunEvent 共用一个公开数据安全边界，拒绝密钥、
+  Authorization、Cookie、Prompt、完整模型响应、Base64、私人路径和超限内容；未读取
+  或打印 `.env`，真实模型、高德、网页、消息、云和其他外部 Provider 调用均为 0
+- 自动化：editable 安装和 `pip check` 通过；Ruff 通过；strict mypy 对 108 个源
+  文件无问题；非真实 Provider 全集
+  `1526 passed / 8 skipped / 2 deselected`。将
+  `PytestUnhandledThreadExceptionWarning` 升级为 error 后同样通过，未观察到
+  aiosqlite 收尾 warning；显式本地 PostgreSQL 组 `8 passed`
+- Compose：PostgreSQL、API、Worker 均健康；API/Worker 为 uid 10001；`/healthz`
+  200；容器迁移为 `20260726_0009 (head)`。扩容两个 Worker 后确定性任务只执行
+  一次，最终 `succeeded/attempt=1`；重复创建返回同一 Job 且 replayed；SSE replay
+  只返回 sequence 2、3。服务和本次测试卷已正常停止/清除
+- 复杂度与唯一性：AgentRunner、ToolRegistry、Provider、Base、Database、
+  Repository 家族、JobQueue、Worker 入口、幂等服务和 AgentRun 主记录各保留一套；
+  Job/RunEvent 安全规则已收敛，没有生产特例、白名单、重复校验或框架内部代理
+- 已知风险：租约恢复是至少一次语义，真实有副作用 handler 必须持有业务幂等键；
+  APScheduler 注册需由未来权威业务数据在进程重启时确定性重建；SSE 使用 250 ms
+  数据库轮询，尚未做压力测试；Compose 默认口令仅限本机；本轮只验证 PostgreSQL 16
+- 下一步：主控按 `docs/technical/M1_0_HANDOFF.md` 复核并交给 QA 独立验收；通过前
+  不合并、不推送、不开始 M1-1 或 M1-2
