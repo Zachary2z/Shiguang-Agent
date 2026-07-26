@@ -14,6 +14,7 @@ from app.config import load_settings
 from app.infrastructure.db.base import Base
 from app.infrastructure.db.models import (
     AgentRunModel,
+    BrowserSessionModel,
     CollectionItemModel,
     CollectionSourceModel,
     CollectionWriteOperationItemModel,
@@ -36,6 +37,7 @@ settings = load_settings()
 config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
 target_metadata = Base.metadata
 assert AgentRunModel.metadata is target_metadata
+assert BrowserSessionModel.metadata is target_metadata
 assert ToolRunModel.metadata is target_metadata
 assert UserModel.metadata is target_metadata
 assert SessionModel.metadata is target_metadata

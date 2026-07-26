@@ -8,12 +8,14 @@ from app.infrastructure.repositories.runs import (
     StoredAgentRun,
     ToolRunWrite,
 )
+from app.infrastructure.repositories.web_sessions import SqlAlchemyWebSessionRepository
 
 __all__ = [
     "AgentRunRepository",
     "RunFinalization",
     "RunEventRepository",
     "SqlAlchemyCollectionRepository",
+    "SqlAlchemyWebSessionRepository",
     "StoredAgentRun",
     "ToolRunWrite",
 ]

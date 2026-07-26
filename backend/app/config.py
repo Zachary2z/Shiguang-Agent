@@ -50,6 +50,18 @@ class StorageConfigurationError(Exception):
     """A fixed local storage configuration failure without path disclosure."""
 
 
+def _database_target(value: str) -> tuple[str, str | None, int, str | None]:
+    """Identify a PostgreSQL data target independently of credentials/query options."""
+
+    url = make_url(value)
+    return (
+        url.drivername,
+        url.host.lower() if url.host is not None else None,
+        url.port or 5432,
+        url.database,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ModelProviderSettings:
     """Real-provider settings; timeout covers one complete SDK call wall clock."""
@@ -268,6 +280,11 @@ class Settings(BaseSettings):
     app_env: Literal["development", "test", "production"] = "development"
     app_timezone: str = "Asia/Shanghai"
     database_url: str = "sqlite+aiosqlite:///./data/shiguang.db"
+    demo_database_url: str | None = None
+    demo_enabled: bool = True
+    web_session_cookie_secure: bool | None = None
+    real_web_session_ttl_seconds: int = 30 * 24 * 60 * 60
+    demo_web_session_ttl_seconds: int = 2 * 60 * 60
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     model_api_base: str | None = None
     model_api_key: SecretStr | None = None
@@ -294,6 +311,10 @@ class Settings(BaseSettings):
     place_match_minimum_score_gap: float = 12.0
     place_match_candidate_score: float = 35.0
     storage_private_root: Path = Field(default=Path("./data/private"), repr=False)
+    demo_storage_private_root: Path = Field(
+        default=Path("./data/demo-private"),
+        repr=False,
+    )
     storage_max_file_size_bytes: int = DEFAULT_STORAGE_MAX_FILE_SIZE_BYTES
     storage_allowed_content_types: str = ",".join(DEFAULT_STORAGE_ALLOWED_CONTENT_TYPES)
 
@@ -320,9 +341,11 @@ class Settings(BaseSettings):
             ) from exc
         return value
 
-    @field_validator("database_url")
+    @field_validator("database_url", "demo_database_url")
     @classmethod
-    def validate_database_url(cls, value: str) -> str:
+    def validate_database_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         try:
             url = make_url(value)
         except ArgumentError as exc:
@@ -331,6 +354,31 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DATABASE_URL must use postgresql+asyncpg or sqlite+aiosqlite"
             )
+        return value
+
+    @field_validator(
+        "real_web_session_ttl_seconds",
+        "demo_web_session_ttl_seconds",
+        mode="before",
+    )
+    @classmethod
+    def reject_boolean_session_ttl(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("web session TTL must be a positive integer")
+        return value
+
+    @field_validator("real_web_session_ttl_seconds")
+    @classmethod
+    def validate_real_session_ttl(cls, value: int) -> int:
+        if value < 1 or value > 30 * 24 * 60 * 60:
+            raise ValueError("REAL_WEB_SESSION_TTL_SECONDS must be at most 30 days")
+        return value
+
+    @field_validator("demo_web_session_ttl_seconds")
+    @classmethod
+    def validate_demo_session_ttl(cls, value: int) -> int:
+        if value < 1 or value > 24 * 60 * 60:
+            raise ValueError("DEMO_WEB_SESSION_TTL_SECONDS must be at most 24 hours")
         return value
 
     @field_validator("model_timeout_seconds", mode="before")
@@ -509,6 +557,27 @@ class Settings(BaseSettings):
             and make_url(self.database_url).drivername != "postgresql+asyncpg"
         ):
             raise ValueError("production DATABASE_URL must use postgresql+asyncpg")
+        if self.app_env == "production" and self.web_session_cookie_secure is False:
+            raise ValueError("production Web Session cookies must be Secure")
+        if self.app_env == "production" and self.demo_enabled:
+            if self.demo_database_url is None:
+                raise ValueError(
+                    "production Demo requires an explicit DEMO_DATABASE_URL"
+                )
+            if make_url(self.demo_database_url).drivername != "postgresql+asyncpg":
+                raise ValueError(
+                    "production DEMO_DATABASE_URL must use postgresql+asyncpg"
+                )
+            if _database_target(self.demo_database_url) == _database_target(
+                self.database_url
+            ):
+                raise ValueError(
+                    "production Demo and real DATABASE_URL values must be different"
+                )
+            if self.demo_storage_private_root.resolve() == self.storage_private_root.resolve():
+                raise ValueError(
+                    "production Demo and real storage roots must be different"
+                )
         return self
 
     @field_validator("storage_max_file_size_bytes", mode="before")
@@ -639,6 +708,35 @@ class Settings(BaseSettings):
                 self.storage_allowed_content_types.split(",")
             ),
         )
+
+    def demo_storage_provider_settings(self) -> StorageProviderSettings:
+        """Build physically separate local storage settings for Demo data."""
+
+        return StorageProviderSettings(
+            private_root=self.demo_storage_private_root,
+            max_file_size_bytes=self.storage_max_file_size_bytes,
+            allowed_content_types=frozenset(
+                self.storage_allowed_content_types.split(",")
+            ),
+        )
+
+    def resolved_demo_database_url(self) -> str | None:
+        if not self.demo_enabled:
+            return None
+        if self.demo_database_url is not None:
+            return self.demo_database_url
+        real_url = make_url(self.database_url)
+        if real_url.drivername != "sqlite+aiosqlite" or not real_url.database:
+            raise ValueError("DEMO_DATABASE_URL is required for this database configuration")
+        database_path = Path(real_url.database)
+        demo_path = database_path.with_name(f"{database_path.stem}-demo{database_path.suffix}")
+        return str(real_url.set(database=str(demo_path)))
+
+    @property
+    def session_cookie_secure(self) -> bool:
+        if self.web_session_cookie_secure is not None:
+            return self.web_session_cookie_secure
+        return self.app_env == "production"
 
 
 def load_settings() -> Settings:

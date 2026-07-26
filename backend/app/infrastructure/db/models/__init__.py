@@ -11,11 +11,13 @@ from app.infrastructure.db.models.collections import (
     SourceModel,
     UserModel,
 )
+from app.infrastructure.db.models.identity import BrowserSessionModel
 from app.infrastructure.db.models.jobs import ScheduledJobModel
 from app.infrastructure.db.models.runs import AgentRunModel, RunEventModel, ToolRunModel
 
 __all__ = [
     "AgentRunModel",
+    "BrowserSessionModel",
     "CollectionItemModel",
     "CollectionSourceModel",
     "CollectionWriteOperationItemModel",
