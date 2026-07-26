@@ -12,8 +12,8 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-HEAD_REVISION = "20260726_0008"
-PREVIOUS_REVISION = "20260724_0007"
+HEAD_REVISION = "20260726_0009"
+PREVIOUS_REVISION = "20260726_0008"
 EVENT_REVISION = "20260724_0007"
 EVENT_PREVIOUS_REVISION = "20260722_0006"
 M03D_REVISION = "20260722_0006"
@@ -22,7 +22,7 @@ M02C_REVISION = "20260721_0005"
 M02C_PREVIOUS_REVISION = "20260721_0004"
 CITY_REVISION = "20260721_0004"
 CITY_PREVIOUS_REVISION = "20260721_0003"
-PREVIOUS_TABLES = {
+LEGACY_TABLES = {
     "agent_runs",
     "alembic_version",
     "collection_items",
@@ -36,8 +36,9 @@ PREVIOUS_TABLES = {
     "tool_runs",
     "users",
 }
-M03D_PREVIOUS_TABLES = PREVIOUS_TABLES - {"place_selection_operations"}
-HEAD_TABLES = PREVIOUS_TABLES | {"scheduled_jobs"}
+PREVIOUS_TABLES = LEGACY_TABLES | {"scheduled_jobs"}
+M03D_PREVIOUS_TABLES = LEGACY_TABLES - {"place_selection_operations"}
+HEAD_TABLES = PREVIOUS_TABLES | {"run_events"}
 
 
 def current_revision(database_path: Path) -> str | None:
@@ -281,12 +282,19 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
             for row in connection.execute("PRAGMA table_info(scheduled_jobs)")
         }
         job_indexes = index_definitions(connection, "scheduled_jobs")
+        event_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(run_events)")
+        }
+        event_indexes = index_definitions(connection, "run_events")
+        event_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(run_events)"
+        ).fetchall()
         foreign_keys = connection.execute("PRAGMA foreign_key_list(tool_runs)").fetchall()
         table_sql = " ".join(
             str(row[0])
             for row in connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' "
-                "AND name IN ('agent_runs', 'tool_runs', 'scheduled_jobs')"
+                "AND name IN ('agent_runs', 'tool_runs', 'scheduled_jobs', 'run_events')"
             )
         )
 
@@ -351,6 +359,16 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
         "started_at",
         "finished_at",
     } == job_columns
+    assert {
+        "id",
+        "agent_run_id",
+        "trace_id",
+        "user_id",
+        "sequence",
+        "event_type",
+        "summary_json",
+        "created_at",
+    } == event_columns
     assert "ix_agent_runs_trace_id" not in agent_indexes
     assert "ix_tool_runs_agent_run_id" not in tool_indexes
     assert any(
@@ -367,6 +385,12 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
         unique and columns == ("user_id", "idempotency_key")
         for unique, columns in job_indexes.values()
     )
+    assert any(
+        unique and columns == ("trace_id", "sequence")
+        for unique, columns in event_indexes.values()
+    )
+    assert len(event_foreign_keys) == 1
+    assert event_foreign_keys[0][2] == "agent_runs"
     assert "uq_agent_runs_trace_id" in table_sql
     assert "uq_tool_runs_run_sequence" in table_sql
     assert len(foreign_keys) == 1
@@ -383,6 +407,8 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
         "ck_scheduled_jobs_attempt_range",
         "ck_scheduled_jobs_max_attempts",
         "ck_scheduled_jobs_lease_shape",
+        "ck_run_events_sequence_positive",
+        "ck_run_events_type",
     ):
         assert constraint_name in table_sql
 

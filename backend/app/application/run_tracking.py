@@ -20,11 +20,13 @@ from app.domain.runs.contracts import (
     ModelCallSummary,
     ToolRunSummary,
 )
+from app.domain.runs.events import RunEventType
 from app.domain.runs.inputs import AgentRunCreate
 from app.domain.runs.statuses import AgentRunStatus, RunErrorCode, ToolRunStatus
 from app.domain.time import utc_now
 from app.infrastructure.repositories import (
     AgentRunRepository,
+    RunEventRepository,
     RunFinalization,
     StoredAgentRun,
     ToolRunWrite,
@@ -531,6 +533,7 @@ class AgentRunService:
             )
         self._session = session
         self._repository = AgentRunRepository(session)
+        self._events = RunEventRepository(session)
         self._runner = runner
         self._pricing = pricing
         self._timeout_seconds = float(timeout_seconds)
@@ -550,6 +553,7 @@ class AgentRunService:
 
         started_at = self._now()
         await self._repository.mark_running(row.id, started_at=started_at)
+        await self._record_start_events(row.id, started_at=started_at)
         await self._session.commit()
         run_id = row.id
         trace_id = row.trace_id
@@ -611,6 +615,7 @@ class AgentRunService:
 
         started_at = self._now()
         await self._repository.mark_running(row.id, started_at=started_at)
+        await self._record_start_events(row.id, started_at=started_at)
         await self._session.commit()
         run_id = row.id
         trace_id = row.trace_id
@@ -711,7 +716,56 @@ class AgentRunService:
             finished_at=self._now(),
         )
         await self._repository.finalize(run_id, finalization)
+        for tool_run in finalization.tool_runs:
+            await self._events.append_for_run(
+                run_id=run_id,
+                event_type=RunEventType.TOOL_COMPLETED,
+                summary={
+                    "tool_name": tool_run.tool_name,
+                    "status": tool_run.status.value,
+                    "tool_sequence": tool_run.sequence,
+                },
+                created_at=finalization.finished_at,
+            )
+        await self._events.append_for_run(
+            run_id=run_id,
+            event_type=RunEventType.RESULT_UPDATED,
+            summary={"status": status.value},
+            created_at=finalization.finished_at,
+        )
+        terminal_summary = {"status": status.value}
+        if error_code is not None:
+            terminal_summary["error_code"] = error_code
+        await self._events.append_for_run(
+            run_id=run_id,
+            event_type=(
+                RunEventType.RUN_COMPLETED
+                if status is AgentRunStatus.SUCCEEDED
+                else RunEventType.RUN_FAILED
+            ),
+            summary=terminal_summary,
+            created_at=finalization.finished_at,
+        )
         await self._session.commit()
+
+    async def _record_start_events(
+        self,
+        run_id: str,
+        *,
+        started_at: datetime,
+    ) -> None:
+        await self._events.append_for_run(
+            run_id=run_id,
+            event_type=RunEventType.RUN_STARTED,
+            summary={"status": AgentRunStatus.RUNNING.value},
+            created_at=started_at,
+        )
+        await self._events.append_for_run(
+            run_id=run_id,
+            event_type=RunEventType.STAGE_CHANGED,
+            summary={"stage": "execution"},
+            created_at=started_at,
+        )
 
     def _elapsed_ms(self, started_at: float) -> int:
         return max(0, int((self._clock() - started_at) * 1000))

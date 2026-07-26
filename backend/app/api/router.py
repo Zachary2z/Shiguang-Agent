@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, Path, Query, Request
+from fastapi import APIRouter, Body, Depends, Header, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import StreamingResponse
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,7 +31,9 @@ from app.application.collection_writes import CollectionWriteService
 from app.application.demo_sessions import DemoSessionService
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
 from app.application.pricing import ConfiguredPricingPolicy
+from app.application.run_events import RunEventService
 from app.application.run_tracking import AgentRunService
+from app.application.sse import stream_run_events
 from app.application.text_collection_workflow import (
     IdempotencyLockRegistry,
     TextCollectionWorkflow,
@@ -364,6 +367,54 @@ async def get_agent_run(
             for tool in summary.tool_runs
         ),
     )
+
+
+@api_router.get("/agent-runs/{trace_id}/events")
+async def get_agent_run_events(
+    trace_id: Annotated[str, Path(pattern=_TRACE_PATH)],
+    request: Request,
+    session: DbSession,
+    user_id: CurrentUserId,
+    last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
+) -> StreamingResponse:
+    after_sequence = _parse_last_event_id(last_event_id)
+    if not await RunEventService(session).run_exists(
+        user_id=user_id,
+        trace_id=trace_id,
+    ):
+        raise ResourceNotFoundError
+    return StreamingResponse(
+        stream_run_events(
+            request=request,
+            session_factory=request.app.state.database.session_factory,
+            user_id=user_id,
+            trace_id=trace_id,
+            after_sequence=after_sequence,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _parse_last_event_id(value: str | None) -> int:
+    if value is None or value == "":
+        return 0
+    if not value.isascii() or not value.isdecimal() or len(value) > 10:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("header", "Last-Event-ID"),
+                    "msg": "Last-Event-ID must be a nonnegative sequence.",
+                    "input": None,
+                    "ctx": {"error": "invalid event sequence"},
+                }
+            ]
+        )
+    return int(value)
 
 
 @api_router.get("/collections", response_model=CollectionListResponse)

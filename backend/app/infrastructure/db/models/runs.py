@@ -11,6 +11,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -19,12 +20,14 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.domain.runs.events import RunEventType
 from app.domain.runs.statuses import AgentRunStatus, ToolRunStatus
 from app.domain.time import utc_now
 from app.infrastructure.db.base import Base
 
 _AGENT_STATUS_SQL = ", ".join(f"'{status.value}'" for status in AgentRunStatus)
 _TOOL_STATUS_SQL = ", ".join(f"'{status.value}'" for status in ToolRunStatus)
+_RUN_EVENT_TYPE_SQL = ", ".join(f"'{event.value}'" for event in RunEventType)
 
 
 class AgentRunModel(Base):
@@ -148,6 +151,41 @@ class ToolRunModel(Base):
     error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utc_now
+    )
+
+
+class RunEventModel(Base):
+    """One replayable, public-safe progress event for an existing AgentRun."""
+
+    __tablename__ = "run_events"
+    __table_args__ = (
+        UniqueConstraint("trace_id", "sequence", name="uq_run_events_trace_sequence"),
+        CheckConstraint("sequence > 0", name="ck_run_events_sequence_positive"),
+        CheckConstraint(
+            f"event_type IN ({_RUN_EVENT_TYPE_SQL})",
+            name="ck_run_events_type",
+        ),
+        Index(
+            "ix_run_events_owner_trace_sequence",
+            "user_id",
+            "trace_id",
+            "sequence",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    agent_run_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("agent_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    trace_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    summary_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )

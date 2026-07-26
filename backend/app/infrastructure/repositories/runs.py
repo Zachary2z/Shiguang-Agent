@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.identifiers import (
@@ -16,6 +18,12 @@ from app.domain.identifiers import (
     validate_trace_id,
     validate_user_id,
 )
+from app.domain.public_data import validate_safe_public_data
+from app.domain.runs.events import (
+    MAX_RUN_EVENT_SUMMARY_BYTES,
+    PublicRunEvent,
+    RunEventType,
+)
 from app.domain.runs.inputs import AgentRunCreate
 from app.domain.runs.statuses import (
     TERMINAL_AGENT_RUN_STATUSES,
@@ -24,7 +32,7 @@ from app.domain.runs.statuses import (
     ensure_run_transition,
 )
 from app.domain.time import as_utc, required_utc
-from app.infrastructure.db.models import AgentRunModel, ToolRunModel
+from app.infrastructure.db.models import AgentRunModel, RunEventModel, ToolRunModel
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -290,3 +298,147 @@ class AgentRunRepository:
             finished_at=as_utc(row.finished_at),
             created_at=required_utc(row.created_at),
         )
+
+
+class RunEventRepository:
+    """Append monotonic events while locking their one parent AgentRun."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def append(
+        self,
+        *,
+        user_id: str,
+        trace_id: str,
+        event_type: RunEventType,
+        summary: dict[str, Any],
+        created_at: datetime,
+    ) -> PublicRunEvent:
+        owner = validate_user_id(user_id)
+        trace = validate_trace_id(trace_id)
+        run = await self._session.scalar(
+            select(AgentRunModel)
+            .where(
+                AgentRunModel.trace_id == trace,
+                AgentRunModel.user_id == owner,
+            )
+            .with_for_update()
+        )
+        if run is None:
+            raise LookupError("AgentRun does not exist")
+        return await self._append_to_run(
+            run,
+            event_type=event_type,
+            summary=summary,
+            created_at=created_at,
+        )
+
+    async def append_for_run(
+        self,
+        *,
+        run_id: str,
+        event_type: RunEventType,
+        summary: dict[str, Any],
+        created_at: datetime,
+    ) -> PublicRunEvent | None:
+        run = await self._session.scalar(
+            select(AgentRunModel)
+            .where(AgentRunModel.id == run_id)
+            .with_for_update()
+        )
+        if run is None:
+            raise LookupError("AgentRun does not exist")
+        if run.user_id is None:
+            return None
+        return await self._append_to_run(
+            run,
+            event_type=event_type,
+            summary=summary,
+            created_at=created_at,
+        )
+
+    async def _append_to_run(
+        self,
+        run: AgentRunModel,
+        *,
+        event_type: RunEventType,
+        summary: dict[str, Any],
+        created_at: datetime,
+    ) -> PublicRunEvent:
+        owner = run.user_id
+        if owner is None:
+            raise ValueError("public RunEvents require an owned AgentRun")
+        safe_summary = validate_safe_public_data(
+            summary,
+            maximum_bytes=MAX_RUN_EVENT_SUMMARY_BYTES,
+        )
+        timestamp = required_utc(created_at)
+        last_sequence = await self._session.scalar(
+            select(func.coalesce(func.max(RunEventModel.sequence), 0)).where(
+                RunEventModel.trace_id == run.trace_id
+            )
+        )
+        sequence = int(last_sequence or 0) + 1
+        row = RunEventModel(
+            id=f"evt_{secrets.token_hex(16)}",
+            agent_run_id=run.id,
+            trace_id=run.trace_id,
+            user_id=owner,
+            sequence=sequence,
+            event_type=event_type.value,
+            summary_json=safe_summary,
+            created_at=timestamp,
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return _public_run_event(row)
+
+    async def list_after(
+        self,
+        *,
+        user_id: str,
+        trace_id: str,
+        after_sequence: int,
+        limit: int = 100,
+    ) -> list[PublicRunEvent]:
+        owner = validate_user_id(user_id)
+        trace = validate_trace_id(trace_id)
+        if isinstance(after_sequence, bool) or after_sequence < 0:
+            raise ValueError("after_sequence must be nonnegative")
+        if isinstance(limit, bool) or limit < 1 or limit > 1000:
+            raise ValueError("limit must be in [1, 1000]")
+        rows = (
+            await self._session.scalars(
+                select(RunEventModel)
+                .where(
+                    RunEventModel.user_id == owner,
+                    RunEventModel.trace_id == trace,
+                    RunEventModel.sequence > after_sequence,
+                )
+                .order_by(RunEventModel.sequence)
+                .limit(limit)
+            )
+        ).all()
+        return [_public_run_event(row) for row in rows]
+
+    async def run_exists(self, *, user_id: str, trace_id: str) -> bool:
+        owner = validate_user_id(user_id)
+        trace = validate_trace_id(trace_id)
+        run_id = await self._session.scalar(
+            select(AgentRunModel.id).where(
+                AgentRunModel.trace_id == trace,
+                AgentRunModel.user_id == owner,
+            )
+        )
+        return run_id is not None
+
+
+def _public_run_event(row: RunEventModel) -> PublicRunEvent:
+    return PublicRunEvent(
+        trace_id=row.trace_id,
+        event_type=RunEventType(row.event_type),
+        sequence=row.sequence,
+        summary=row.summary_json,
+        created_at=required_utc(row.created_at),
+    )

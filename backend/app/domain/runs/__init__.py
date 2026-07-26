@@ -19,3 +19,6 @@ __all__ = [
     "generate_trace_id",
     "validate_trace_id",
 ]
+from app.domain.runs.events import PublicRunEvent, RunEventType
+
+__all__ = ["PublicRunEvent", "RunEventType"]
