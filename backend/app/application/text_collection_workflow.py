@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
@@ -151,8 +151,14 @@ class IdempotencyLockRegistry:
             entry.participants += 1
         try:
             await entry.lock.acquire()
+        except asyncio.CancelledError as cancellation:
+            await self._await_cleanup(
+                self._leave(key, entry),
+                cancellation=cancellation,
+            )
+            raise cancellation from None
         except BaseException:
-            await self._leave(key, entry)
+            await self._await_cleanup(self._leave(key, entry))
             raise
         return entry
 
@@ -175,6 +181,24 @@ class IdempotencyLockRegistry:
                 assert not entry.lock.locked()
                 if self._entries.get(key) is entry:
                     del self._entries[key]
+
+    @staticmethod
+    async def _await_cleanup(
+        cleanup: Coroutine[object, object, None],
+        *,
+        cancellation: asyncio.CancelledError | None = None,
+    ) -> None:
+        cleanup_task = asyncio.create_task(cleanup)
+        pending_cancellation = cancellation
+        while not cleanup_task.done():
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError as caught:
+                if pending_cancellation is None:
+                    pending_cancellation = caught
+        cleanup_task.result()
+        if pending_cancellation is not None:
+            raise pending_cancellation
 
 
 @dataclass(slots=True)
@@ -200,11 +224,16 @@ class _IdempotencyLockLease:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        del exc_type, exc_value, traceback
+        del exc_type, traceback
         entry, self.entry = self.entry, None
         if entry is None:
             raise RuntimeError("idempotency lock lease was not acquired")
-        await self.registry._release(self.key, entry)
+        await self.registry._await_cleanup(
+            self.registry._release(self.key, entry),
+            cancellation=(
+                exc_value if isinstance(exc_value, asyncio.CancelledError) else None
+            ),
+        )
 
 
 class TextCollectionWorkflow:

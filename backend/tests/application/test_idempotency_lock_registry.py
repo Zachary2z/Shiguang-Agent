@@ -6,7 +6,26 @@ import asyncio
 
 import pytest
 
-from app.application.text_collection_workflow import IdempotencyLockRegistry
+from app.application.text_collection_workflow import (
+    IdempotencyLockRegistry,
+    _IdempotencyLockEntry,
+)
+
+
+class _CoordinatedCleanupRegistry(IdempotencyLockRegistry):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cleanup_started = asyncio.Event()
+        self.allow_cleanup = asyncio.Event()
+
+    async def _leave(
+        self,
+        key: tuple[str, str],
+        entry: _IdempotencyLockEntry,
+    ) -> None:
+        self.cleanup_started.set()
+        await self.allow_cleanup.wait()
+        await super()._leave(key, entry)
 
 
 @pytest.mark.asyncio
@@ -167,3 +186,108 @@ async def test_eviction_race_never_allows_two_effective_locks_for_one_key() -> N
         assert registry.active_key_count == 0
 
     assert maximum_active == 1
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_exit_waits_for_cleanup_before_propagating() -> None:
+    registry = _CoordinatedCleanupRegistry()
+    entered = asyncio.Event()
+    leave_body = asyncio.Event()
+    observed: list[asyncio.CancelledError] = []
+
+    async def holder() -> None:
+        try:
+            async with registry.lock(
+                user_id="usr_one",
+                idempotency_key="cancel-during-exit",
+            ):
+                entered.set()
+                await leave_body.wait()
+        except asyncio.CancelledError as cancellation:
+            observed.append(cancellation)
+            raise
+
+    task = asyncio.create_task(holder())
+    await entered.wait()
+    leave_body.set()
+    await registry.cleanup_started.wait()
+
+    task.cancel("first cancellation")
+    task.cancel("second cancellation")
+    registry.allow_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+    assert observed == [caught.value]
+    assert registry.active_key_count == 0
+    assert all(
+        candidate.done()
+        for candidate in asyncio.all_tasks()
+        if candidate is not asyncio.current_task()
+        and candidate.get_coro().__qualname__.endswith(
+            "IdempotencyLockRegistry._release"
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_waiter_cancellation_cleanup_survives_repeated_cancellation() -> None:
+    registry = _CoordinatedCleanupRegistry()
+    holder_entered = asyncio.Event()
+    release_holder = asyncio.Event()
+    waiter_attempting = asyncio.Event()
+
+    async def holder() -> None:
+        async with registry.lock(
+            user_id="usr_one",
+            idempotency_key="cancel-waiter-cleanup",
+        ):
+            holder_entered.set()
+            await release_holder.wait()
+
+    async def waiter() -> None:
+        waiter_attempting.set()
+        async with registry.lock(
+            user_id="usr_one",
+            idempotency_key="cancel-waiter-cleanup",
+        ):
+            raise AssertionError("cancelled waiter entered")
+
+    holder_task = asyncio.create_task(holder())
+    await holder_entered.wait()
+    waiter_task = asyncio.create_task(waiter())
+    await waiter_attempting.wait()
+    waiter_task.cancel("first cancellation")
+    await registry.cleanup_started.wait()
+    waiter_task.cancel("second cancellation")
+    registry.allow_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await waiter_task
+    assert registry.active_key_count == 1
+
+    release_holder.set()
+    await holder_task
+    assert registry.active_key_count == 0
+
+
+@pytest.mark.asyncio
+async def test_body_cancelled_error_object_propagates_after_exit_cleanup() -> None:
+    registry = _CoordinatedCleanupRegistry()
+    original = asyncio.CancelledError("body cancellation")
+
+    async def holder() -> None:
+        async with registry.lock(
+            user_id="usr_one",
+            idempotency_key="body-cancellation",
+        ):
+            raise original
+
+    task = asyncio.create_task(holder())
+    await registry.cleanup_started.wait()
+    registry.allow_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await task
+    assert caught.value is original
+    assert registry.active_key_count == 0
