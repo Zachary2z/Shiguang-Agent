@@ -17,6 +17,22 @@ services:
       retries: 20
     restart: unless-stopped
 
+  demo-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: shiguang_demo
+      POSTGRES_USER: shiguang
+      POSTGRES_PASSWORD: ${DEMO_POSTGRES_PASSWORD:-shiguang-demo-local-only}
+      TZ: UTC
+    volumes:
+      - demo-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shiguang -d shiguang_demo"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
   api:
     build:
       context: .
@@ -26,15 +42,22 @@ services:
       - -c
       - >-
         python -m alembic upgrade head &&
+        DATABASE_URL="$$DEMO_DATABASE_URL" python -m alembic upgrade head &&
         exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
       APP_ENV: development
       DATABASE_URL: postgresql+asyncpg://shiguang:${POSTGRES_PASSWORD:-shiguang-local-only}@postgres:5432/shiguang
+      DEMO_DATABASE_URL: postgresql+asyncpg://shiguang:${DEMO_POSTGRES_PASSWORD:-shiguang-demo-local-only}@demo-postgres:5432/shiguang_demo
+      DEMO_ENABLED: "1"
+      WEB_SESSION_COOKIE_SECURE: "0"
+      DEMO_STORAGE_PRIVATE_ROOT: /app/data/demo-private
       LOG_LEVEL: INFO
       RUN_REAL_MODEL_TESTS: "0"
       RUN_REAL_MAP_TESTS: "0"
     depends_on:
       postgres:
+        condition: service_healthy
+      demo-postgres:
         condition: service_healthy
     ports:
       - "${API_PORT:-8000}:8000"
@@ -60,6 +83,7 @@ services:
     environment:
       APP_ENV: development
       DATABASE_URL: postgresql+asyncpg://shiguang:${POSTGRES_PASSWORD:-shiguang-local-only}@postgres:5432/shiguang
+      DEMO_DATABASE_URL: postgresql+asyncpg://shiguang:${DEMO_POSTGRES_PASSWORD:-shiguang-demo-local-only}@demo-postgres:5432/shiguang_demo
       LOG_LEVEL: INFO
       WORKER_POLL_SECONDS: "1"
       RUN_REAL_MODEL_TESTS: "0"
@@ -77,3 +101,4 @@ services:
 
 volumes:
   postgres-data:
+  demo-postgres-data:

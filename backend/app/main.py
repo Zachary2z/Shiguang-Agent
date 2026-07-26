@@ -24,6 +24,7 @@ def create_app(
     text_provider: ModelProvider | None = None,
     web_provider: WebContentProvider | None = None,
     storage_provider: StorageProvider | None = None,
+    demo_storage_provider: StorageProvider | None = None,
 ) -> FastAPI:
     """Create a configured FastAPI application without running migrations."""
 
@@ -33,11 +34,18 @@ def create_app(
     @asynccontextmanager
     async def lifespan(api: FastAPI) -> AsyncIterator[None]:
         database = Database(resolved_settings.database_url)
+        demo_url = resolved_settings.resolved_demo_database_url()
+        demo_database = None if demo_url is None else Database(demo_url)
         api.state.database = database
+        api.state.demo_database = demo_database
         try:
             await database.connect()
+            if demo_database is not None:
+                await demo_database.connect()
             yield
         finally:
+            if demo_database is not None:
+                await demo_database.close()
             await database.close()
 
     api = FastAPI(
@@ -46,9 +54,12 @@ def create_app(
         lifespan=lifespan,
     )
     api.state.settings = resolved_settings
+    api.state.database = None
+    api.state.demo_database = None
     api.state.text_provider = text_provider
     api.state.web_provider = web_provider
     api.state.storage_provider = storage_provider
+    api.state.demo_storage_provider = demo_storage_provider
     api.state.idempotency_locks = IdempotencyLockRegistry()
     api.add_middleware(RequestContextMiddleware)
     install_error_handlers(api)

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, Header, Path, Query, Request
+from fastapi import APIRouter, Body, Depends, Header, Path, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
 from pydantic import TypeAdapter, ValidationError
@@ -13,8 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import (
     get_agent_timeout_seconds,
+    get_current_database,
+    get_current_principal,
     get_current_user_id,
     get_db_session,
+    get_demo_db_session,
     get_idempotency_locks,
     get_pricing,
     get_storage_provider,
@@ -38,6 +42,7 @@ from app.application.text_collection_workflow import (
     IdempotencyLockRegistry,
     TextCollectionWorkflow,
 )
+from app.application.web_sessions import WebSessionService
 from app.config import Settings
 from app.domain.collections import (
     IDEMPOTENCY_KEY_JSON_SCHEMA,
@@ -47,6 +52,8 @@ from app.domain.collections import (
     ResourceNotFoundError,
     UndoOutcome,
 )
+from app.domain.identity import SESSION_COOKIE_NAME, CurrentPrincipal
+from app.infrastructure.db import Database
 from app.providers.storage import StorageProvider
 from app.providers.web import WebContentProvider
 from app.schemas.api import (
@@ -66,6 +73,7 @@ from app.schemas.api import (
     SourceSummaryResponse,
     UndoRequest,
     UndoResponse,
+    WebSessionRevokedResponse,
 )
 from nanobot_core.providers import ModelProvider
 
@@ -76,7 +84,10 @@ _TRACE_PATH = r"^trc_[A-Za-z0-9_-]{32}$"
 api_router = APIRouter(prefix="/api/v1")
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
+DemoDbSession = Annotated[AsyncSession, Depends(get_demo_db_session)]
 CurrentUserId = Annotated[str, Depends(get_current_user_id)]
+Principal = Annotated[CurrentPrincipal, Depends(get_current_principal)]
+CurrentDatabase = Annotated[Database, Depends(get_current_database)]
 TextProvider = Annotated[ModelProvider, Depends(get_text_provider)]
 Pricing = Annotated[ConfiguredPricingPolicy, Depends(get_pricing)]
 Locks = Annotated[IdempotencyLockRegistry, Depends(get_idempotency_locks)]
@@ -139,17 +150,59 @@ _MESSAGE_REQUEST_BODY = {
     status_code=201,
 )
 async def create_demo_session(
-    session: DbSession,
+    request: Request,
+    response: Response,
+    session: DemoDbSession,
     payload: Annotated[DemoSessionCreateRequest | None, Body()] = None,
 ) -> DemoSessionResponse:
     del payload
-    created = await DemoSessionService(session=session).create()
-    return DemoSessionResponse(
-        session_id=created.id,
-        channel=created.channel.value,
-        status=created.status.value,
-        created_at=created.created_at,
+    settings: Settings = request.app.state.settings
+    created = await DemoSessionService(
+        session=session,
+        lifetime=timedelta(seconds=settings.demo_web_session_ttl_seconds),
+    ).start(session_token=request.cookies.get(SESSION_COOKIE_NAME))
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=created.session_token,
+        max_age=settings.demo_web_session_ttl_seconds,
+        httponly=True,
+        secure=settings.session_cookie_secure,
+        samesite="lax",
+        path="/",
     )
+    return DemoSessionResponse(
+        session_id=created.message_session.id,
+        channel=created.message_session.channel.value,
+        status=created.message_session.status.value,
+        created_at=created.message_session.created_at,
+        expires_at=created.expires_at,
+        csrf_token=created.csrf_token,
+        resumed=created.resumed,
+    )
+
+
+@api_router.delete(
+    "/web-session",
+    response_model=WebSessionRevokedResponse,
+)
+async def revoke_current_web_session(
+    request: Request,
+    response: Response,
+    session: DbSession,
+    principal: Principal,
+) -> WebSessionRevokedResponse:
+    await WebSessionService(session=session).revoke(
+        session_id=principal.web_session_id,
+    )
+    await session.commit()
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        path="/",
+        secure=request.app.state.settings.session_cookie_secure,
+        httponly=True,
+        samesite="lax",
+    )
+    return WebSessionRevokedResponse()
 
 
 @api_router.post(
@@ -375,6 +428,7 @@ async def get_agent_run_events(
     request: Request,
     session: DbSession,
     user_id: CurrentUserId,
+    database: CurrentDatabase,
     last_event_id: Annotated[str | None, Header(alias="Last-Event-ID")] = None,
 ) -> StreamingResponse:
     after_sequence = _parse_last_event_id(last_event_id)
@@ -386,7 +440,7 @@ async def get_agent_run_events(
     return StreamingResponse(
         stream_run_events(
             request=request,
-            session_factory=request.app.state.database.session_factory,
+            session_factory=database.session_factory,
             user_id=user_id,
             trace_id=trace_id,
             after_sequence=after_sequence,

@@ -7,7 +7,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
-from app.api.dependencies import ProviderNotConfiguredError
+from app.api.dependencies import (
+    AuthenticationRequiredError,
+    CsrfRejectedError,
+    DemoNotAvailableError,
+    ProviderNotConfiguredError,
+)
 from app.application.text_collection_workflow import (
     IdempotentRequestInProgressError,
     TextCollectionProviderError,
@@ -40,6 +45,24 @@ def install_error_handlers(api: FastAPI) -> None:
     api.add_exception_handler(TextCollectionRunError, _workflow_error)
     api.add_exception_handler(TextCollectionTimeoutError, _workflow_timeout)
     api.add_exception_handler(ProviderNotConfiguredError, _provider_not_configured)
+    api.add_exception_handler(AuthenticationRequiredError, _authentication_required)
+    api.add_exception_handler(CsrfRejectedError, _csrf_rejected)
+    api.add_exception_handler(DemoNotAvailableError, _demo_not_available)
+
+
+async def _authentication_required(request: Request, exc: Exception) -> JSONResponse:
+    del request, exc
+    return _error(401, "AUTHENTICATION_REQUIRED", "Authentication is required.")
+
+
+async def _csrf_rejected(request: Request, exc: Exception) -> JSONResponse:
+    del request, exc
+    return _error(403, "CSRF_REJECTED", "CSRF validation failed.")
+
+
+async def _demo_not_available(request: Request, exc: Exception) -> JSONResponse:
+    del request, exc
+    return _error(503, "DEMO_NOT_AVAILABLE", "Demo is not available.")
 
 
 async def _request_validation_error(

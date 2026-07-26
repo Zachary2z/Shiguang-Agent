@@ -43,6 +43,13 @@ class DemoSessionResponse(ApiModel):
     channel: str
     status: str
     created_at: datetime
+    expires_at: datetime
+    csrf_token: str = Field(repr=False)
+    resumed: bool
+
+
+class WebSessionRevokedResponse(ApiModel):
+    status: Literal["revoked"] = "revoked"
 
 
 class MessageCreateRequest(ApiModel):
