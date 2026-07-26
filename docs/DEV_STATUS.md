@@ -4,18 +4,18 @@
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-1 Web 会话与 Demo 身份 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待主控验收 |
+| 当前分支 | codex/m1-1-web-session |
 | 最近更新 | 2026-07-27 |
-| 阻塞项 | 无；M1-1 允许开始 |
+| 阻塞项 | 无；当前允许阶段仍为 M1-1，未经验收不得进入 M1-2 |
 
 ## 当前任务
 
 M0-0A 至 M0-5D、M0-Gate、Event 日期粒度和富输入截止策略均已通过主控验收，M0
 保持正式完成。M1-0 已通过主控验收：先关闭 `IdempotencyLockRegistry` 无界增长
 及取消清理竞态，再完成 PostgreSQL、持久化 JobQueue、Worker、APScheduler、
-RunEvent/SSE replay 和最小 Docker Compose。当前只允许开始 M1-1；M1-2 及后续
-阶段均未开始。
+RunEvent/SSE replay 和最小 Docker Compose。M1-1 已完成开发并等待主控验收；
+当前允许阶段仍为 M1-1，M1-2 及后续阶段均未开始。
 
 ## M0 状态
 
@@ -36,7 +36,7 @@ RunEvent/SSE replay 和最小 Docker Compose。当前只允许开始 M1-1；M1-2
 | 阶段 | 状态 | 说明 |
 |---|---|---|
 | M1-0 PostgreSQL 与任务基础 | 已完成 | 主控独立复验锁生命周期、PostgreSQL、Job/Worker、SSE replay、Compose、安全和净复杂度通过 |
-| M1-1 Web Session | 未开始 | 当前唯一允许开始阶段 |
+| M1-1 Web Session | 待主控验收 | Web Session、CSRF、独立浏览器 Demo 沙盒和物理双库隔离已完成开发 |
 | M1-2 Next.js 前端 | 未开始 | 不在本阶段范围 |
 
 状态只允许使用：未开始、进行中、待验收、待主控验收、已完成、阻塞。
@@ -76,13 +76,15 @@ RunEvent/SSE replay 和最小 Docker Compose。当前只允许开始 M1-1；M1-2
 - M1-0 开发实现已完成：幂等锁注册表可在最后参与者退出后安全淘汰；正式运行支持
   PostgreSQL；唯一 JobQueue、Worker 和 APScheduler 创建适配已建立；既有 AgentRun
   增加持久化安全事件和 SSE 断线重放；本地 Compose 提供 PostgreSQL、API、Worker。
+- M1-1 开发实现已完成：浏览器凭据只以哈希持久化，Cookie/CSRF、绝对过期、当前
+  设备撤销和启动凭据轮换集中在唯一身份边界；每个浏览器拥有独立 Demo User、消息
+  Session 与 Web Session，Demo 和真实数据分别进入独立数据库及私有存储。
 
 ## 下一步
 
-从主控集成并推送后的最新 `main` 创建 `codex/m1-1-web-session`，只实现 M1-1 Web
-会话与 Demo 身份。复用现有 User、Session、Repository 和 FastAPI 依赖，建立
-浏览器会话恢复、过期和用户隔离，并让 Demo 使用独立临时沙盒身份；只为未来
-ChannelIdentity 保留最小领域/持久化边界，不实现微信登录链接、绑定码或 OAuth。
+主控只验收 `codex/m1-1-web-session` 的 M1-1 Web 会话与 Demo 身份：重点复核
+凭据哈希、Cookie/CSRF、绝对过期与撤销、启动轮换、跨浏览器所有权过滤、Demo/真实
+物理双库和双存储路由，以及唯一身份实现。验收通过前当前允许阶段仍为 M1-1；
 M1-2 Next.js 及后续阶段继续禁止提前开发。
 
 ## 已确认 M0-Gate 延迟与超时校准
@@ -1945,3 +1947,53 @@ M1-2 Next.js 及后续阶段继续禁止提前开发。
 - M1-0 允许完成并集成。保留的非阻断风险为至少一次租约要求未来有副作用 handler
   自带业务幂等、APScheduler 注册需从权威数据重建，以及 SSE 250 ms 轮询尚未压力
   测试。当前唯一允许阶段改为 M1-1；M1-2 及后续阶段未开始
+
+#### 2026-07-27｜M1-1 Web 会话与 Demo 身份｜待主控验收
+
+- 分支与门禁：`codex/m1-1-web-session` 从指定基线
+  `272c710259862566586b968f87a64fa1e73e42a8` 创建；开始时本地 `main`、
+  `origin/main` 和 HEAD 均精确等于基线，工作区干净，Alembic 唯一 head 为
+  `20260726_0009`
+- 提交：持久 Web Session
+  `97c89d0ea1d84ffcd89de1190455f5a926392ad2`；浏览器 Demo 沙盒
+  `2ad2c501f0e288bb59c64954e52b226c2a1b312b`；安全与隔离测试
+  `bdad9e29a628c2b8e39dd06ed84df71802ea6767`；文档提交及最终 HEAD 以最终交接
+  输出和 `git rev-parse HEAD` 为准
+- 身份与安全：建立唯一 `BrowserSession`、`CurrentPrincipal`、
+  `WebSessionService` 和 SQLAlchemy Repository；既有 `Session` 继续只表示
+  Agent/消息会话。服务端生成 256-bit Token/CSRF，数据库只保存哈希；Cookie 固定
+  HttpOnly、SameSite=Lax、Path=/、无 Domain，production 强制 Secure；写请求统一
+  使用 `X-CSRF-Token`
+- 生命周期：真实会话保留默认/上限 30 天能力但没有公开登录入口；Demo 默认 2 小时、
+  上限 24 小时；绝对过期采用 `[created_at, expires_at)`，不滑动续期。当前设备可
+  撤销；Demo 恢复保持同一沙盒并同时轮换 Session Token 与 CSRF，旧 Token 立即
+  失效
+- Demo 隔离：删除运行时固定 Demo User；每个 Cookie Jar 在 Demo 数据库创建独立
+  User、Web Session 和消息 Session。API 从已验证 Session 得到 `user_id` 与数据库，
+  跨用户 Message、Collection、Source、AgentRun、RunEvent、Job 和 Undo 继续统一
+  所有权过滤，跨用户与不存在资源保持相同 404
+- 物理隔离：应用使用两个独立 `Database` 实例与两个私有存储根；production 启用
+  Demo 时必须显式配置不同 PostgreSQL 目标和不同存储根。Compose 提供正式与 Demo
+  PostgreSQL，并在 API 启动前分别迁移到新唯一 head `20260727_0010`
+- ChannelIdentity：只定义供应商无关的 `channel + subject` 领域对象和
+  `resolve_user_id` Repository 协议；因当前没有持久化消费者而不建表。微信字段、
+  登录链接、绑定码、兑换和 OAuth 全部延后到 M2-2
+- 自动化：editable 安装与 `pip check` 通过；Ruff 通过；strict mypy 对 115 个
+  源文件通过；严格线程告警的非真实全集和仓库外 DNS/TCP 封锁全集均为
+  `1555 passed / 11 skipped`；身份/迁移封网聚焦 `30 passed`；Core
+  `120 passed`；SQLite 迁移 `23 passed`
+- PostgreSQL 与 Compose：PostgreSQL 16 标记组 `9 passed / 161 deselected`，
+  覆盖迁移往返、Session 并发、双库、JobQueue、RunEvent 和 SSE。Compose 两库、
+  API、Worker 全部 healthy，API/Worker uid 均为 10001，两库均在
+  `20260727_0010`；Demo 启动后正式库 User/Web Session 为 0，Demo 库各为 1；
+  日志不含凭据或 Provider 调用，本轮容器、网络、镜像和卷已清理
+- 安全与复杂度：日志、异常、repr、OpenAPI 和公开响应不含 Session Token、Cookie、
+  哈希或 `user_id`。AgentRunner、ToolRegistry、Provider、User、消息 Session、
+  Database 类型、Repository 家族、AgentRun、RunEvent、JobQueue 和业务 API 均继续
+  唯一；没有白名单、固定 Token、重复路由校验或认证中间件
+- 调用与环境：真实模型、高德、网页、对象存储、消息、微信和付费 API 调用总数为
+  0；未读取或提交 `.env`
+- 风险与下一步：同浏览器极端并发启动只保证数据库最后一次凭据有效，M1-2 应串行
+  启动；过期 Session 清理任务尚未实现；ChannelIdentity 持久化等待 M2-2。主控按
+  `docs/technical/M1_1_HANDOFF.md` 独立验收；通过前当前允许阶段仍为 M1-1，不合并、
+  不推送、不开始 M1-2

@@ -187,12 +187,12 @@ behavior.
 
 ## M0-2D synchronous API
 
-`app.api` exposes the M0-only `/api/v1` surface for Demo Session creation, plain-text message
-submission, safe AgentRun lookup, collection list/detail, patch, logical delete, and path-bound
-Undo. Route code only resolves the fixed server Demo identity, validates strict Pydantic input,
-maps status codes, and serializes allowlisted responses. `CollectionQueryService` owns stable
-filtering/pagination, while `TextCollectionWorkflow` is the only new orchestration entry point
-and delegates extraction, writes, run tracking, and ownership checks to the existing services.
+`app.api` exposes the `/api/v1` surface for Demo Session creation, plain-text message submission,
+safe AgentRun lookup, collection list/detail, patch, logical delete, and path-bound Undo.
+`CollectionQueryService` owns stable filtering/pagination, while `TextCollectionWorkflow` is the
+only new orchestration entry point and delegates extraction, writes, run tracking, and ownership
+checks to the existing services. The original M0 fixed Demo identity was removed by M1-1; all
+routes now receive their owner through the verified browser principal described below.
 
 Message submission is synchronous and never claims to be queued after the request completes.
 It requires a safe `idempotency_key`; deterministic Message/Source/trace identifiers plus the
@@ -426,4 +426,32 @@ Offline focus suite:
 
 ```bash
 python -m pytest -q tests/contract/test_m0_4d_unified_input.py
+```
+
+## M1-1 browser identity and Demo isolation
+
+`app.domain.identity.BrowserSession` is distinct from the existing Agent/message `Session`.
+`WebSessionService` issues and resolves the only browser credential type, while
+`SqlAlchemyWebSessionRepository` persists only SHA-256 Token and CSRF hashes in
+`web_sessions`. Revision `20260727_0010` is the unique migration head and directly follows
+`20260726_0009`.
+
+`get_request_identity` is the single API boundary for Cookie validation, physical database
+routing, `CurrentPrincipal`, ownership and CSRF. Unsafe authenticated requests require
+`X-CSRF-Token`. The Cookie is `HttpOnly`, `SameSite=Lax`, `Path=/`, has no broad Domain, and is
+always Secure in production. Expiry is absolute; Demo defaults to two hours with a 24-hour
+maximum, while the unused real-login capability defaults to 30 days. Demo bootstrap restores
+the same browser sandbox but rotates both Session Token and CSRF, invalidating the old Token.
+
+The app owns separate real and Demo `Database` instances and separate private-storage roots.
+Production Demo requires an explicit, different PostgreSQL `DEMO_DATABASE_URL`; tests use two
+temporary SQLite databases. `POST /api/v1/demo/sessions` creates a per-browser Demo User, Web
+Session and message Session only in the Demo database. It accepts neither `user_id` nor a Token
+in the request body. The minimal provider-neutral `ChannelIdentity` protocol intentionally has
+no table until M2-2 supplies a real persistence consumer.
+
+Focused offline verification:
+
+```bash
+python -m pytest -q tests/unit/test_web_session_identity.py tests/contract/test_m1_1_web_sessions.py
 ```

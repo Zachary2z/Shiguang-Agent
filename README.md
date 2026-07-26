@@ -5,15 +5,16 @@
 ## 当前阶段
 
 **M0 技术验证已正式完成。** M0-0A 至 M0-5D 和 M0-Gate 均已通过主控验收；
-**M1-0 PostgreSQL 与任务基础已通过主控验收。** 当前允许开始 M1-1 Web 会话与
-Demo 身份；M1-2 及后续阶段尚未开始。
+**M1-0 PostgreSQL 与任务基础已通过主控验收。M1-1 Web 会话与 Demo 身份已完成
+开发，等待主控验收。** 当前允许阶段仍为 M1-1；M1-2 及后续阶段尚未开始。
 
 普通测试全部离线，不读取真实模型或地图密钥，也不访问网络。M0 历史真实验收的
 逐次授权不延续到 M1；真实模型、高德、网页、对象存储及其他外部/付费调用仍默认
 未授权，必须在当前任务中重新取得明确授权并限制请求范围。
 
-正式运行使用 PostgreSQL；SQLite 继续支持适合的单元测试。根目录 Dockerfile 和
-`compose.yaml` 提供 PostgreSQL、唯一 API 入口与唯一 Worker 入口。M1-0 已先修复
+正式运行使用 PostgreSQL；Demo 与真实数据使用两个独立数据库，SQLite 继续支持
+适合的单元测试。根目录 Dockerfile 和 `compose.yaml` 提供两套 PostgreSQL、唯一
+API 入口与唯一 Worker 入口。M1-0 已先修复
 `IdempotencyLockRegistry` 无界增长 P2，再加入持久化 Job、只负责创建 Job 的
 APScheduler 适配、租约恢复、SSE 持久化与 `Last-Event-ID` 重放。
 
@@ -104,6 +105,21 @@ sequence，服务只返回更大的持久化事件。Job payload 是内部有界
 敏感别名、Prompt、完整模型响应、Header、私有文件 key/路径没有公开字段，合法
 `content_sha256` 只在明确允许的位置序列化。
 
+### M1-1 Web Session 与 Demo 身份
+
+`BrowserSession`、`WebSessionService` 和 `SqlAlchemyWebSessionRepository` 分别是
+唯一浏览器会话领域、应用和持久化边界；既有 `Session` 继续只表示 Agent/消息
+会话。服务端生成 256-bit 随机 Session Token 和 CSRF，数据库只保存 SHA-256。
+Cookie 固定为 `HttpOnly`、`SameSite=Lax`、`Path=/` 且不设置 `Domain`；
+production 强制 `Secure`。所有认证写请求统一使用 `X-CSRF-Token`，过期采用绝对
+时间且不滑动续期，当前设备可显式撤销。
+
+`POST /api/v1/demo/sessions` 不接受客户端 `user_id` 或 Token。首次访问在独立 Demo
+数据库中创建该浏览器专属的 Demo User、Web Session 和消息 Session；有效 Cookie
+恢复同一沙盒，同时轮换 Session Token 与 CSRF，旧 Token 立即失效。Demo 默认 2
+小时、配置上限 24 小时；真实 Web Session 保留 30 天能力，但本阶段没有真实登录
+入口。`ChannelIdentity` 只保留供应商无关最小协议，持久化和微信绑定延后到 M2-2。
+
 ### 价格与人民币契约
 
 拾光当前只支持中国本地场景，用户无需填写或选择币种。文字、URL 正文和图片共用 `parse_extraction_response()` 抽取信任边界：模型已经明确识别出的本地金额若未写币种，会在进入严格候选契约前统一补为内部单位 `CNY`；系统不会扫描原文数字或自行猜测价格。明确免费保存为 `Decimal("0") + CNY`，无法确认价格时金额和币种都保持 `None` 并标记价格缺失、不确定或计划风险。
@@ -158,10 +174,11 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前唯一 HEAD revision 是 `20260726_0009`。`0008` 增加持久化
-`scheduled_jobs`，`0009` 增加现有 AgentRun 的 `run_events` 子记录。正式运行使用
-`postgresql+asyncpg`；SQLite 继续用于适合的测试。应用导入和普通启动不使用
-`create_all()`；Compose 的 API 启动命令会在 Uvicorn 前显式执行 Alembic 升级。
+当前唯一 HEAD revision 是 `20260727_0010`。`0008` 增加持久化
+`scheduled_jobs`，`0009` 增加现有 AgentRun 的 `run_events` 子记录，`0010` 增加
+只保存凭据哈希的 `web_sessions`。正式运行使用 `postgresql+asyncpg`；SQLite 继续
+用于适合的测试。应用导入和普通启动不使用 `create_all()`；Compose 的 API 启动
+命令会分别将真实与 Demo 数据库升级到 head。
 
 ### 启动 API
 
@@ -190,8 +207,9 @@ docker compose ps
 curl -i http://127.0.0.1:8000/healthz
 ```
 
-API 等 PostgreSQL 健康后执行迁移并启动既有 `app.main:app`；Worker 再等 API 健康后
-从同一 PostgreSQL 队列领取任务。API 和 Worker 都继承 Dockerfile 的非 root 用户。
+API 等两套 PostgreSQL 健康后分别执行迁移并启动既有 `app.main:app`；Worker 再等
+API 健康后从正式 PostgreSQL 队列领取任务。API 和 Worker 都继承 Dockerfile 的
+非 root 用户。
 如需验证两个 Worker 竞争，可临时扩容：
 
 ```bash
@@ -218,6 +236,11 @@ Compose 中的数据库口令是仅供本机开发的默认值，可通过 shell
 | `APP_ENV` | `development` | `development`、`test` 或 `production` |
 | `APP_TIMEZONE` | `Asia/Shanghai` | 有效 IANA 时区 |
 | `DATABASE_URL` | `postgresql+asyncpg://...` | 正式运行 PostgreSQL URL；测试可使用异步 SQLite |
+| `DEMO_DATABASE_URL` | `postgresql+asyncpg://...` | 独立 Demo PostgreSQL URL；production 启用 Demo 时必须显式提供且不得等于正式库 |
+| `DEMO_ENABLED` | `1` | 是否启用 Demo；production 启用时强制独立数据库 |
+| `WEB_SESSION_COOKIE_SECURE` | 环境决定 | production 必须为 Secure；开发 HTTP 可显式关闭 |
+| `REAL_WEB_SESSION_TTL_SECONDS` | `2592000` | 真实 Web Session 绝对有效期，上限 30 天；本阶段无公开登录入口 |
+| `DEMO_WEB_SESSION_TTL_SECONDS` | `7200` | Demo Web Session 绝对有效期，上限 24 小时 |
 | `LOG_LEVEL` | `INFO` | 标准 Python 日志级别 |
 | `MODEL_API_BASE` | 无 | OpenAI-compatible API Base，仅启用真实 Provider 时必填 |
 | `MODEL_API_KEY` | 无 | 服务端密钥，以 `SecretStr` 脱敏，仅启用真实 Provider 时必填 |
@@ -241,6 +264,7 @@ Compose 中的数据库口令是仅供本机开发的默认值，可通过 shell
 | `PLACE_MATCH_CANDIDATE_SCORE` | `35` | 合理候选的最低分数，只允许有限正数 `(0, 100]` 且不得高于唯一匹配阈值 |
 | `RUN_REAL_MAP_TESTS` | `0` | 只有精确设为 `1` 且另获授权才允许真实高德测试 |
 | `STORAGE_PRIVATE_ROOT` | `./data/private` | 本地私有根目录；不得位于公开 `public/static` 目录，完整路径不会进入公开对象或错误 |
+| `DEMO_STORAGE_PRIVATE_ROOT` | `./data/demo-private` | 与真实用户文件物理分离的 Demo 私有根目录 |
 | `STORAGE_MAX_FILE_SIZE_BYTES` | `10000000` | 流式写入上限，只允许 `1..20000000` 字节 |
 | `STORAGE_ALLOWED_CONTENT_TYPES` | `image/jpeg,image/png,image/webp` | 允许类型的逗号分隔子集；声明类型还必须通过集中式文件签名校验 |
 
