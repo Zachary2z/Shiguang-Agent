@@ -104,7 +104,6 @@ class OfflineProviderFactory:
         outcomes: Sequence[httpx.Response | BaseException],
         *,
         clock: Callable[[], float] | None = None,
-        timeout_seconds: float = 7,
     ) -> tuple[OpenAICompatibleProvider, list[httpx.Request]]:
         pending = deque(outcomes)
         requests: list[httpx.Request] = []
@@ -123,7 +122,7 @@ class OfflineProviderFactory:
         if clock is not None:
             kwargs["clock"] = clock
         provider = OpenAICompatibleProvider.from_settings(
-            _settings(model_timeout_seconds=timeout_seconds),
+            _settings(),
             **kwargs,  # type: ignore[arg-type]
         )
         self.providers.append(provider)
@@ -230,17 +229,35 @@ async def test_maps_text_response_and_all_metadata(
 async def test_response_after_fifteen_seconds_but_before_thirty_succeeds(
     provider_factory: OfflineProviderFactory,
 ) -> None:
-    timestamps = iter([100.0, 116.0])
-    provider, requests = provider_factory.build(
-        [_response(_completion(content="completed before hard guardrail"))],
-        clock=lambda: next(timestamps),
-        timeout_seconds=30,
+    old_timeout_seconds = 0.015
+    new_timeout_seconds = 0.03
+    release_response = asyncio.Event()
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        await release_response.wait()
+        return _response(_completion(content="completed before hard guardrail"))
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAICompatibleProvider.from_settings(
+        _settings(model_timeout_seconds=new_timeout_seconds),
+        http_client=http_client,
+    )
+    provider_factory.providers.append(provider)
+    provider_factory.requests.append(requests)
+    started_at = monotonic()
+    asyncio.get_running_loop().call_later(
+        old_timeout_seconds + 0.001,
+        release_response.set,
     )
 
     result = await provider.chat(messages=[], tools=None)
+    elapsed = monotonic() - started_at
 
     assert result.content == "completed before hard guardrail"
-    assert result.latency_ms == 16_000
+    assert elapsed >= old_timeout_seconds
+    assert release_response.is_set()
     assert len(requests) == 1
 
 
