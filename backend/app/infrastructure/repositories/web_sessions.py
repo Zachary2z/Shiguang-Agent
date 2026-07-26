@@ -37,28 +37,6 @@ class SqlAlchemyWebSessionRepository:
         )
         return None if model is None else _to_domain(model)
 
-    async def replace_credentials(
-        self,
-        *,
-        session_id: str,
-        token_hash: str,
-        csrf_token_hash: str,
-    ) -> BrowserSession | None:
-        await self._session.execute(
-            update(BrowserSessionModel)
-            .where(
-                BrowserSessionModel.id == session_id,
-                BrowserSessionModel.revoked_at.is_(None),
-            )
-            .values(
-                token_hash=token_hash,
-                csrf_token_hash=csrf_token_hash,
-            )
-        )
-        await self._session.flush()
-        model = await self._session.get(BrowserSessionModel, session_id)
-        return None if model is None or model.revoked_at is not None else _to_domain(model)
-
     async def revoke(
         self,
         *,

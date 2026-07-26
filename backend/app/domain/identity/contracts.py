@@ -90,14 +90,6 @@ class WebSessionRepository(Protocol):
 
     async def get_by_token_hash(self, token_hash: str) -> BrowserSession | None: ...
 
-    async def replace_credentials(
-        self,
-        *,
-        session_id: str,
-        token_hash: str,
-        csrf_token_hash: str,
-    ) -> BrowserSession | None: ...
-
     async def revoke(
         self,
         *,

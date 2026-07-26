@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -28,6 +29,7 @@ class DemoSessionBootstrap:
     session_token: str
     csrf_token: str
     expires_at: datetime
+    cookie_max_age_seconds: int
     resumed: bool
 
 
@@ -37,20 +39,24 @@ class DemoSessionService:
         *,
         session: AsyncSession,
         lifetime: timedelta,
+        now: Callable[[], datetime] = utc_now,
     ) -> None:
         self._session = session
         self._lifetime = lifetime
+        self._now = now
         self._repository = SqlAlchemyCollectionRepository(session)
-        self._web_sessions = WebSessionService(session=session)
+        self._web_sessions = WebSessionService(session=session, now=now)
 
     async def start(self, *, session_token: str | None) -> DemoSessionBootstrap:
+        timestamp = self._now()
         if session_token is not None:
-            resolved = await self._web_sessions.resolve(
+            resumed = await self._web_sessions.resume(
                 session_token=session_token,
                 mode=PrincipalMode.DEMO,
+                at=timestamp,
             )
-            if resolved is not None:
-                principal, browser_session = resolved
+            if resumed is not None:
+                principal, issued = resumed
                 user = await self._repository.get_user(user_id=principal.user_id)
                 message_sessions = await self._repository.list_sessions(
                     user_id=principal.user_id
@@ -64,23 +70,22 @@ class DemoSessionService:
                     None,
                 )
                 if user is not None and user.mode is UserMode.DEMO and active is not None:
-                    rotated = await self._web_sessions.rotate_credentials(
-                        session_id=browser_session.id
+                    await self._session.rollback()
+                    return DemoSessionBootstrap(
+                        message_session=active,
+                        session_token=issued.session_token,
+                        csrf_token=issued.csrf_token,
+                        expires_at=issued.browser_session.expires_at,
+                        cookie_max_age_seconds=_remaining_cookie_seconds(
+                            expires_at=issued.browser_session.expires_at,
+                            now=timestamp,
+                        ),
+                        resumed=True,
                     )
-                    if rotated is not None:
-                        await self._session.commit()
-                        return DemoSessionBootstrap(
-                            message_session=active,
-                            session_token=rotated.session_token,
-                            csrf_token=rotated.csrf_token,
-                            expires_at=rotated.browser_session.expires_at,
-                            resumed=True,
-                        )
 
         # Resolution is read-only but SQLAlchemy autobegins a transaction for it.
         # End that transaction before atomically creating a replacement sandbox.
         await self._session.rollback()
-        timestamp = utc_now()
         user = User(
             id=generate_user_id(),
             mode=UserMode.DEMO,
@@ -104,11 +109,20 @@ class DemoSessionService:
                 user_id=user.id,
                 mode=PrincipalMode.DEMO,
                 lifetime=self._lifetime,
+                at=timestamp,
             )
         return DemoSessionBootstrap(
             message_session=message_session,
             session_token=issued.session_token,
             csrf_token=issued.csrf_token,
             expires_at=issued.browser_session.expires_at,
+            cookie_max_age_seconds=_remaining_cookie_seconds(
+                expires_at=issued.browser_session.expires_at,
+                now=timestamp,
+            ),
             resumed=False,
         )
+
+
+def _remaining_cookie_seconds(*, expires_at: datetime, now: datetime) -> int:
+    return max(0, int((expires_at - now).total_seconds()))

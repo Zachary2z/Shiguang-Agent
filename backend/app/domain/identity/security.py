@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 import secrets
+from base64 import urlsafe_b64encode
 
 SESSION_COOKIE_NAME = "shiguang_session"
 CSRF_HEADER_NAME = "X-CSRF-Token"
 _SECRET_PATTERN = re.compile(r"^[A-Za-z0-9_-]{43}$", flags=re.ASCII)
 _HASH_PATTERN = re.compile(r"^[a-f0-9]{64}$", flags=re.ASCII)
+_CSRF_DERIVATION_CONTEXT = b"shiguang:web-session:csrf:v1"
 
 
 class SessionCredentialError(ValueError):
@@ -33,6 +36,19 @@ def validate_session_secret(value: object) -> str:
 def hash_session_secret(value: str) -> str:
     secret = validate_session_secret(value)
     return hashlib.sha256(secret.encode("ascii")).hexdigest()
+
+
+def derive_csrf_token(session_token: str) -> str:
+    """Derive the browser CSRF proof without persisting another plaintext secret."""
+
+    secret = validate_session_secret(session_token)
+    digest = hmac.new(
+        secret.encode("ascii"),
+        _CSRF_DERIVATION_CONTEXT,
+        hashlib.sha256,
+    ).digest()
+    csrf_token = urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+    return validate_session_secret(csrf_token)
 
 
 def validate_secret_hash(value: str) -> str:

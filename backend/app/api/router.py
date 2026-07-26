@@ -164,7 +164,8 @@ async def create_demo_session(
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=created.session_token,
-        max_age=settings.demo_web_session_ttl_seconds,
+        max_age=created.cookie_max_age_seconds,
+        expires=created.expires_at,
         httponly=True,
         secure=settings.session_cookie_secure,
         samesite="lax",

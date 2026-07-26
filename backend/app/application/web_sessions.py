@@ -1,7 +1,8 @@
-"""Creation, recovery, CSRF rotation, and revocation for the single Web Session model."""
+"""Creation, stable recovery, and revocation for the single Web Session model."""
 
 from __future__ import annotations
 
+import hmac
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -13,6 +14,7 @@ from app.domain.identity import (
     BrowserSession,
     CurrentPrincipal,
     PrincipalMode,
+    derive_csrf_token,
     generate_session_secret,
     hash_session_secret,
 )
@@ -44,12 +46,13 @@ class WebSessionService:
         user_id: str,
         mode: PrincipalMode,
         lifetime: timedelta,
+        at: datetime | None = None,
     ) -> IssuedWebSession:
         if lifetime <= timedelta(0):
             raise ValueError("web session lifetime must be positive")
-        timestamp = self._now()
+        timestamp = at or self._now()
         token = generate_session_secret()
-        csrf_token = generate_session_secret()
+        csrf_token = derive_csrf_token(token)
         browser_session = BrowserSession(
             id=f"wbs_{uuid4().hex}",
             user_id=user_id,
@@ -70,13 +73,14 @@ class WebSessionService:
         *,
         session_token: str,
         mode: PrincipalMode,
+        at: datetime | None = None,
     ) -> tuple[CurrentPrincipal, BrowserSession] | None:
         try:
             token_hash = hash_session_secret(session_token)
         except ValueError:
             return None
         browser_session = await self._repository.get_by_token_hash(token_hash)
-        if browser_session is None or not browser_session.is_active_at(self._now()):
+        if browser_session is None or not browser_session.is_active_at(at or self._now()):
             return None
         return (
             CurrentPrincipal(
@@ -88,20 +92,34 @@ class WebSessionService:
             browser_session,
         )
 
-    async def rotate_credentials(self, *, session_id: str) -> IssuedWebSession | None:
-        session_token = generate_session_secret()
-        csrf_token = generate_session_secret()
-        browser_session = await self._repository.replace_credentials(
-            session_id=session_id,
-            token_hash=hash_session_secret(session_token),
-            csrf_token_hash=hash_session_secret(csrf_token),
-        )
-        if browser_session is None:
-            return None
-        return IssuedWebSession(
-            browser_session=browser_session,
+    async def resume(
+        self,
+        *,
+        session_token: str,
+        mode: PrincipalMode,
+        at: datetime | None = None,
+    ) -> tuple[CurrentPrincipal, IssuedWebSession] | None:
+        resolved = await self.resolve(
             session_token=session_token,
-            csrf_token=csrf_token,
+            mode=mode,
+            at=at,
+        )
+        if resolved is None:
+            return None
+        principal, browser_session = resolved
+        csrf_token = derive_csrf_token(session_token)
+        if not hmac.compare_digest(
+            hash_session_secret(csrf_token),
+            browser_session.csrf_token_hash,
+        ):
+            return None
+        return (
+            principal,
+            IssuedWebSession(
+                browser_session=browser_session,
+                session_token=session_token,
+                csrf_token=csrf_token,
+            ),
         )
 
     async def revoke(self, *, session_id: str) -> BrowserSession | None:
