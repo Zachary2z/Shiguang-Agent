@@ -226,43 +226,6 @@ async def test_maps_text_response_and_all_metadata(
 
 
 @pytest.mark.asyncio
-async def test_provider_allows_response_after_application_deadline_before_safety_cap(
-    provider_factory: OfflineProviderFactory,
-) -> None:
-    application_deadline_seconds = 0.06
-    provider_safety_cap_seconds = 0.075
-    release_response = asyncio.Event()
-    requests: list[httpx.Request] = []
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        await release_response.wait()
-        return _response(_completion(content="completed before hard guardrail"))
-
-    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    provider = OpenAICompatibleProvider.from_settings(
-        _settings(model_timeout_seconds=provider_safety_cap_seconds),
-        http_client=http_client,
-    )
-    provider_factory.providers.append(provider)
-    provider_factory.requests.append(requests)
-    started_at = monotonic()
-    asyncio.get_running_loop().call_later(
-        application_deadline_seconds + 0.001,
-        release_response.set,
-    )
-
-    result = await provider.chat(messages=[], tools=None)
-    elapsed = monotonic() - started_at
-
-    assert result.content == "completed before hard guardrail"
-    assert elapsed >= application_deadline_seconds
-    assert elapsed < provider_safety_cap_seconds
-    assert release_response.is_set()
-    assert len(requests) == 1
-
-
-@pytest.mark.asyncio
 async def test_maps_json_schema_response_format_with_isolated_schema(
     provider_factory: OfflineProviderFactory,
 ) -> None:

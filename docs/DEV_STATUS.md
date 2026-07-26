@@ -1757,11 +1757,18 @@ Session、M1-2 Next.js 或其他后续阶段。
   报告中的 30 秒正式边界描述，替换为 60 秒单一正常截止与 75 秒异常安全上限；
   没有新增 Deadline/Timeout helper、第二套 Provider、workflow、图片服务、Parser、
   repair、清理机制或后台 Task，净生产复杂度未增加
-- 验证：聚焦组覆盖配置、Provider、图片、抽取/repair、统一输入和 Event 日期回归，
-  `423 passed`。最终全量离线组 Ruff 通过，strict mypy 对 94 个源文件无问题，
-  `1509 passed / 2 deselected`。首次全量运行发现比例测试的 60/75ms 窗口会被 SDK
-  首次懒初始化占用，生产代码未失败；仅将同一测试比例放大为 0.6/0.75 秒后最终全量
-  通过，没有增加生产 sleep、特例、skip 或放宽业务断言
+- 验收 P2 修复：删除
+  `test_provider_allows_response_after_application_deadline_before_safety_cap`。该测试重复
+  覆盖已有契约，且 60/75ms 外部计时依赖其他测试预热 SDK，单独运行时会因首次懒
+  初始化稳定失败；本修复没有通过增加 sleep、放宽容差或放大计时比例规避问题，也
+  没有新增替代测试。配置 75 秒边界、Provider 自身截止取消/等待及 TIMEOUT 映射、
+  截止前分段响应成功、正式图片工作流 60 秒先取消 75 秒 Provider、单次 HTTP 与
+  清理无残留继续由现有独立测试覆盖
+- 修复验证与复杂度：按指定清单各执行一次，聚焦组 `379 passed`；Ruff 通过，
+  strict mypy 对 94 个源文件无问题；全量离线组
+  `1508 passed / 2 deselected`。P2 修复只删除一项测试并更新本交接记录，生产代码、
+  配置值和产品文档语义零修改，净测试复杂度下降；没有生产 sleep、特例、skip 或
+  放宽断言
 - 范围与下一步：Event 日期逻辑、Prompt、数据库模型、迁移和 M1 功能均未修改；真实
   模型、地图、网页、对象存储、消息及其他外部 API 请求为 0。固定样本 03 未执行、
   未标记通过；主控应先离线复核并 ff-only 集成，再单独取得最多两次非流式请求授权，
