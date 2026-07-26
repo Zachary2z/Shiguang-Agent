@@ -26,9 +26,11 @@ Alembic 唯一 head：`20260726_0009`
 - `run_events` 通过外键附属于既有 `AgentRun`，没有第二套运行主记录。写入先锁定父
   AgentRun，再分配 trace 内递增 sequence。SSE 支持 `Last-Event-ID`，只补发更大
   sequence；终态事件发送后结束当前流。
-- Job payload、结果摘要和 RunEvent 摘要共用 `app.domain.public_data` 安全边界，
-  拒绝密钥、Authorization、Cookie、Prompt、模型完整响应、Base64、私人路径和超限
-  内容；SSE 不输出思维链。
+- Job payload 是只在队列与 Worker 内部流转的有界 JSON，不复用公开 DTO，也不会
+  被 SSE 或结果摘要自动透传。Job 结果和七类 RunEvent 摘要分别由显式冻结模型生成；
+  未声明字段不能进入持久化公开摘要或 SSE。`apiKey`、`access_token`、
+  `modelResponse` 等别名无需黑名单也没有公开字段，合法 `content_sha256` 只在明确
+  允许的位置出现；SSE 不输出 Prompt、模型响应、Header、私有 key/路径或思维链。
 - 根目录 `compose.yaml` 只包含 PostgreSQL、API、Worker，复用 Dockerfile 和
   `app.main:app`。API 在启动 Uvicorn 前执行 Alembic；Worker 等 API 健康后启动。
 
@@ -38,27 +40,39 @@ Alembic 唯一 head：`20260726_0009`
 2. `8ea7bc454546b35646c62f01ec359d5a16ae91d9` — PostgreSQL 驱动、配置和历史迁移兼容。
 3. `d86c9f02c0b95048cf5be0af11f0d0c2b912f960` — JobQueue、Worker、APScheduler、0008。
 4. `61db0b2ff4469d7e311a7fe4b6b117da1da81b9a` — RunEvent、SSE、0009、Compose。
-5. 文档与交接提交的完整 SHA 由本分支最终 `git rev-parse HEAD` 和最终交接输出记录。
+5. `b8bbb8ff366614370e1a45b4eab4922c20617fc9` — 原候选文档交接。
+6. `67716ea01f9350e3253bace5370e849e61d018b4` — 取消期间确定完成锁清理。
+7. `85765af6dce984a60541f0b97cd239215a3175bf` — 统一 SQLAlchemy DML rowcount 类型边界。
+8. `2b2f7a3036a411d5a0bd35546f137fd95c1c3a2a` — 删除公共数据启发式黑名单，改用显式摘要契约。
+9. 最终文档提交与最终 HEAD 的完整 SHA 由最终交接输出记录。
 
 ## 自动化验证
 
-- editable 安装和 `pip check` 通过。
-- Ruff 通过；strict mypy 对 108 个源文件无问题。
+- QA 在原候选 `b8bbb8ff...` 上实际复现 strict mypy 11 个错误；因此原候选“mypy
+  已通过”的记录无效，不能作为验收证据。`85765af...` 之后以仓库指定 `.venv`
+  重新执行，strict mypy 对 108 个源文件无问题。
+- `pip check` 与 Ruff 通过；P1 指定聚焦集合 `37 passed`，既有 SQLite
+  Run tracking 加聚焦集合 `61 passed`。
 - 非真实 Provider 全集：
-  `1526 passed, 8 skipped, 2 deselected`。
+  `1546 passed, 8 skipped, 2 deselected`。
 - 上述全集将 `PytestUnhandledThreadExceptionWarning` 提升为 error 后仍通过；本次未
   观察到 aiosqlite 收尾 warning，也没有过滤 warning 或使用 sleep 掩盖。
-- 显式本地 PostgreSQL 测试：`8 passed`。覆盖全新迁移/当前版本/check/降级/重升、
+- Core `120 passed`；SQLite 迁移 `23 passed`；Alembic 唯一 head
+  `20260726_0009`。
+- 显式本地 PostgreSQL 16 加锁聚焦：`17 passed`。覆盖全新迁移/current/check/
+  降级 base/重升、
   双 Worker 竞争、Job 幂等、三次重试、取消、租约恢复、UTC、并发事件 sequence、
-  用户/trace 隔离、敏感摘要拒绝和 SSE 重放。
+  用户/trace 隔离、内部 payload 与公开摘要隔离、合法 SHA-256、敏感别名拒绝和
+  SSE 重放。
 - 幂等锁聚焦回归覆盖同键、不同键/用户、10,000 个高基数键、异常、持有者取消、
-  等待者取消和淘汰竞态；请求完成后 `active_key_count == 0`。
+  等待者取消、退出清理阶段连续取消和淘汰竞态；清理任务被持有并观察至完成，原始
+  `CancelledError` 传播，请求完成后 `active_key_count == 0`。
 
 ## Compose 实机结果
 
 - PostgreSQL 16、API、Worker 均启动并通过健康检查；API 与 Worker 均为
   `uid=10001(appuser)`。
-- `/healthz` 返回 200；容器内 `alembic current --check-heads` 为
+- `/healthz` 返回 200；容器内 `alembic current` 为
   `20260726_0009 (head)`。
 - 扩容到两个 Worker 后，重复创建同一确定性任务返回同一 Job ID 和
   `replayed=true`；最终为 `succeeded`、`attempt=1`、安全结果摘要
@@ -73,8 +87,13 @@ Alembic 唯一 head：`20260726_0009`
   Repository 家族、JobQueue 契约、Worker 入口、幂等服务和 AgentRun 主记录。
 - APScheduler、Worker 和 API 没有业务执行的平行入口；APScheduler 只创建持久化
   Job，Worker 只消费 JobQueue。
-- Job 与 RunEvent 的敏感数据校验已收敛到同一个公开数据边界；没有测试白名单、
-  固定容量缓存、后台清扫、重复安全代理或框架内部属性补丁。
+- `app.domain.public_data`、关键词黑名单和 Base64 猜测已删除。内部 Job payload、
+  显式 Job 结果模型和七类 RunEvent 摘要职责分离；RunEvent 持久化与 SSE 共用同一
+  类型化序列化边界。没有字段别名黑名单、测试白名单、固定容量缓存、后台清扫、
+  重复安全代理或第二套通用校验器。
+- SQLAlchemy UPDATE/DELETE 只通过一个 `execute_dml_rowcount()` 类型边界取得
+  `CursorResult.rowcount`；执行仍使用原 `AsyncSession`，CAS、取消和租约恢复语义
+  未改变；该类型边界没有 `Any` 返回、`type: ignore` 或逐调用代理。
 
 ## 已知风险和 QA 重点
 
@@ -86,6 +105,9 @@ Alembic 唯一 head：`20260726_0009`
   套队列。
 - SSE 当前以 250 ms PostgreSQL 轮询实现跨进程可见性，没有引入 Redis、WebSocket
   或 LISTEN/NOTIFY；正确性已验证，吞吐和长连接容量尚未做压力测试。
+- Job payload 是内部持久化 JSON，不等同于“允许持久化凭据”的授权；新增真实业务
+  Job 时仍必须定义自己的最小 payload 类型，并禁止把凭据写入任务。当前 M1-0 只有
+  无副作用确定性 Job。
 - Compose 默认口令仅供本机开发；生产必须由运行环境注入。当前只验证 PostgreSQL
   16，不代表其他大版本已完成兼容验收。
 - M1-1 身份/Web Session、M1-2 前端和后续业务 Job 均未实现。

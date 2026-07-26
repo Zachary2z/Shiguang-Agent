@@ -98,8 +98,10 @@ python -m pytest -q -m postgresql
 单调递增，公开类型包括 `run.started`、`stage.changed`、`tool.completed`、
 `approval.required`、`result.updated`、`run.completed` 和 `run.failed`。订阅入口为
 `GET /api/v1/agent-runs/{trace_id}/events`；`Last-Event-ID` 表示客户端已经确认的
-sequence，服务只返回更大的持久化事件。摘要与 Job payload 共用一个安全边界，拒绝
-密钥、Authorization、Cookie、Prompt、完整模型响应、Base64 和私人路径。
+sequence，服务只返回更大的持久化事件。Job payload 是内部有界 JSON，不会自动进入
+公开结果或 SSE；Job 结果和七类 RunEvent 摘要由显式允许字段的冻结模型生成。常见
+敏感别名、Prompt、完整模型响应、Header、私有文件 key/路径没有公开字段，合法
+`content_sha256` 只在明确允许的位置序列化。
 
 ### 价格与人民币契约
 

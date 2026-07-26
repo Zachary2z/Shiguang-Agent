@@ -1841,14 +1841,12 @@ Next.js 或其他后续阶段。
   安全摘要不含思维链；`GET /api/v1/agent-runs/{trace_id}/events` 支持
   `Last-Event-ID`。20 个并发事件得到连续唯一的 1..20；重连只补发未确认 sequence；
   跨用户/trace 统一隔离
-- 安全：Job payload、结果和 RunEvent 共用一个公开数据安全边界，拒绝密钥、
-  Authorization、Cookie、Prompt、完整模型响应、Base64、私人路径和超限内容；未读取
-  或打印 `.env`，真实模型、高德、网页、消息、云和其他外部 Provider 调用均为 0
-- 自动化：editable 安装和 `pip check` 通过；Ruff 通过；strict mypy 对 108 个源
-  文件无问题；非真实 Provider 全集
-  `1526 passed / 8 skipped / 2 deselected`。将
-  `PytestUnhandledThreadExceptionWarning` 升级为 error 后同样通过，未观察到
-  aiosqlite 收尾 warning；显式本地 PostgreSQL 组 `8 passed`
+- 安全：原候选用 `app.domain.public_data` 同时校验内部 Job payload 和公开摘要；
+  QA 后续确认这是启发式黑名单设计，已由 2026-07-27 P1 修复记录取代。未读取或打印
+  `.env`，真实模型、高德、网页、消息、云和其他外部 Provider 调用均为 0
+- 自动化：原候选曾记录 strict mypy 对 108 个源文件通过，但 QA 在精确候选
+  `b8bbb8ff366614370e1a45b4eab4922c20617fc9` 实际复现 11 个错误；该原候选
+  mypy 结论无效。修复后的真实结果见下一条记录
 - Compose：PostgreSQL、API、Worker 均健康；API/Worker 为 uid 10001；`/healthz`
   200；容器迁移为 `20260726_0009 (head)`。扩容两个 Worker 后确定性任务只执行
   一次，最终 `succeeded/attempt=1`；重复创建返回同一 Job 且 replayed；SSE replay
@@ -1861,3 +1859,62 @@ Next.js 或其他后续阶段。
   数据库轮询，尚未做压力测试；Compose 默认口令仅限本机；本轮只验证 PostgreSQL 16
 - 下一步：主控按 `docs/technical/M1_0_HANDOFF.md` 复核并交给 QA 独立验收；通过前
   不合并、不推送、不开始 M1-1 或 M1-2
+
+#### 2026-07-27｜M1-0 QA 阻断 P1 修复｜待主控验收
+
+- 分支与门禁：继续使用 `codex/m1-0-postgresql-jobs`，从指定修复基线
+  `b8bbb8ff366614370e1a45b4eab4922c20617fc9` 追加提交；开始时工作区干净，
+  `main` 与 `origin/main` 均精确为
+  `6dbdbbaa49c8493b425870e2ea74682c6f2c0ca6`。未 amend、rebase、squash、合并
+  main 或推送
+- 三个 P1 提交：取消清理
+  `67716ea01f9350e3253bace5370e849e61d018b4`；DML 类型边界
+  `85765af6dce984a60541f0b97cd239215a3175bf`；显式公开数据契约
+  `2b2f7a3036a411d5a0bd35546f137fd95c1c3a2a`。最终文档提交和最终 HEAD 由开发
+  窗口交接输出记录
+- 取消清理：锁获取等待和 lease 退出都把参与者清理交给本次调用持有的单个 cleanup
+  task，并用 shield 抵御退出阶段的重复取消；调用方在观察 task 结果、确认注册表
+  计数更新后才重新抛出最早的原始 `CancelledError`。没有遗留未观察 task，没有
+  TTL、LRU、sleep、扫描、后台清扫或第二套锁；数据库唯一约束仍是跨进程边界
+- 锁回归：Event 精确协调清理开始与放行，不依赖计时碰运气；覆盖同 key、不同
+  user/key、10,000 高基数、异常、等待获取取消、持有期间取消、退出清理阶段连续
+  取消和淘汰竞态。聚焦 `9 passed`，每类最后参与者退出后
+  `active_key_count == 0`
+- mypy 与 SQLAlchemy：原候选 11 个错误全部来自 ORM `AsyncSession.execute()` 对
+  DML 返回 `Result[Any]` 的静态类型。新增唯一
+  `app.infrastructure.db.dml.execute_dml_rowcount()`，在一处确认
+  `CursorResult` 并返回 `int rowcount`；Job 的 CAS/取消/两类租约恢复与 Collection
+  的 CAS/删除/Undo 仍通过原 Session 和事务执行。没有 `Any` 返回、错误码关闭、
+  mypy 放宽或逐调用类型代理；SQLite Collection/写入回归 `41 passed`，PostgreSQL
+  同样通过
+- 公开数据契约：删除 `app.domain.public_data`、字段关键词黑名单、Base64 正则猜测
+  和对应重复测试。Job payload 现在是仅供 JobQueue/Worker 使用的有界内部 JSON；
+  Job 公开结果为唯一 `JobResultSummary`。七类 RunEvent 各有显式冻结 summary
+  模型，Repository 持久化与 SSE 共用同一类型化序列化函数，不接受任意 dict
+- 安全行为：`apiKey`、`access_token`、`modelResponse`、Prompt、Authorization、
+  Cookie、Header、私有文件 key/路径都没有公开 summary 字段；extra-forbid 在模型
+  构造前拒绝。合法 64 位 lowercase `content_sha256` 在 Job 结果或
+  `result.updated` 明确字段可保存、重放。内部 payload 即使含同名内部键也不会
+  自动进入 Job 结果、RunEvent 或 SSE
+- 静态与离线结果：项目 `.venv` 的 `pip check`、Ruff 和 strict mypy 全部退出 0，
+  mypy 检查 108 个源文件；指定 P1 聚焦 `37 passed`，加既有 SQLite Run tracking
+  为 `61 passed`。将 `PytestUnhandledThreadExceptionWarning` 升级为 error 的非真实
+  全集为 `1546 passed / 8 skipped / 2 deselected`，未观察到 aiosqlite 收尾
+  warning；Core `120 passed`，SQLite 迁移 `23 passed`，Alembic 唯一 head 为
+  `20260726_0009`
+- PostgreSQL 16：一次性本地容器完成全新 upgrade/current/check、downgrade base、
+  re-upgrade/current/check；PostgreSQL migrations、双 Worker、Job 幂等/三次重试/
+  取消/过期租约、并发 RunEvent sequence、用户/trace 隔离、SSE replay、内部
+  payload/公开摘要隔离、合法 SHA-256 与锁取消聚焦合计 `17 passed`
+- Compose：无真实 Provider 配置，重新构建后 PostgreSQL、API、两个 Worker 全部
+  healthy；API/Worker UID 均为 10001，`/healthz` 为 200，迁移为
+  `20260726_0009 (head)`。重复任务返回相同 ID 和 `replayed=true`，两个 Worker
+  最终只完成一次（`succeeded/attempt=1`）；`Last-Event-ID: 1` 只重放 sequence
+  2、3，合法 SHA-256 保留。日志未命中 Provider、Authorization、Cookie 或内部
+  payload 哨兵；Compose 服务、网络与测试卷已正常停止并清理
+- 复杂度、范围与风险：AgentRunner、ToolRegistry、Provider、Base、Database、
+  Repository 家族、JobQueue、Worker、RunEvent、AgentRun 和幂等服务继续各一套；
+  没有新增黑名单、通用安全代理、重复校验器、生产特例或后续业务 Job。租约仍为
+  至少一次恢复，未来有副作用 handler 必须自带业务幂等；APScheduler 注册仍需未来
+  从权威数据重建；SSE 250 ms 轮询尚未压力测试。状态继续“待主控验收”，不进入
+  M1-1/M1-2
