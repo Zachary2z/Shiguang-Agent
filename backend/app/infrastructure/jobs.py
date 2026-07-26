@@ -26,6 +26,7 @@ from app.domain.jobs import (
     validate_safe_label,
 )
 from app.domain.time import required_utc, utc_now
+from app.infrastructure.db.dml import execute_dml_rowcount
 from app.infrastructure.db.models import ScheduledJobModel
 
 
@@ -132,7 +133,8 @@ class PostgresJobQueue:
         )
         timestamp = required_utc(now)
         async with self._session_factory() as session, session.begin():
-            result = await session.execute(
+            rowcount = await execute_dml_rowcount(
+                session,
                 update(ScheduledJobModel)
                 .where(
                     ScheduledJobModel.id == job_id,
@@ -148,7 +150,7 @@ class PostgresJobQueue:
                     finished_at=timestamp,
                 )
             )
-            return result.rowcount == 1
+            return rowcount == 1
 
     async def fail(
         self,
@@ -205,7 +207,8 @@ class PostgresJobQueue:
         validate_safe_label(job_id, name="job_id")
         timestamp = required_utc(now)
         async with self._session_factory() as session, session.begin():
-            result = await session.execute(
+            rowcount = await execute_dml_rowcount(
+                session,
                 update(ScheduledJobModel)
                 .where(
                     ScheduledJobModel.id == job_id,
@@ -222,12 +225,13 @@ class PostgresJobQueue:
                     finished_at=timestamp,
                 )
             )
-            return result.rowcount == 1
+            return rowcount == 1
 
     async def recover_stale(self, *, now: datetime) -> int:
         timestamp = required_utc(now)
         async with self._session_factory() as session, session.begin():
-            exhausted = await session.execute(
+            exhausted = await execute_dml_rowcount(
+                session,
                 update(ScheduledJobModel)
                 .where(
                     ScheduledJobModel.status == JobStatus.RUNNING.value,
@@ -243,7 +247,8 @@ class PostgresJobQueue:
                     finished_at=timestamp,
                 )
             )
-            recoverable = await session.execute(
+            recoverable = await execute_dml_rowcount(
+                session,
                 update(ScheduledJobModel)
                 .where(
                     ScheduledJobModel.status == JobStatus.RUNNING.value,
@@ -259,7 +264,7 @@ class PostgresJobQueue:
                     updated_at=timestamp,
                 )
             )
-            return exhausted.rowcount + recoverable.rowcount
+            return exhausted + recoverable
 
     async def get(self, *, user_id: str, job_id: str) -> ScheduledJob | None:
         owner = validate_user_id(user_id)

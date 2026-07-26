@@ -55,6 +55,7 @@ from app.domain.places import (
     PoiProvider,
 )
 from app.domain.time import as_utc, require_aware_utc, required_utc
+from app.infrastructure.db.dml import execute_dml_rowcount
 from app.infrastructure.db.models import (
     CollectionItemModel,
     CollectionSourceModel,
@@ -392,7 +393,8 @@ class SqlAlchemyCollectionRepository:
         if self._editable_values(item) == self._editable_values(current):
             return current
 
-        result = await self._session.execute(
+        rowcount = await execute_dml_rowcount(
+            self._session,
             update(CollectionItemModel)
             .where(
                 CollectionItemModel.id == identifier,
@@ -405,7 +407,7 @@ class SqlAlchemyCollectionRepository:
                 updated_at=item.updated_at,
             )
         )
-        if result.rowcount != 1:
+        if rowcount != 1:
             raise VersionConflictError
         updated = await self._require_collection_item(owner, identifier)
         return self._collection_item(updated)
@@ -437,7 +439,8 @@ class SqlAlchemyCollectionRepository:
         ):
             raise ValueError("Place resolution cannot change aggregate identity")
         ensure_collection_transition(current.status, item.status)
-        result = await self._session.execute(
+        rowcount = await execute_dml_rowcount(
+            self._session,
             update(CollectionItemModel)
             .where(
                 CollectionItemModel.id == identifier,
@@ -453,7 +456,7 @@ class SqlAlchemyCollectionRepository:
             )
             .execution_options(synchronize_session=False)
         )
-        if result.rowcount != 1:
+        if rowcount != 1:
             raise VersionConflictError
         return self._collection_item(await self._refresh_collection_item(owner, identifier))
 
@@ -518,7 +521,8 @@ class SqlAlchemyCollectionRepository:
         ]
         if expected_version is not None:
             conditions.append(CollectionItemModel.version == expected_version)
-        result = await self._session.execute(
+        rowcount = await execute_dml_rowcount(
+            self._session,
             update(CollectionItemModel)
             .where(*conditions)
             .values(
@@ -529,7 +533,7 @@ class SqlAlchemyCollectionRepository:
             .execution_options(synchronize_session=False)
         )
         updated = await self._refresh_collection_item(owner, identifier)
-        if result.rowcount == 1:
+        if rowcount == 1:
             return self._collection_item(updated)
         current = CollectionStatus(updated.status)
         if current is CollectionStatus.DELETED:
@@ -756,7 +760,8 @@ class SqlAlchemyCollectionRepository:
         ):
             raise ValueError("undo_token_hash must be a lowercase SHA-256 digest")
         timestamp = require_aware_utc(claimed_at)
-        result = await self._session.execute(
+        rowcount = await execute_dml_rowcount(
+            self._session,
             update(CollectionWriteOperationModel)
             .where(
                 CollectionWriteOperationModel.user_id == owner,
@@ -767,7 +772,7 @@ class SqlAlchemyCollectionRepository:
             .values(undone_at=timestamp)
             .execution_options(synchronize_session=False)
         )
-        return result.rowcount == 1
+        return rowcount == 1
 
     async def add_place_selection_operation(
         self,
