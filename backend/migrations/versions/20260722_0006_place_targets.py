@@ -16,10 +16,79 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _place_target_json_constraint(dialect_name: str) -> str:
+    if dialect_name == "postgresql":
+        return (
+            "place_target_json IS NULL OR ("
+            "(place_target_json ->> 'scope') = place_scope AND "
+            "(place_target_json ->> 'match_status') = place_match_status AND "
+            "(place_target_json ->> 'confirmed_by') = place_confirmed_by AND "
+            "(place_target_json ->> 'confirmed_at')::timestamptz = place_confirmed_at AND ("
+            "(place_scope = 'exact' AND "
+            "(place_target_json #>> '{poi,provider}') = poi_provider AND "
+            "(place_target_json #>> '{poi,poi_id}') = poi_id AND "
+            "(place_target_json #>> '{poi,city_code}') = poi_city_code AND "
+            "(place_target_json #>> '{poi,coordinate,latitude}')::double precision = "
+            "poi_latitude AND "
+            "(place_target_json #>> '{poi,coordinate,longitude}')::double precision = "
+            "poi_longitude AND "
+            "(place_target_json #>> '{poi,coordinate,coordinate_system}') = "
+            "poi_coordinate_system AND "
+            "json_typeof(place_target_json -> 'brand_identity') = 'null') OR "
+            "(place_scope = 'any_branch' AND "
+            "(place_target_json #>> '{brand_identity,namespace}') = brand_namespace AND "
+            "(place_target_json #>> '{brand_identity,stable_id}') = brand_id AND "
+            "json_typeof(place_target_json -> 'poi') = 'null')))"
+        )
+    return (
+        "place_target_json IS NULL OR (json_valid(place_target_json) AND "
+        "json_type(place_target_json, '$') = 'object' AND "
+        "json_extract(place_target_json, '$.scope') = place_scope AND "
+        "json_extract(place_target_json, '$.match_status') = place_match_status AND "
+        "json_extract(place_target_json, '$.confirmed_by') = place_confirmed_by AND "
+        "julianday(json_extract(place_target_json, '$.confirmed_at')) = "
+        "julianday(place_confirmed_at) AND ((place_scope = 'exact' AND "
+        "json_extract(place_target_json, '$.poi.provider') = poi_provider AND "
+        "json_extract(place_target_json, '$.poi.poi_id') = poi_id AND "
+        "json_extract(place_target_json, '$.poi.city_code') = poi_city_code AND "
+        "json_extract(place_target_json, '$.poi.coordinate.latitude') = poi_latitude AND "
+        "json_extract(place_target_json, '$.poi.coordinate.longitude') = poi_longitude AND "
+        "json_extract(place_target_json, '$.poi.coordinate.coordinate_system') = "
+        "poi_coordinate_system AND "
+        "json_type(place_target_json, '$.brand_identity') = 'null') OR "
+        "(place_scope = 'any_branch' AND "
+        "json_extract(place_target_json, '$.brand_identity.namespace') = "
+        "brand_namespace AND "
+        "json_extract(place_target_json, '$.brand_identity.stable_id') = brand_id AND "
+        "json_type(place_target_json, '$.poi') = 'null')))"
+    )
+
+
+def _candidate_json_constraint(dialect_name: str) -> str:
+    if dialect_name == "postgresql":
+        return (
+            "place_candidate_snapshot_json IS NULL OR ("
+            "json_array_length(place_candidate_snapshot_json #> '{result,candidates}') = "
+            "candidate_count AND "
+            "(place_candidate_snapshot_json ->> 'queried_at')::timestamptz = "
+            "candidates_queried_at)"
+        )
+    return (
+        "place_candidate_snapshot_json IS NULL OR "
+        "(json_valid(place_candidate_snapshot_json) AND "
+        "json_type(place_candidate_snapshot_json, '$') = 'object' AND "
+        "json_array_length(place_candidate_snapshot_json, '$.result.candidates') = "
+        "candidate_count AND "
+        "julianday(json_extract(place_candidate_snapshot_json, '$.queried_at')) = "
+        "julianday(candidates_queried_at))"
+    )
+
+
 def upgrade() -> None:
     """Extend the existing collection aggregate; do not create a brand collection."""
 
-    with op.batch_alter_table("collection_items", recreate="always") as batch_op:
+    dialect_name = op.get_bind().dialect.name
+    with op.batch_alter_table("collection_items", recreate="auto") as batch_op:
         batch_op.add_column(sa.Column("place_scope", sa.String(16), nullable=True))
         batch_op.add_column(sa.Column("place_target_json", sa.JSON(), nullable=True))
         batch_op.add_column(sa.Column("poi_provider", sa.String(32), nullable=True))
@@ -75,26 +144,7 @@ def upgrade() -> None:
         )
         batch_op.create_check_constraint(
             "ck_collection_items_place_target_json_consistency",
-            "place_target_json IS NULL OR (json_valid(place_target_json) AND "
-            "json_type(place_target_json, '$') = 'object' AND "
-            "json_extract(place_target_json, '$.scope') = place_scope AND "
-            "json_extract(place_target_json, '$.match_status') = place_match_status AND "
-            "json_extract(place_target_json, '$.confirmed_by') = place_confirmed_by AND "
-            "julianday(json_extract(place_target_json, '$.confirmed_at')) = "
-            "julianday(place_confirmed_at) AND ((place_scope = 'exact' AND "
-            "json_extract(place_target_json, '$.poi.provider') = poi_provider AND "
-            "json_extract(place_target_json, '$.poi.poi_id') = poi_id AND "
-            "json_extract(place_target_json, '$.poi.city_code') = poi_city_code AND "
-            "json_extract(place_target_json, '$.poi.coordinate.latitude') = poi_latitude AND "
-            "json_extract(place_target_json, '$.poi.coordinate.longitude') = poi_longitude AND "
-            "json_extract(place_target_json, '$.poi.coordinate.coordinate_system') = "
-            "poi_coordinate_system AND "
-            "json_type(place_target_json, '$.brand_identity') = 'null') OR "
-            "(place_scope = 'any_branch' AND "
-            "json_extract(place_target_json, '$.brand_identity.namespace') = "
-            "brand_namespace AND "
-            "json_extract(place_target_json, '$.brand_identity.stable_id') = brand_id AND "
-            "json_type(place_target_json, '$.poi') = 'null')))",
+            _place_target_json_constraint(dialect_name),
         )
         batch_op.create_check_constraint(
             "ck_collection_items_candidate_snapshot_shape",
@@ -105,13 +155,7 @@ def upgrade() -> None:
         )
         batch_op.create_check_constraint(
             "ck_collection_items_candidate_snapshot_json_consistency",
-            "place_candidate_snapshot_json IS NULL OR "
-            "(json_valid(place_candidate_snapshot_json) AND "
-            "json_type(place_candidate_snapshot_json, '$') = 'object' AND "
-            "json_array_length(place_candidate_snapshot_json, '$.result.candidates') = "
-            "candidate_count AND "
-            "julianday(json_extract(place_candidate_snapshot_json, '$.queried_at')) = "
-            "julianday(candidates_queried_at))",
+            _candidate_json_constraint(dialect_name),
         )
         batch_op.create_check_constraint(
             "ck_collection_items_event_without_place_target",
@@ -125,6 +169,7 @@ def upgrade() -> None:
         ["user_id", "poi_provider", "poi_id"],
         unique=True,
         sqlite_where=sa.text("place_scope = 'exact' AND status <> 'deleted'"),
+        postgresql_where=sa.text("place_scope = 'exact' AND status <> 'deleted'"),
     )
     op.create_index(
         "uq_collection_items_user_any_brand",
@@ -132,6 +177,7 @@ def upgrade() -> None:
         ["user_id", "brand_namespace", "brand_id"],
         unique=True,
         sqlite_where=sa.text("place_scope = 'any_branch' AND status <> 'deleted'"),
+        postgresql_where=sa.text("place_scope = 'any_branch' AND status <> 'deleted'"),
     )
 
     op.create_table(
@@ -199,7 +245,7 @@ def downgrade() -> None:
     op.drop_table("place_selection_operations")
     op.drop_index("uq_collection_items_user_any_brand", table_name="collection_items")
     op.drop_index("uq_collection_items_user_exact_poi", table_name="collection_items")
-    with op.batch_alter_table("collection_items", recreate="always") as batch_op:
+    with op.batch_alter_table("collection_items", recreate="auto") as batch_op:
         batch_op.drop_constraint("ck_collection_items_event_without_place_target", type_="check")
         batch_op.drop_constraint(
             "ck_collection_items_candidate_snapshot_json_consistency", type_="check"

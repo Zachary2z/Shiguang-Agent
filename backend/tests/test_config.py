@@ -102,12 +102,33 @@ def test_invalid_timezone_has_diagnostic_error() -> None:
         )
 
 
-def test_non_async_sqlite_url_is_rejected() -> None:
-    with pytest.raises(ValidationError, match=r"must use sqlite\+aiosqlite during M0"):
+def test_non_async_database_urls_are_rejected() -> None:
+    with pytest.raises(ValidationError, match=r"postgresql\+asyncpg or sqlite\+aiosqlite"):
         Settings(
             _env_file=None,
             app_env="test",
             database_url="sqlite:///./wrong-driver.db",
+        )
+
+
+def test_postgresql_asyncpg_is_supported_and_required_in_production() -> None:
+    postgres_url = "postgresql+asyncpg://shiguang:password@db:5432/shiguang"
+
+    settings = Settings(
+        _env_file=None,
+        app_env="production",
+        database_url=postgres_url,
+    )
+
+    assert settings.database_url == postgres_url
+    with pytest.raises(
+        ValidationError,
+        match=r"production DATABASE_URL must use postgresql\+asyncpg",
+    ):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            database_url="sqlite+aiosqlite:///:memory:",
         )
 
 

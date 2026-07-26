@@ -19,7 +19,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """Persist candidate detail, one idempotent operation, and its Undo group."""
 
-    with op.batch_alter_table("collection_items", recreate="always") as batch_op:
+    with op.batch_alter_table("collection_items", recreate="auto") as batch_op:
         batch_op.add_column(sa.Column("business_district", sa.String(100), nullable=True))
         batch_op.add_column(sa.Column("landmark", sa.String(160), nullable=True))
         batch_op.add_column(sa.Column("metro_station", sa.String(100), nullable=True))
@@ -162,13 +162,14 @@ def downgrade() -> None:
             "(SELECT COUNT(*) FROM collection_write_operation_items)"
         )
     )
+    json_text = "::text" if connection.dialect.name == "postgresql" else ""
     metadata_count = connection.scalar(
         sa.text(
             "SELECT COUNT(*) FROM collection_items WHERE "
             "business_district IS NOT NULL OR landmark IS NOT NULL OR "
             "metro_station IS NOT NULL OR event_start_clue IS NOT NULL OR "
-            "event_end_clue IS NOT NULL OR missing_fields_json <> '[]' OR "
-            "uncertainties_json <> '[]'"
+            f"event_end_clue IS NOT NULL OR missing_fields_json{json_text} <> '[]' OR "
+            f"uncertainties_json{json_text} <> '[]'"
         )
     )
     if operation_count or metadata_count:
@@ -179,7 +180,7 @@ def downgrade() -> None:
 
     op.drop_table("collection_write_operation_items")
     op.drop_table("collection_write_operations")
-    with op.batch_alter_table("collection_items", recreate="always") as batch_op:
+    with op.batch_alter_table("collection_items", recreate="auto") as batch_op:
         batch_op.drop_constraint(
             "ck_collection_items_place_without_event_clues",
             type_="check",

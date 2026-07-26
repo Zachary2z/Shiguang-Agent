@@ -48,6 +48,8 @@ assert CollectionWriteOperationItemModel.metadata is target_metadata
 def ensure_sqlite_directory(database_url: str) -> None:
     """Create the configured local SQLite parent directory when necessary."""
 
+    if make_url(database_url).get_backend_name() != "sqlite":
+        return
     database_path = make_url(database_url).database
     if database_path and database_path != ":memory:":
         Path(database_path).expanduser().parent.mkdir(parents=True, exist_ok=True)

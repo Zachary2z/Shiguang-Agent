@@ -24,7 +24,7 @@ _CITY_HINT_CHECK = (
 def upgrade() -> None:
     """Rename the planning default and make collection city text an optional hint."""
 
-    with op.batch_alter_table("users", recreate="always") as batch_op:
+    with op.batch_alter_table("users", recreate="auto") as batch_op:
         batch_op.drop_constraint("ck_users_city", type_="check")
         batch_op.alter_column(
             "city",
@@ -37,7 +37,7 @@ def upgrade() -> None:
             "default_plan_city IN ('shenzhen')",
         )
 
-    with op.batch_alter_table("collection_items", recreate="always") as batch_op:
+    with op.batch_alter_table("collection_items", recreate="auto") as batch_op:
         batch_op.drop_constraint("ck_collection_items_city", type_="check")
         batch_op.alter_column(
             "city",
@@ -69,7 +69,7 @@ def downgrade() -> None:
             "NULL or differ from 'shenzhen'"
         )
 
-    with op.batch_alter_table("collection_items", recreate="always") as batch_op:
+    with op.batch_alter_table("collection_items", recreate="auto") as batch_op:
         batch_op.drop_constraint("ck_collection_items_city_hint", type_="check")
         batch_op.alter_column(
             "city_hint",
@@ -84,7 +84,7 @@ def downgrade() -> None:
             "city IN ('shenzhen')",
         )
 
-    with op.batch_alter_table("users", recreate="always") as batch_op:
+    with op.batch_alter_table("users", recreate="auto") as batch_op:
         batch_op.drop_constraint("ck_users_default_plan_city", type_="check")
         batch_op.alter_column(
             "default_plan_city",

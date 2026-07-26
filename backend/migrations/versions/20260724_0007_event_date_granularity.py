@@ -19,7 +19,7 @@ depends_on: str | Sequence[str] | None = None
 def upgrade() -> None:
     """Add date-only Event facts without converting them to timestamps."""
 
-    with op.batch_alter_table("collection_items", recreate="always") as batch_op:
+    with op.batch_alter_table("collection_items", recreate="auto") as batch_op:
         batch_op.add_column(sa.Column("event_start_date", sa.Date(), nullable=True))
         batch_op.add_column(sa.Column("event_end_date", sa.Date(), nullable=True))
         batch_op.create_check_constraint(
@@ -50,7 +50,7 @@ def downgrade() -> None:
             "cannot downgrade to 20260722_0006 while Event date facts exist"
         )
 
-    with op.batch_alter_table("collection_items", recreate="always") as batch_op:
+    with op.batch_alter_table("collection_items", recreate="auto") as batch_op:
         batch_op.drop_constraint("ck_collection_items_place_without_event_time", type_="check")
         batch_op.create_check_constraint(
             "ck_collection_items_place_without_event_time",

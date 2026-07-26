@@ -320,6 +320,7 @@ class CollectionItemModel(Base):
             "poi_id",
             unique=True,
             sqlite_where=text("place_scope = 'exact' AND status <> 'deleted'"),
+            postgresql_where=text("place_scope = 'exact' AND status <> 'deleted'"),
         ),
         Index(
             "uq_collection_items_user_any_brand",
@@ -328,6 +329,7 @@ class CollectionItemModel(Base):
             "brand_id",
             unique=True,
             sqlite_where=text("place_scope = 'any_branch' AND status <> 'deleted'"),
+            postgresql_where=text("place_scope = 'any_branch' AND status <> 'deleted'"),
         ),
     )
 

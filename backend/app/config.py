@@ -326,8 +326,10 @@ class Settings(BaseSettings):
             url = make_url(value)
         except ArgumentError as exc:
             raise ValueError("DATABASE_URL must be a valid SQLAlchemy database URL") from exc
-        if url.drivername != "sqlite+aiosqlite":
-            raise ValueError("DATABASE_URL must use sqlite+aiosqlite during M0")
+        if url.drivername not in {"sqlite+aiosqlite", "postgresql+asyncpg"}:
+            raise ValueError(
+                "DATABASE_URL must use postgresql+asyncpg or sqlite+aiosqlite"
+            )
         return value
 
     @field_validator("model_timeout_seconds", mode="before")
@@ -483,6 +485,15 @@ class Settings(BaseSettings):
             raise ValueError(
                 "PLACE_MATCH_CANDIDATE_SCORE cannot exceed PLACE_MATCH_UNIQUE_SCORE"
             )
+        return self
+
+    @model_validator(mode="after")
+    def require_postgresql_in_production(self) -> Self:
+        if (
+            self.app_env == "production"
+            and make_url(self.database_url).drivername != "postgresql+asyncpg"
+        ):
+            raise ValueError("production DATABASE_URL must use postgresql+asyncpg")
         return self
 
     @field_validator("storage_max_file_size_bytes", mode="before")

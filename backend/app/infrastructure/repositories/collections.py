@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, cast
 
 from sqlalchemy import func, select, update
-from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.collections import (
@@ -394,21 +392,18 @@ class SqlAlchemyCollectionRepository:
         if self._editable_values(item) == self._editable_values(current):
             return current
 
-        result = cast(
-            CursorResult[Any],
-            await self._session.execute(
-                update(CollectionItemModel)
-                .where(
-                    CollectionItemModel.id == identifier,
-                    CollectionItemModel.user_id == owner,
-                    CollectionItemModel.version == expected_version,
-                )
-                .values(
-                    **self._editable_storage_values(item),
-                    version=expected_version + 1,
-                    updated_at=item.updated_at,
-                )
-            ),
+        result = await self._session.execute(
+            update(CollectionItemModel)
+            .where(
+                CollectionItemModel.id == identifier,
+                CollectionItemModel.user_id == owner,
+                CollectionItemModel.version == expected_version,
+            )
+            .values(
+                **self._editable_storage_values(item),
+                version=expected_version + 1,
+                updated_at=item.updated_at,
+            )
         )
         if result.rowcount != 1:
             raise VersionConflictError
@@ -442,24 +437,21 @@ class SqlAlchemyCollectionRepository:
         ):
             raise ValueError("Place resolution cannot change aggregate identity")
         ensure_collection_transition(current.status, item.status)
-        result = cast(
-            CursorResult[Any],
-            await self._session.execute(
-                update(CollectionItemModel)
-                .where(
-                    CollectionItemModel.id == identifier,
-                    CollectionItemModel.user_id == owner,
-                    CollectionItemModel.version == expected_version,
-                )
-                .values(
-                    **self._editable_storage_values(item),
-                    **self._place_storage_values(item),
-                    status=item.status.value,
-                    version=expected_version + 1,
-                    updated_at=item.updated_at,
-                )
-                .execution_options(synchronize_session=False)
-            ),
+        result = await self._session.execute(
+            update(CollectionItemModel)
+            .where(
+                CollectionItemModel.id == identifier,
+                CollectionItemModel.user_id == owner,
+                CollectionItemModel.version == expected_version,
+            )
+            .values(
+                **self._editable_storage_values(item),
+                **self._place_storage_values(item),
+                status=item.status.value,
+                version=expected_version + 1,
+                updated_at=item.updated_at,
+            )
+            .execution_options(synchronize_session=False)
         )
         if result.rowcount != 1:
             raise VersionConflictError
@@ -526,18 +518,15 @@ class SqlAlchemyCollectionRepository:
         ]
         if expected_version is not None:
             conditions.append(CollectionItemModel.version == expected_version)
-        result = cast(
-            CursorResult[Any],
-            await self._session.execute(
-                update(CollectionItemModel)
-                .where(*conditions)
-                .values(
-                    status=CollectionStatus.DELETED.value,
-                    version=CollectionItemModel.version + 1,
-                    updated_at=timestamp,
-                )
-                .execution_options(synchronize_session=False)
-            ),
+        result = await self._session.execute(
+            update(CollectionItemModel)
+            .where(*conditions)
+            .values(
+                status=CollectionStatus.DELETED.value,
+                version=CollectionItemModel.version + 1,
+                updated_at=timestamp,
+            )
+            .execution_options(synchronize_session=False)
         )
         updated = await self._refresh_collection_item(owner, identifier)
         if result.rowcount == 1:
@@ -767,19 +756,16 @@ class SqlAlchemyCollectionRepository:
         ):
             raise ValueError("undo_token_hash must be a lowercase SHA-256 digest")
         timestamp = require_aware_utc(claimed_at)
-        result = cast(
-            CursorResult[Any],
-            await self._session.execute(
-                update(CollectionWriteOperationModel)
-                .where(
-                    CollectionWriteOperationModel.user_id == owner,
-                    CollectionWriteOperationModel.undo_token_hash == undo_token_hash,
-                    CollectionWriteOperationModel.undone_at.is_(None),
-                    CollectionWriteOperationModel.undo_expires_at > timestamp,
-                )
-                .values(undone_at=timestamp)
-                .execution_options(synchronize_session=False)
-            ),
+        result = await self._session.execute(
+            update(CollectionWriteOperationModel)
+            .where(
+                CollectionWriteOperationModel.user_id == owner,
+                CollectionWriteOperationModel.undo_token_hash == undo_token_hash,
+                CollectionWriteOperationModel.undone_at.is_(None),
+                CollectionWriteOperationModel.undo_expires_at > timestamp,
+            )
+            .values(undone_at=timestamp)
+            .execution_options(synchronize_session=False)
         )
         return result.rowcount == 1
 
