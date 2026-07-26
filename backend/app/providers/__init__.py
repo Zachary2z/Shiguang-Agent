@@ -1,6 +1,7 @@
 """Application-layer adapters for external providers."""
 
 from app.providers.amap import AmapMapProvider, create_amap_http_client
+from app.providers.jobs import JobQueue
 from app.providers.map import MapProvider, MapProviderError, MapProviderErrorCode
 from app.providers.map_stub import StubMapProvider
 from app.providers.openai_compatible import OpenAICompatibleProvider
@@ -25,6 +26,7 @@ from app.providers.web import (
 __all__ = [
     "AmapMapProvider",
     "MapProvider",
+    "JobQueue",
     "MapProviderError",
     "MapProviderErrorCode",
     "OpenAICompatibleProvider",

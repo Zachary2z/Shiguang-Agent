@@ -284,6 +284,7 @@ class Settings(BaseSettings):
     model_pricing_source: str = "configured_model_rates"
     agent_max_tool_calls: int = MAX_TOOL_CALLS_PER_RUN
     agent_timeout_seconds: float = MAX_RUN_TIMEOUT_SECONDS
+    worker_poll_seconds: float = 1.0
     amap_api_key: SecretStr | None = None
     amap_base_url: str = DEFAULT_AMAP_BASE_URL
     amap_timeout_seconds: float = 5.0
@@ -431,6 +432,20 @@ class Settings(BaseSettings):
                 "AGENT_TIMEOUT_SECONDS must be a finite number in "
                 f"(0, {MAX_RUN_TIMEOUT_SECONDS:g}]"
             )
+        return value
+
+    @field_validator("worker_poll_seconds", mode="before")
+    @classmethod
+    def reject_boolean_worker_poll(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("WORKER_POLL_SECONDS must be a finite number in (0, 60]")
+        return value
+
+    @field_validator("worker_poll_seconds")
+    @classmethod
+    def validate_worker_poll(cls, value: float) -> float:
+        if not isfinite(value) or value <= 0 or value > 60:
+            raise ValueError("WORKER_POLL_SECONDS must be a finite number in (0, 60]")
         return value
 
     @field_validator("amap_timeout_seconds", mode="before")

@@ -19,6 +19,7 @@ from app.infrastructure.db.models import (
     CollectionWriteOperationItemModel,
     CollectionWriteOperationModel,
     MessageModel,
+    ScheduledJobModel,
     SessionModel,
     SourceModel,
     ToolRunModel,
@@ -38,6 +39,7 @@ assert ToolRunModel.metadata is target_metadata
 assert UserModel.metadata is target_metadata
 assert SessionModel.metadata is target_metadata
 assert MessageModel.metadata is target_metadata
+assert ScheduledJobModel.metadata is target_metadata
 assert SourceModel.metadata is target_metadata
 assert CollectionItemModel.metadata is target_metadata
 assert CollectionSourceModel.metadata is target_metadata

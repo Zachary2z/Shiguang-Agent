@@ -11,6 +11,7 @@ from app.infrastructure.db.models.collections import (
     SourceModel,
     UserModel,
 )
+from app.infrastructure.db.models.jobs import ScheduledJobModel
 from app.infrastructure.db.models.runs import AgentRunModel, ToolRunModel
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "MessageModel",
     "PlaceSelectionOperationModel",
     "SessionModel",
+    "ScheduledJobModel",
     "SourceModel",
     "ToolRunModel",
     "UserModel",
