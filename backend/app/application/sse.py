@@ -20,7 +20,7 @@ def encode_run_event(event: PublicRunEvent) -> str:
         "trace_id": event.trace_id,
         "type": event.event_type.value,
         "sequence": event.sequence,
-        "summary": event.summary,
+        "summary": event.summary.model_dump(mode="json", exclude_none=True),
         "created_at": event.created_at.isoformat(),
     }
     payload = json.dumps(

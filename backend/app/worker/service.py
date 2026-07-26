@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any
 
-from app.domain.jobs import ScheduledJob, validate_safe_job_data, validate_safe_label
+from app.domain.jobs import JobResultSummary, ScheduledJob, validate_safe_label
 from app.domain.time import utc_now
 from app.providers.jobs import JobQueue
 
-JobHandler = Callable[[ScheduledJob], Awaitable[dict[str, Any]]]
+JobHandler = Callable[[ScheduledJob], Awaitable[JobResultSummary]]
 
 
 class JobWorker:
@@ -44,7 +43,7 @@ class JobWorker:
                 now=utc_now(),
             )
         try:
-            summary = validate_safe_job_data(await handler(job))
+            summary = await handler(job)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -75,11 +74,11 @@ class JobWorker:
                 continue
 
 
-async def deterministic_noop(job: ScheduledJob) -> dict[str, Any]:
+async def deterministic_noop(job: ScheduledJob) -> JobResultSummary:
     """Side-effect-free handler used only for local infrastructure verification."""
 
     del job
-    return {"outcome": "completed"}
+    return JobResultSummary(outcome="completed")
 
 
 __all__ = ["JobHandler", "JobWorker", "deterministic_noop"]

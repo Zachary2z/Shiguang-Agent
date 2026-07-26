@@ -7,7 +7,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.domain.jobs import JobConflictError, JobCreate, JobStatus, ScheduledJob
+from app.domain.jobs import (
+    JobConflictError,
+    JobCreate,
+    JobResultSummary,
+    JobStatus,
+    ScheduledJob,
+)
 from app.infrastructure.db import Database
 from app.infrastructure.jobs import PostgresJobQueue
 from app.worker.service import JobWorker
@@ -15,6 +21,7 @@ from app.worker.service import JobWorker
 USER_ID = "usr_0123456789abcdef0123456789abcdef"
 OTHER_USER_ID = "usr_fedcba9876543210fedcba9876543210"
 TRACE_ID = "trc_11111111111111111111111111111111"
+CONTENT_SHA256 = "a" * 64
 
 
 def _request(
@@ -44,16 +51,32 @@ def test_two_workers_claim_and_execute_one_job_once(
         queue = PostgresJobQueue(database.session_factory)
         executions = 0
 
-        async def handler(job: ScheduledJob) -> dict[str, object]:
+        async def handler(job: ScheduledJob) -> JobResultSummary:
             nonlocal executions
             assert job.trace_id == TRACE_ID
+            assert job.payload == {
+                "apiKey": "internal-only",
+                "modelResponse": "internal-only",
+                "content_sha256": CONTENT_SHA256,
+            }
             executions += 1
             await asyncio.sleep(0)
-            return {"outcome": "completed"}
+            return JobResultSummary(
+                outcome="completed",
+                content_sha256=CONTENT_SHA256,
+            )
 
         try:
             created = await queue.create(
-                _request(key="worker-race", run_at=datetime.now(UTC))
+                _request(
+                    key="worker-race",
+                    run_at=datetime.now(UTC),
+                    payload={
+                        "apiKey": "internal-only",
+                        "modelResponse": "internal-only",
+                        "content_sha256": CONTENT_SHA256,
+                    },
+                )
             )
             workers = (
                 JobWorker(
@@ -75,7 +98,11 @@ def test_two_workers_claim_and_execute_one_job_once(
             assert persisted is not None
             assert persisted.status is JobStatus.SUCCEEDED
             assert persisted.attempt == 1
-            assert persisted.result_summary == {"outcome": "completed"}
+            assert persisted.result_summary == JobResultSummary(
+                outcome="completed",
+                content_sha256=CONTENT_SHA256,
+            )
+            assert "internal-only" not in repr(persisted)
             assert persisted.created_at.tzinfo is not None
             assert persisted.created_at.utcoffset() == timedelta(0)
         finally:
@@ -214,7 +241,7 @@ def test_cancelled_completed_and_recovered_jobs_are_not_duplicated(
             assert await queue.complete(
                 job_id=recovered.id,
                 worker_id="replacement_worker",
-                summary={"outcome": "recovered"},
+                summary=JobResultSummary(outcome="recovered"),
                 now=start + timedelta(seconds=61),
             )
             assert await queue.claim(

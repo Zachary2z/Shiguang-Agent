@@ -6,7 +6,6 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,11 +17,12 @@ from app.domain.identifiers import (
     validate_trace_id,
     validate_user_id,
 )
-from app.domain.public_data import validate_safe_public_data
 from app.domain.runs.events import (
-    MAX_RUN_EVENT_SUMMARY_BYTES,
     PublicRunEvent,
+    RunEventSummary,
     RunEventType,
+    parse_run_event_summary,
+    serialize_run_event_summary,
 )
 from app.domain.runs.inputs import AgentRunCreate
 from app.domain.runs.statuses import (
@@ -312,7 +312,7 @@ class RunEventRepository:
         user_id: str,
         trace_id: str,
         event_type: RunEventType,
-        summary: dict[str, Any],
+        summary: RunEventSummary,
         created_at: datetime,
     ) -> PublicRunEvent:
         owner = validate_user_id(user_id)
@@ -339,7 +339,7 @@ class RunEventRepository:
         *,
         run_id: str,
         event_type: RunEventType,
-        summary: dict[str, Any],
+        summary: RunEventSummary,
         created_at: datetime,
     ) -> PublicRunEvent | None:
         run = await self._session.scalar(
@@ -363,16 +363,13 @@ class RunEventRepository:
         run: AgentRunModel,
         *,
         event_type: RunEventType,
-        summary: dict[str, Any],
+        summary: RunEventSummary,
         created_at: datetime,
     ) -> PublicRunEvent:
         owner = run.user_id
         if owner is None:
             raise ValueError("public RunEvents require an owned AgentRun")
-        safe_summary = validate_safe_public_data(
-            summary,
-            maximum_bytes=MAX_RUN_EVENT_SUMMARY_BYTES,
-        )
+        public_summary = serialize_run_event_summary(event_type, summary)
         timestamp = required_utc(created_at)
         last_sequence = await self._session.scalar(
             select(func.coalesce(func.max(RunEventModel.sequence), 0)).where(
@@ -387,7 +384,7 @@ class RunEventRepository:
             user_id=owner,
             sequence=sequence,
             event_type=event_type.value,
-            summary_json=safe_summary,
+            summary_json=public_summary,
             created_at=timestamp,
         )
         self._session.add(row)
@@ -435,10 +432,11 @@ class RunEventRepository:
 
 
 def _public_run_event(row: RunEventModel) -> PublicRunEvent:
+    event_type = RunEventType(row.event_type)
     return PublicRunEvent(
         trace_id=row.trace_id,
-        event_type=RunEventType(row.event_type),
+        event_type=event_type,
         sequence=row.sequence,
-        summary=row.summary_json,
+        summary=parse_run_event_summary(event_type, row.summary_json),
         created_at=required_utc(row.created_at),
     )

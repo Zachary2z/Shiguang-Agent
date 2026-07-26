@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Protocol
 
-from app.domain.jobs import JobCreate, ScheduledJob
+from app.domain.jobs import JobCreate, JobResultSummary, ScheduledJob
 
 
 class JobQueue(Protocol):
@@ -23,7 +23,7 @@ class JobQueue(Protocol):
         *,
         job_id: str,
         worker_id: str,
-        summary: dict[str, Any],
+        summary: JobResultSummary,
         now: datetime,
     ) -> bool: ...
 

@@ -10,13 +10,22 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 from fastapi import FastAPI
+from pydantic import ValidationError
 
 from app.api.dependencies import get_current_user_id
 from app.application.demo_sessions import DEMO_USER_ID
 from app.application.run_events import RunEventService
 from app.config import Settings
-from app.domain.runs.events import RunEventType
+from app.domain.runs.events import (
+    ResultUpdatedSummary,
+    RunCompletedSummary,
+    RunEventSummary,
+    RunEventType,
+    RunStartedSummary,
+    StageChangedSummary,
+)
 from app.domain.runs.inputs import AgentRunCreate
+from app.domain.runs.statuses import AgentRunStatus
 from app.infrastructure.db import Database
 from app.infrastructure.repositories import AgentRunRepository
 from app.main import create_app
@@ -77,7 +86,7 @@ def test_concurrent_run_events_are_monotonic_and_trace_isolated(
                         user_id=DEMO_USER_ID,
                         trace_id=TRACE_ID,
                         event_type=RunEventType.STAGE_CHANGED,
-                        summary={"stage": f"fixture-{index}"},
+                        summary=StageChangedSummary(stage=f"fixture-{index}"),
                     )
 
             await asyncio.gather(*(publish(index) for index in range(20)))
@@ -86,7 +95,7 @@ def test_concurrent_run_events_are_monotonic_and_trace_isolated(
                     user_id=OTHER_USER_ID,
                     trace_id=OTHER_TRACE_ID,
                     event_type=RunEventType.RUN_STARTED,
-                    summary={"status": "running"},
+                    summary=RunStartedSummary(status=AgentRunStatus.RUNNING),
                 )
             async with database.session() as session:
                 service = RunEventService(session)
@@ -129,12 +138,28 @@ def test_sse_last_event_id_replays_only_unconfirmed_sequences(
             await _create_run(database, user_id=DEMO_USER_ID, trace_id=TRACE_ID)
             async with database.session() as session:
                 service = RunEventService(session)
-                for event_type, summary in (
-                    (RunEventType.RUN_STARTED, {"status": "running"}),
-                    (RunEventType.STAGE_CHANGED, {"stage": "fixture"}),
-                    (RunEventType.RESULT_UPDATED, {"status": "ready"}),
-                    (RunEventType.RUN_COMPLETED, {"status": "succeeded"}),
-                ):
+                summaries: tuple[
+                    tuple[RunEventType, RunEventSummary],
+                    ...,
+                ] = (
+                    (
+                        RunEventType.RUN_STARTED,
+                        RunStartedSummary(status=AgentRunStatus.RUNNING),
+                    ),
+                    (
+                        RunEventType.STAGE_CHANGED,
+                        StageChangedSummary(stage="fixture"),
+                    ),
+                    (
+                        RunEventType.RESULT_UPDATED,
+                        ResultUpdatedSummary(status=AgentRunStatus.SUCCEEDED),
+                    ),
+                    (
+                        RunEventType.RUN_COMPLETED,
+                        RunCompletedSummary(status=AgentRunStatus.SUCCEEDED),
+                    ),
+                )
+                for event_type, summary in summaries:
                     await service.publish(
                         user_id=DEMO_USER_ID,
                         trace_id=TRACE_ID,
@@ -178,21 +203,45 @@ def test_sse_last_event_id_replays_only_unconfirmed_sequences(
 
 
 @pytest.mark.postgresql
-def test_run_event_summary_rejects_sensitive_material(
+def test_run_event_summary_is_allowlisted_and_accepts_content_hash(
     postgresql_database_url: str,
 ) -> None:
     async def scenario() -> None:
         database = Database(postgresql_database_url)
         try:
             await _create_run(database, user_id=DEMO_USER_ID, trace_id=TRACE_ID)
-            async with database.session() as session:
-                with pytest.raises(ValueError, match="forbidden field"):
-                    await RunEventService(session).publish(
-                        user_id=DEMO_USER_ID,
-                        trace_id=TRACE_ID,
-                        event_type=RunEventType.RESULT_UPDATED,
-                        summary={"prompt": "private"},
+            for field in (
+                "apiKey",
+                "access_token",
+                "modelResponse",
+                "file_key",
+                "path",
+                "prompt",
+                "authorization",
+                "cookie",
+            ):
+                with pytest.raises(ValidationError):
+                    ResultUpdatedSummary.model_validate(
+                        {
+                            "status": AgentRunStatus.SUCCEEDED,
+                            field: "private-value",
+                        },
+                        strict=True,
                     )
+            async with database.session() as session:
+                event = await RunEventService(session).publish(
+                    user_id=DEMO_USER_ID,
+                    trace_id=TRACE_ID,
+                    event_type=RunEventType.RESULT_UPDATED,
+                    summary=ResultUpdatedSummary(
+                        status=AgentRunStatus.SUCCEEDED,
+                        content_sha256="a" * 64,
+                    ),
+                )
+                assert event.summary == ResultUpdatedSummary(
+                    status=AgentRunStatus.SUCCEEDED,
+                    content_sha256="a" * 64,
+                )
         finally:
             await database.close()
 

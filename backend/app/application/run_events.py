@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.runs.events import PublicRunEvent, RunEventType
+from app.domain.runs.events import PublicRunEvent, RunEventSummary, RunEventType
 from app.domain.time import utc_now
 from app.infrastructure.repositories import RunEventRepository
 
@@ -23,7 +22,7 @@ class RunEventService:
         user_id: str,
         trace_id: str,
         event_type: RunEventType,
-        summary: dict[str, Any],
+        summary: RunEventSummary,
         created_at: datetime | None = None,
     ) -> PublicRunEvent:
         event = await self._repository.append(

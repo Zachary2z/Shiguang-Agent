@@ -20,7 +20,16 @@ from app.domain.runs.contracts import (
     ModelCallSummary,
     ToolRunSummary,
 )
-from app.domain.runs.events import RunEventType
+from app.domain.runs.events import (
+    ResultUpdatedSummary,
+    RunCompletedSummary,
+    RunEventSummary,
+    RunEventType,
+    RunFailedSummary,
+    RunStartedSummary,
+    StageChangedSummary,
+    ToolCompletedSummary,
+)
 from app.domain.runs.inputs import AgentRunCreate
 from app.domain.runs.statuses import AgentRunStatus, RunErrorCode, ToolRunStatus
 from app.domain.time import utc_now
@@ -720,29 +729,47 @@ class AgentRunService:
             await self._events.append_for_run(
                 run_id=run_id,
                 event_type=RunEventType.TOOL_COMPLETED,
-                summary={
-                    "tool_name": tool_run.tool_name,
-                    "status": tool_run.status.value,
-                    "tool_sequence": tool_run.sequence,
-                },
+                summary=ToolCompletedSummary(
+                    tool_name=tool_run.tool_name,
+                    status=tool_run.status,
+                    tool_sequence=tool_run.sequence,
+                ),
                 created_at=finalization.finished_at,
             )
         await self._events.append_for_run(
             run_id=run_id,
             event_type=RunEventType.RESULT_UPDATED,
-            summary={"status": status.value},
+            summary=ResultUpdatedSummary(status=status),
             created_at=finalization.finished_at,
         )
-        terminal_summary = {"status": status.value}
-        if error_code is not None:
-            terminal_summary["error_code"] = error_code
+        terminal_summary: RunEventSummary
+        if status is AgentRunStatus.SUCCEEDED:
+            terminal_event_type = RunEventType.RUN_COMPLETED
+            terminal_summary = RunCompletedSummary(
+                status=AgentRunStatus.SUCCEEDED
+            )
+        elif status is AgentRunStatus.PARTIALLY_SUCCEEDED:
+            terminal_event_type = RunEventType.RUN_COMPLETED
+            terminal_summary = RunCompletedSummary(
+                status=AgentRunStatus.PARTIALLY_SUCCEEDED
+            )
+        elif status in {AgentRunStatus.FAILED, AgentRunStatus.CANCELLED}:
+            if error_code is None:
+                raise ValueError("failed RunEvent requires an error code")
+            terminal_event_type = RunEventType.RUN_FAILED
+            terminal_summary = RunFailedSummary(
+                status=(
+                    AgentRunStatus.FAILED
+                    if status is AgentRunStatus.FAILED
+                    else AgentRunStatus.CANCELLED
+                ),
+                error_code=error_code,
+            )
+        else:
+            raise ValueError("terminal RunEvent requires a terminal status")
         await self._events.append_for_run(
             run_id=run_id,
-            event_type=(
-                RunEventType.RUN_COMPLETED
-                if status is AgentRunStatus.SUCCEEDED
-                else RunEventType.RUN_FAILED
-            ),
+            event_type=terminal_event_type,
             summary=terminal_summary,
             created_at=finalization.finished_at,
         )
@@ -757,13 +784,13 @@ class AgentRunService:
         await self._events.append_for_run(
             run_id=run_id,
             event_type=RunEventType.RUN_STARTED,
-            summary={"status": AgentRunStatus.RUNNING.value},
+            summary=RunStartedSummary(status=AgentRunStatus.RUNNING),
             created_at=started_at,
         )
         await self._events.append_for_run(
             run_id=run_id,
             event_type=RunEventType.STAGE_CHANGED,
-            summary={"stage": "execution"},
+            summary=StageChangedSummary(stage="execution"),
             created_at=started_at,
         )
 

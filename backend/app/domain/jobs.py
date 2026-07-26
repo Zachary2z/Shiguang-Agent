@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from enum import StrEnum
@@ -10,12 +11,10 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.domain.identifiers import validate_trace_id, validate_user_id
-from app.domain.public_data import validate_safe_public_data
 from app.domain.time import required_utc
 
 MAX_JOB_ATTEMPTS = 3
 MAX_JOB_PAYLOAD_BYTES = 4096
-MAX_JOB_SUMMARY_BYTES = 1024
 JOB_LEASE_SECONDS = 60
 JOB_RETRY_DELAYS_SECONDS = (5, 30)
 
@@ -41,14 +40,22 @@ def validate_safe_label(value: str, *, name: str) -> str:
     return value
 
 
-def validate_safe_job_data(
-    value: dict[str, Any],
-    *,
-    maximum_bytes: int = MAX_JOB_PAYLOAD_BYTES,
-) -> dict[str, Any]:
-    """Reject secrets and unbounded/private material at the durable boundary."""
+def validate_job_payload(value: dict[str, object]) -> dict[str, object]:
+    """Validate bounded JSON for internal persistence, never public serialization."""
 
-    return validate_safe_public_data(value, maximum_bytes=maximum_bytes)
+    try:
+        encoded = json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("job payload must contain finite JSON values") from error
+    if len(encoded.encode("utf-8")) > MAX_JOB_PAYLOAD_BYTES:
+        raise ValueError("job payload exceeds its size limit")
+    return value
 
 
 class _JobModel(BaseModel):
@@ -63,7 +70,7 @@ class _JobModel(BaseModel):
 class JobCreate(_JobModel):
     user_id: str
     job_type: str
-    payload: dict[str, Any] = Field(default_factory=dict, repr=False)
+    payload: dict[str, object] = Field(default_factory=dict, repr=False)
     run_at: datetime
     max_attempts: int = Field(default=MAX_JOB_ATTEMPTS, ge=1, le=MAX_JOB_ATTEMPTS)
     idempotency_key: str = Field(repr=False)
@@ -91,15 +98,39 @@ class JobCreate(_JobModel):
 
     @field_validator("payload")
     @classmethod
-    def safe_payload(cls, value: dict[str, Any]) -> dict[str, Any]:
-        return validate_safe_job_data(value)
+    def bounded_payload(cls, value: dict[str, object]) -> dict[str, object]:
+        return validate_job_payload(value)
+
+
+class JobResultSummary(_JobModel):
+    """The complete allowlisted public result surface for infrastructure jobs."""
+
+    outcome: str
+    content_sha256: str | None = None
+
+    @field_validator("outcome")
+    @classmethod
+    def safe_outcome(cls, value: str) -> str:
+        return validate_safe_label(value, name="outcome")
+
+    @field_validator("content_sha256")
+    @classmethod
+    def valid_content_sha256(cls, value: str | None) -> str | None:
+        if value is not None and (
+            len(value) != 64
+            or any(character not in "0123456789abcdef" for character in value)
+        ):
+            raise ValueError(
+                "content_sha256 must be 64 lowercase hexadecimal characters"
+            )
+        return value
 
 
 class ScheduledJob(_JobModel):
     id: str
     user_id: str
     job_type: str
-    payload: dict[str, Any] = Field(repr=False)
+    payload: dict[str, object] = Field(repr=False)
     run_at: datetime
     status: JobStatus
     attempt: int
@@ -109,7 +140,7 @@ class ScheduledJob(_JobModel):
     worker_id: str | None
     lease_expires_at: datetime | None
     last_error_code: str | None
-    result_summary: dict[str, Any] | None
+    result_summary: JobResultSummary | None
     created_at: datetime
     updated_at: datetime
     started_at: datetime | None
@@ -138,12 +169,12 @@ __all__ = [
     "JOB_RETRY_DELAYS_SECONDS",
     "MAX_JOB_ATTEMPTS",
     "MAX_JOB_PAYLOAD_BYTES",
-    "MAX_JOB_SUMMARY_BYTES",
     "JobConflictError",
     "JobCreate",
+    "JobResultSummary",
     "JobStatus",
     "ScheduledJob",
     "TERMINAL_JOB_STATUSES",
-    "validate_safe_job_data",
+    "validate_job_payload",
     "validate_safe_label",
 ]

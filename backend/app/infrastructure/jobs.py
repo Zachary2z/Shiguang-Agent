@@ -7,7 +7,6 @@ import json
 import secrets
 from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
@@ -17,12 +16,11 @@ from app.domain.identifiers import validate_user_id
 from app.domain.jobs import (
     JOB_LEASE_SECONDS,
     JOB_RETRY_DELAYS_SECONDS,
-    MAX_JOB_SUMMARY_BYTES,
     JobConflictError,
     JobCreate,
+    JobResultSummary,
     JobStatus,
     ScheduledJob,
-    validate_safe_job_data,
     validate_safe_label,
 )
 from app.domain.time import required_utc, utc_now
@@ -122,15 +120,11 @@ class PostgresJobQueue:
         *,
         job_id: str,
         worker_id: str,
-        summary: dict[str, Any],
+        summary: JobResultSummary,
         now: datetime,
     ) -> bool:
         validate_safe_label(job_id, name="job_id")
         worker = validate_safe_label(worker_id, name="worker_id")
-        safe_summary = validate_safe_job_data(
-            summary,
-            maximum_bytes=MAX_JOB_SUMMARY_BYTES,
-        )
         timestamp = required_utc(now)
         async with self._session_factory() as session, session.begin():
             rowcount = await execute_dml_rowcount(
@@ -143,7 +137,10 @@ class PostgresJobQueue:
                 )
                 .values(
                     status=JobStatus.SUCCEEDED.value,
-                    result_summary_json=safe_summary,
+                    result_summary_json=summary.model_dump(
+                        mode="json",
+                        exclude_none=True,
+                    ),
                     worker_id=None,
                     lease_expires_at=None,
                     updated_at=timestamp,
@@ -310,7 +307,14 @@ def _scheduled_job(
         worker_id=row.worker_id,
         lease_expires_at=row.lease_expires_at,
         last_error_code=row.last_error_code,
-        result_summary=row.result_summary_json,
+        result_summary=(
+            None
+            if row.result_summary_json is None
+            else JobResultSummary.model_validate(
+                row.result_summary_json,
+                strict=True,
+            )
+        ),
         created_at=row.created_at,
         updated_at=row.updated_at,
         started_at=row.started_at,

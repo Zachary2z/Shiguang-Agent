@@ -1,4 +1,4 @@
-"""Bounded lifecycle and race coverage for the one process-local idempotency lock."""
+"""Cancellation-safe lifecycle coverage for the workflow's idempotency lock."""
 
 from __future__ import annotations
 
