@@ -118,6 +118,7 @@ def test_postgresql_asyncpg_is_supported_and_required_in_production() -> None:
         _env_file=None,
         app_env="production",
         database_url=postgres_url,
+        demo_enabled=False,
     )
 
     assert settings.database_url == postgres_url
@@ -129,6 +130,73 @@ def test_postgresql_asyncpg_is_supported_and_required_in_production() -> None:
             _env_file=None,
             app_env="production",
             database_url="sqlite+aiosqlite:///:memory:",
+            demo_enabled=False,
+        )
+
+
+def test_production_demo_database_and_secure_cookie_are_hard_gates() -> None:
+    real_url = "postgresql+asyncpg://shiguang:password@real-db:5432/shiguang"
+    demo_url = "postgresql+asyncpg://shiguang:password@demo-db:5432/shiguang_demo"
+    settings = Settings(
+        _env_file=None,
+        app_env="production",
+        database_url=real_url,
+        demo_database_url=demo_url,
+    )
+
+    assert settings.session_cookie_secure is True
+    with pytest.raises(ValidationError, match="explicit DEMO_DATABASE_URL"):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            database_url=real_url,
+        )
+    with pytest.raises(ValidationError, match="must be different"):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            database_url=real_url,
+            demo_database_url=real_url,
+        )
+    with pytest.raises(ValidationError, match="must be different"):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            database_url=real_url,
+            demo_database_url=(
+                "postgresql+asyncpg://shiguang:another-password@REAL-DB:5432/"
+                "shiguang?application_name=demo"
+            ),
+        )
+    with pytest.raises(ValidationError, match="cookies must be Secure"):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            database_url=real_url,
+            demo_database_url=demo_url,
+            web_session_cookie_secure=False,
+        )
+    with pytest.raises(ValidationError, match="storage roots must be different"):
+        Settings(
+            _env_file=None,
+            app_env="production",
+            database_url=real_url,
+            demo_database_url=demo_url,
+            storage_private_root="/srv/shiguang/private",
+            demo_storage_private_root="/srv/shiguang/private",
+        )
+
+
+def test_web_session_ttls_are_bounded_without_sliding_configuration() -> None:
+    settings = Settings(_env_file=None, app_env="test")
+    assert settings.real_web_session_ttl_seconds == 30 * 24 * 60 * 60
+    assert settings.demo_web_session_ttl_seconds == 2 * 60 * 60
+
+    with pytest.raises(ValidationError, match="at most 24 hours"):
+        Settings(
+            _env_file=None,
+            app_env="test",
+            demo_web_session_ttl_seconds=24 * 60 * 60 + 1,
         )
 
 

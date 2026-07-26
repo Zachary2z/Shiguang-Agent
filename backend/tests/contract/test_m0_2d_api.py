@@ -128,17 +128,21 @@ def _response(*candidates: PlaceCandidate | EventCandidate):
 
 
 def _migrate(settings: Settings) -> None:
-    database_path = settings.database_url.removeprefix("sqlite+aiosqlite:///")
     previous = os.environ.get("DATABASE_URL")
-    os.environ["DATABASE_URL"] = settings.database_url
     try:
-        command.upgrade(Config(str(BACKEND_ROOT / "alembic.ini")), "head")
+        for database_url in (
+            settings.database_url,
+            settings.resolved_demo_database_url(),
+        ):
+            assert database_url is not None
+            os.environ["DATABASE_URL"] = database_url
+            command.upgrade(Config(str(BACKEND_ROOT / "alembic.ini")), "head")
     finally:
         if previous is None:
             os.environ.pop("DATABASE_URL", None)
         else:
             os.environ["DATABASE_URL"] = previous
-    assert Path(database_path).exists()
+    assert Path(settings.database_url.removeprefix("sqlite+aiosqlite:///")).exists()
 
 
 @asynccontextmanager
@@ -157,7 +161,14 @@ async def _client(
 async def _demo(client: httpx.AsyncClient) -> str:
     response = await client.post("/api/v1/demo/sessions")
     assert response.status_code == 201
+    client.headers["X-CSRF-Token"] = response.json()["csrf_token"]
     return str(response.json()["session_id"])
+
+
+def _demo_database_path(settings: Settings) -> Path:
+    database_url = settings.resolved_demo_database_url()
+    assert database_url is not None
+    return Path(database_url.removeprefix("sqlite+aiosqlite:///"))
 
 
 async def _submit(
@@ -179,11 +190,12 @@ async def test_demo_session_works_without_model_config_and_rejects_client_user_i
 ) -> None:
     async with _client(test_settings) as (_api, client):
         first = await client.post("/api/v1/demo/sessions")
-        second = await client.post("/api/v1/demo/sessions", json={})
+        second = await client.post("/api/v1/demo/sessions")
         spoofed = await client.post(
             "/api/v1/demo/sessions",
             json={"user_id": "usr_0123456789abcdef0123456789abcdef"},
         )
+        client.headers["X-CSRF-Token"] = second.json()["csrf_token"]
         unavailable = await _submit(
             client,
             first.json()["session_id"],
@@ -192,7 +204,8 @@ async def test_demo_session_works_without_model_config_and_rejects_client_user_i
         )
 
     assert first.status_code == second.status_code == 201
-    assert first.json()["session_id"] != second.json()["session_id"]
+    assert first.json()["session_id"] == second.json()["session_id"]
+    assert first.json()["resumed"] is False and second.json()["resumed"] is True
     assert spoofed.status_code == 422
     assert "usr_0123456789abcdef0123456789abcdef" not in spoofed.text
     assert unavailable.status_code == 503
@@ -295,7 +308,7 @@ async def test_sequential_and_concurrent_idempotency_do_not_repeat_data(
     assert conflict.status_code == 409
     assert conflict.json()["error_code"] == "IDEMPOTENCY_CONFLICT"
 
-    database_path = Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///"))
+    database_path = _demo_database_path(test_settings)
     with sqlite3.connect(database_path) as connection:
         counts = {
             table: connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -487,7 +500,8 @@ async def test_validation_and_request_logs_never_echo_message_or_undo_token(
 
     logs = "\n".join(record.getMessage() for record in caplog.records)
     combined = invalid_message.text + invalid_token.text + logs
-    assert invalid_message.status_code == invalid_token.status_code == 422
+    assert invalid_message.status_code == 401
+    assert invalid_token.status_code == 422
     for secret in (message_marker, token_marker, "private-auth", "private-cookie"):
         assert secret not in combined
 
@@ -498,6 +512,7 @@ async def test_openapi_has_unique_routes_m1_sse_and_no_future_business_endpoints
 ) -> None:
     async with _client(test_settings) as (api, client):
         response = await client.get("/openapi.json")
+        await _demo(client)
         missing = await client.get(
             "/api/v1/agent-runs/trc_0123456789abcdef0123456789abcdef/events"
         )
@@ -674,7 +689,7 @@ async def test_other_user_session_collection_and_trace_have_same_404(
             updated_at=now,
         )
         trace_id = generate_trace_id()
-        async with api.state.database.session() as db_session:
+        async with api.state.demo_database.session() as db_session:
             repository = SqlAlchemyCollectionRepository(db_session)
             await repository.add_user(user_id=other_user.id, user=other_user)
             await repository.add_session(user_id=other_user.id, session=other_session)
@@ -729,7 +744,7 @@ async def test_cancelled_error_propagates_and_records_cancelled_without_collecti
                 content="广州塔",
             )
 
-    database_path = Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///"))
+    database_path = _demo_database_path(test_settings)
     with sqlite3.connect(database_path) as connection:
         run = connection.execute("SELECT status, error_code FROM agent_runs").fetchone()
         counts = tuple(
@@ -776,7 +791,7 @@ async def test_mid_transaction_failure_rolls_back_all_collection_artifacts(
                 content="两个具体地点",
             )
 
-    database_path = Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///"))
+    database_path = _demo_database_path(test_settings)
     with sqlite3.connect(database_path) as connection:
         counts = tuple(
             connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -832,7 +847,7 @@ async def test_concurrent_undo_is_idempotent_and_expired_token_is_unavailable(
             content="过期地点",
         )
         expiring_data = expiring.json()
-        async with api.state.database.session() as db_session:
+        async with api.state.demo_database.session() as db_session:
             await db_session.execute(
                 text(
                     "UPDATE collection_write_operations "
@@ -899,7 +914,7 @@ async def test_synchronous_workflow_enforces_configured_run_timeout(
     assert replay.status_code == 504
     assert replay.json()["error_code"] == "RUN_TIMEOUT"
     assert replay.json()["trace_id"] == response.json()["trace_id"]
-    database_path = Path(settings.database_url.removeprefix("sqlite+aiosqlite:///"))
+    database_path = _demo_database_path(settings)
     with sqlite3.connect(database_path) as connection:
         run = connection.execute("SELECT status, error_code FROM agent_runs").fetchone()
     assert run == ("failed", "RUN_TIMEOUT")

@@ -17,10 +17,9 @@ from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from pydantic import SecretStr, ValidationError
-from sqlalchemy import text
+from sqlalchemy import select, text
 
 from app.application.collection_writes import CollectionWriteService
-from app.application.demo_sessions import DEMO_USER_ID
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.text_collection_workflow import (
@@ -45,6 +44,7 @@ from app.domain.web import (
     WebFetchFailureCode,
     WebPageContent,
 )
+from app.infrastructure.db.models import SessionModel
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.main import create_app
@@ -226,9 +226,14 @@ def _web_success() -> WebPageContent:
 
 def _migrate(settings: Settings) -> None:
     previous = os.environ.get("DATABASE_URL")
-    os.environ["DATABASE_URL"] = settings.database_url
     try:
-        command.upgrade(Config(str(BACKEND_ROOT / "alembic.ini")), "head")
+        for database_url in (
+            settings.database_url,
+            settings.resolved_demo_database_url(),
+        ):
+            assert database_url is not None
+            os.environ["DATABASE_URL"] = database_url
+            command.upgrade(Config(str(BACKEND_ROOT / "alembic.ini")), "head")
     finally:
         if previous is None:
             os.environ.pop("DATABASE_URL", None)
@@ -245,15 +250,19 @@ async def _client(
 ) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient, LocalPrivateStorageProvider]]:
     database_path = Path(settings.database_url.removeprefix("sqlite+aiosqlite:///"))
     active_settings = settings.model_copy(
-        update={"storage_private_root": database_path.parent / "private"}
+        update={
+            "storage_private_root": database_path.parent / "private",
+            "demo_storage_private_root": database_path.parent / "demo-private",
+        }
     )
     await asyncio.to_thread(_migrate, active_settings)
-    storage = LocalPrivateStorageProvider.from_settings(active_settings)
+    storage = LocalPrivateStorageProvider(config=active_settings.demo_storage_provider_settings())
     api = create_app(
         active_settings,
         text_provider=provider,
         web_provider=web,
         storage_provider=storage,
+        demo_storage_provider=storage,
     )
     async with api.router.lifespan_context(api):
         transport = httpx.ASGITransport(app=api)
@@ -264,7 +273,17 @@ async def _client(
 async def _demo(client: httpx.AsyncClient) -> str:
     response = await client.post("/api/v1/demo/sessions")
     assert response.status_code == 201
+    client.headers["X-CSRF-Token"] = response.json()["csrf_token"]
     return str(response.json()["session_id"])
+
+
+async def _demo_owner_id(api: FastAPI, session_id: str) -> str:
+    async with api.state.demo_database.session() as session:
+        user_id = await session.scalar(
+            select(SessionModel.user_id).where(SessionModel.id == session_id)
+        )
+    assert user_id is not None
+    return user_id
 
 
 @pytest.mark.asyncio
@@ -275,6 +294,7 @@ async def test_text_url_and_image_share_one_result_and_collection_mapping(
     web = StubWebProvider(_web_success())
     async with _client(test_settings, provider, web=web) as (api, client, _storage):
         session_id = await _demo(client)
+        demo_user_id = await _demo_owner_id(api, session_id)
         text_result = await client.post(
             f"/api/v1/sessions/{session_id}/messages",
             json={"type": "text", "idempotency_key": "text", "text": "具体地点"},
@@ -296,9 +316,9 @@ async def test_text_url_and_image_share_one_result_and_collection_mapping(
             await client.get(f"/api/v1/agent-runs/{result.json()['trace_id']}")
             for result in (text_result, url_result, image_result)
         ]
-        async with api.state.database.session() as session:
+        async with api.state.demo_database.session() as session:
             sources = await SqlAlchemyCollectionRepository(session).list_sources(
-                user_id=DEMO_USER_ID
+                user_id=demo_user_id
             )
 
     assert all(result.status_code == 200 for result in (text_result, url_result, image_result))
@@ -324,7 +344,9 @@ async def test_text_url_and_image_share_one_result_and_collection_mapping(
     assert sources[2].file_key is not None
     assert sources[2].metadata.content_sha256 is not None
     assert sources[2].file_key not in image_result.text
-    database_path = Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///"))
+    demo_database_url = test_settings.resolved_demo_database_url()
+    assert demo_database_url is not None
+    database_path = Path(demo_database_url.removeprefix("sqlite+aiosqlite:///"))
     database_dump = await asyncio.to_thread(database_path.read_bytes)
     assert b"RAW_WEB_PRIVATE_MARKER" not in database_dump
     assert PNG_SCREENSHOT not in database_dump
@@ -364,8 +386,7 @@ async def test_text_url_and_image_preserve_date_only_events_without_inventing_ti
 
     assert all(result.status_code == 200 for result in (text_result, url_result, image_result))
     collections = [
-        result.json()["collections"][0]
-        for result in (text_result, url_result, image_result)
+        result.json()["collections"][0] for result in (text_result, url_result, image_result)
     ]
     assert [item["title"] for item in collections] == [
         "Text dates",
@@ -386,9 +407,7 @@ async def test_public_text_replay_preserves_event_dates_and_existing_candidate_b
     candidates = (_replay_date_event(), _exact_time_event(), _place("Replay place"))
     provider = FakeProvider(
         [
-            fake_response(
-                content=ExtractionResult.with_candidates((candidate,)).model_dump_json()
-            )
+            fake_response(content=ExtractionResult.with_candidates((candidate,)).model_dump_json())
             for candidate in candidates
         ]
     )
@@ -407,6 +426,7 @@ async def test_public_text_replay_preserves_event_dates_and_existing_candidate_b
 
     async with _client(test_settings, provider) as (api, client, _storage):
         session_id = await _demo(client)
+        demo_user_id = await _demo_owner_id(api, session_id)
         for payload in payloads:
             first = await client.post(
                 f"/api/v1/sessions/{session_id}/messages",
@@ -414,10 +434,10 @@ async def test_public_text_replay_preserves_event_dates_and_existing_candidate_b
             )
             first_results.append(first)
             item_id = str(first.json()["collections"][0]["id"])
-            async with api.state.database.session() as session:
+            async with api.state.demo_database.session() as session:
                 repository = SqlAlchemyCollectionRepository(session)
                 saved = await repository.get_collection_item(
-                    user_id=DEMO_USER_ID,
+                    user_id=demo_user_id,
                     collection_item_id=item_id,
                 )
                 assert saved is not None
@@ -431,10 +451,10 @@ async def test_public_text_replay_preserves_event_dates_and_existing_candidate_b
             )
             assert len(provider.calls) == len(first_results)
 
-        async with api.state.database.session() as session:
+        async with api.state.demo_database.session() as session:
             repository = SqlAlchemyCollectionRepository(session)
             stored = await repository.list_collection_items(
-                user_id=DEMO_USER_ID,
+                user_id=demo_user_id,
                 include_inactive=True,
             )
 
@@ -486,6 +506,7 @@ async def test_url_failure_is_recoverable_and_never_calls_model(
     web = StubWebProvider(WebFetchFailure.for_code(WebFetchFailureCode.TARGET_BLOCKED))
     async with _client(test_settings, provider, web=web) as (api, client, _storage):
         session_id = await _demo(client)
+        demo_user_id = await _demo_owner_id(api, session_id)
         response = await client.post(
             f"/api/v1/sessions/{session_id}/messages",
             json={
@@ -503,9 +524,9 @@ async def test_url_failure_is_recoverable_and_never_calls_model(
             },
         )
         run = await client.get(f"/api/v1/agent-runs/{response.json()['trace_id']}")
-        async with api.state.database.session() as session:
+        async with api.state.demo_database.session() as session:
             sources = await SqlAlchemyCollectionRepository(session).list_sources(
-                user_id=DEMO_USER_ID
+                user_id=demo_user_id
             )
 
     assert response.status_code == replay.status_code == 200
@@ -565,28 +586,33 @@ async def test_same_key_is_isolated_between_sessions_and_image_replay_stores_onc
     test_settings: Settings,
 ) -> None:
     provider = FakeProvider([_response("First"), _response("Second"), _response("Image")])
-    async with _client(test_settings, provider) as (_api, client, _storage):
-        first_session, second_session = await _demo(client), await _demo(client)
-        first, second = await asyncio.gather(
-            client.post(
+    async with _client(test_settings, provider) as (api, client, _storage):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api),
+            base_url="http://test",
+        ) as second_client:
+            first_session = await _demo(client)
+            second_session = await _demo(second_client)
+            first, second = await asyncio.gather(
+                client.post(
+                    f"/api/v1/sessions/{first_session}/messages",
+                    json={"idempotency_key": "shared", "content": "first"},
+                ),
+                second_client.post(
+                    f"/api/v1/sessions/{second_session}/messages",
+                    json={"idempotency_key": "shared", "content": "second"},
+                ),
+            )
+            image = await client.post(
                 f"/api/v1/sessions/{first_session}/messages",
-                json={"idempotency_key": "shared", "content": "first"},
-            ),
-            client.post(
-                f"/api/v1/sessions/{second_session}/messages",
-                json={"idempotency_key": "shared", "content": "second"},
-            ),
-        )
-        image = await client.post(
-            f"/api/v1/sessions/{first_session}/messages",
-            content=PNG_SCREENSHOT,
-            headers={"Content-Type": "image/png", "Idempotency-Key": "same-image"},
-        )
-        replay = await client.post(
-            f"/api/v1/sessions/{first_session}/messages",
-            content=PNG_SCREENSHOT,
-            headers={"Content-Type": "image/png", "Idempotency-Key": "same-image"},
-        )
+                content=PNG_SCREENSHOT,
+                headers={"Content-Type": "image/png", "Idempotency-Key": "same-image"},
+            )
+            replay = await client.post(
+                f"/api/v1/sessions/{first_session}/messages",
+                content=PNG_SCREENSHOT,
+                headers={"Content-Type": "image/png", "Idempotency-Key": "same-image"},
+            )
 
     assert first.status_code == second.status_code == image.status_code == replay.status_code == 200
     assert first.json()["trace_id"] != second.json()["trace_id"]
@@ -607,11 +633,12 @@ async def test_same_key_and_frozen_input_remain_isolated_across_users(
     input_snapshot = second_input.model_dump(mode="python")
     async with _client(test_settings, provider) as (api, client, _storage):
         demo_session_id = await _demo(client)
+        demo_user_id = await _demo_owner_id(api, demo_session_id)
         first = await client.post(
             f"/api/v1/sessions/{demo_session_id}/messages",
             json={"idempotency_key": "cross-user", "content": "第一位用户"},
         )
-        async with api.state.database.session() as session:
+        async with api.state.demo_database.session() as session:
             repository = SqlAlchemyCollectionRepository(session)
             await repository.add_user(
                 user_id=second_user_id,
@@ -641,7 +668,7 @@ async def test_same_key_and_frozen_input_remain_isolated_across_users(
                 idempotency_key="cross-user",
                 input=second_input,
             )
-            first_sources = await repository.list_sources(user_id=DEMO_USER_ID)
+            first_sources = await repository.list_sources(user_id=demo_user_id)
             second_sources = await repository.list_sources(user_id=second_user_id)
 
     assert first.status_code == 200
@@ -678,7 +705,8 @@ async def test_invalid_and_different_image_payloads_never_duplicate_or_leak_file
         invalid_run = await client.get(f"/api/v1/agent-runs/{invalid.json()['trace_id']}")
 
     private_root = (
-        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent / "private"
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
+        / "demo-private"
     )
     objects = list((private_root / "objects").iterdir())
     combined = (
@@ -719,7 +747,7 @@ async def test_image_idempotency_identity_includes_normalized_media_type(
             content=PNG_SCREENSHOT,
             headers={"Content-Type": "IMAGE/PNG", "Idempotency-Key": "mime-conflict"},
         )
-        async with api.state.database.session() as session:
+        async with api.state.demo_database.session() as session:
             message_content = await session.scalar(text("SELECT content FROM messages LIMIT 1"))
 
     assert declared_jpeg.status_code == 500
@@ -761,7 +789,7 @@ async def test_each_image_media_type_replays_without_duplicate_side_effects(
             headers={"Content-Type": media_type.upper(), "Idempotency-Key": key},
         )
         run = await client.get(f"/api/v1/agent-runs/{first.json()['trace_id']}")
-        async with api.state.database.session() as session:
+        async with api.state.demo_database.session() as session:
             count_values: list[int] = []
             for table in ("messages", "sources", "agent_runs", "tool_runs"):
                 count_values.append(
@@ -770,7 +798,8 @@ async def test_each_image_media_type_replays_without_duplicate_side_effects(
             counts = tuple(count_values)
 
     private_root = (
-        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent / "private"
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
+        / "demo-private"
     )
     assert first.status_code == replay.status_code == 200
     assert replay.json()["replayed"] is True
@@ -803,6 +832,7 @@ async def test_image_insufficient_information_keeps_private_source_unconfirmed(
     provider = FakeProvider([fake_response(content=insufficient.model_dump_json())])
     async with _client(test_settings, provider) as (api, client, _storage):
         session_id = await _demo(client)
+        demo_user_id = await _demo_owner_id(api, session_id)
         response = await client.post(
             f"/api/v1/sessions/{session_id}/messages",
             content=PNG_SCREENSHOT,
@@ -813,9 +843,9 @@ async def test_image_insufficient_information_keeps_private_source_unconfirmed(
             content=PNG_SCREENSHOT,
             headers={"Content-Type": "image/png", "Idempotency-Key": "insufficient"},
         )
-        async with api.state.database.session() as session:
+        async with api.state.demo_database.session() as session:
             sources = await SqlAlchemyCollectionRepository(session).list_sources(
-                user_id=DEMO_USER_ID
+                user_id=demo_user_id
             )
 
     assert response.status_code == 200
@@ -923,7 +953,7 @@ async def test_image_cancellation_finalizes_run_and_removes_new_file(
                 content=PNG_SCREENSHOT,
                 headers={"Content-Type": "image/png", "Idempotency-Key": "cancel-image"},
             )
-        async with api.state.database.session() as session:
+        async with api.state.demo_database.session() as session:
             trace_id = await session.scalar(
                 text("SELECT trace_id FROM agent_runs ORDER BY created_at DESC LIMIT 1")
             )
@@ -935,7 +965,8 @@ async def test_image_cancellation_finalizes_run_and_removes_new_file(
         )
 
     private_root = (
-        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent / "private"
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
+        / "demo-private"
     )
     assert caught.value is cancellation
     assert run.json()["status"] == "cancelled"
@@ -966,7 +997,8 @@ async def test_image_provider_failure_replay_has_no_additional_side_effects(
         run = await client.get(f"/api/v1/agent-runs/{first.json()['trace_id']}")
 
     private_root = (
-        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent / "private"
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
+        / "demo-private"
     )
     assert first.status_code == replay.status_code == 502
     assert replay.json() == first.json()
@@ -1005,7 +1037,7 @@ async def test_image_initial_and_repair_share_one_outer_workflow_budget(
 
     private_root = (
         Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
-        / "private"
+        / "demo-private"
     )
     assert response.status_code == 504
     assert response.json()["error_code"] == "RUN_TIMEOUT"
@@ -1055,7 +1087,7 @@ async def test_image_outer_deadline_cancels_longer_provider_safety_cap(
                     "Idempotency-Key": "outer-before-provider-cap",
                 },
             )
-            async with api.state.database.session() as session:
+            async with api.state.demo_database.session() as session:
                 count_values: list[int] = []
                 for table in (
                     "sources",
@@ -1070,7 +1102,7 @@ async def test_image_outer_deadline_cancels_longer_provider_safety_cap(
 
     private_root = (
         Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
-        / "private"
+        / "demo-private"
     )
     assert response.status_code == 504
     assert response.json()["error_code"] == "RUN_TIMEOUT"
@@ -1114,7 +1146,7 @@ async def test_cleanup_failure_is_fixed_and_does_not_leak_sensitive_context(
             },
         )
         run = await client.get(f"/api/v1/agent-runs/{response.json()['trace_id']}")
-        async with api.state.database.session() as session:
+        async with api.state.demo_database.session() as session:
             tool_rows = (
                 await session.execute(
                     text(
@@ -1164,7 +1196,7 @@ async def test_collection_cancellation_survives_storage_cleanup_failure(
                 content=PNG_SCREENSHOT,
                 headers={"Content-Type": "image/png", "Idempotency-Key": "cancel-cleanup"},
             )
-        async with api.state.database.session() as session:
+        async with api.state.demo_database.session() as session:
             run = (
                 await session.execute(
                     text(
@@ -1213,7 +1245,7 @@ async def test_image_collection_write_failure_rolls_back_and_cleans_file(
                 content=PNG_SCREENSHOT,
                 headers={"Content-Type": "image/png", "Idempotency-Key": "db-failure"},
             )
-        async with api.state.database.session() as session:
+        async with api.state.demo_database.session() as session:
             count_values: list[int] = []
             for table in ("sources", "collection_items", "collection_write_operations"):
                 value = await session.scalar(text(f"SELECT COUNT(*) FROM {table}"))
@@ -1224,7 +1256,8 @@ async def test_image_collection_write_failure_rolls_back_and_cleans_file(
             )
 
     private_root = (
-        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent / "private"
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
+        / "demo-private"
     )
     assert counts == (0, 0, 0)
     assert run_status == "failed"
@@ -1262,7 +1295,7 @@ async def test_image_database_write_timeout_cleans_all_private_file_state(
                 "Idempotency-Key": "database-write-timeout",
             },
         )
-        async with api.state.database.session() as session:
+        async with api.state.demo_database.session() as session:
             count_values: list[int] = []
             for table in (
                 "sources",
@@ -1275,7 +1308,7 @@ async def test_image_database_write_timeout_cleans_all_private_file_state(
 
     private_root = (
         Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
-        / "private"
+        / "demo-private"
     )
     assert response.status_code == 504
     assert response.json()["error_code"] == "RUN_TIMEOUT"

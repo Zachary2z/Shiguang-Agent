@@ -22,10 +22,12 @@ os.environ["APP_ENV"] = "test"
 @pytest.fixture
 def test_settings(tmp_path: Path) -> Settings:
     database_path = tmp_path / "app.db"
+    demo_database_path = tmp_path / "demo.db"
     return Settings(
         _env_file=None,
         app_env="test",
         database_url=f"sqlite+aiosqlite:///{database_path}",
+        demo_database_url=f"sqlite+aiosqlite:///{demo_database_path}",
         log_level="DEBUG",
     )
 
@@ -95,3 +97,34 @@ def postgresql_database_url() -> Iterator[str]:
         else:
             os.environ["DATABASE_URL"] = old_database_url
         asyncio.run(_drop_postgresql_database(admin_url, database_name))
+
+
+@pytest.fixture
+def postgresql_database_pair_urls() -> Iterator[tuple[str, str]]:
+    """Yield separately migrated real and Demo PostgreSQL databases."""
+
+    admin_url = _postgresql_admin_url()
+    database_names = (
+        f"shiguang_real_test_{uuid4().hex}",
+        f"shiguang_demo_test_{uuid4().hex}",
+    )
+    for database_name in database_names:
+        asyncio.run(_create_postgresql_database(admin_url, database_name))
+    old_database_url = os.environ.get("DATABASE_URL")
+    try:
+        rendered_urls: list[str] = []
+        for database_name in database_names:
+            database_url = admin_url.set(database=database_name).render_as_string(
+                hide_password=False
+            )
+            os.environ["DATABASE_URL"] = database_url
+            command.upgrade(Config("alembic.ini"), "head")
+            rendered_urls.append(database_url)
+        yield rendered_urls[0], rendered_urls[1]
+    finally:
+        if old_database_url is None:
+            os.environ.pop("DATABASE_URL", None)
+        else:
+            os.environ["DATABASE_URL"] = old_database_url
+        for database_name in database_names:
+            asyncio.run(_drop_postgresql_database(admin_url, database_name))

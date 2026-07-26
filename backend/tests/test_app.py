@@ -105,17 +105,20 @@ async def test_database_is_closed_when_startup_connection_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     lifecycle_events: list[str] = []
+    demo_url = test_settings.resolved_demo_database_url()
+    assert demo_url is not None
 
     class FailingDatabase:
         def __init__(self, database_url: str) -> None:
-            assert database_url == test_settings.database_url
+            assert database_url in {test_settings.database_url, demo_url}
+            self._kind = "real" if database_url == test_settings.database_url else "demo"
 
         async def connect(self) -> None:
-            lifecycle_events.append("connect")
+            lifecycle_events.append(f"connect:{self._kind}")
             raise RuntimeError("database unavailable")
 
         async def close(self) -> None:
-            lifecycle_events.append("close")
+            lifecycle_events.append(f"close:{self._kind}")
 
     monkeypatch.setattr(main_module, "Database", FailingDatabase)
     api = create_app(test_settings)
@@ -124,4 +127,4 @@ async def test_database_is_closed_when_startup_connection_fails(
         async with api.router.lifespan_context(api):
             pass
 
-    assert lifecycle_events == ["connect", "close"]
+    assert lifecycle_events == ["connect:real", "close:demo", "close:real"]

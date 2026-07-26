@@ -12,10 +12,14 @@ import pytest
 from fastapi import FastAPI
 from pydantic import ValidationError
 
-from app.api.dependencies import get_current_user_id
-from app.application.demo_sessions import DEMO_USER_ID
+from app.api.dependencies import (
+    RequestIdentityContext,
+    get_current_user_id,
+    get_request_identity,
+)
 from app.application.run_events import RunEventService
 from app.config import Settings
+from app.domain.identity import BrowserSession, CurrentPrincipal, PrincipalMode
 from app.domain.runs.events import (
     ResultUpdatedSummary,
     RunCompletedSummary,
@@ -31,6 +35,7 @@ from app.infrastructure.repositories import AgentRunRepository
 from app.main import create_app
 
 OTHER_USER_ID = "usr_fedcba9876543210fedcba9876543210"
+RUN_USER_ID = "usr_0123456789abcdef0123456789abcdef"
 TRACE_ID = "trc_0123456789abcdef0123456789abcdef"
 OTHER_TRACE_ID = "trc_fedcba9876543210fedcba9876543210"
 
@@ -73,7 +78,7 @@ def test_concurrent_run_events_are_monotonic_and_trace_isolated(
     async def scenario() -> None:
         database = Database(postgresql_database_url)
         try:
-            await _create_run(database, user_id=DEMO_USER_ID, trace_id=TRACE_ID)
+            await _create_run(database, user_id=RUN_USER_ID, trace_id=TRACE_ID)
             await _create_run(
                 database,
                 user_id=OTHER_USER_ID,
@@ -83,7 +88,7 @@ def test_concurrent_run_events_are_monotonic_and_trace_isolated(
             async def publish(index: int) -> None:
                 async with database.session() as session:
                     await RunEventService(session).publish(
-                        user_id=DEMO_USER_ID,
+                        user_id=RUN_USER_ID,
                         trace_id=TRACE_ID,
                         event_type=RunEventType.STAGE_CHANGED,
                         summary=StageChangedSummary(stage=f"fixture-{index}"),
@@ -100,7 +105,7 @@ def test_concurrent_run_events_are_monotonic_and_trace_isolated(
             async with database.session() as session:
                 service = RunEventService(session)
                 events = await service.list_after(
-                    user_id=DEMO_USER_ID,
+                    user_id=RUN_USER_ID,
                     trace_id=TRACE_ID,
                     after_sequence=0,
                 )
@@ -135,7 +140,7 @@ def test_sse_last_event_id_replays_only_unconfirmed_sequences(
     async def scenario() -> None:
         database = Database(postgresql_database_url)
         try:
-            await _create_run(database, user_id=DEMO_USER_ID, trace_id=TRACE_ID)
+            await _create_run(database, user_id=RUN_USER_ID, trace_id=TRACE_ID)
             async with database.session() as session:
                 service = RunEventService(session)
                 summaries: tuple[
@@ -161,7 +166,7 @@ def test_sse_last_event_id_replays_only_unconfirmed_sequences(
                 )
                 for event_type, summary in summaries:
                     await service.publish(
-                        user_id=DEMO_USER_ID,
+                        user_id=RUN_USER_ID,
                         trace_id=TRACE_ID,
                         event_type=event_type,
                         summary=summary,
@@ -173,9 +178,35 @@ def test_sse_last_event_id_replays_only_unconfirmed_sequences(
             _env_file=None,
             app_env="test",
             database_url=postgresql_database_url,
+            demo_enabled=False,
             log_level="ERROR",
         )
         api = create_app(settings)
+
+        async def identity_override() -> AsyncIterator[RequestIdentityContext]:
+            async with api.state.database.session() as session:
+                expires_at = datetime(2026, 7, 28, tzinfo=UTC)
+                browser_session = BrowserSession(
+                    id="wbs_0123456789abcdef0123456789abcdef",
+                    user_id=RUN_USER_ID,
+                    token_hash="1" * 64,
+                    csrf_token_hash="2" * 64,
+                    created_at=datetime(2026, 7, 27, tzinfo=UTC),
+                    expires_at=expires_at,
+                )
+                yield RequestIdentityContext(
+                    principal=CurrentPrincipal(
+                        web_session_id=browser_session.id,
+                        user_id=RUN_USER_ID,
+                        mode=PrincipalMode.REAL,
+                        expires_at=expires_at,
+                    ),
+                    browser_session=browser_session,
+                    session=session,
+                    database=api.state.database,
+                )
+
+        api.dependency_overrides[get_request_identity] = identity_override
         async with _client_for(api) as client:
             replay = await client.get(
                 f"/api/v1/agent-runs/{TRACE_ID}/events",
@@ -209,7 +240,7 @@ def test_run_event_summary_is_allowlisted_and_accepts_content_hash(
     async def scenario() -> None:
         database = Database(postgresql_database_url)
         try:
-            await _create_run(database, user_id=DEMO_USER_ID, trace_id=TRACE_ID)
+            await _create_run(database, user_id=RUN_USER_ID, trace_id=TRACE_ID)
             for field in (
                 "apiKey",
                 "access_token",
@@ -230,7 +261,7 @@ def test_run_event_summary_is_allowlisted_and_accepts_content_hash(
                     )
             async with database.session() as session:
                 event = await RunEventService(session).publish(
-                    user_id=DEMO_USER_ID,
+                    user_id=RUN_USER_ID,
                     trace_id=TRACE_ID,
                     event_type=RunEventType.RESULT_UPDATED,
                     summary=ResultUpdatedSummary(
