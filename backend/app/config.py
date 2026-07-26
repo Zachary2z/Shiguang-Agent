@@ -31,7 +31,8 @@ from nanobot_core.providers import StructuredOutputMode
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ENV_FILE = REPOSITORY_ROOT / ".env"
 DEFAULT_AMAP_BASE_URL = "https://restapi.amap.com"
-MAX_MODEL_TIMEOUT_SECONDS = 15.0
+DEFAULT_MODEL_TIMEOUT_SECONDS = 30.0
+MAX_MODEL_TIMEOUT_SECONDS = 30.0
 MAX_AMAP_TIMEOUT_SECONDS = 30.0
 MAX_AMAP_RETRIES = 1
 MAX_AMAP_RETRY_AFTER_SECONDS = 5.0
@@ -271,7 +272,7 @@ class Settings(BaseSettings):
     model_api_base: str | None = None
     model_api_key: SecretStr | None = None
     model_name: str | None = None
-    model_timeout_seconds: float | None = None
+    model_timeout_seconds: float | None = DEFAULT_MODEL_TIMEOUT_SECONDS
     model_structured_output_mode: Literal[
         "none",
         "json_schema",

@@ -1842,3 +1842,43 @@ M1-0 仍未开始。修复集成后必须重新取得用户明确授权，使用
 总上限 12 次非流式 Chat Completions；SDK 和外层重试均为 0；单次模型总墙钟 15 秒，
 每张完整共享总预算 20 秒。首次鉴权、endpoint、供应商或模型能力错误立即停止。
 报告仍只写仓库外，且不记录完整请求、响应、Base64、密钥、模型名或 Request ID。
+
+## 25. 模型与富输入超时策略收敛
+
+### 25.1 稳定产品边界
+
+在第 24 节有限真实观测之后，本次校准不再按单个样本继续调整 15、18、20 等临时
+数字，而是收敛为两层既有正式边界：
+
+- `MODEL_TIMEOUT_SECONDS` 默认和最大值均为 30 秒，覆盖一次完整
+  `chat.completions.create()` SDK 调用的总墙钟时间；
+- URL/图片完整工作流使用一个 60 秒共享总墙钟硬兜底；
+- initial 与唯一一次自然触发的 repair 位于同一个外层 operation，initial 消耗的
+  时间直接减少 repair 的剩余预算，不会为 repair 重置 60 秒；
+- 20 秒仅作为图片和网页解析的非阻断性能观察目标，超过 20 秒但未达到 60 秒可以
+  正常完成，不再映射为 HTTP 或业务失败；
+- SDK `max_retries=0`，Provider 和应用层自动重试均为 0。
+
+这两个硬兜底复用现有 `OpenAICompatibleProvider` 总墙钟保护和
+`AgentRunService.execute_application()` 外层预算。没有新增 timeout helper、图片
+计时器、Provider、工作流、Parser 或 repair 路径。
+
+### 25.2 取消、清理与安全
+
+单次 Provider 到达内部截止后，`asyncio.wait_for` 会取消并等待进行中的 SDK 请求
+结束，再映射为唯一 `ProviderErrorCode.TIMEOUT`；外部 `CancelledError` 继续原对象
+传播。富输入到达 60 秒截止后同样取消当前 operation，并等待既有图片对象、metadata、
+temporary、reservation 和未提交数据库写入清理完成；不会遗留后台请求或临时业务
+状态。Provider close 继续关闭 SDK 与底层 HTTP client。
+
+异常、日志、repr、公开 DTO 和运行摘要不包含 Prompt、完整响应、Base64、API Key、
+Authorization、Request ID 或私人路径。本修复没有改变 Event 日期粒度、Event 状态、
+DTO、Parser、Prompt、数据库模型或 Alembic；唯一 head 继续为 `20260724_0007`。
+
+### 25.3 验证与后续真实复测
+
+本开发窗口只使用 Fake、Mock、固定 Fixture、受控 awaitable 与封网测试；没有读取
+`.env`，真实模型、地图、网页、对象存储、消息及其他外部 API 调用均为 0。固定真实
+样本 03 尚未复测；主控完成离线集成后仍须重新取得真实模型调用授权，才能按 30 秒
+Provider 硬兜底和 60 秒富输入共享硬兜底重新验收。20 秒只记录性能观察，不作为内容
+正确性或功能成功的强制 Gate。

@@ -54,7 +54,7 @@ from app.providers.storage import StorageProvider, StorageProviderError
 from app.providers.web import WebContentProvider
 from nanobot_core.providers import ModelProvider, ProviderError, StructuredOutputMode
 
-MAX_RICH_INPUT_WORKFLOW_SECONDS = 20.0
+MAX_RICH_INPUT_WORKFLOW_SECONDS = 60.0
 _RECOVERY_SUPPLY_TEXT = "supply_text"
 _RECOVERY_SEND_SCREENSHOT = "send_screenshot"
 _RECOVERY_REUPLOAD_IMAGE = "reupload_image"

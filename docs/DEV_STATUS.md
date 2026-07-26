@@ -3,17 +3,18 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 关闭后校准窗口 |
-| 当前子阶段 | Event 日期粒度修正 |
+| 当前子阶段 | 模型与富输入超时策略收敛修复 |
 | 状态 | 待验收 |
 | 当前分支 | codex/event-date-granularity |
-| 最近更新 | 2026-07-24 |
-| 阻塞项 | 本修复待主控集成；M1-0 仍未开始，IdempotencyLockRegistry 无界增长 P2 仍是其第一项强制前置 |
+| 最近更新 | 2026-07-26 |
+| 阻塞项 | 本超时策略修复待主控集成与固定样本 03 重新授权复测；M1-0 仍未开始，IdempotencyLockRegistry 无界增长 P2 仍是其第一项强制前置 |
 
 ## 当前任务
 
 M0-0A 至 M0-5D 及 M0-Gate 均已通过主控验收，M0 仍保持正式完成。本窗口只处理
-M0 关闭后、M1-0 开始前的 Event 有效日期与准确场次时间通用领域语义；不重新打开
-M0 功能范围，也不开始 M1-0。修复集成后仍须另行启动 M1-0，并先解决
+M0 关闭后、M1-0 开始前的模型单次与 URL/图片富输入整链路超时策略收敛；Event
+有效日期与准确场次时间领域语义保持不变，不重新打开 M0 功能范围，也不开始 M1-0。
+修复集成后仍须另行启动 M1-0，并先解决
 `IdempotencyLockRegistry` 无界增长 P2；PostgreSQL、Job、Worker、APScheduler、
 Docker Compose、SSE、M1-1、M1-2 及后续阶段均未开始。
 
@@ -1693,3 +1694,43 @@ Session、M1-2 Next.js 或其他后续阶段。
 - 安全与下一步：所有命令显式使用测试环境；未读取 `.env`，真实模型、地图、网页、
   对象存储、消息及其他真实/付费 API 调用为 0。等待主控重点复测 date-only 重放、
   exact-time/Place 边界和零重复收藏后集成；M0 状态与 M1-0 前置不变
+
+#### 2026-07-26｜模型与富输入超时策略收敛修复｜待主控验收
+
+- 分支与门禁：继续使用 `codex/event-date-granularity`，指定基线与开始 HEAD 均为
+  `1c921c54215cdaf56e6ca04e5aeee2b46c5fddc4`；开始工作区干净，Event 日期粒度与
+  幂等重放修复提交链完整。Alembic 唯一 head 为 `20260724_0007`
+- 配置与 Provider：`MODEL_TIMEOUT_SECONDS` 默认值和最大允许值统一为 30 秒；
+  唯一 `OpenAICompatibleProvider` 继续在一次
+  `chat.completions.create()` SDK await 外使用一次总墙钟截止，SDK
+  `max_retries=0`，一次 chat 只发一次请求。15 秒后、30 秒前的受控逻辑耗时成功，
+  到点继续映射唯一 `PROVIDER_TIMEOUT`
+- 富输入预算：唯一 `TextCollectionWorkflow` 的既有
+  `MAX_RICH_INPUT_WORKFLOW_SECONDS` 从 20 收敛为 60；URL 与图片仍只通过
+  `AgentRunService.execute_application()` 建立一次外层预算。initial 和唯一 repair
+  位于同一个 operation，initial 消耗后 repair 只使用剩余时间，不重置预算
+- 性能与产品语义：20 秒只保留为 URL/图片解析非阻断性能观察目标，不再是统一工作流
+  强制失败阈值；30/60 是稳定产品硬兜底，不按固定样本继续上调。Event 日期字段、
+  状态、Parser、Prompt、结构抽取、repair 和计划规则均未修改
+- 取消、清理与重试：Provider/工作流硬截止继续由 `asyncio.wait_for` 取消并等待活动
+  协程；外部 `CancelledError` 原对象传播。图片 timeout、取消和数据库写入 timeout
+  继续清理 objects、metadata、temporary、reservation 与未提交业务写入；SDK、
+  Provider 和应用层自动重试均为 0
+- 离线验证：无索引 editable 安装最终通过，`pip check`、Ruff、94 文件 strict
+  mypy 均通过；超时/配置/Provider/图片/抽取/统一输入聚焦 `379 passed`，Event
+  检索与计划回归 `86 passed`；正式非真实全集
+  `1508 passed / 2 deselected`，默认全集 `1508 passed / 2 skipped`
+- 封网与迁移：仓库外 pytest 插件封锁 DNS、connect、connect_ex 和
+  create_connection 后聚焦 `251 passed`、非真实全集
+  `1508 passed / 2 deselected`；迁移测试 `23 passed`。所有最终测试命令均为
+  0 failed、0 warning
+- 环境说明：首次 `PIP_NO_INDEX=1` 构建隔离安装因本机未缓存 setuptools/wheel
+  构建依赖退出 1；随后只复用本机 Anaconda 已有的 setuptools wheel 与 wheel 包，
+  使用 `--no-build-isolation` 完成无网络 editable 安装。没有从外部索引下载依赖
+- 复杂度与安全：ModelProvider、OpenAICompatibleProvider、AgentRunner、
+  ImageRecognitionService、TextCollectionWorkflow、Parser 与 repair 均保持唯一；
+  没有新增 timeout helper、后台任务、样本 03 特例、自动重试、配置入口、迁移或
+  M1 代码。Git 不跟踪 `.env`、数据库、缓存、临时脚本或虚拟环境；未读取 `.env`
+- 外部调用与下一步：真实模型、地图、网页、对象存储、消息及其他外部 API 调用为
+  0。固定真实样本 03 尚需主控离线集成通过后重新取得授权再按 30/60 策略复测；
+  M0 保持完成，M1-0 仍未开始，首项前置仍是 `IdempotencyLockRegistry` 有界生命周期

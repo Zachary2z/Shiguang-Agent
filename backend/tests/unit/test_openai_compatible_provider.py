@@ -104,6 +104,7 @@ class OfflineProviderFactory:
         outcomes: Sequence[httpx.Response | BaseException],
         *,
         clock: Callable[[], float] | None = None,
+        timeout_seconds: float = 7,
     ) -> tuple[OpenAICompatibleProvider, list[httpx.Request]]:
         pending = deque(outcomes)
         requests: list[httpx.Request] = []
@@ -122,7 +123,7 @@ class OfflineProviderFactory:
         if clock is not None:
             kwargs["clock"] = clock
         provider = OpenAICompatibleProvider.from_settings(
-            _settings(),
+            _settings(model_timeout_seconds=timeout_seconds),
             **kwargs,  # type: ignore[arg-type]
         )
         self.providers.append(provider)
@@ -223,6 +224,24 @@ async def test_maps_text_response_and_all_metadata(
     assert "response_format" not in request_body
     assert request_body["enable_thinking"] is False
     assert request_body["stream"] is False
+
+
+@pytest.mark.asyncio
+async def test_response_after_fifteen_seconds_but_before_thirty_succeeds(
+    provider_factory: OfflineProviderFactory,
+) -> None:
+    timestamps = iter([100.0, 116.0])
+    provider, requests = provider_factory.build(
+        [_response(_completion(content="completed before hard guardrail"))],
+        clock=lambda: next(timestamps),
+        timeout_seconds=30,
+    )
+
+    result = await provider.chat(messages=[], tools=None)
+
+    assert result.content == "completed before hard guardrail"
+    assert result.latency_ms == 16_000
+    assert len(requests) == 1
 
 
 @pytest.mark.asyncio

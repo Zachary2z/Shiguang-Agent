@@ -23,7 +23,10 @@ from app.application.collection_writes import CollectionWriteService
 from app.application.demo_sessions import DEMO_USER_ID
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
 from app.application.pricing import ConfiguredPricingPolicy
-from app.application.text_collection_workflow import TextCollectionWorkflow
+from app.application.text_collection_workflow import (
+    MAX_RICH_INPUT_WORKFLOW_SECONDS,
+    TextCollectionWorkflow,
+)
 from app.config import Settings
 from app.domain.collections import (
     CandidateField,
@@ -61,6 +64,10 @@ from tests.fixtures.images import JPEG_SCREENSHOT, PNG_SCREENSHOT, WEBP_SCREENSH
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 7, 22, tzinfo=UTC)
+
+
+def test_rich_input_workflow_has_one_stable_sixty_second_guardrail() -> None:
+    assert MAX_RICH_INPUT_WORKFLOW_SECONDS == 60
 
 
 class StubWebProvider(WebContentProvider):
