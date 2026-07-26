@@ -2,21 +2,19 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 当前总阶段 | M0 关闭后校准窗口 |
-| 当前子阶段 | 富输入截止时间单一归属修复 |
-| 状态 | 待验收 |
-| 当前分支 | codex/rich-input-deadline-convergence |
+| 当前总阶段 | M1 Web/H5 核心闭环 |
+| 当前子阶段 | M1-0 PostgreSQL 与任务基础 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-26 |
-| 阻塞项 | 本截止时间修复待主控离线验收与 ff-only 集成；固定样本 03 尚未复测，必须重新授权；M1-0 仍未开始，IdempotencyLockRegistry 无界增长 P2 仍是其第一项强制前置 |
+| 阻塞项 | 无未关闭 P0/P1；IdempotencyLockRegistry 无界增长 P2 必须作为 M1-0 第一项前置修复 |
 
 ## 当前任务
 
-M0-0A 至 M0-5D 及 M0-Gate 均已通过主控验收，M0 仍保持正式完成。本窗口只处理
-M0 关闭后、M1-0 开始前的模型单次与 URL/图片富输入整链路超时策略收敛；Event
-有效日期与准确场次时间领域语义保持不变，不重新打开 M0 功能范围，也不开始 M1-0。
-修复集成后仍须另行启动 M1-0，并先解决
-`IdempotencyLockRegistry` 无界增长 P2；PostgreSQL、Job、Worker、APScheduler、
-Docker Compose、SSE、M1-1、M1-2 及后续阶段均未开始。
+M0-0A 至 M0-5D、M0-Gate、Event 日期粒度和富输入截止策略均已通过主控验收，M0
+保持正式完成。当前允许开始 M1-0，但尚未实现任何 M1 功能。M1-0 必须先解决
+`IdempotencyLockRegistry` 无界增长 P2，再进入 PostgreSQL、Job、Worker、
+APScheduler、Docker Compose 和 SSE；M1-1、M1-2 及后续阶段均未开始。
 
 ## M0 状态
 
@@ -61,16 +59,19 @@ Docker Compose、SSE、M1-1、M1-2 及后续阶段均未开始。
 - M0-5B 已完成：唯一结构化收藏检索入口、正式城市和状态边界、硬约束过滤、动态事实、请求级任意分店解析、同 POI 去重、安全错误及只读幂等均已通过主控验收。
 - M0-5C 已完成：唯一确定性草案生成与复核入口、主方案及最多两个备选、交通与结束缓冲、费用/来源/风险、任意分店快照、20 组零硬约束违反 Fixture，以及中国场景下严格的 `None + None` 或 `Decimal + CNY` 价格契约均已通过主控验收。
 - M0-5D 已完成：收藏优先、显式 Place 缺口、外部补充 Approval、拒绝/collection-only/Event 零外搜、候选消歧、外部来源与风险、统一排程和已知/未知 CNY 费用均已通过主控验收。
-- M0 关闭后 Event 日期粒度修正待验收：有效自然日期与准确场次时间使用独立字段，
+- M0 关闭后 Event 日期粒度修正已完成：有效自然日期与准确场次时间使用独立字段，
   date-only Event 可收藏但保持待补充且不进入计划；没有样本白名单或第二套解析链。
+- 富输入截止策略收敛已完成：URL/图片只使用 60 秒应用层共享硬截止，
+  Provider/transport 使用 75 秒异常安全上限；固定样本 03 在约 47.1 秒成功返回，
+  正确保留展期日期并保持精确时刻为空，实际 1 次请求、0 repair、0 重试。
 
 ## 下一步
 
-M0-Gate 已完成。当前先由主控集成 Event 日期粒度修正；样本 06 已由用户决定不作为
-内容正确性 Gate，本任务也没有为样本 03 增加任何生产特例。所有验证保持离线，真实
-API 调用为 0。M1-0 尚未开始，其第一项仍必须先解决幂等锁注册表无界增长 P2，再进入
-PostgreSQL、Job、Worker、APScheduler、Docker Compose 和 SSE。aiosqlite 偶发收尾
-warning、文本/图片超时余量与网页真实最多五跳未覆盖继续监测。不得提前开始 M1-1
+M0-Gate 及关闭后的两项校准均已完成，当前允许启动 M1-0。第一项必须先解决幂等锁
+注册表无界增长 P2，再进入 PostgreSQL、Job、Worker、APScheduler、Docker Compose
+和 SSE。样本 03 的 47.1 秒结果超过 20 秒非阻断性能观察目标，仍是小样本性能风险；
+若后续真实同步请求达到 60 秒，不继续提高时限，改由 M1 后台 Job 承载。
+aiosqlite 偶发收尾 warning 与网页真实最多五跳未覆盖继续监测。不得提前开始 M1-1
 Session、M1-2 Next.js 或其他后续阶段。
 
 ## 已确认 M0-Gate 延迟与超时校准
@@ -1773,3 +1774,31 @@ Session、M1-2 Next.js 或其他后续阶段。
   模型、地图、网页、对象存储、消息及其他外部 API 请求为 0。固定样本 03 未执行、
   未标记通过；主控应先离线复核并 ff-only 集成，再单独取得最多两次非流式请求授权，
   保持零重试。若真实同步请求仍超过 60 秒，不再提高上限，后续转 M1 后台 Job
+
+#### 2026-07-26｜Event 日期与富输入截止最终主控验收｜已完成
+
+- 集成：主控确认修复提交 `55ae656bae212c5655694854591d41b1719e3b9f`
+  直接包含本地 `main` 基线，工作区干净且提交链无 merge commit；以 `--ff-only`
+  集成到本地 `main`，合并前后 tree 一致、无冲突和额外代码变化
+- 离线验收：`pip check`、Ruff、94 文件 strict mypy 通过；修复聚焦组
+  `379 passed`，正式非真实全集 `1508 passed / 2 deselected`；合并后配置、
+  Provider 和统一输入最小检查 `194 passed`。Alembic 唯一 head 保持
+  `20260724_0007`
+- 复杂度：验收修复只删除一项依赖 SDK 首次懒初始化时序的重复测试，没有增加
+  sleep、容差、特例或生产代理。ModelProvider、OpenAICompatibleProvider、
+  AgentRunner、ImageRecognitionService、TextCollectionWorkflow、Parser 和 repair
+  路径继续各自唯一
+- 真实授权：用户明确授权固定样本 03 最多 2 次非流式请求、零重试；实际 initial
+  1 次、repair 0 次，底层 HTTP 1 次，没有人工补调用、fallback、退避、模式切换、
+  高德、网页或其他外部 API
+- 真实结果：统一图片入口约 47.1 秒返回 HTTP 200；识别
+  `event_start_date=2026-06-13`、`event_end_date=2026-07-31`，精确开始/结束时刻
+  均为空，状态为 `pending_details`。结果正确区分展期日期与每日准确时刻
+- 清理与安全：Provider、HTTP client 和应用生命周期正常关闭，后台任务为 0；隔离
+  原图、metadata、临时文件、reservation、数据库和 QA 临时根均已清理。报告未记录
+  完整请求/响应、Base64、密钥、模型名、endpoint、Authorization、Request ID、
+  账号或私人路径
+- 结论：当前无未关闭 P0/P1，60 秒应用截止与 75 秒 Provider 异常安全上限的本轮
+  真实门禁通过。47.1 秒超过 20 秒性能观察目标且样本量不足，继续作为性能风险；
+  若达到 60 秒则转 M1 后台 Job，不再放宽同步时限。当前允许开始 M1-0，首项仍是
+  `IdempotencyLockRegistry` 有界生命周期修复

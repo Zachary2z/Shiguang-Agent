@@ -1891,3 +1891,33 @@ Provider/传输层异常安全上限和 60 秒富输入单一正常截止重新�
 均通过，pytest 为 `1509 passed / 2 deselected`。MockTransport 比例测试确认应用层
 截止先取消较长 Provider 请求、单次 chat 单次 HTTP、请求取消已等待完成，图片私有
 目录和数据库业务表无残留。固定样本 03 未在开发窗口执行或标记通过。
+
+### 25.4 最终主控集成与固定样本 03 真实结果
+
+主控在提交 `55ae656bae212c5655694854591d41b1719e3b9f` 上完成独立复核并以
+`--ff-only` 集成到本地 `main`。Ruff、94 文件 strict mypy、`379 passed` 聚焦组、
+`1508 passed / 2 deselected` 非真实全集和合并后 `194 passed` 最小检查均通过；
+Alembic 唯一 head 保持 `20260724_0007`。验收修复只删除一项依赖 SDK 首次懒初始化
+时序的重复测试，没有修改生产代码或增加 sleep、容差、特例和第二套超时路径。
+
+用户随后明确授权只复测仓库外固定样本 03，最多 2 次非流式请求、零重试。实际只
+发生 1 次 initial Provider 调用和 1 次底层 HTTP 请求，repair 未触发。统一图片入口
+约 47.1 秒返回 HTTP 200，结构化结果为：
+
+- 标题：`西蒙神奇车库6周年作品展`；
+- `event_start_date=2026-06-13`；
+- `event_end_date=2026-07-31`；
+- `event_start_at` 与 `event_end_at` 均为空；
+- 状态为 `pending_details`；
+- 城市/行政区为深圳/南山区，价格为 CNY 0。
+
+结果正确区分明确展期日期与未知每日准确时刻，没有编造开闭馆时间。Provider、
+HTTP client 和应用生命周期正常关闭，未结束后台任务为 0；测试隔离原图、metadata、
+临时文件、reservation、数据库和 QA 临时根全部清理。报告没有记录完整请求、完整
+响应、Base64、密钥、模型名、endpoint、Authorization、Request ID、账号或私人路径。
+
+本次结果超过 20 秒非阻断性能观察目标，但低于 60 秒应用层硬截止，因此内容和时限
+门禁通过，旧的 30 秒 Provider 截止问题未复现。单一样本不能形成统计 P95 或证明
+充足余量；47.1 秒继续作为性能风险。如果后续真实同步请求达到 60 秒，必须转入 M1
+后台 Job，不再提高同步工作流或 Provider 上限。当前没有未关闭 P0/P1，允许进入
+M1-0，且 `IdempotencyLockRegistry` 有界生命周期仍是第一项强制前置。
