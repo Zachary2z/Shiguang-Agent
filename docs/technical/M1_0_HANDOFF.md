@@ -1,12 +1,14 @@
 # M1-0 PostgreSQL 与任务基础交接
 
-状态：待主控验收
+状态：主控验收通过
 
 分支：`codex/m1-0-postgresql-jobs`
 
 基线：`6dbdbbaa49c8493b425870e2ea74682c6f2c0ca6`
 
 Alembic 唯一 head：`20260726_0009`
+
+最终验收候选：`55458db5ae857c2dae6bdfe66622a9b835e425fc`
 
 ## 实现边界
 
@@ -148,3 +150,20 @@ docker compose down --volumes
 ```
 
 该验收不授权真实模型、地图、网页、消息、云部署或其他付费调用。
+
+## 2026-07-27 主控独立验收
+
+- `pip check`、Ruff、strict mypy 全部通过；mypy 检查 108 个源文件。
+- 聚焦锁、Job、公开事件和既有 Run tracking 为 `60 passed`。
+- 普通及进程级封网非真实全集均为
+  `1546 passed / 8 skipped / 2 deselected`；Core `120 passed`；SQLite
+  迁移 `23 passed`。
+- PostgreSQL 16 显式组为 `8 passed / 1548 deselected`；Compose 中 PostgreSQL、
+  API 和两个 Worker 均 healthy，非 root 运行，任务幂等只执行一次，SSE 从
+  `Last-Event-ID` 正确重放。
+- 仓库外取消竞态探针确认最后参与者退出后注册表计数为 0；公开摘要拒绝未声明的
+  敏感别名并允许显式 SHA-256 字段。
+- 本轮未读取 `.env`，未调用真实模型、地图、网页或付费 API；测试容器、卷、网络
+  和临时镜像均已清理。
+- 代码范围与唯一性检查通过，当前无未关闭 P0/P1。M1-0 可以关闭，下一唯一允许
+  阶段为 M1-1 Web 会话与 Demo 身份。

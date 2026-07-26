@@ -3,18 +3,19 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
-| 当前子阶段 | M1-0 PostgreSQL 与任务基础 |
-| 状态 | 待主控验收 |
-| 当前分支 | codex/m1-0-postgresql-jobs |
-| 最近更新 | 2026-07-26 |
-| 阻塞项 | 无开发阻塞；等待主控集成与 QA 验收 |
+| 当前子阶段 | M1-1 Web 会话与 Demo 身份 |
+| 状态 | 未开始 |
+| 当前分支 | main |
+| 最近更新 | 2026-07-27 |
+| 阻塞项 | 无；M1-1 允许开始 |
 
 ## 当前任务
 
 M0-0A 至 M0-5D、M0-Gate、Event 日期粒度和富输入截止策略均已通过主控验收，M0
-保持正式完成。M1-0 已按门禁先解决 `IdempotencyLockRegistry` 无界增长 P2，再完成
-PostgreSQL、持久化 JobQueue、Worker、APScheduler、RunEvent/SSE replay 和最小
-Docker Compose，当前待主控验收。M1-1、M1-2 及后续阶段均未开始。
+保持正式完成。M1-0 已通过主控验收：先关闭 `IdempotencyLockRegistry` 无界增长
+及取消清理竞态，再完成 PostgreSQL、持久化 JobQueue、Worker、APScheduler、
+RunEvent/SSE replay 和最小 Docker Compose。当前只允许开始 M1-1；M1-2 及后续
+阶段均未开始。
 
 ## M0 状态
 
@@ -34,8 +35,8 @@ Docker Compose，当前待主控验收。M1-1、M1-2 及后续阶段均未开始
 
 | 阶段 | 状态 | 说明 |
 |---|---|---|
-| M1-0 PostgreSQL 与任务基础 | 待主控验收 | 锁 P2、PostgreSQL、JobQueue/Worker/APScheduler、SSE replay、Compose 已实现 |
-| M1-1 Web Session | 未开始 | 不在本阶段范围 |
+| M1-0 PostgreSQL 与任务基础 | 已完成 | 主控独立复验锁生命周期、PostgreSQL、Job/Worker、SSE replay、Compose、安全和净复杂度通过 |
+| M1-1 Web Session | 未开始 | 当前唯一允许开始阶段 |
 | M1-2 Next.js 前端 | 未开始 | 不在本阶段范围 |
 
 状态只允许使用：未开始、进行中、待验收、待主控验收、已完成、阻塞。
@@ -78,12 +79,11 @@ Docker Compose，当前待主控验收。M1-1、M1-2 及后续阶段均未开始
 
 ## 下一步
 
-主控应在当前分支复核提交边界、迁移、PostgreSQL 并发、SSE、Compose、安全和净
-复杂度，并由 QA 独立复现 `docs/technical/M1_0_HANDOFF.md`。样本 03 的 47.1 秒结果
-超过 20 秒非阻断性能观察目标，仍是小样本性能风险；若后续真实同步请求达到 60 秒，
-不继续提高时限，改由已建立的 M1 Job 基础承载。aiosqlite 偶发收尾 warning 本轮在
-升级为 error 的全量测试中未复现，继续监测。验收前不得开始 M1-1 Session、M1-2
-Next.js 或其他后续阶段。
+从主控集成并推送后的最新 `main` 创建 `codex/m1-1-web-session`，只实现 M1-1 Web
+会话与 Demo 身份。复用现有 User、Session、Repository 和 FastAPI 依赖，建立
+浏览器会话恢复、过期和用户隔离，并让 Demo 使用独立临时沙盒身份；只为未来
+ChannelIdentity 保留最小领域/持久化边界，不实现微信登录链接、绑定码或 OAuth。
+M1-2 Next.js 及后续阶段继续禁止提前开发。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -1918,3 +1918,30 @@ Next.js 或其他后续阶段。
   至少一次恢复，未来有副作用 handler 必须自带业务幂等；APScheduler 注册仍需未来
   从权威数据重建；SSE 250 ms 轮询尚未压力测试。状态继续“待主控验收”，不进入
   M1-1/M1-2
+
+#### 2026-07-27｜M1-0 PostgreSQL 与任务基础｜主控验收通过
+
+- 验收候选：`55458db5ae857c2dae6bdfe66622a9b835e425fc`；基线、`main` 与
+  `origin/main` 在集成前均为 `6dbdbbaa49c8493b425870e2ea74682c6f2c0ca6`，
+  提交链线性且无 merge commit
+- 三个 QA P1 已关闭：取消发生在锁退出清理期间时仍等待唯一 cleanup task 完成并
+  原样传播取消，仓库外竞态探针结束后 `active_key_count == 0`；SQLAlchemy DML
+  rowcount 只经过一个类型边界，strict mypy 对 108 个源文件通过；内部 Job payload
+  与显式 Job/RunEvent 公开摘要分离，旧关键词黑名单和 Base64 猜测已删除
+- 独立离线结果：`pip check`、Ruff、mypy 均通过；聚焦回归 `60 passed`；普通及
+  进程级封网非真实全集均为 `1546 passed / 8 skipped / 2 deselected`；Core
+  `120 passed`；SQLite 迁移 `23 passed`；Alembic 唯一 head 为
+  `20260726_0009`
+- PostgreSQL 16：显式组 `8 passed / 1548 deselected`，覆盖迁移往返、双 Worker、
+  Job 幂等/重试/取消/租约恢复、并发 RunEvent、用户隔离、类型化摘要和 SSE replay
+- Compose：PostgreSQL、API、两个 Worker 均 healthy，API/Worker 均以 uid 10001
+  运行；`/healthz` 200；迁移位于 head；重复任务同 ID 且只执行一次，
+  `succeeded/attempt=1`；`Last-Event-ID: 1` 仅返回 sequence 2、3；日志无内部
+  payload、凭据或真实 Provider 标记；本轮资源已全部清理
+- 安全与复杂度：未读取 `.env`，真实模型、地图、网页、消息和付费 API 调用均为
+  0；AgentRunner、ToolRegistry、Provider、Database、Repository、JobQueue、
+  Worker、RunEvent、AgentRun 和幂等服务继续各一套，没有新增黑名单、生产特例、
+  重复校验器或后续业务 Job；当前无未关闭 P0/P1
+- M1-0 允许完成并集成。保留的非阻断风险为至少一次租约要求未来有副作用 handler
+  自带业务幂等、APScheduler 注册需从权威数据重建，以及 SSE 250 ms 轮询尚未压力
+  测试。当前唯一允许阶段改为 M1-1；M1-2 及后续阶段未开始

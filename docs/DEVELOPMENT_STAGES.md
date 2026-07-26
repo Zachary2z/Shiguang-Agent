@@ -5,10 +5,10 @@
 | 项目 | Shiguang_Nanobot |
 | 产品 | 拾光｜把收藏变成行动的个人生活 Agent |
 | 文档版本 | v1.0 |
-| 日期 | 2026-07-26 |
+| 日期 | 2026-07-27 |
 | 状态 | 后续开发执行基线 |
 | 仓库 | /Users/zhangzihao/Documents/Shiguang_Nanobot |
-| 当前阶段 | M1-0 PostgreSQL 与任务基础允许开始；尚未实现 |
+| 当前阶段 | M1-0 已通过主控验收；当前允许开始 M1-1 Web 会话与 Demo 身份 |
 
 ---
 
