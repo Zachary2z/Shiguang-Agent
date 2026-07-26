@@ -77,15 +77,17 @@ RunEvent/SSE replay 和最小 Docker Compose。M1-1 已完成开发并等待主�
   PostgreSQL；唯一 JobQueue、Worker 和 APScheduler 创建适配已建立；既有 AgentRun
   增加持久化安全事件和 SSE 断线重放；本地 Compose 提供 PostgreSQL、API、Worker。
 - M1-1 开发实现已完成：浏览器凭据只以哈希持久化，Cookie/CSRF、绝对过期、当前
-  设备撤销和启动凭据轮换集中在唯一身份边界；每个浏览器拥有独立 Demo User、消息
-  Session 与 Web Session，Demo 和真实数据分别进入独立数据库及私有存储。
+  设备撤销和稳定恢复集中在唯一身份边界；Session Token 在普通恢复中保持稳定，
+  CSRF 由 Token 确定性派生，恢复 Cookie 使用数据库剩余寿命；每个浏览器拥有独立
+  Demo User、消息 Session 与 Web Session，Demo 和真实数据分别进入独立数据库及
+  私有存储。
 
 ## 下一步
 
 主控只验收 `codex/m1-1-web-session` 的 M1-1 Web 会话与 Demo 身份：重点复核
-凭据哈希、Cookie/CSRF、绝对过期与撤销、启动轮换、跨浏览器所有权过滤、Demo/真实
-物理双库和双存储路由，以及唯一身份实现。验收通过前当前允许阶段仍为 M1-1；
-M1-2 Next.js 及后续阶段继续禁止提前开发。
+凭据哈希、Cookie/CSRF、绝对过期与撤销、跨进程稳定恢复、跨浏览器所有权过滤、
+Demo/真实物理双库和双存储路由，以及唯一身份实现。验收通过前当前允许阶段仍为
+M1-1；M1-2 Next.js 及后续阶段继续禁止提前开发。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -1957,17 +1959,19 @@ M1-2 Next.js 及后续阶段继续禁止提前开发。
 - 提交：持久 Web Session
   `97c89d0ea1d84ffcd89de1190455f5a926392ad2`；浏览器 Demo 沙盒
   `2ad2c501f0e288bb59c64954e52b226c2a1b312b`；安全与隔离测试
-  `bdad9e29a628c2b8e39dd06ed84df71802ea6767`；文档提交及最终 HEAD 以最终交接
-  输出和 `git rev-parse HEAD` 为准
+  `bdad9e29a628c2b8e39dd06ed84df71802ea6767`；并发恢复与 Cookie 生命周期修复
+  `4aca9bf7990af21ba3e7787aa2ddda857daba870`；文档提交及最终 HEAD 以最终交接输出
+  和 `git rev-parse HEAD` 为准
 - 身份与安全：建立唯一 `BrowserSession`、`CurrentPrincipal`、
   `WebSessionService` 和 SQLAlchemy Repository；既有 `Session` 继续只表示
-  Agent/消息会话。服务端生成 256-bit Token/CSRF，数据库只保存哈希；Cookie 固定
-  HttpOnly、SameSite=Lax、Path=/、无 Domain，production 强制 Secure；写请求统一
-  使用 `X-CSRF-Token`
+  Agent/消息会话。服务端生成 256-bit Session Token，CSRF 通过带版本化领域上下文
+  的 HMAC-SHA-256 确定性派生，数据库只保存两者哈希；Cookie 固定 HttpOnly、
+  SameSite=Lax、Path=/、无 Domain，production 强制 Secure；写请求统一使用
+  `X-CSRF-Token`
 - 生命周期：真实会话保留默认/上限 30 天能力但没有公开登录入口；Demo 默认 2 小时、
   上限 24 小时；绝对过期采用 `[created_at, expires_at)`，不滑动续期。当前设备可
-  撤销；Demo 恢复保持同一沙盒并同时轮换 Session Token 与 CSRF，旧 Token 立即
-  失效
+  撤销；普通 Demo 恢复以只读方式保持同一沙盒、稳定 Session Token 和可重建 CSRF，
+  多路跨进程恢复不会相互失效。恢复 Cookie 的 Max-Age/Expires 使用数据库剩余寿命
 - Demo 隔离：删除运行时固定 Demo User；每个 Cookie Jar 在 Demo 数据库创建独立
   User、Web Session 和消息 Session。API 从已验证 Session 得到 `user_id` 与数据库，
   跨用户 Message、Collection、Source、AgentRun、RunEvent、Job 和 Undo 继续统一
@@ -1980,11 +1984,10 @@ M1-2 Next.js 及后续阶段继续禁止提前开发。
   登录链接、绑定码、兑换和 OAuth 全部延后到 M2-2
 - 自动化：editable 安装与 `pip check` 通过；Ruff 通过；strict mypy 对 115 个
   源文件通过；严格线程告警的非真实全集和仓库外 DNS/TCP 封锁全集均为
-  `1555 passed / 11 skipped`；身份/迁移封网聚焦 `30 passed`；Core
-  `120 passed`；SQLite 迁移 `23 passed`
-- PostgreSQL 与 Compose：PostgreSQL 16 标记组 `9 passed / 161 deselected`，
-  覆盖迁移往返、Session 并发、双库、JobQueue、RunEvent 和 SSE。Compose 两库、
-  API、Worker 全部 healthy，API/Worker uid 均为 10001，两库均在
+  `1559 passed / 10 skipped / 2 deselected`；身份/迁移封网聚焦 `34 passed`
+- PostgreSQL 与 Compose：PostgreSQL 16 标记组 `10 passed / 1561 deselected`，
+  覆盖迁移往返、8 路 API 稳定恢复、Session 并发、双库、JobQueue、RunEvent 和
+  SSE。Compose 两库、API、Worker 全部 healthy，API/Worker uid 均为 10001，两库均在
   `20260727_0010`；Demo 启动后正式库 User/Web Session 为 0，Demo 库各为 1；
   日志不含凭据或 Provider 调用，本轮容器、网络、镜像和卷已清理
 - 安全与复杂度：日志、异常、repr、OpenAPI 和公开响应不含 Session Token、Cookie、
@@ -1993,7 +1996,7 @@ M1-2 Next.js 及后续阶段继续禁止提前开发。
   唯一；没有白名单、固定 Token、重复路由校验或认证中间件
 - 调用与环境：真实模型、高德、网页、对象存储、消息、微信和付费 API 调用总数为
   0；未读取或提交 `.env`
-- 风险与下一步：同浏览器极端并发启动只保证数据库最后一次凭据有效，M1-2 应串行
-  启动；过期 Session 清理任务尚未实现；ChannelIdentity 持久化等待 M2-2。主控按
-  `docs/technical/M1_1_HANDOFF.md` 独立验收；通过前当前允许阶段仍为 M1-1，不合并、
-  不推送、不开始 M1-2
+- 风险与下一步：过期 Session 清理任务尚未实现；ChannelIdentity 持久化等待
+  M2-2。事件门控的 SQLite/PostgreSQL 并发测试已证明所有恢复响应凭据均可用，当前
+  无未关闭 P0/P1。主控按 `docs/technical/M1_1_HANDOFF.md` 独立验收；通过前当前
+  允许阶段仍为 M1-1，不合并、不推送、不开始 M1-2

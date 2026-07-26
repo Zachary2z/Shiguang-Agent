@@ -109,16 +109,19 @@ sequence，服务只返回更大的持久化事件。Job payload 是内部有界
 
 `BrowserSession`、`WebSessionService` 和 `SqlAlchemyWebSessionRepository` 分别是
 唯一浏览器会话领域、应用和持久化边界；既有 `Session` 继续只表示 Agent/消息
-会话。服务端生成 256-bit 随机 Session Token 和 CSRF，数据库只保存 SHA-256。
+会话。服务端生成 256-bit 随机 Session Token；CSRF 由该 Token 通过带版本化领域
+上下文的 HMAC-SHA-256 确定性派生，数据库仍只保存两者的 SHA-256。
 Cookie 固定为 `HttpOnly`、`SameSite=Lax`、`Path=/` 且不设置 `Domain`；
 production 强制 `Secure`。所有认证写请求统一使用 `X-CSRF-Token`，过期采用绝对
-时间且不滑动续期，当前设备可显式撤销。
+时间且不滑动续期，恢复 Cookie 的 `Max-Age`/`Expires` 对应数据库剩余寿命，当前
+设备可显式撤销。
 
 `POST /api/v1/demo/sessions` 不接受客户端 `user_id` 或 Token。首次访问在独立 Demo
 数据库中创建该浏览器专属的 Demo User、Web Session 和消息 Session；有效 Cookie
-恢复同一沙盒，同时轮换 Session Token 与 CSRF，旧 Token 立即失效。Demo 默认 2
-小时、配置上限 24 小时；真实 Web Session 保留 30 天能力，但本阶段没有真实登录
-入口。`ChannelIdentity` 只保留供应商无关最小协议，持久化和微信绑定延后到 M2-2。
+以只读方式恢复同一沙盒和稳定凭据，跨进程并发恢复不会互相失效。无效、伪造、
+过期或撤销 Cookie 会创建全新的随机 Demo 沙盒。Demo 默认 2 小时、配置上限 24
+小时；真实 Web Session 保留 30 天能力，但本阶段没有真实登录入口。
+`ChannelIdentity` 只保留供应商无关最小协议，持久化和微信绑定延后到 M2-2。
 
 ### 价格与人民币契约
 
