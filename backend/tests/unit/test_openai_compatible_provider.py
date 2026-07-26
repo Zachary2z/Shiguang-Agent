@@ -226,11 +226,11 @@ async def test_maps_text_response_and_all_metadata(
 
 
 @pytest.mark.asyncio
-async def test_response_after_fifteen_seconds_but_before_thirty_succeeds(
+async def test_provider_allows_response_after_application_deadline_before_safety_cap(
     provider_factory: OfflineProviderFactory,
 ) -> None:
-    old_timeout_seconds = 0.015
-    new_timeout_seconds = 0.03
+    application_deadline_seconds = 0.06
+    provider_safety_cap_seconds = 0.075
     release_response = asyncio.Event()
     requests: list[httpx.Request] = []
 
@@ -241,14 +241,14 @@ async def test_response_after_fifteen_seconds_but_before_thirty_succeeds(
 
     http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
     provider = OpenAICompatibleProvider.from_settings(
-        _settings(model_timeout_seconds=new_timeout_seconds),
+        _settings(model_timeout_seconds=provider_safety_cap_seconds),
         http_client=http_client,
     )
     provider_factory.providers.append(provider)
     provider_factory.requests.append(requests)
     started_at = monotonic()
     asyncio.get_running_loop().call_later(
-        old_timeout_seconds + 0.001,
+        application_deadline_seconds + 0.001,
         release_response.set,
     )
 
@@ -256,7 +256,8 @@ async def test_response_after_fifteen_seconds_but_before_thirty_succeeds(
     elapsed = monotonic() - started_at
 
     assert result.content == "completed before hard guardrail"
-    assert elapsed >= old_timeout_seconds
+    assert elapsed >= application_deadline_seconds
+    assert elapsed < provider_safety_cap_seconds
     assert release_response.is_set()
     assert len(requests) == 1
 

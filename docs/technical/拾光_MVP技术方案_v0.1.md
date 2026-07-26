@@ -706,9 +706,11 @@ score = 兴趣匹配 + 区域匹配 + 时间适配 + 天气适配
 
 模型名称、API Base、密钥和超时全部通过配置注入。
 
-单次模型 Provider 调用使用 30 秒总墙钟硬兜底，覆盖一次完整 SDK 请求；SDK
-`max_retries=0`，Provider 和应用层均不自动重试。达到硬截止时取消并等待进行中的
-SDK 请求结束，再映射为统一 timeout；外部取消原样传播。
+单次模型 Provider 调用使用 75 秒总墙钟异常安全上限，覆盖一次完整 SDK 请求；该值
+只约束 Provider/传输层异常，正常 URL/图片统一输入流程应先由应用层 60 秒共享截止
+取消请求。SDK `max_retries=0`，Provider 和应用层均不自动重试，一次 chat 只产生
+一次非流式 HTTP 请求。Provider 自身到达安全上限时取消并等待进行中的 SDK 请求结束，
+再映射为统一 timeout；应用层或其他外部取消时传播原始 `CancelledError`。
 
 ### 15.2 MapProvider
 
@@ -746,6 +748,8 @@ delete(file_key)
 - URL 与图片完整流程使用一个 60 秒共享总墙钟硬兜底，覆盖输入准备、initial、
   解析、唯一 repair、结果提交和必要清理；
 - initial 与 repair 共用同一个截止，initial 消耗后 repair 只能使用剩余预算；
+- 60 秒是正常统一输入路径唯一可触达的硬截止；若真实同步请求仍超过该值，不再提高
+  上限，后续改由 M1 后台 Job 承载；
 - 20 秒仅作为网页和图片任务的非阻断性能观察目标；超过 20 秒但未达到 60 秒时
   允许正常完成。
 
@@ -807,7 +811,7 @@ DATABASE_URL=sqlite+aiosqlite:///./data/shiguang.db
 MODEL_API_BASE=
 MODEL_API_KEY=
 MODEL_NAME=
-MODEL_TIMEOUT_SECONDS=30
+MODEL_TIMEOUT_SECONDS=75
 
 AMAP_API_KEY=
 AMAP_CITY=深圳
@@ -865,9 +869,10 @@ DEMO_MAX_RUNS_PER_DAY=5
 - 样本数量不足以支撑分位数时，只报告观测范围和风险，不把少量可用性 Smoke Test 描述为 P95 验证；
 - Fake、Mock 和录制 Fixture 负责大规模稳定回归；真实取样必须单独授权并在执行前限制请求数和预算，不能让普通测试隐式产生费用；
 - 正常 P95 建议不高于对应硬时限的 60%–75%。若端到端链路缺少余量，应优先减少调用、增加明确的逻辑总时限或转后台任务；
-- 校准必须检查嵌套预算关系：模型单次 30 秒硬兜底不能挤满 Agent 60 秒总预算，
-  高德重试不能无限延长逻辑请求；URL 和图片完整处理链路共用 60 秒硬兜底，initial
-  与 repair 不重置截止；20 秒仅用于非阻断性能观察；
+- 校准必须检查嵌套预算关系：模型 Provider/传输层 75 秒异常安全上限不能先于
+  应用层 60 秒截止触发，高德重试不能无限延长逻辑请求；URL 和图片完整处理链路
+  共用 60 秒硬兜底并以其作为正常路径唯一截止，initial 与 repair 不重置截止；
+  20 秒仅用于非阻断性能观察；
 - 最终在 `docs/technical/M0_VALIDATION_REPORT.md` 记录调整前后数值、数据依据、未调整原因与剩余风险。
 
 ## 21. 开发顺序

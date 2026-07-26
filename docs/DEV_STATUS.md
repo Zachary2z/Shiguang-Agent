@@ -3,11 +3,11 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M0 关闭后校准窗口 |
-| 当前子阶段 | 模型与富输入超时策略收敛修复 |
+| 当前子阶段 | 富输入截止时间单一归属修复 |
 | 状态 | 待验收 |
-| 当前分支 | codex/event-date-granularity |
+| 当前分支 | codex/rich-input-deadline-convergence |
 | 最近更新 | 2026-07-26 |
-| 阻塞项 | 本超时策略修复待主控集成与固定样本 03 重新授权复测；M1-0 仍未开始，IdempotencyLockRegistry 无界增长 P2 仍是其第一项强制前置 |
+| 阻塞项 | 本截止时间修复待主控离线验收与 ff-only 集成；固定样本 03 尚未复测，必须重新授权；M1-0 仍未开始，IdempotencyLockRegistry 无界增长 P2 仍是其第一项强制前置 |
 
 ## 当前任务
 
@@ -1734,3 +1734,35 @@ Session、M1-2 Next.js 或其他后续阶段。
 - 外部调用与下一步：真实模型、地图、网页、对象存储、消息及其他外部 API 调用为
   0。固定真实样本 03 尚需主控离线集成通过后重新取得授权再按 30/60 策略复测；
   M0 保持完成，M1-0 仍未开始，首项前置仍是 `IdempotencyLockRegistry` 有界生命周期
+
+#### 2026-07-26｜富输入截止时间单一归属修复｜待主控验收
+
+- 分支与门禁：开发分支 `codex/rich-input-deadline-convergence` 从指定基线
+  `fe93904ad7ede25f5ed43bcb43830f6feadc6fbf` 创建；开始时工作区干净且 HEAD
+  精确等于该 SHA。没有读取或修改 `.env`，没有合并 main 或推送
+- 超时所有权：URL/图片继续只复用 `AgentRunService.execute_application()` 的
+  60 秒外层共享截止，覆盖输入准备、initial、唯一 repair、解析、提交和清理；
+  initial 消耗后 repair 只能使用剩余时间。60 秒是正常富输入路径唯一可触达的硬
+  截止，20 秒仍只是非阻断性能观察目标
+- Provider 安全上限：`MODEL_TIMEOUT_SECONDS` 默认值和最大允许值由 30 秒统一替换为
+  75 秒，只作为 Provider/传输层异常安全上限；正常富输入必须先由应用层 60 秒取消
+  SDK 请求。SDK `max_retries=0`，外层重试为 0，一次 chat 仍只产生一次非流式 HTTP
+  请求，没有 fallback、退避、模式切换或补调用
+- 取消与清理：外层取消沿既有调用栈进入唯一 `OpenAICompatibleProvider`，Provider
+  原样传播 `CancelledError`；其 `asyncio.wait_for` 等待 SDK 请求取消结束，再由既有
+  图片和工作流清理移除 objects、metadata、temporary、reservation 及未提交数据库
+  业务写入。离线 MockTransport 用例证明 0.6 秒应用层截止先于 0.75 秒 Provider
+  安全上限触发、HTTP 恰好一次、请求收到取消、客户端关闭且业务与存储无残留
+- 旧规则与复杂度：删除当前配置、断言、README、MVP 技术方案、阶段校准要求和验证
+  报告中的 30 秒正式边界描述，替换为 60 秒单一正常截止与 75 秒异常安全上限；
+  没有新增 Deadline/Timeout helper、第二套 Provider、workflow、图片服务、Parser、
+  repair、清理机制或后台 Task，净生产复杂度未增加
+- 验证：聚焦组覆盖配置、Provider、图片、抽取/repair、统一输入和 Event 日期回归，
+  `423 passed`。最终全量离线组 Ruff 通过，strict mypy 对 94 个源文件无问题，
+  `1509 passed / 2 deselected`。首次全量运行发现比例测试的 60/75ms 窗口会被 SDK
+  首次懒初始化占用，生产代码未失败；仅将同一测试比例放大为 0.6/0.75 秒后最终全量
+  通过，没有增加生产 sleep、特例、skip 或放宽业务断言
+- 范围与下一步：Event 日期逻辑、Prompt、数据库模型、迁移和 M1 功能均未修改；真实
+  模型、地图、网页、对象存储、消息及其他外部 API 请求为 0。固定样本 03 未执行、
+  未标记通过；主控应先离线复核并 ff-only 集成，再单独取得最多两次非流式请求授权，
+  保持零重试。若真实同步请求仍超过 60 秒，不再提高上限，后续转 M1 后台 Job

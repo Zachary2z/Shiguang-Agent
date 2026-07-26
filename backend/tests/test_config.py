@@ -473,14 +473,14 @@ def test_complete_model_configuration_is_returned_with_secret_type() -> None:
     assert model.timeout_seconds == 12.5
 
 
-def test_model_timeout_defaults_to_stable_thirty_second_guardrail() -> None:
+def test_model_timeout_defaults_to_provider_safety_cap() -> None:
     settings = Settings(
         _env_file=None,
         app_env="test",
         database_url="sqlite+aiosqlite:///:memory:",
     )
 
-    assert settings.model_timeout_seconds == 30
+    assert settings.model_timeout_seconds == 75
 
 
 def test_missing_model_configuration_is_deferred_and_secret_safe() -> None:
@@ -536,12 +536,12 @@ def test_invalid_model_api_base_is_rejected_without_echoing_value(api_base: str)
 
 @pytest.mark.parametrize(
     "timeout",
-    [0, -1, 30.001, float("nan"), float("inf"), True],
+    [0, -1, 75.001, float("nan"), float("inf"), True],
 )
 def test_invalid_model_timeout_is_rejected(timeout: float) -> None:
     with pytest.raises(
         ValidationError,
-        match=r"MODEL_TIMEOUT_SECONDS must be a finite number in \(0, 30\]",
+        match=r"MODEL_TIMEOUT_SECONDS must be a finite number in \(0, 75\]",
     ):
         Settings(
             _env_file=None,
@@ -551,15 +551,15 @@ def test_invalid_model_timeout_is_rejected(timeout: float) -> None:
         )
 
 
-def test_model_timeout_accepts_thirty_second_upper_boundary() -> None:
+def test_model_timeout_accepts_seventy_five_second_upper_boundary() -> None:
     settings = Settings(
         _env_file=None,
         app_env="test",
         database_url="sqlite+aiosqlite:///:memory:",
-        model_timeout_seconds=30,
+        model_timeout_seconds=75,
     )
 
-    assert settings.model_timeout_seconds == 30
+    assert settings.model_timeout_seconds == 75
 
 
 def test_settings_repr_masks_model_api_key() -> None:

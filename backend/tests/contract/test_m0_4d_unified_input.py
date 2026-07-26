@@ -16,7 +16,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 from sqlalchemy import text
 
 from app.application.collection_writes import CollectionWriteService
@@ -27,7 +27,7 @@ from app.application.text_collection_workflow import (
     MAX_RICH_INPUT_WORKFLOW_SECONDS,
     TextCollectionWorkflow,
 )
-from app.config import Settings
+from app.config import ModelProviderSettings, Settings
 from app.domain.collections import (
     CandidateField,
     EventCandidate,
@@ -48,6 +48,7 @@ from app.domain.web import (
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.main import create_app
+from app.providers import OpenAICompatibleProvider
 from app.providers.storage import StorageProviderError, StorageProviderErrorCode
 from app.providers.web import WebContentProvider
 from nanobot_core.providers import (
@@ -1012,6 +1013,71 @@ async def test_image_initial_and_repair_share_one_outer_workflow_budget(
     assert provider.repair_started.is_set()
     assert provider.repair_cancelled.is_set()
     assert monotonic() - started_at < 0.18
+    for directory in ("objects", "metadata", ".tmp", ".reservations"):
+        assert list((private_root / directory).iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_image_outer_deadline_cancels_longer_provider_safety_cap(
+    test_settings: Settings,
+) -> None:
+    settings = test_settings.model_copy(update={"agent_timeout_seconds": 0.6})
+    request_cancelled = asyncio.Event()
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            request_cancelled.set()
+            raise
+        raise AssertionError("unreachable")
+
+    sdk_http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    provider = OpenAICompatibleProvider(
+        config=ModelProviderSettings(
+            api_base="https://model.example.test/compatible-mode/v1",
+            api_key=SecretStr("fake-offline-key"),
+            model_name="fake-offline-model",
+            timeout_seconds=0.75,
+        ),
+        http_client=sdk_http_client,
+    )
+    try:
+        async with _client(settings, provider) as (api, client, _storage):
+            session_id = await _demo(client)
+            response = await client.post(
+                f"/api/v1/sessions/{session_id}/messages",
+                content=PNG_SCREENSHOT,
+                headers={
+                    "Content-Type": "image/png",
+                    "Idempotency-Key": "outer-before-provider-cap",
+                },
+            )
+            async with api.state.database.session() as session:
+                count_values: list[int] = []
+                for table in (
+                    "sources",
+                    "collection_items",
+                    "collection_write_operations",
+                ):
+                    value = await session.scalar(text(f"SELECT COUNT(*) FROM {table}"))
+                    count_values.append(int(value or 0))
+                counts = tuple(count_values)
+    finally:
+        await provider.close()
+
+    private_root = (
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
+        / "private"
+    )
+    assert response.status_code == 504
+    assert response.json()["error_code"] == "RUN_TIMEOUT"
+    assert request_cancelled.is_set()
+    assert len(requests) == 1
+    assert sdk_http_client.is_closed is True
+    assert counts == (0, 0, 0)
     for directory in ("objects", "metadata", ".tmp", ".reservations"):
         assert list((private_root / directory).iterdir()) == []
 
