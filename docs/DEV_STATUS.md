@@ -3,19 +3,20 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
-| 当前子阶段 | M1-1 Web 会话与 Demo 身份 |
-| 状态 | 待主控验收 |
-| 当前分支 | codex/m1-1-web-session |
+| 当前子阶段 | M1-2 正式前端基础 |
+| 状态 | 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-27 |
-| 阻塞项 | 无；当前允许阶段仍为 M1-1，未经验收不得进入 M1-2 |
+| 阻塞项 | 无；当前唯一允许阶段为 M1-2 |
 
 ## 当前任务
 
 M0-0A 至 M0-5D、M0-Gate、Event 日期粒度和富输入截止策略均已通过主控验收，M0
 保持正式完成。M1-0 已通过主控验收：先关闭 `IdempotencyLockRegistry` 无界增长
 及取消清理竞态，再完成 PostgreSQL、持久化 JobQueue、Worker、APScheduler、
-RunEvent/SSE replay 和最小 Docker Compose。M1-1 已完成开发并等待主控验收；
-当前允许阶段仍为 M1-1，M1-2 及后续阶段均未开始。
+RunEvent/SSE replay 和最小 Docker Compose。M1-1 已通过主控验收：浏览器
+Session、稳定 CSRF、并发安全 Demo 恢复、跨浏览器所有权过滤及 Demo/真实物理
+隔离均已复核。当前唯一允许阶段为 M1-2，M1-2 及后续阶段尚未实现。
 
 ## M0 状态
 
@@ -36,8 +37,8 @@ RunEvent/SSE replay 和最小 Docker Compose。M1-1 已完成开发并等待主�
 | 阶段 | 状态 | 说明 |
 |---|---|---|
 | M1-0 PostgreSQL 与任务基础 | 已完成 | 主控独立复验锁生命周期、PostgreSQL、Job/Worker、SSE replay、Compose、安全和净复杂度通过 |
-| M1-1 Web Session | 待主控验收 | Web Session、CSRF、独立浏览器 Demo 沙盒和物理双库隔离已完成开发 |
-| M1-2 Next.js 前端 | 未开始 | 不在本阶段范围 |
+| M1-1 Web Session | 已完成 | 主控复核稳定凭据、CSRF、并发恢复、隔离、PostgreSQL 与 Compose 通过 |
+| M1-2 Next.js 前端 | 未开始 | 当前唯一允许阶段 |
 
 状态只允许使用：未开始、进行中、待验收、待主控验收、已完成、阻塞。
 
@@ -84,10 +85,10 @@ RunEvent/SSE replay 和最小 Docker Compose。M1-1 已完成开发并等待主�
 
 ## 下一步
 
-主控只验收 `codex/m1-1-web-session` 的 M1-1 Web 会话与 Demo 身份：重点复核
-凭据哈希、Cookie/CSRF、绝对过期与撤销、跨进程稳定恢复、跨浏览器所有权过滤、
-Demo/真实物理双库和双存储路由，以及唯一身份实现。验收通过前当前允许阶段仍为
-M1-1；M1-2 Next.js 及后续阶段继续禁止提前开发。
+从最新 `main` 创建 M1-2 阶段分支，只实施 Next.js + TypeScript 正式前端基础：
+设计 Token、响应式移动端/桌面框架、四项空路由、唯一 API/SSE Client、统一加载与
+错误状态，以及可访问性基础。不得提前实现 M1-3 Agent 内容导入、M1-4 收藏业务、
+M1-5 计划、真实登录或微信功能。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -2000,3 +2001,34 @@ M1-1；M1-2 Next.js 及后续阶段继续禁止提前开发。
   M2-2。事件门控的 SQLite/PostgreSQL 并发测试已证明所有恢复响应凭据均可用，当前
   无未关闭 P0/P1。主控按 `docs/technical/M1_1_HANDOFF.md` 独立验收；通过前当前
   允许阶段仍为 M1-1，不合并、不推送、不开始 M1-2
+
+#### 2026-07-27｜M1-1 Web 会话与 Demo 身份｜主控验收通过
+
+- 验收候选：`aaa05fb63dd0059af6b994157cd830a39101cded`；指定基线、本地
+  `main` 与 `origin/main` 均为
+  `272c710259862566586b968f87a64fa1e73e42a8`，提交链线性且无 merge commit
+- 缺陷关闭：普通 Demo 恢复不再轮换数据库凭据，Session Token 稳定，CSRF 由该
+  Token 通过单一领域分离 HMAC 路径确定性派生；恢复 Cookie 使用数据库剩余寿命，
+  不滑动续期。独立仓库外探针连续 5 轮、每轮 16 个客户端并发恢复，全部 201，
+  随后读取全部 200、CSRF 写边界全部正确，数据库始终只有一组 Demo 身份
+- 静态与离线：`pip check`、Ruff 和 strict mypy（115 个源文件）通过；身份、迁移
+  聚焦 `34 passed`；严格线程告警非真实全集
+  `1559 passed / 10 skipped / 2 deselected`；默认全集
+  `1559 passed / 12 skipped`；Core `120 passed`；DNS/TCP 封锁聚焦
+  `34 passed`，封网非真实全集再次
+  `1559 passed / 10 skipped / 2 deselected`
+- PostgreSQL 16：标记组 `10 passed / 1561 deselected`，覆盖迁移往返、8 路 API
+  稳定恢复、Web Session 并发、双库、JobQueue、RunEvent 和 SSE；Alembic 唯一
+  head 为 `20260727_0010`
+- Compose：使用独立项目、端口、镜像和临时卷重新构建；正式库、Demo 库、API 和
+  Worker 全部 healthy，API/Worker UID 均为 10001，两库均位于
+  `20260727_0010`。容器内 8 路并发恢复全部可用；Demo 写入后正式库
+  User/Session/WebSession 均为 0，Demo 库各为 1；日志凭据扫描通过，测试资源已
+  全部清理
+- 安全与复杂度：数据库只保存 Token/CSRF 哈希，Cookie、CSRF、过期、撤销和身份
+  路由保持单一边界；被替代的凭据更新路径已经删除，没有进程锁、sleep、重试、
+  Token 白名单、第二套 Session/CSRF 或前端串行化补丁。未读取 `.env`，真实模型、
+  地图、网页、消息和付费 API 调用均为 0
+- 结论：当前无未关闭 P0/P1。保留的非阻断风险为过期 Session 清理任务尚未实现，
+  ChannelIdentity 持久化继续等待 M2-2。M1-1 允许完成并集成，当前唯一允许阶段
+  改为 M1-2；M1-3 及后续阶段未开始

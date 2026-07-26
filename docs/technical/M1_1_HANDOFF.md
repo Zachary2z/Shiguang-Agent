@@ -2,7 +2,7 @@
 
 ## 交付状态
 
-- 状态：待主控验收
+- 状态：已通过主控验收
 - 分支：`codex/m1-1-web-session`
 - 指定基线：`272c710259862566586b968f87a64fa1e73e42a8`
 - 实现提交：
@@ -12,7 +12,7 @@
   - `4aca9bf7990af21ba3e7787aa2ddda857daba870`（并发安全恢复与 Cookie 剩余寿命修复）
 - 文档提交及最终 HEAD：以最终交接输出和 `git rev-parse HEAD` 的完整 SHA 为准
 - Alembic 唯一 head：`20260727_0010`
-- 当前允许阶段仍为 M1-1；主控验收前不得进入 M1-2
+- M1-1 已完成；当前唯一允许阶段为 M1-2
 
 ## 唯一身份与数据模型
 
@@ -120,10 +120,15 @@ Repository 家族、AgentRun、RunEvent、JobQueue 和业务 API 均继续唯一
   可审计的维护任务清理，不得改成请求滑动续期。
 - ChannelIdentity 持久化需等 M2-2 的正式渠道消费者和字段事实确认。
 
-## 主控复测重点
+## 主控验收结论
 
-从指定基线核对线性提交和唯一迁移 head；独立复测同一有效 Cookie 的多路并发恢复
-均返回同一沙盒且全部凭据可用、恢复 Cookie 使用剩余寿命、等号过期、恢复/撤销
-竞态、两个 Cookie Jar 全资源隔离、Demo/真实双库写入计数、production Secure/
-显式 Demo 数据库门禁、SSE/Job 所有权，以及 OpenAPI/日志/异常脱敏。当前无未关闭
-P0/P1。验收通过前不合并、不推送，也不开始 M1-2。
+主控从指定基线核对了线性提交与唯一迁移 head，并独立复测同一有效 Cookie 的多路
+并发恢复、恢复 Cookie 剩余寿命、等号过期、恢复/撤销竞态、两个 Cookie Jar 全资源
+隔离、Demo/真实双库写入计数、production Secure/显式 Demo 数据库门禁、SSE/Job
+所有权及 OpenAPI/日志/异常脱敏。
+
+验收结果：`pip check`、Ruff、strict mypy、身份/迁移聚焦、普通与封网非真实全集、
+Core、PostgreSQL 16 标记组和独立 Compose 双库均通过。仓库外压力探针连续
+5 轮、每轮 16 个并发恢复客户端，所有成功响应凭据均可继续读取并通过 CSRF 边界；
+容器内 8 路并发结果一致。当前无未关闭 P0/P1，M1-1 允许完成；当前唯一允许阶段为
+M1-2。本次验收未读取 `.env`，真实或付费 API 调用为 0。
