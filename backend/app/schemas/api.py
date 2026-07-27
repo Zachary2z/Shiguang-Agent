@@ -41,6 +41,18 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
 
+def _json_arrays_as_domain_tuples(value: object) -> object:
+    """Normalize JSON containers without coercing their scalar members."""
+
+    if isinstance(value, list):
+        return tuple(_json_arrays_as_domain_tuples(item) for item in value)
+    if isinstance(value, dict):
+        return {
+            key: _json_arrays_as_domain_tuples(item) for key, item in value.items()
+        }
+    return value
+
+
 class DemoSessionCreateRequest(ApiModel):
     pass
 
@@ -299,6 +311,15 @@ class CollectionDetailResponse(ApiModel):
 class CollectionPatchRequest(ApiModel):
     expected_version: int = Field(ge=1)
     changes: CollectionItemPatch
+
+    @field_validator("changes", mode="before")
+    @classmethod
+    def validate_changes_as_json(cls, value: object) -> object:
+        """Adapt JSON arrays to the immutable containers used by the domain."""
+
+        if isinstance(value, CollectionItemPatch):
+            return value
+        return _json_arrays_as_domain_tuples(value)
 
 
 class PlaceCandidateResponse(ApiModel):

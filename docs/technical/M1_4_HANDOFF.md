@@ -1,6 +1,6 @@
 # M1-4 收藏库与地点消歧交接
 
-状态：**P1 修复完成，待主控复验**
+状态：**收藏详情保存 P1 修复完成，待主控复验**
 
 ## 范围与结论
 
@@ -21,7 +21,9 @@ Repository、写服务、候选评分/选择、Undo/Restore、API Client 或前�
   - 返回既有 `items/page/page_size/total` 分页结构
 - `GET /api/v1/collections/{item_id}`：返回允许公开的收藏详情和来源摘要。
 - `PATCH /api/v1/collections/{item_id}`、`DELETE`、`POST .../restore`：继续复用
-  `CollectionWriteService` 和既有 `expected_version`/恢复边界。
+  `CollectionWriteService` 和既有 `expected_version`/恢复边界。PATCH 的唯一公开
+  请求模型会把 JSON array 递归规范化为领域不可变 tuple，再交给唯一
+  `CollectionItemPatch`；该步骤不转换标量，也不复制字段或标签校验。
 - `GET /api/v1/collections/{item_id}/poi-candidates`：返回持久化快照的公开候选
   字段、当前版本和快照指纹；不返回坐标、评分证据或供应商原文。
 - `POST /api/v1/collections/{item_id}/poi-selection`：输入
@@ -70,6 +72,13 @@ feedback、saving 或候选状态。若候选选择合并到不同收藏，仍�
 URL 的 `item`，保留搜索、筛选和页码，并加载服务端返回的正式收藏；同 ID 的
 “以上都不是”不触发额外导航。
 
+收藏详情保存 P1 的根因是 FastAPI 已将 JSON array 解码为 Python `list`，而嵌套的
+`CollectionItemPatch` 使用 strict 模式并以 tuple 表达不可变集合；原前端组件测试
+直接 mock 了成功响应，因此没有经过真实请求 DTO。修复只位于
+`CollectionPatchRequest.changes` 这一公开 JSON 边界：统一转换 JSON 容器后继续由
+原领域契约验证未知字段、成员类型、标签规则和字段组合。前端仍发送正常 JSON
+array，没有省略或伪装 `tags`。
+
 ## 数据库与迁移
 
 未新增迁移。现有 `collection_items` 已包含版本、逻辑删除/恢复状态、
@@ -79,12 +88,16 @@ URL 的 `item`，保留搜索、筛选和页码，并加载服务端返回的正
 
 ## 验证
 
-- 指定后端组合回归：78 项。
-- 前端 Vitest：53 项，其中 M1-4 组件 15 项；新增覆盖保存迟到成功/失败，
+- M1-4 真实 ASGI 契约：6 项；地点选择与迁移组合：66 项。
+- 前端 Vitest：54 项，其中 M1-4 组件 16 项；新增覆盖真实 PATCH body、保留已有
+  标签修改标题、标签修改/清空和 422 不伪装成功；原保存迟到成功/失败，
   删除、恢复和候选选择迟到，合并后 URL/详情/刷新一致，以及同 ID 不导航。
-- Playwright：22 项，其中 M1-4 8 项，覆盖 320/390/768/1024/1440px、URL
+- Playwright：23 项；新增真实 FastAPI + FakeProvider 收藏详情保存链路，覆盖已有
+  标签、保存成功及关闭重开后的持久化一致性。原 M1-4 8 项继续覆盖
+  320/390/768/1024/1440px、URL
   历史、恶意文本、候选恢复路径、删除恢复、键盘焦点和 reduced motion。
-- 后端完整离线回归：`1577 passed, 11 skipped, 2 deselected`。
+- 后端完整离线回归：`1578 passed, 11 skipped, 2 deselected`；仓库外插件封锁
+  DNS、`connect`、`connect_ex` 和 `create_connection` 后相关回归 `72 passed`。
 - pip check、Ruff、mypy、前端 lint/typecheck/build、生产依赖 audit 均通过。
   全部使用 Fake/Fixture 和本地临时数据库，不调用真实模型、地图、网页或付费 API。
 
@@ -100,4 +113,7 @@ URL 的 `item`，保留搜索、筛选和页码，并加载服务端返回的正
 - P1 修复只增加一套详情操作归属机制，并扩展既有
   `PlaceTargetSelectionService`；没有新增 Mutation Manager、合并服务、来源迁移
   路径、Repository、幂等记录或来源模型。
+- 收藏保存修复没有新增 `CollectionItemPatch`、编辑服务、标签校验器或字段级转换
+  分支；仍只有一个 PATCH 路由和一个 `CollectionWriteService`。严格成员类型、
+  未知字段、版本冲突、用户隔离及原三个 P1 修复均保持。
 - 未实现 M1-5、真实登录、分享、提醒、微信、日历或“我的”业务。

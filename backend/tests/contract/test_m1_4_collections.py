@@ -385,6 +385,109 @@ async def test_collection_detail_candidates_and_sources_are_cross_user_invisible
 
 
 @pytest.mark.asyncio
+async def test_patch_accepts_json_tag_arrays_atomically_and_keeps_strict_edges(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider(
+        [_response(_place(title="原始标题", city_hint="深圳", tags=("旧标签",)))]
+    )
+    async with _client(test_settings, provider) as (api, owner):
+        session_id = await _demo(owner)
+        created = await _submit(
+            owner,
+            session_id,
+            key="m14-patch-tags",
+            content="带标签的收藏",
+        )
+        original = created.json()["collections"][0]
+        item_id = original["id"]
+        changed = await owner.patch(
+            f"/api/v1/collections/{item_id}",
+            json={
+                "expected_version": original["version"],
+                "changes": {
+                    "title": "海边夜景",
+                    "city_hint": "深圳",
+                    "district": "南山区",
+                    "address": "深圳湾公园",
+                    "tags": ["海边", "夜景"],
+                },
+            },
+        )
+        detail = await owner.get(f"/api/v1/collections/{item_id}")
+        listing = await owner.get("/api/v1/collections")
+        invalid_responses = [
+            await owner.patch(
+                f"/api/v1/collections/{item_id}",
+                json={
+                    "expected_version": changed.json()["version"],
+                    "changes": {"title": "不应保存", "tags": invalid_tags},
+                },
+            )
+            for invalid_tags in (
+                "海边",
+                ["海边", 7],
+                {"unexpected": "shape"},
+            )
+        ]
+        after_invalid = await owner.get(f"/api/v1/collections/{item_id}")
+        stale = await owner.patch(
+            f"/api/v1/collections/{item_id}",
+            json={
+                "expected_version": original["version"],
+                "changes": {"tags": []},
+            },
+        )
+        cleared = await owner.patch(
+            f"/api/v1/collections/{item_id}",
+            json={
+                "expected_version": changed.json()["version"],
+                "changes": {"tags": []},
+            },
+        )
+        cleared_detail = await owner.get(f"/api/v1/collections/{item_id}")
+        cleared_listing = await owner.get("/api/v1/collections")
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=api),
+            base_url="http://test",
+        ) as stranger:
+            stranger_session = await stranger.post("/api/v1/demo/sessions")
+            stranger.headers["X-CSRF-Token"] = stranger_session.json()["csrf_token"]
+            foreign_patch = await stranger.patch(
+                f"/api/v1/collections/{item_id}",
+                json={
+                    "expected_version": cleared.json()["version"],
+                    "changes": {"tags": ["越权"]},
+                },
+            )
+
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["version"] == original["version"] + 1
+    expected_fields = {
+        "title": "海边夜景",
+        "city_hint": "深圳",
+        "district": "南山区",
+        "address": "深圳湾公园",
+        "tags": ["海边", "夜景"],
+    }
+    for field, expected in expected_fields.items():
+        assert changed.json()[field] == expected
+        assert detail.json()["item"][field] == expected
+        assert listing.json()["items"][0][field] == expected
+    assert all(response.status_code == 422 for response in invalid_responses)
+    assert after_invalid.json()["item"]["title"] == "海边夜景"
+    assert after_invalid.json()["item"]["version"] == changed.json()["version"]
+    assert stale.status_code == 409
+    assert cleared.status_code == 200
+    assert cleared.json()["tags"] == []
+    assert cleared.json()["version"] == changed.json()["version"] + 1
+    assert cleared_detail.json()["item"]["tags"] == []
+    assert cleared_listing.json()["items"][0]["tags"] == []
+    assert foreign_patch.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_expected_version_conflict_delete_restore_and_agent_shared_read(
     test_settings: Settings,
 ) -> None:

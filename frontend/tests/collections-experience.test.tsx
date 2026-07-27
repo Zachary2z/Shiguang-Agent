@@ -166,26 +166,50 @@ describe("CollectionsExperience", () => {
 
   it("opens details, saves the selected item, deletes it, and restores it", async () => {
     currentQuery = `item=${baseItem.id}`;
-    const updated = { ...baseItem, title: "深圳湾海滨公园", version: 2 };
-    const deleted = { ...updated, status: "deleted", version: 3 };
-    const restored = { ...updated, version: 4 };
     let currentPage = filledPage;
     let currentDetail = { item: baseItem, sources: [] };
+    const patchBodies: Array<{
+      expected_version: number;
+      changes: {
+        title: string;
+        city_hint: string;
+        district: string;
+        address: string;
+        tags: string[];
+      };
+    }> = [];
     vi.spyOn(apiClient, "request").mockImplementation(
       async (path, options) => {
         if (path === "/api/v1/demo/sessions") return session as never;
         if (path.startsWith("/api/v1/collections?")) return currentPage as never;
         if (path.endsWith("/restore")) {
+          const restored = {
+            ...currentDetail.item,
+            status: "active",
+            version: currentDetail.item.version + 1,
+          };
           currentPage = { ...filledPage, items: [restored] };
           currentDetail = { item: restored, sources: [] };
           return restored as never;
         }
         if (options?.method === "DELETE") {
+          const deleted = {
+            ...currentDetail.item,
+            status: "deleted",
+            version: currentDetail.item.version + 1,
+          };
           currentPage = emptyPage;
           currentDetail = { item: deleted, sources: [] };
           return deleted as never;
         }
         if (options?.method === "PATCH") {
+          const body = JSON.parse(String(options.body)) as (typeof patchBodies)[number];
+          patchBodies.push(body);
+          const updated = {
+            ...currentDetail.item,
+            ...body.changes,
+            version: currentDetail.item.version + 1,
+          };
           currentPage = { ...filledPage, items: [updated] };
           currentDetail = { item: updated, sources: [] };
           return updated as never;
@@ -201,6 +225,28 @@ describe("CollectionsExperience", () => {
     await userEvent.type(title, "深圳湾海滨公园");
     await userEvent.click(within(dialog).getByRole("button", { name: "保存修改" }));
     expect(await screen.findByText(/Agent 与收藏库会读取同一条数据/)).toBeInTheDocument();
+    expect(patchBodies[0]).toEqual({
+      expected_version: 1,
+      changes: {
+        title: "深圳湾海滨公园",
+        city_hint: "深圳",
+        district: "南山区",
+        address: "滨海大道",
+        tags: ["公园", "散步"],
+      },
+    });
+
+    const tags = within(dialog).getByRole("textbox", { name: "标签" });
+    await userEvent.clear(tags);
+    await userEvent.type(tags, "海边、夜景");
+    await userEvent.click(within(dialog).getByRole("button", { name: "保存修改" }));
+    await waitFor(() => expect(patchBodies).toHaveLength(2));
+    expect(patchBodies[1].changes.tags).toEqual(["海边", "夜景"]);
+
+    await userEvent.clear(tags);
+    await userEvent.click(within(dialog).getByRole("button", { name: "保存修改" }));
+    await waitFor(() => expect(patchBodies).toHaveLength(3));
+    expect(patchBodies[2].changes.tags).toEqual([]);
 
     await userEvent.click(within(dialog).getByRole("button", { name: "删除收藏" }));
     expect(await screen.findByRole("button", { name: "恢复" })).toBeInTheDocument();
@@ -281,6 +327,32 @@ describe("CollectionsExperience", () => {
       await within(dialog).findByRole("button", { name: "保存修改" }),
     );
     expect(await screen.findByText(/刚刚被更新，请刷新后继续/)).toBeInTheDocument();
+  });
+
+  it("does not report success when the API rejects a patch with 422", async () => {
+    currentQuery = `item=${baseItem.id}`;
+    vi.spyOn(apiClient, "request").mockImplementation(
+      async (path, options) => {
+        if (path === "/api/v1/demo/sessions") return session as never;
+        if (path.startsWith("/api/v1/collections?")) return filledPage as never;
+        if (options?.method === "PATCH") {
+          throw new ApiError("request_failed", 422, "request-id");
+        }
+        return { item: baseItem, sources: [] } as never;
+      },
+    );
+
+    render(<CollectionsExperience />);
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      await within(dialog).findByRole("button", { name: "保存修改" }),
+    );
+    expect(
+      await screen.findByText("收藏库暂时没有加载完成。"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Agent 与收藏库会读取同一条数据/),
+    ).toBeNull();
   });
 
   it("reuses the candidate idempotency key after an uncertain failure", async () => {
