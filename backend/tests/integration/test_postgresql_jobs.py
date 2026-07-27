@@ -252,3 +252,55 @@ def test_cancelled_completed_and_recovered_jobs_are_not_duplicated(
             await database.close()
 
     asyncio.run(scenario())
+
+
+@pytest.mark.postgresql
+def test_heartbeat_prevents_reclaim_past_original_lease(
+    postgresql_database_url: str,
+) -> None:
+    async def scenario() -> None:
+        database = Database(postgresql_database_url)
+        queue = PostgresJobQueue(database.session_factory, lease_seconds=0.12)
+        executions = 0
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def handler(job: ScheduledJob) -> JobResultSummary:
+            nonlocal executions
+            del job
+            executions += 1
+            started.set()
+            await release.wait()
+            return JobResultSummary(outcome="completed")
+
+        try:
+            created = await queue.create(
+                _request(key="heartbeat-race", run_at=datetime.now(UTC))
+            )
+            first = JobWorker(
+                queue=queue,
+                worker_id="heartbeat_owner",
+                handlers={"deterministic.noop": handler},
+                heartbeat_seconds=0.03,
+            )
+            second = JobWorker(
+                queue=queue,
+                worker_id="heartbeat_contender",
+                handlers={"deterministic.noop": handler},
+                heartbeat_seconds=0.03,
+            )
+            running = asyncio.create_task(first.run_once())
+            await started.wait()
+            await asyncio.sleep(0.2)
+            assert await second.run_once() is None
+            assert executions == 1
+            release.set()
+            assert await running is not None
+            persisted = await queue.get(user_id=USER_ID, job_id=created.id)
+            assert persisted is not None
+            assert persisted.status is JobStatus.SUCCEEDED
+            assert persisted.attempt == 1
+        finally:
+            await database.close()
+
+    asyncio.run(scenario())

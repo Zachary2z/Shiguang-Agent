@@ -36,9 +36,13 @@ class PostgresJobQueue:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         now: Callable[[], datetime] = utc_now,
+        lease_seconds: float = JOB_LEASE_SECONDS,
     ) -> None:
+        if lease_seconds <= 0 or lease_seconds > JOB_LEASE_SECONDS:
+            raise ValueError(f"lease_seconds must be in (0, {JOB_LEASE_SECONDS}]")
         self._session_factory = session_factory
         self._now = now
+        self._lease_seconds = lease_seconds
 
     async def create(self, request: JobCreate) -> ScheduledJob:
         fingerprint = _request_fingerprint(request)
@@ -108,12 +112,42 @@ class PostgresJobQueue:
             row.status = JobStatus.RUNNING.value
             row.attempt += 1
             row.worker_id = worker
-            row.lease_expires_at = timestamp + timedelta(seconds=JOB_LEASE_SECONDS)
+            row.lease_expires_at = timestamp + timedelta(seconds=self._lease_seconds)
             row.started_at = row.started_at or timestamp
             row.updated_at = timestamp
             await session.flush()
             result = _scheduled_job(row)
         return result
+
+    async def renew_lease(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        now: datetime,
+    ) -> bool:
+        """Extend one live lease only while its original worker still owns it."""
+
+        validate_safe_label(job_id, name="job_id")
+        worker = validate_safe_label(worker_id, name="worker_id")
+        timestamp = required_utc(now)
+        async with self._session_factory() as session, session.begin():
+            rowcount = await execute_dml_rowcount(
+                session,
+                update(ScheduledJobModel)
+                .where(
+                    ScheduledJobModel.id == job_id,
+                    ScheduledJobModel.status == JobStatus.RUNNING.value,
+                    ScheduledJobModel.worker_id == worker,
+                    ScheduledJobModel.lease_expires_at > timestamp,
+                )
+                .values(
+                    lease_expires_at=timestamp
+                    + timedelta(seconds=self._lease_seconds),
+                    updated_at=timestamp,
+                )
+            )
+            return rowcount == 1
 
     async def complete(
         self,

@@ -3,12 +3,14 @@ import {
   fireEvent,
   render,
   screen,
+  within,
   waitFor,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AgentExperience } from "@/components/agent-experience";
+import { ApiError } from "@/lib/api-client";
 
 const { request, connect } = vi.hoisted(() => ({
   request: vi.fn(),
@@ -34,6 +36,57 @@ const session = {
   csrf_token: "runtime-only-csrf",
   resumed: false,
 };
+
+const accepted = {
+  message_id: "msg_0123456789abcdef0123456789abcdef",
+  trace_id: "trc_0123456789abcdef0123456789abcdef",
+  input_type: "text",
+  run_status: "queued",
+  events_url:
+    "/api/v1/agent-runs/trc_0123456789abcdef0123456789abcdef/events",
+  result_url:
+    "/api/v1/agent-runs/trc_0123456789abcdef0123456789abcdef/result",
+  replayed: false,
+};
+
+function collection(
+  id: string,
+  title: string,
+  status: "active" | "pending_details" | "deleted" = "active",
+) {
+  return {
+    id,
+    title,
+    kind: "place",
+    city_hint: "深圳",
+    city_pending: false,
+    district: "南山区",
+    address: null,
+    tags: [],
+    missing_fields: [],
+    uncertainties: [],
+    status,
+    version: 1,
+  };
+}
+
+function completedResult(collections: ReturnType<typeof collection>[]) {
+  return {
+    message_id: accepted.message_id,
+    trace_id: accepted.trace_id,
+    input_type: "text",
+    run_status: "succeeded",
+    extraction: {
+      outcome: "candidates",
+      missing_fields: [],
+      recovery_suggestions: [],
+    },
+    collections,
+    recovery_actions: [],
+    error_code: null,
+    tool_steps: [],
+  };
+}
 
 describe("Agent experience", () => {
   afterEach(cleanup);
@@ -132,5 +185,189 @@ describe("Agent experience", () => {
 
     expect(await screen.findByText("<img src=x onerror=alert(1)>")).toBeInTheDocument();
     expect(container.querySelector("img")).toBeNull();
+  });
+
+  it("reuses one idempotency key after an uncertain network failure", async () => {
+    const user = userEvent.setup();
+    request
+      .mockRejectedValueOnce(new ApiError("network_error", null, null))
+      .mockResolvedValueOnce(accepted);
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+
+    await user.type(screen.getByRole("textbox", { name: "收藏内容" }), "深圳天文台");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByText("网络连接中断，请重试。");
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    const submissions = request.mock.calls.filter(
+      ([path, options]) =>
+        String(path).endsWith("/messages") && options?.method === "POST",
+    );
+    expect(submissions).toHaveLength(2);
+    const first = JSON.parse(String(submissions[0][1]?.body));
+    const second = JSON.parse(String(submissions[1][1]?.body));
+    expect(second.idempotency_key).toBe(first.idempotency_key);
+  });
+
+  it("creates a new submission identity only after the input changes", async () => {
+    const user = userEvent.setup();
+    request
+      .mockRejectedValueOnce(new ApiError("timeout", null, null))
+      .mockResolvedValueOnce(accepted);
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    const input = screen.getByRole("textbox", { name: "收藏内容" });
+
+    await user.type(input, "深圳天文台");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByText("上传等待超时，请检查网络后重试。");
+    await user.click(screen.getByRole("button", { name: "补充文字" }));
+    await user.type(input, " 西涌");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    const submissions = request.mock.calls.filter(
+      ([path, options]) =>
+        String(path).endsWith("/messages") && options?.method === "POST",
+    );
+    const first = JSON.parse(String(submissions[0][1]?.body));
+    const second = JSON.parse(String(submissions[1][1]?.body));
+    expect(second.idempotency_key).not.toBe(first.idempotency_key);
+  });
+
+  it("keeps submission gated until delayed conversation recovery finishes", async () => {
+    const user = userEvent.setup();
+    let resolveConversation:
+      | ((value: { messages: never[] }) => void)
+      | undefined;
+    const delayedConversation = new Promise<{ messages: never[] }>((resolve) => {
+      resolveConversation = resolve;
+    });
+    request.mockReset();
+    request
+      .mockResolvedValueOnce(session)
+      .mockReturnValueOnce(delayedConversation)
+      .mockResolvedValueOnce(accepted);
+    render(<AgentExperience />);
+    const input = screen.getByRole("textbox", { name: "收藏内容" });
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("button", { name: "处理中" })).toBeDisabled();
+
+    resolveConversation?.({ messages: [] });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "发送" })).toBeEnabled(),
+    );
+    await user.type(input, "恢复完成后的新提交");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows and independently edits, removes, and restores every collection", async () => {
+    const user = userEvent.setup();
+    const first = collection(
+      "col_11111111111111111111111111111111",
+      "深圳天文台",
+    );
+    const second = collection(
+      "col_22222222222222222222222222222222",
+      "西涌海滩",
+      "pending_details",
+    );
+    request
+      .mockResolvedValueOnce(accepted)
+      .mockResolvedValueOnce(completedResult([first, second]))
+      .mockResolvedValueOnce({ ...first, title: "深圳天文台 · 西涌", version: 2 })
+      .mockResolvedValueOnce({ ...second, status: "deleted", version: 2 })
+      .mockResolvedValueOnce({ ...second, status: "pending_details", version: 3 });
+    connect.mockImplementation((options: {
+      onEvent: (event: unknown) => void;
+    }) => {
+      window.setTimeout(
+        () =>
+          options.onEvent({
+            id: "4",
+            event: "run.completed",
+            sequence: 4,
+            data: { summary: { status: "succeeded" } },
+          }),
+        0,
+      );
+      return { cancel: vi.fn(), closed: new Promise<void>(() => {}) };
+    });
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    await user.type(screen.getByRole("textbox", { name: "收藏内容" }), "两个地点");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    const firstCard = (await screen.findByText("深圳天文台")).closest("article");
+    const secondCard = screen.getByText("西涌海滩").closest("article");
+    expect(firstCard).not.toBeNull();
+    expect(secondCard).not.toBeNull();
+    expect(screen.getByText("本次整理出 2 项收藏")).toBeInTheDocument();
+
+    await user.click(within(firstCard!).getByRole("button", { name: "修改" }));
+    const title = within(firstCard!).getByRole("textbox", { name: "名称" });
+    expect(title).toHaveAttribute("name", "collection_title");
+    expect(title).toHaveAttribute("autocomplete", "off");
+    await user.clear(title);
+    await user.type(title, "深圳天文台 · 西涌");
+    await user.click(within(firstCard!).getByRole("button", { name: "保存修改" }));
+    await screen.findByText("深圳天文台 · 西涌");
+
+    await user.click(within(secondCard!).getByRole("button", { name: "撤销" }));
+    await user.click(
+      within(secondCard!).getByRole("button", { name: "恢复收藏" }),
+    );
+    await waitFor(() =>
+      expect(within(secondCard!).getByText("待补充")).toBeInTheDocument(),
+    );
+
+    const mainInput = screen.getByRole("textbox", { name: "收藏内容" });
+    expect(mainInput).toHaveAttribute("name", "collection_input");
+    expect(mainInput).toHaveAttribute("autocomplete", "off");
+    await user.click(screen.getByRole("button", { name: "继续添加" }));
+    await waitFor(() => expect(mainInput).toHaveFocus());
+  });
+
+  it("cancels the previous SSE connection before following a new run", async () => {
+    const user = userEvent.setup();
+    const firstCancel = vi.fn();
+    request
+      .mockResolvedValueOnce(accepted)
+      .mockResolvedValueOnce(completedResult([
+        collection("col_33333333333333333333333333333333", "第一项"),
+      ]))
+      .mockResolvedValueOnce({ ...accepted, trace_id: "trc_new" });
+    connect
+      .mockImplementationOnce((options: {
+        onEvent: (event: unknown) => void;
+      }) => {
+        window.setTimeout(
+          () =>
+            options.onEvent({
+              id: "4",
+              event: "run.completed",
+              sequence: 4,
+              data: {},
+            }),
+          0,
+        );
+        return { cancel: firstCancel, closed: new Promise<void>(() => {}) };
+      })
+      .mockReturnValueOnce({
+        cancel: vi.fn(),
+        closed: new Promise<void>(() => {}),
+      });
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    const input = screen.getByRole("textbox", { name: "收藏内容" });
+    await user.type(input, "第一项");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByRole("heading", { name: "第一项" });
+    await user.clear(input);
+    await user.type(input, "第二项");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    expect(firstCancel).toHaveBeenCalled();
   });
 });

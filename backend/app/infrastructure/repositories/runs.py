@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.identifiers import (
@@ -274,6 +274,30 @@ class AgentRunRepository:
             updated_at=required_utc(row.updated_at),
             tool_runs=[self._stored_tool(tool_row) for tool_row in tool_rows],
         )
+
+    async def delete_queued_by_trace_id(
+        self,
+        *,
+        user_id: str,
+        trace_id: str,
+    ) -> bool:
+        owner = validate_user_id(user_id)
+        trace = validate_trace_id(trace_id)
+        run = await self._session.scalar(
+            select(AgentRunModel).where(
+                AgentRunModel.trace_id == trace,
+                AgentRunModel.user_id == owner,
+                AgentRunModel.status == AgentRunStatus.QUEUED.value,
+            )
+        )
+        if run is None:
+            return False
+        await self._session.execute(
+            delete(RunEventModel).where(RunEventModel.agent_run_id == run.id)
+        )
+        await self._session.delete(run)
+        await self._session.flush()
+        return True
 
     async def _require(self, run_id: str) -> AgentRunModel:
         row = await self._session.get(AgentRunModel, run_id)

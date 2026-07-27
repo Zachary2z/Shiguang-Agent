@@ -2260,3 +2260,44 @@ Session、稳定 CSRF、并发安全 Demo 恢复、跨浏览器所有权过滤�
   Windows/Linux、Safari/Firefox 或生产 PostgreSQL 浏览器联调
 - 下一步：主控独立复核接口、刷新/断线/重复提交、安全 DTO、恢复迁移、响应式和
   真实 FastAPI 离线浏览器闭环；验收前不开始 M1-4
+
+#### 2026-07-27｜M1-3 主控 QA 缺陷修复｜待主控验收
+
+- 分支与边界：在 `codex/m1-3-agent-import` 候选提交
+  `d1daa7354d3ae63dd71972cf6a6631c968637c1b` 上修复；继续只处理 M1-3，
+  未合并、未推送、未读取 `.env`，未实现 M1-4 或调用真实模型、地图、网页与付费
+  API
+- Worker 默认启动：无模型配置时不再构造 Provider，API、主/演示 PostgreSQL 与
+  Worker 均保持 healthy；`content.import` 使用既有工作流收敛为
+  `failed / MODEL_PROVIDER_NOT_CONFIGURED`，不会让 Worker 退出或留下永久 queued
+  Run；完整配置仍只构造既有 `OpenAICompatibleProvider`
+- 租约：唯一 `JobQueue` 增加通用 `renew_lease`，唯一 `JobWorker` 在 Handler
+  生命周期内按 20 秒心跳续租；完成、异常、取消与失去所有权都会停止心跳，真实
+  失联仍由原 `recover_stale` 恢复。PostgreSQL 回归及 Compose 实测均证明处理跨过
+  原租约边界时第二个 Worker 不会执行 Handler
+- 提交一致性：Message、queued AgentRun、Source/私有文件准备完成后若 Queue 创建
+  失败，会先查询 trace 处理“响应丢失但 Job 已创建”，确认无 Job 才通过既有
+  Repository 补偿 Message、Run、RunEvent、Source 与文件；同 key 重试继续复用
+  原任务或确定性重建，不重复收藏
+- 图片取消：既有图片签名、解码与推理图准备移出事件循环执行，保持同一校验和存储
+  边界，同时确保外层工作流截止可以及时取消 Provider 请求和进入原清理路径
+- 前端：同一输入在不确定网络失败后的重试复用 idempotency key，只有正文变化、
+  选择新文件或“继续添加”才换 key；统一 operation generation 管理 Session 恢复、
+  新提交、权威结果与唯一 SSE Client，迟到恢复/响应不能覆盖新 Run，新 Run 前
+  取消旧 SSE
+- 多结果与可访问性：不再使用 `collections[0]`，一次导入的所有收藏均显示各自
+  状态，并可按具体收藏修改、撤销与恢复；主输入和快速编辑补齐稳定
+  `name`/`autocomplete`，“继续添加”和“补充文字”回焦主输入，失败提示只保留
+  一处 live region
+- Compose：从干净快照、不使用 `--env-file` 构建；PostgreSQL、Demo PostgreSQL、
+  API、Worker 全部 healthy，API/Worker 重启计数为 0。分进程离线 Provider
+  `content.import` 得到 succeeded，`Last-Event-ID` 仅重放后续 sequence；短租约
+  双 Worker 验证执行计数为 1。默认无模型导入得到安全失败终态
+- 验证：后端 `pip check`、Ruff、mypy、完整离线回归、core、迁移和 11 项真实
+  PostgreSQL 标记测试通过；前端生产依赖 audit 为 0，lint、typecheck、34 项
+  Vitest、build 通过；Playwright `14 passed`，真实 FastAPI + 离线 Fake 闭环保持
+  通过
+- 迁移与冗余：本次不新增迁移，Alembic 仍为单一
+  `20260727_0011` head；没有新增第二套 Provider、JobQueue、Worker、AgentRunner、
+  ToolRegistry、workflow、SSE Client、Repository、幂等或 Undo/Restore 系统
+- 阶段状态：M1-3 继续为“待主控验收”；主控复测通过前不开始 M1-4

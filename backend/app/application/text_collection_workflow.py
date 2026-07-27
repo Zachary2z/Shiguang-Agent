@@ -426,7 +426,11 @@ class TextCollectionWorkflow:
             extraction_result=self._extraction_from_source(source, saved),
             auto_save_result=saved,
             recovery_actions=(
-                () if source is None else source.metadata.workflow_recovery_actions
+                ("retry_later",)
+                if source is None and run.error_code is not None
+                else ()
+                if source is None
+                else source.metadata.workflow_recovery_actions
             ),
             error_code=run.error_code,
             replayed=True,

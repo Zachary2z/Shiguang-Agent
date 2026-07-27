@@ -219,11 +219,10 @@ class ImageRecognitionService:
         inference_content_type: str | None = None
         expires_at: datetime | None = None
         try:
-            dimensions = self._validate_image(image_bytes, content_type=content_type)
-            inference_bytes, inference_content_type = self._prepare_inference_image(
+            inference_bytes, inference_content_type = await asyncio.to_thread(
+                self._prepare_validated_image,
                 image_bytes,
-                content_type=content_type,
-                dimensions=dimensions,
+                content_type,
             )
             expires_at = require_aware_utc(self._clock()) + timedelta(
                 days=ORIGINAL_SCREENSHOT_RETENTION_DAYS
@@ -301,14 +300,10 @@ class ImageRecognitionService:
                 code=ImageRecognitionErrorCode.PROCESSING_FAILED
             )
         try:
-            dimensions = self._validate_image(
+            inference_bytes, inference_content_type = await asyncio.to_thread(
+                self._prepare_validated_image,
                 image_bytes,
-                content_type=metadata.content_type,
-            )
-            inference_bytes, inference_content_type = self._prepare_inference_image(
-                image_bytes,
-                content_type=metadata.content_type,
-                dimensions=dimensions,
+                metadata.content_type,
             )
             return await self._extract(
                 inference_bytes,
@@ -473,6 +468,18 @@ class ImageRecognitionService:
             raise ImageRecognitionError(
                 code=ImageRecognitionErrorCode.ANIMATED_IMAGE_NOT_ALLOWED
             )
+
+    def _prepare_validated_image(
+        self,
+        payload: bytes,
+        content_type: str,
+    ) -> tuple[bytes, str]:
+        dimensions = self._validate_image(payload, content_type=content_type)
+        return self._prepare_inference_image(
+            payload,
+            content_type=content_type,
+            dimensions=dimensions,
+        )
 
     def _observe(self, response: ModelResponse | None) -> None:
         if isinstance(response, ModelResponse) and self._response_observer is not None:

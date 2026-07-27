@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.collections import (
@@ -179,6 +179,20 @@ class SqlAlchemyCollectionRepository:
         ).all()
         return [self._message(row) for row in rows]
 
+    async def delete_message(self, *, user_id: str, message_id: str) -> bool:
+        owner = validate_user_id(user_id)
+        identifier = validate_message_id(message_id)
+        rowcount = await execute_dml_rowcount(
+            self._session,
+            delete(MessageModel).where(
+                MessageModel.id == identifier,
+                MessageModel.session_id.in_(
+                    select(SessionModel.id).where(SessionModel.user_id == owner)
+                ),
+            ),
+        )
+        return rowcount == 1
+
     async def add_source(self, *, user_id: str, source: Source) -> Source:
         owner = validate_user_id(user_id)
         if owner != source.user_id:
@@ -222,6 +236,23 @@ class SqlAlchemyCollectionRepository:
             )
         ).all()
         return [self._source(row) for row in rows]
+
+    async def delete_source(self, *, user_id: str, source_id: str) -> bool:
+        owner = validate_user_id(user_id)
+        identifier = validate_source_id(source_id)
+        rowcount = await execute_dml_rowcount(
+            self._session,
+            delete(SourceModel).where(
+                SourceModel.id == identifier,
+                SourceModel.user_id == owner,
+                ~SourceModel.id.in_(
+                    select(CollectionSourceModel.source_id).where(
+                        CollectionSourceModel.user_id == owner
+                    )
+                ),
+            ),
+        )
+        return rowcount == 1
 
     async def update_source_parse_status(
         self,

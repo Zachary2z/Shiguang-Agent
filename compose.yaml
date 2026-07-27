@@ -54,6 +54,8 @@ services:
       LOG_LEVEL: INFO
       RUN_REAL_MODEL_TESTS: "0"
       RUN_REAL_MAP_TESTS: "0"
+    volumes:
+      - private-data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -88,6 +90,9 @@ services:
       WORKER_POLL_SECONDS: "1"
       RUN_REAL_MODEL_TESTS: "0"
       RUN_REAL_MAP_TESTS: "0"
+      DEMO_STORAGE_PRIVATE_ROOT: /app/data/demo-private
+    volumes:
+      - private-data:/app/data
     depends_on:
       api:
         condition: service_healthy
@@ -102,3 +107,4 @@ services:
 volumes:
   postgres-data:
   demo-postgres-data:
+  private-data:

@@ -14,7 +14,8 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.content_import_jobs import (
     CONTENT_IMPORT_JOB_TYPE,
@@ -23,7 +24,13 @@ from app.application.content_import_jobs import (
 from app.application.pricing import ConfiguredPricingPolicy
 from app.config import Settings
 from app.domain.collections import ExtractionResult, PlaceCandidate
-from app.infrastructure.db.models import ScheduledJobModel, SourceModel
+from app.domain.jobs import JobCreate
+from app.infrastructure.db.models import (
+    AgentRunModel,
+    MessageModel,
+    ScheduledJobModel,
+    SourceModel,
+)
 from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.main import create_app
@@ -32,6 +39,15 @@ from tests.core.fakes import FakeProvider, fake_response
 from tests.fixtures.images import PNG_SCREENSHOT
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
+COUNTED_MODELS = (MessageModel, AgentRunModel, ScheduledJobModel, SourceModel)
+
+
+async def _row_counts(session: AsyncSession) -> tuple[int, ...]:
+    values: list[int] = []
+    for model in COUNTED_MODELS:
+        value = await session.scalar(select(func.count()).select_from(model))
+        values.append(int(value or 0))
+    return tuple(values)
 
 
 def _migrate(settings: Settings) -> None:
@@ -71,7 +87,7 @@ def _response(title: str = "深圳天文台"):
 @asynccontextmanager
 async def _runtime(
     settings: Settings,
-    provider: FakeProvider,
+    provider: FakeProvider | None,
 ) -> AsyncIterator[
     tuple[FastAPI, httpx.AsyncClient, JobWorker, LocalPrivateStorageProvider]
 ]:
@@ -265,3 +281,92 @@ async def test_session_auth_and_csrf_are_enforced(test_settings: Settings) -> No
         )
         assert unauthorized.status_code == 401
         assert forbidden.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_missing_model_configuration_finishes_run_safely(
+    test_settings: Settings,
+) -> None:
+    async with _runtime(test_settings, None) as (_api, client, worker, _storage):
+        session = await _session(client)
+        accepted = await client.post(
+            f"/api/v1/sessions/{session['session_id']}/messages",
+            json={
+                "type": "text",
+                "idempotency_key": "missing-model",
+                "text": "深圳天文台",
+            },
+        )
+        assert accepted.status_code == 202
+        completed = await worker.run_once()
+        result = await client.get(accepted.json()["result_url"])
+        assert completed is not None
+        assert completed.status.value == "succeeded"
+        assert completed.result_summary is not None
+        assert completed.result_summary.outcome == "failed"
+        assert result.json()["run_status"] == "failed"
+        assert result.json()["error_code"] == "MODEL_PROVIDER_NOT_CONFIGURED"
+        assert result.json()["recovery_actions"] == ["retry_later"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("image", (False, True))
+async def test_queue_failure_compensates_and_same_key_retries_without_orphans(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    image: bool,
+) -> None:
+    original_create = PostgresJobQueue.create
+    attempts = 0
+
+    async def fail_once(
+        queue: PostgresJobQueue,
+        request: JobCreate,
+    ):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("private queue outage")
+        return await original_create(queue, request)
+
+    monkeypatch.setattr(PostgresJobQueue, "create", fail_once)
+    provider = FakeProvider([_response()])
+    async with _runtime(test_settings, provider) as (api, client, worker, _storage):
+        session = await _session(client)
+        path = f"/api/v1/sessions/{session['session_id']}/messages"
+        request = (
+            {
+                "content": PNG_SCREENSHOT,
+                "headers": {
+                    "Content-Type": "image/png",
+                    "Idempotency-Key": "queue-retry",
+                },
+            }
+            if image
+            else {
+                "json": {
+                    "type": "text",
+                    "idempotency_key": "queue-retry",
+                    "text": "深圳天文台",
+                }
+            }
+        )
+        with pytest.raises(RuntimeError, match="private queue outage"):
+            await client.post(path, **request)
+        async with api.state.demo_database.session() as database_session:
+            counts = await _row_counts(database_session)
+        assert counts == (0, 0, 0, 0)
+        storage_root = (
+            Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
+            / "demo-private"
+        )
+        assert list((storage_root / "objects").iterdir()) == []
+
+        accepted = await client.post(path, **request)
+        assert accepted.status_code == 202
+        assert await worker.run_once() is not None
+        result = await client.get(accepted.json()["result_url"])
+        assert result.json()["run_status"] == "succeeded"
+        async with api.state.demo_database.session() as database_session:
+            final_counts = await _row_counts(database_session)
+        assert final_counts == (1, 1, 1, 1)

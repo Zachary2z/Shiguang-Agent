@@ -7,16 +7,31 @@ from datetime import UTC, datetime
 
 import pytest
 
+from app.config import Settings
 from app.domain.jobs import (
     JobCreate,
     JobResultSummary,
     JobStatus,
     ScheduledJob,
 )
+from app.worker.__main__ import _configured_model_provider
 from app.worker.service import JobWorker
 
 USER_ID = "usr_0123456789abcdef0123456789abcdef"
 NOW = datetime(2026, 7, 26, tzinfo=UTC)
+
+
+def test_worker_allows_model_provider_to_be_unconfigured(
+    test_settings: Settings,
+) -> None:
+    settings = test_settings.model_copy(
+        update={
+            "model_api_base": None,
+            "model_api_key": None,
+            "model_name": None,
+        }
+    )
+    assert _configured_model_provider(settings) is None
 
 
 def _job() -> ScheduledJob:
@@ -47,6 +62,9 @@ class RecordingQueue:
         self.job: ScheduledJob | None = job
         self.summary: JobResultSummary | None = None
         self.failed = False
+        self.renewals = 0
+        self.allow_renewal = True
+        self.renew_error: Exception | None = None
 
     async def create(self, request: JobCreate) -> ScheduledJob:
         del request
@@ -82,6 +100,19 @@ class RecordingQueue:
         del job_id, worker_id, error_code, now
         self.failed = True
         return None
+
+    async def renew_lease(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        now: datetime,
+    ) -> bool:
+        del job_id, worker_id, now
+        self.renewals += 1
+        if self.renew_error is not None:
+            raise self.renew_error
+        return self.allow_renewal
 
     async def cancel(self, *, user_id: str, job_id: str, now: datetime) -> bool:
         del user_id, job_id, now
@@ -155,3 +186,104 @@ async def test_worker_propagates_cancellation() -> None:
     assert caught.value is cancellation
     assert queue.summary is None
     assert queue.failed is False
+
+
+@pytest.mark.asyncio
+async def test_worker_renews_lease_until_handler_completes_then_stops() -> None:
+    queue = RecordingQueue(_job())
+    release = asyncio.Event()
+
+    async def handler(job: ScheduledJob) -> JobResultSummary:
+        del job
+        await release.wait()
+        return JobResultSummary(outcome="completed")
+
+    worker = JobWorker(
+        queue=queue,
+        worker_id="worker_test",
+        handlers={"deterministic.noop": handler},
+        heartbeat_seconds=0.01,
+    )
+    execution = asyncio.create_task(worker.run_once())
+    await asyncio.sleep(0.025)
+    assert queue.renewals >= 2
+    release.set()
+    assert await execution is not None
+    renewals_at_completion = queue.renewals
+    await asyncio.sleep(0.02)
+    assert queue.renewals == renewals_at_completion
+
+
+@pytest.mark.asyncio
+async def test_worker_cancels_handler_when_lease_is_lost() -> None:
+    queue = RecordingQueue(_job())
+    queue.allow_renewal = False
+    handler_cancelled = asyncio.Event()
+
+    async def handler(job: ScheduledJob) -> JobResultSummary:
+        del job
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            handler_cancelled.set()
+            raise
+
+    worker = JobWorker(
+        queue=queue,
+        worker_id="worker_test",
+        handlers={"deterministic.noop": handler},
+        heartbeat_seconds=0.01,
+    )
+    assert await worker.run_once() is None
+    assert handler_cancelled.is_set()
+    assert queue.failed is False
+
+
+@pytest.mark.asyncio
+async def test_worker_cancellation_stops_heartbeat() -> None:
+    queue = RecordingQueue(_job())
+
+    async def handler(job: ScheduledJob) -> JobResultSummary:
+        del job
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    worker = JobWorker(
+        queue=queue,
+        worker_id="worker_test",
+        handlers={"deterministic.noop": handler},
+        heartbeat_seconds=0.01,
+    )
+    execution = asyncio.create_task(worker.run_once())
+    await asyncio.sleep(0.025)
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+    renewals_at_cancellation = queue.renewals
+    await asyncio.sleep(0.02)
+    assert queue.renewals == renewals_at_cancellation
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_exception_cancels_handler_and_fails_owned_job() -> None:
+    queue = RecordingQueue(_job())
+    queue.renew_error = RuntimeError("database unavailable")
+    handler_cancelled = asyncio.Event()
+
+    async def handler(job: ScheduledJob) -> JobResultSummary:
+        del job
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            handler_cancelled.set()
+            raise
+
+    worker = JobWorker(
+        queue=queue,
+        worker_id="worker_test",
+        handlers={"deterministic.noop": handler},
+        heartbeat_seconds=0.01,
+    )
+    assert await worker.run_once() is None
+    assert handler_cancelled.is_set()
+    assert queue.failed is True

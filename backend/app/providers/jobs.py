@@ -27,6 +27,14 @@ class JobQueue(Protocol):
         now: datetime,
     ) -> bool: ...
 
+    async def renew_lease(
+        self,
+        *,
+        job_id: str,
+        worker_id: str,
+        now: datetime,
+    ) -> bool: ...
+
     async def fail(
         self,
         *,

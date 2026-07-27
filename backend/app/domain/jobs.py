@@ -16,6 +16,7 @@ from app.domain.time import required_utc
 MAX_JOB_ATTEMPTS = 3
 MAX_JOB_PAYLOAD_BYTES = 4096
 JOB_LEASE_SECONDS = 60
+JOB_HEARTBEAT_SECONDS = 20
 JOB_RETRY_DELAYS_SECONDS = (5, 30)
 
 _SAFE_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -166,6 +167,7 @@ class JobConflictError(RuntimeError):
 
 __all__ = [
     "JOB_LEASE_SECONDS",
+    "JOB_HEARTBEAT_SECONDS",
     "JOB_RETRY_DELAYS_SECONDS",
     "MAX_JOB_ATTEMPTS",
     "MAX_JOB_PAYLOAD_BYTES",

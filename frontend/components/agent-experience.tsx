@@ -14,6 +14,7 @@ import { sseClient, type SseEvent } from "@/lib/sse-client";
 
 type AgentState =
   | "idle"
+  | "recovering"
   | "submitting"
   | "queued"
   | "processing"
@@ -122,15 +123,35 @@ function resultState(result: ImportResult): AgentState {
   if (result.run_status === "failed" || result.run_status === "cancelled") {
     return "failed";
   }
-  const status = result.collections[0]?.status;
-  if (status === "active") return "saved";
-  if (status === "pending_selection") return "pending_selection";
-  if (status === "pending_details") return "pending_details";
+  const statuses = new Set(result.collections.map((item) => item.status));
+  if (statuses.size > 0 && statuses.size === 1 && statuses.has("deleted")) {
+    return "undone";
+  }
+  if (statuses.has("pending_selection")) return "pending_selection";
+  if (statuses.has("pending_details")) return "pending_details";
+  if (
+    statuses.has("active") ||
+    statuses.has("visited") ||
+    statuses.has("archived")
+  ) {
+    return "saved";
+  }
   if (result.run_status === "queued") return "queued";
   if (result.run_status === "running") return "processing";
   return result.extraction?.outcome === "candidates"
     ? "pending_details"
     : "failed";
+}
+
+function collectionStatusLabel(status: CollectionItem["status"]): string {
+  return {
+    active: "已收藏",
+    pending_selection: "待选择",
+    pending_details: "待补充",
+    visited: "已到访",
+    archived: "已归档",
+    deleted: "已撤销",
+  }[status];
 }
 
 function errorMessage(error: unknown): string {
@@ -148,63 +169,37 @@ function errorMessage(error: unknown): string {
 
 export function AgentExperience() {
   const [session, setSession] = useState<DemoSession | null>(null);
-  const [state, setState] = useState<AgentState>("idle");
+  const [state, setState] = useState<AgentState>("recovering");
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [feedback, setFeedback] = useState("");
   const [stage, setStage] = useState("准备接收");
   const [result, setResult] = useState<ImportResult | null>(null);
-  const [editing, setEditing] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
   const [draftDistrict, setDraftDistrict] = useState("");
   const [showTools, setShowTools] = useState(false);
   const submitController = useRef<AbortController | null>(null);
   const sseCancel = useRef<(() => void) | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
-
-  const startSession = useCallback(async () => {
-    try {
-      const next = await apiClient.request<DemoSession>("/api/v1/demo/sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "{}",
-      });
-      setSession(next);
-      setFeedback("");
-      return next;
-    } catch (error) {
-      setState("failed");
-      setFeedback(errorMessage(error));
-      return null;
-    }
-  }, []);
-
-  useEffect(() => {
-    const sessionStart = window.setTimeout(() => void startSession(), 0);
-    return () => {
-      window.clearTimeout(sessionStart);
-      submitController.current?.abort();
-      sseCancel.current?.();
-    };
-  }, [startSession]);
+  const mainInput = useRef<HTMLTextAreaElement | null>(null);
+  const operationGeneration = useRef(0);
+  const submissionKey = useRef<string | null>(null);
 
   const readAuthoritativeResult = useCallback(
-    async (path: `/${string}`) => {
+    async (path: `/${string}`, generation: number) => {
       try {
         const authoritative = await apiClient.request<ImportResult>(path);
+        if (operationGeneration.current !== generation) return;
         setResult(authoritative);
         setState(resultState(authoritative));
-        const item = authoritative.collections[0];
-        if (item) {
-          setDraftTitle(item.title);
-          setDraftDistrict(item.district ?? "");
-        }
         setFeedback(
           authoritative.error_code
             ? "识别没有完成，你可以补充文字、改发截图或重试。"
             : "",
         );
       } catch (error) {
+        if (operationGeneration.current !== generation) return;
         setState("failed");
         setFeedback(errorMessage(error));
       }
@@ -213,80 +208,117 @@ export function AgentExperience() {
   );
 
   const followRun = useCallback(
-    (accepted: AcceptedImport) => {
+    (accepted: AcceptedImport, generation: number) => {
+      sseCancel.current?.();
       let lastSequence = 0;
       const connection = sseClient.connect<RunEventData>({
         path: accepted.events_url,
         maxReconnectAttempts: 2,
         onEvent: (event: SseEvent<RunEventData>) => {
+          if (operationGeneration.current !== generation) return;
           if (event.sequence <= lastSequence) return;
           lastSequence = event.sequence;
           const nextStage = event.data.summary?.stage;
           if (nextStage) setStage(stageLabels[nextStage] ?? "正在处理");
           if (event.event === "run.started") setState("processing");
           if (event.event === "run.completed" || event.event === "run.failed") {
-            void readAuthoritativeResult(accepted.result_url);
+            void readAuthoritativeResult(accepted.result_url, generation);
           }
         },
         onStateChange: (connectionState) => {
+          if (operationGeneration.current !== generation) return;
           if (connectionState === "disconnected") {
             setFeedback("连接短暂中断，正在从上次进度恢复。");
           }
           if (connectionState === "error") {
             setFeedback("进度连接已断开，正在读取最终结果。");
-            void readAuthoritativeResult(accepted.result_url);
+            void readAuthoritativeResult(accepted.result_url, generation);
           }
         },
       });
       sseCancel.current = connection.cancel;
       void connection.closed.catch(() => {
-        void readAuthoritativeResult(accepted.result_url);
+        if (operationGeneration.current === generation) {
+          void readAuthoritativeResult(accepted.result_url, generation);
+        }
       });
     },
     [readAuthoritativeResult],
   );
 
   useEffect(() => {
-    if (!session) return;
-    const recover = window.setTimeout(() => {
-      void apiClient
-        .request<Conversation>(`/api/v1/sessions/${session.session_id}/messages`)
-        .then((conversation) => {
+    const generation = operationGeneration.current + 1;
+    operationGeneration.current = generation;
+    const bootstrap = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const next = await apiClient.request<DemoSession>(
+            "/api/v1/demo/sessions",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: "{}",
+            },
+          );
+          if (operationGeneration.current !== generation) return;
+          setSession(next);
+          const conversation = await apiClient.request<Conversation>(
+            `/api/v1/sessions/${next.session_id}/messages`,
+          );
+          if (operationGeneration.current !== generation) return;
           const latest = conversation.messages.at(-1);
-          if (!latest) return;
-          if (latest.run_status === "queued" || latest.run_status === "running") {
-            setState(latest.run_status === "queued" ? "queued" : "processing");
-            followRun({
-              ...latest,
-              run_status: "queued",
-              replayed: true,
-            });
+          if (!latest) {
+            setState("idle");
             return;
           }
-          void readAuthoritativeResult(latest.result_url);
-        })
-        .catch(() => {
-          // A fresh session legitimately has no recoverable conversation.
-        });
+          if (latest.run_status === "queued" || latest.run_status === "running") {
+            setState(latest.run_status === "queued" ? "queued" : "processing");
+            followRun(
+              { ...latest, run_status: "queued", replayed: true },
+              generation,
+            );
+            return;
+          }
+          await readAuthoritativeResult(latest.result_url, generation);
+        } catch (error) {
+          if (operationGeneration.current !== generation) return;
+          setState("failed");
+          setFeedback(errorMessage(error));
+        }
+      })();
     }, 0);
-    return () => window.clearTimeout(recover);
-  }, [followRun, readAuthoritativeResult, session]);
+    return () => {
+      window.clearTimeout(bootstrap);
+      operationGeneration.current += 1;
+      submitController.current?.abort();
+      sseCancel.current?.();
+    };
+  }, [followRun, readAuthoritativeResult]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!session || ["submitting", "queued", "processing"].includes(state)) return;
+    if (
+      !session ||
+      ["recovering", "submitting", "queued", "processing"].includes(state)
+    ) {
+      return;
+    }
     if (!file && !text.trim()) {
       setFeedback("写下一个地点、粘贴链接，或选择一张截图。");
       return;
     }
 
+    const generation = operationGeneration.current + 1;
+    operationGeneration.current = generation;
+    sseCancel.current?.();
     setState("submitting");
     setFeedback("");
     setStage("内容接收");
     setResult(null);
     const controller = new AbortController();
     submitController.current = controller;
-    const key = crypto.randomUUID();
+    const key = submissionKey.current ?? crypto.randomUUID();
+    submissionKey.current = key;
     const path = `/api/v1/sessions/${session.session_id}/messages` as const;
     try {
       const requestHeaders = file
@@ -316,13 +348,12 @@ export function AgentExperience() {
             signal: controller.signal,
           };
       const accepted = await apiClient.request<AcceptedImport>(path, options);
+      if (operationGeneration.current !== generation) return;
       setState("queued");
       setStage("正在识别");
-      followRun(accepted);
+      followRun(accepted, generation);
     } catch (error) {
-      if (error instanceof ApiError && error.code === "unauthorized") {
-        await startSession();
-      }
+      if (operationGeneration.current !== generation) return;
       setState("failed");
       setFeedback(errorMessage(error));
     } finally {
@@ -333,6 +364,7 @@ export function AgentExperience() {
   function chooseFile(event: ChangeEvent<HTMLInputElement>) {
     const selected = event.target.files?.[0] ?? null;
     if (!selected) return;
+    submissionKey.current = null;
     if (!acceptedImageTypes.has(selected.type)) {
       setFeedback("请选择 JPEG、PNG 或 WebP 图片。");
       event.target.value = "";
@@ -345,11 +377,29 @@ export function AgentExperience() {
     }
     setFile(selected);
     setText("");
+    submissionKey.current = null;
     setFeedback("");
   }
 
-  async function saveEdit() {
-    const item = result?.collections[0];
+  function replaceCollection(updated: CollectionItem) {
+    if (!result) return;
+    const next = {
+      ...result,
+      collections: result.collections.map((item) =>
+        item.id === updated.id ? updated : item,
+      ),
+    };
+    setResult(next);
+    setState(resultState(next));
+  }
+
+  function beginEdit(item: CollectionItem) {
+    setDraftTitle(item.title);
+    setDraftDistrict(item.district ?? "");
+    setEditingId(item.id);
+  }
+
+  async function saveEdit(item: CollectionItem) {
     if (!item || !session || !draftTitle.trim()) return;
     try {
       const updated = await apiClient.request<CollectionItem>(
@@ -367,58 +417,62 @@ export function AgentExperience() {
           }),
         },
       );
-      setResult({ ...result, collections: [updated, ...result.collections.slice(1)] });
-      setEditing(false);
+      replaceCollection(updated);
+      setEditingId(null);
     } catch (error) {
       setFeedback(errorMessage(error));
     }
   }
 
-  async function undo() {
-    const item = result?.collections[0];
+  async function undo(item: CollectionItem) {
     if (!item || !session) return;
     try {
       const deleted = await apiClient.request<CollectionItem>(
         `/api/v1/collections/${item.id}?expected_version=${item.version}`,
         { method: "DELETE", csrfToken: session.csrf_token },
       );
-      setResult({ ...result, collections: [deleted, ...result.collections.slice(1)] });
-      setState("undone");
-      setFeedback("已撤销收藏，你可以恢复。");
+      replaceCollection(deleted);
+      setFeedback(`已撤销“${item.title}”，你可以单独恢复。`);
     } catch (error) {
       setFeedback(errorMessage(error));
     }
   }
 
-  async function restore() {
-    const item = result?.collections[0];
+  async function restore(item: CollectionItem) {
     if (!item || !session) return;
     try {
       const restored = await apiClient.request<CollectionItem>(
         `/api/v1/collections/${item.id}/restore`,
         { method: "POST", csrfToken: session.csrf_token },
       );
-      setResult({ ...result, collections: [restored, ...result.collections.slice(1)] });
-      setState(resultState({ ...result, collections: [restored] }));
-      setFeedback("已恢复收藏。");
+      replaceCollection(restored);
+      setFeedback(`已恢复“${item.title}”。`);
     } catch (error) {
       setFeedback(errorMessage(error));
     }
   }
 
   function continueAdding() {
+    operationGeneration.current += 1;
     sseCancel.current?.();
+    submissionKey.current = null;
     setText("");
     setFile(null);
     setResult(null);
     setState("idle");
     setStage("准备接收");
     setFeedback("");
-    fileInput.current?.focus();
+    window.setTimeout(() => mainInput.current?.focus(), 0);
   }
 
-  const busy = ["submitting", "queued", "processing"].includes(state);
-  const item = result?.collections[0] ?? null;
+  function returnToInput() {
+    setState("idle");
+    window.setTimeout(() => mainInput.current?.focus(), 0);
+  }
+
+  const busy = ["recovering", "submitting", "queued", "processing"].includes(
+    state,
+  );
 
   return (
     <section className="agent-page" aria-labelledby="agent-title">
@@ -460,93 +514,118 @@ export function AgentExperience() {
           </article>
         )}
 
-        {item && state !== "undone" && (
-          <article className="result-card" aria-live="polite">
-            <div className="result-status">
-              <span>
-                {state === "saved"
-                  ? "已收藏"
-                  : state === "pending_selection"
-                    ? "待选择"
-                    : "待补充"}
-              </span>
-              <small>{item.kind === "place" ? "地点" : "活动"}</small>
+        {result && result.collections.length > 0 && (
+          <section className="collection-results" aria-live="polite" aria-label="识别结果">
+            <div className="collection-results-heading">
+              <p>本次整理出 {result.collections.length} 项收藏</p>
+              <button type="button" className="quiet-button" onClick={continueAdding}>
+                继续添加
+              </button>
             </div>
-            {editing ? (
-              <div className="quick-edit">
-                <label>
-                  名称
-                  <input
-                    value={draftTitle}
-                    onChange={(event) => setDraftTitle(event.target.value)}
-                  />
-                </label>
-                <label>
-                  区域
-                  <input
-                    value={draftDistrict}
-                    onChange={(event) => setDraftDistrict(event.target.value)}
-                  />
-                </label>
-                <div className="inline-actions">
-                  <button type="button" onClick={() => void saveEdit()}>保存修改</button>
-                  <button type="button" className="quiet-button" onClick={() => setEditing(false)}>取消</button>
+            {result.collections.map((item) => (
+              <article className="result-card" key={item.id}>
+                <div className="result-status">
+                  <span>{collectionStatusLabel(item.status)}</span>
+                  <small>{item.kind === "place" ? "地点" : "活动"}</small>
                 </div>
-              </div>
-            ) : (
-              <>
-                <h2>{item.title}</h2>
-                <p className="place-line">
-                  {[item.city_hint, item.district, item.address].filter(Boolean).join(" · ") ||
-                    "地点信息还需要补充"}
-                </p>
-                {item.tags.length > 0 && (
-                  <ul className="tag-list" aria-label="标签">
-                    {item.tags.map((tag) => <li key={tag}>{tag}</li>)}
-                  </ul>
-                )}
-                {(item.missing_fields.length > 0 || item.uncertainties.length > 0) && (
-                  <div className="result-notes">
-                    {item.missing_fields.length > 0 && (
-                      <p><strong>待补充：</strong>{item.missing_fields.join("、")}</p>
-                    )}
-                    {item.uncertainties.length > 0 && (
-                      <p><strong>待确认：</strong>{item.uncertainties.map((entry) => entry.field).join("、")}</p>
-                    )}
+                {editingId === item.id ? (
+                  <div className="quick-edit">
+                    <label>
+                      名称
+                      <input
+                        name="collection_title"
+                        autoComplete="off"
+                        value={draftTitle}
+                        onChange={(event) => setDraftTitle(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      区域
+                      <input
+                        name="collection_district"
+                        autoComplete="address-level2"
+                        value={draftDistrict}
+                        onChange={(event) => setDraftDistrict(event.target.value)}
+                      />
+                    </label>
+                    <div className="inline-actions">
+                      <button type="button" onClick={() => void saveEdit(item)}>
+                        保存修改
+                      </button>
+                      <button
+                        type="button"
+                        className="quiet-button"
+                        onClick={() => setEditingId(null)}
+                      >
+                        取消
+                      </button>
+                    </div>
                   </div>
+                ) : (
+                  <>
+                    <h2>{item.title}</h2>
+                    <p className="place-line">
+                      {[item.city_hint, item.district, item.address]
+                        .filter(Boolean)
+                        .join(" · ") || "地点信息还需要补充"}
+                    </p>
+                    {item.tags.length > 0 && (
+                      <ul className="tag-list" aria-label={`${item.title}的标签`}>
+                        {item.tags.map((tag) => <li key={tag}>{tag}</li>)}
+                      </ul>
+                    )}
+                    {(item.missing_fields.length > 0 ||
+                      item.uncertainties.length > 0) && (
+                      <div className="result-notes">
+                        {item.missing_fields.length > 0 && (
+                          <p><strong>待补充：</strong>{item.missing_fields.join("、")}</p>
+                        )}
+                        {item.uncertainties.length > 0 && (
+                          <p><strong>待确认：</strong>{item.uncertainties.map((entry) => entry.field).join("、")}</p>
+                        )}
+                      </div>
+                    )}
+                    {item.status === "pending_selection" && (
+                      <p className="next-stage-note">
+                        已找到多个可能地点，完整候选选择将在收藏阶段继续处理。
+                      </p>
+                    )}
+                    <div className="result-actions">
+                      {item.status !== "deleted" ? (
+                        <>
+                          <button type="button" onClick={() => beginEdit(item)}>
+                            修改
+                          </button>
+                          <button
+                            type="button"
+                            className="quiet-button"
+                            onClick={() => void undo(item)}
+                          >
+                            撤销
+                          </button>
+                        </>
+                      ) : (
+                        <button type="button" onClick={() => void restore(item)}>
+                          恢复收藏
+                        </button>
+                      )}
+                    </div>
+                  </>
                 )}
-                {state === "pending_selection" && (
-                  <p className="next-stage-note">已找到多个可能地点，完整候选选择将在收藏阶段继续处理。</p>
-                )}
-                <div className="result-actions">
-                  <button type="button" onClick={() => setEditing(true)}>修改</button>
-                  <button type="button" className="quiet-button" onClick={() => void undo()}>撤销</button>
-                  <button type="button" className="quiet-button" onClick={continueAdding}>继续添加</button>
-                </div>
-              </>
-            )}
-          </article>
-        )}
-
-        {state === "undone" && item && (
-          <article className="undo-card" aria-live="polite">
-            <div><p>已撤销</p><h2>{item.title}</h2></div>
-            <div className="result-actions">
-              <button type="button" onClick={() => void restore()}>恢复收藏</button>
-              <button type="button" className="quiet-button" onClick={continueAdding}>继续添加</button>
-            </div>
-          </article>
+              </article>
+            ))}
+          </section>
         )}
 
         {state === "failed" && (
-          <article className="failure-card" role="status">
+          <article className="failure-card" role="status" aria-live="polite">
             <p className="process-kicker">这次没有认出来</p>
             <h2>换一种最短路径继续</h2>
             <p>{feedback || "补充地点名称，改发清晰截图，或重新提交即可。"}</p>
             <div className="recovery-list">
-              <button type="button" onClick={() => setState("idle")}>补充文字</button>
+              <button type="button" onClick={returnToInput}>补充文字</button>
               <button type="button" className="quiet-button" onClick={() => fileInput.current?.click()}>改发截图</button>
-              <button type="button" className="quiet-button" onClick={() => setState("idle")}>重试</button>
+              <button type="button" className="quiet-button" onClick={returnToInput}>重试</button>
             </div>
           </article>
         )}
@@ -571,6 +650,9 @@ export function AgentExperience() {
       <form className="input-dock" onSubmit={submit}>
         <div className="dock-input-row">
           <textarea
+            ref={mainInput}
+            name="collection_input"
+            autoComplete="off"
             aria-label="收藏内容"
             placeholder="写下地点，或粘贴 HTTP(S) 链接…"
             value={text}
@@ -579,6 +661,7 @@ export function AgentExperience() {
             onChange={(event) => {
               setText(event.target.value);
               setFile(null);
+              submissionKey.current = null;
               setFeedback("");
             }}
           />
@@ -591,6 +674,7 @@ export function AgentExperience() {
             <input
               ref={fileInput}
               type="file"
+              name="collection_image"
               accept="image/jpeg,image/png,image/webp"
               disabled={busy}
               onChange={chooseFile}
@@ -603,7 +687,9 @@ export function AgentExperience() {
               取消上传
             </button>
           )}
-          <p className="dock-feedback" aria-live="polite">{feedback}</p>
+          {state !== "failed" && (
+            <p className="dock-feedback" aria-live="polite">{feedback}</p>
+          )}
         </div>
       </form>
     </section>

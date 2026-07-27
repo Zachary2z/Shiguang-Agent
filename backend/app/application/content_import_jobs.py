@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import AsyncIterator
 from datetime import timedelta
@@ -16,6 +17,9 @@ from app.application.input_contracts import CollectionInput, ImageInput, TextInp
 from app.application.pricing import PricingPolicy
 from app.application.text_collection_workflow import (
     IdempotencyLockRegistry,
+    TextCollectionProviderError,
+    TextCollectionRunError,
+    TextCollectionTimeoutError,
     TextCollectionWorkflow,
 )
 from app.config import StorageProviderSettings
@@ -32,7 +36,8 @@ from app.domain.jobs import JobCreate, JobResultSummary, ScheduledJob
 from app.domain.runs import AgentRunStatus
 from app.domain.time import utc_now
 from app.infrastructure.jobs import PostgresJobQueue
-from app.infrastructure.repositories import SqlAlchemyCollectionRepository
+from app.infrastructure.repositories import AgentRunRepository, SqlAlchemyCollectionRepository
+from app.providers.jobs import JobQueue
 from app.providers.storage import (
     RetentionPolicy,
     StorageProvider,
@@ -88,9 +93,10 @@ class ContentImportSubmissionService:
         locks: IdempotencyLockRegistry,
         timeout_seconds: float,
         storage: StorageProvider | None,
+        queue: JobQueue | None = None,
     ) -> None:
         self._session = session
-        self._queue = PostgresJobQueue(session_factory)
+        self._queue = queue or PostgresJobQueue(session_factory)
         self._pricing = pricing
         self._locks = locks
         self._timeout_seconds = timeout_seconds
@@ -148,16 +154,35 @@ class ContentImportSubmissionService:
             source_id=source_id,
             input_type=prepared.message.content_type.value,
         )
-        job = await self._queue.create(
-            JobCreate(
-                user_id=user_id,
-                job_type=CONTENT_IMPORT_JOB_TYPE,
-                payload=payload.model_dump(mode="json"),
-                run_at=prepared.run_created_at,
-                idempotency_key=key,
-                trace_id=prepared.trace_id,
-            )
+        request = JobCreate(
+            user_id=user_id,
+            job_type=CONTENT_IMPORT_JOB_TYPE,
+            payload=payload.model_dump(mode="json"),
+            run_at=prepared.run_created_at,
+            idempotency_key=key,
+            trace_id=prepared.trace_id,
         )
+        try:
+            job = await self._queue.create(request)
+        except BaseException as error:
+            existing = await asyncio.shield(
+                self._queue.get_by_trace(
+                    user_id=user_id,
+                    trace_id=prepared.trace_id,
+                )
+            )
+            if existing is None:
+                await asyncio.shield(
+                    self._compensate_unqueued_import(
+                        user_id=user_id,
+                        message_id=prepared.message.id,
+                        trace_id=prepared.trace_id,
+                        source_id=source_id,
+                    )
+                )
+            if isinstance(error, asyncio.CancelledError) or existing is None:
+                raise
+            job = existing
         return ContentImportSubmission(
             message_id=prepared.message.id,
             trace_id=prepared.trace_id,
@@ -165,6 +190,35 @@ class ContentImportSubmissionService:
             run_status=prepared.run_status,
             replayed=prepared.replayed or job.replayed,
         )
+
+    async def _compensate_unqueued_import(
+        self,
+        *,
+        user_id: str,
+        message_id: str,
+        trace_id: str,
+        source_id: str,
+    ) -> None:
+        source = await self._repository.get_source(
+            user_id=user_id,
+            source_id=source_id,
+        )
+        file_key = None if source is None else source.file_key
+        await self._repository.delete_source(
+            user_id=user_id,
+            source_id=source_id,
+        )
+        await self._repository.delete_message(
+            user_id=user_id,
+            message_id=message_id,
+        )
+        await AgentRunRepository(self._session).delete_queued_by_trace_id(
+            user_id=user_id,
+            trace_id=trace_id,
+        )
+        await self._session.commit()
+        if file_key is not None and self._storage is not None:
+            await self._storage.delete(file_key)
 
     async def _stage_image(
         self,
@@ -233,7 +287,7 @@ class ContentImportJobHandler:
         self,
         *,
         session_factory: async_sessionmaker[AsyncSession],
-        provider: ModelProvider,
+        provider: ModelProvider | None,
         pricing: PricingPolicy,
         locks: IdempotencyLockRegistry,
         timeout_seconds: float,
@@ -268,23 +322,30 @@ class ContentImportJobHandler:
                 payload=payload,
                 content=message.content,
             )
-            result = await TextCollectionWorkflow(
-                session=session,
-                provider=self._provider,
-                pricing=self._pricing,
-                locks=self._locks,
-                timeout_seconds=self._timeout_seconds,
-                web_provider=self._web_provider,
-                storage=self._storage,
-                storage_config=self._storage_config,
-                structured_output_mode=self._structured_output_mode,
-            ).submit_input(
-                user_id=job.user_id,
-                session_id=payload.session_id,
-                idempotency_key=job.idempotency_key,
-                input=input,
-                resume_queued=True,
-            )
+            try:
+                result = await TextCollectionWorkflow(
+                    session=session,
+                    provider=self._provider,
+                    pricing=self._pricing,
+                    locks=self._locks,
+                    timeout_seconds=self._timeout_seconds,
+                    web_provider=self._web_provider,
+                    storage=self._storage,
+                    storage_config=self._storage_config,
+                    structured_output_mode=self._structured_output_mode,
+                ).submit_input(
+                    user_id=job.user_id,
+                    session_id=payload.session_id,
+                    idempotency_key=job.idempotency_key,
+                    input=input,
+                    resume_queued=True,
+                )
+            except (
+                TextCollectionProviderError,
+                TextCollectionRunError,
+                TextCollectionTimeoutError,
+            ):
+                return JobResultSummary(outcome="failed")
             return JobResultSummary(outcome=result.run_status.value)
 
     async def _restore_input(
