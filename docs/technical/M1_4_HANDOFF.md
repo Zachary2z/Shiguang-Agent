@@ -1,6 +1,6 @@
 # M1-4 收藏库与地点消歧交接
 
-状态：**收藏详情保存 P1 修复完成，待主控复验**
+状态：**已通过主控验收**
 
 ## 范围与结论
 
@@ -117,3 +117,24 @@ array，没有省略或伪装 `tags`。
   分支；仍只有一个 PATCH 路由和一个 `CollectionWriteService`。严格成员类型、
   未知字段、版本冲突、用户隔离及原三个 P1 修复均保持。
 - 未实现 M1-5、真实登录、分享、提醒、微信、日历或“我的”业务。
+
+## 主控验收
+
+- 最终阶段提交：`512650a60914cc613cfeb3be1e5c27b243b17e63`；线性继承
+  `91d54d6c49d63865daa2ab840546ae7c1b4a0845` 和阶段基线
+  `e244bf663c73f12057d24fbaf65e0cb5e2f50523`，已纯快进集成到 `main`。
+- 全新 Python 3.14 快照中，pip check、Ruff、mypy 通过；真实 ASGI M1-4 契约
+  `6 passed`，相关服务/旧契约/迁移组合 `83 passed`，完整离线与封网全集均为
+  `1578 passed, 11 skipped, 2 deselected`。Alembic 唯一 head 仍为
+  `20260727_0011`。
+- Node 25.8、npm 11.11 环境中，生产依赖 audit 为 0，lint、typecheck、build
+  通过，Vitest `54 passed`，Playwright `23 passed`。
+- 主控实际浏览器使用真实 Next.js、FastAPI、Worker、临时 SQLite 和 FakeProvider
+  创建带“观星、周末”标签的收藏；修改名称后版本由 1 增至 2，关闭重开保持名称
+  和标签；清空标签后版本增至 3，列表和详情一致。
+- 原三个 P1 与 JSON array P1 均已关闭，当前无未关闭 P0/P1。没有新增 DTO、
+  Repository、编辑服务、前端状态框架或迁移，也没有读取 `.env` 或调用真实模型、
+  地图、网页及付费 API。
+- 非阻断 UI 债务留待后续统一可访问性收口：详情编辑离开时尚无未保存提示，弹层
+  尚未设置 `overscroll-behavior: contain`，部分非认证输入尚未显式
+  `autocomplete="off"`；不为本轮验收追加零散补丁。
