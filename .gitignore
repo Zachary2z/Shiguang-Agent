@@ -39,6 +39,8 @@ node_modules/
 .next/
 out/
 coverage/
+playwright-report/
+test-results/
 .npm/
 .pnpm-store/
 .yarn/cache/

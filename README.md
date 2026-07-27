@@ -34,12 +34,38 @@ Shiguang_Nanobot/
 │   ├── tests/                  # 后端与 Nanobot Core 离线自动化测试
 │   ├── alembic.ini
 │   └── pyproject.toml
+├── frontend/                   # Next.js + TypeScript 正式 Web/H5 前端
 ├── docs/                       # 正式产品、技术、阶段与状态文档
 ├── prototypes/ux/              # 静态 UX/UI 评审原型
 ├── compose.yaml                # PostgreSQL、API、Worker 本地开发栈
 ├── .env.example                # 无敏感信息的配置示例
 └── README.md
 ```
+
+## 正式前端本地开发
+
+需要 Node.js 20.9 或更高版本。前端只使用 npm，并提交唯一
+`frontend/package-lock.json`：
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+打开 <http://127.0.0.1:3000/>。质量检查与离线测试：
+
+```bash
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run test:e2e
+```
+
+API 默认同源；仅在本地前后端使用不同 origin 时设置公开的
+`NEXT_PUBLIC_API_BASE_URL`，不得在该变量或任何前端配置中放入密钥或凭据。更完整
+说明见 `frontend/README.md`。
 
 ## 后端本地开发
 

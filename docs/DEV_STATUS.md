@@ -4,10 +4,10 @@
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-2 正式前端基础 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | 待主控验收 |
+| 当前分支 | codex/m1-2-frontend-foundation |
 | 最近更新 | 2026-07-27 |
-| 阻塞项 | 无；当前唯一允许阶段为 M1-2 |
+| 阻塞项 | 无；等待主控验收，当前唯一允许阶段仍为 M1-2 |
 
 ## 当前任务
 
@@ -16,7 +16,8 @@ M0-0A 至 M0-5D、M0-Gate、Event 日期粒度和富输入截止策略均已通�
 及取消清理竞态，再完成 PostgreSQL、持久化 JobQueue、Worker、APScheduler、
 RunEvent/SSE replay 和最小 Docker Compose。M1-1 已通过主控验收：浏览器
 Session、稳定 CSRF、并发安全 Demo 恢复、跨浏览器所有权过滤及 Demo/真实物理
-隔离均已复核。当前唯一允许阶段为 M1-2，M1-2 及后续阶段尚未实现。
+隔离均已复核。M1-2 正式前端基础已完成开发并等待主控验收；当前唯一允许阶段仍为
+M1-2，M1-3 及后续阶段未开始。
 
 ## M0 状态
 
@@ -38,7 +39,8 @@ Session、稳定 CSRF、并发安全 Demo 恢复、跨浏览器所有权过滤�
 |---|---|---|
 | M1-0 PostgreSQL 与任务基础 | 已完成 | 主控独立复验锁生命周期、PostgreSQL、Job/Worker、SSE replay、Compose、安全和净复杂度通过 |
 | M1-1 Web Session | 已完成 | 主控复核稳定凭据、CSRF、并发恢复、隔离、PostgreSQL 与 Compose 通过 |
-| M1-2 Next.js 前端 | 未开始 | 当前唯一允许阶段 |
+| M1-2 Next.js 前端 | 待主控验收 | 正式前端基础、离线测试、构建与五档响应式浏览器验证通过 |
+| M1-3 Agent 与内容导入 | 未开始 | 验收 M1-2 前不得开始 |
 
 状态只允许使用：未开始、进行中、待验收、待主控验收、已完成、阻塞。
 
@@ -85,10 +87,10 @@ Session、稳定 CSRF、并发安全 Demo 恢复、跨浏览器所有权过滤�
 
 ## 下一步
 
-从最新 `main` 创建 M1-2 阶段分支，只实施 Next.js + TypeScript 正式前端基础：
-设计 Token、响应式移动端/桌面框架、四项空路由、唯一 API/SSE Client、统一加载与
-错误状态，以及可访问性基础。不得提前实现 M1-3 Agent 内容导入、M1-4 收藏业务、
-M1-5 计划、真实登录或微信功能。
+主控在 `codex/m1-2-frontend-foundation` 上独立复核正式前端基础、依赖锁、构建、
+五档响应式、可访问性、API/SSE Client 唯一性与阶段边界。验收前当前唯一允许阶段
+仍为 M1-2；不得开始 M1-3 Agent 内容导入、M1-4 收藏业务、M1-5 计划、真实登录或
+微信功能。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -2114,3 +2116,57 @@ M1-5 计划、真实登录或微信功能。
   产品界面、设计 Token 和交互规则，不复制评审工作台、模拟设备边框、固定 Mock
   数据或原型脚本；正式路由必须使用 Next.js Link
 - 阶段状态：当前唯一允许阶段仍为 M1-2，正式 Next.js 产品实现尚未开始
+
+#### 2026-07-27｜M1-2 正式前端基础｜待主控验收
+
+- 分支与基线：`codex/m1-2-frontend-foundation` 从指定
+  `97addee78dd8791ec0671213f7f07892a8c8d217` 创建；开始时工作区干净，本地
+  `main` 精确等于指定基线并包含 `origin/main`
+  `1b471c704b3e63f82866dbabaa25040d43a05048`，两者差异只有已确认 UI/UX 基线；
+  M1-2 是唯一允许阶段，`frontend/` 尚不存在，M1-3 及后续未开始
+- 工程与路由：在 `frontend/` 建立 Next.js 16.2.12 App Router、React 19 与
+  TypeScript strict 工程；只使用 npm 和一个 `package-lock.json`。根路径重定向到
+  `/agent`，`/agent`、`/collections`、`/plans`、`/me` 四个空业务路由支持直达、
+  刷新和浏览器前进后退；导航全部使用 Next.js `Link` 并准确设置
+  `aria-current="page"`
+- 设计与响应式：`styles/tokens.css` 是颜色、字体、字号、间距、圆角、阴影、层级、
+  动画、布局和 44px 触控尺寸的唯一 Token 来源；标题使用宋体系统栈，正文使用
+  无衬线系统栈。移动端为全屏 H5、浮动四项底部导航与安全区；768–1199px 使用
+  左侧导航和收敛主内容；1200px 起按需显示右侧上下文区。正式界面只提取原型内层
+  视觉规则，没有评审工作台、设备边框、页面目录、原型脚本或 Mock 业务数据
+- 公共入口：`lib/api-client.ts` 是唯一 Fetch/API Client，集中同源 Base URL、
+  `credentials: include`、超时、外部取消、稳定 HTTP/网络/解析错误和可选
+  `X-CSRF-Token`；不记录 Cookie、CSRF、请求正文、异常原文或敏感响应。
+  `lib/sse-client.ts` 是唯一实时连接实现，使用 Fetch 流支持递增 sequence、
+  `Last-Event-ID` 重放、重复序列过滤、有限重连、断开/错误状态、终态关闭与取消
+- 状态与可访问性：提供 Loading、Empty、Error、Offline/Disconnected 和 Retry
+  Action，App Router 页面级 `error.tsx`、`loading.tsx`、`not-found.tsx`；提供
+  Skip Link、可见 `focus-visible`、主 landmarks、单一 H1 层级、SVG 图标语义、
+  `aria-live`/`aria-busy`、`prefers-reduced-motion` 和强制 label/name/autocomplete
+  的基础输入组件
+- 安装与静态检查：Node 25.8.0、npm 11.11.0；首次安装因用户全局 npm 缓存历史
+  root 所有权失败，未修改全局权限，改用仓库外临时缓存成功。最终 `npm ci
+  --ignore-scripts` 通过；`npm run lint` 与 `npm run typecheck` 均退出 0；
+  `npm audit --omit=dev --audit-level=high` 为 `found 0 vulnerabilities`
+- 自动化与构建：Vitest + Testing Library 是唯一组件测试栈，`npm test` 为
+  `22 passed`，覆盖导航/aria-current、统一状态、Retry、表单基础、API 错误/超时/
+  取消/CSRF/凭据/脱敏，以及 SSE sequence/replay/重连/断开/取消。`npm run build`
+  成功，7 个静态页面生成；Playwright 是唯一浏览器测试工具，`13 passed`
+- 响应式与视觉：Playwright 覆盖 320、390、768、1024、1440px，五档均无横向
+  溢出，当前导航准确，所有可见主导航目标至少 44×44px，四路由直达/刷新、键盘
+  Skip Link、浏览器前进后退和减少动画通过，页面控制台错误为 0；另对 390×844
+  和 1440×1000 截图人工复核，未发现遮挡、设备外壳或布局漂移
+- 对比度与安全：普通 Ink、Muted、Bay 文字在 Paper 上对比度分别为
+  15.60:1、6.04:1、6.20:1，深湾绿按钮白字为 10.00:1；生产浏览器静态资源未命中
+  密钥或本机路径。Git 未包含 `.env`、数据库、缓存、依赖、截图、测试报告或构建
+  产物，学习参考目录、后端代码与迁移均未修改
+- 复杂度与范围：API Client、SSE Client、Token、导航、状态体系和测试工具各只有
+  一套；没有 M1-3 输入/URL/截图、M1-4 收藏与消歧、M1-5 计划、真实“我的”、登录、
+  微信、后端接口、数据库、第三方 API、部署或消息发送。未读取 `.env`，真实模型、
+  高德、网页、对象存储和付费调用为 0
+- 已知风险：当前只在 macOS、Node 25.8.0 和 Chromium 145 验证，未覆盖 Node 20/22、
+  Windows/Linux、Safari/Firefox 或真实后端联调；Next.js 服务器内部生成元数据会
+  记录构建工作目录，但未进入浏览器静态资源且 `.next` 不提交。完整 npm audit 的
+  剩余告警仅来自开发期 ESLint 依赖链；生产依赖 audit 为 0
+- 下一步：主控使用本记录命令独立复测并检查阶段范围、唯一公共入口和净复杂度；
+  通过前不合并、不推送、不开始 M1-3
