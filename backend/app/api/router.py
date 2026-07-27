@@ -25,6 +25,7 @@ from app.api.dependencies import (
 )
 from app.api.errors import UndoNotAvailableError
 from app.application.collection_queries import (
+    CollectionCityGroup,
     CollectionListCriteria,
     CollectionQueryService,
     CollectionSort,
@@ -36,6 +37,7 @@ from app.application.content_import_jobs import (
 )
 from app.application.demo_sessions import DemoSessionService
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
+from app.application.place_targets import PlaceTargetSelectionService
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.run_events import RunEventService
 from app.application.run_tracking import AgentRunService
@@ -55,6 +57,7 @@ from app.domain.collections import (
     UndoOutcome,
 )
 from app.domain.identity import SESSION_COOKIE_NAME, CurrentPrincipal
+from app.domain.places import PlaceSelection
 from app.infrastructure.db import Database
 from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
@@ -75,6 +78,10 @@ from app.schemas.api import (
     ExtractionSummaryResponse,
     JsonMessageCreateRequest,
     MessageCreateRequest,
+    PlaceCandidateResponse,
+    PlaceCandidatesResponse,
+    PlaceSelectionRequest,
+    PlaceSelectionResponse,
     PublicModelCallResponse,
     PublicToolRunResponse,
     SourceSummaryResponse,
@@ -585,8 +592,14 @@ def _parse_last_event_id(value: str | None) -> int:
 async def list_collections(
     session: DbSession,
     user_id: CurrentUserId,
+    search: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
     city_hint: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
+    city_code: Annotated[
+        str | None, Query(pattern=r"^[a-z][a-z0-9_]{1,31}$")
+    ] = None,
+    city_group: Annotated[CollectionCityGroup | None, Query()] = None,
     city_pending: Annotated[bool | None, Query()] = None,
+    formal_city_pending: Annotated[bool | None, Query()] = None,
     district: Annotated[str | None, Query(min_length=1, max_length=100)] = None,
     kind: Annotated[CollectionKind | None, Query()] = None,
     status: Annotated[CollectionStatus | None, Query()] = None,
@@ -596,11 +609,27 @@ async def list_collections(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ) -> CollectionListResponse:
+    if city_code is not None and city_group is not None:
+        raise RequestValidationError(
+            [
+                {
+                    "type": "value_error",
+                    "loc": ("query", "city_group"),
+                    "msg": "city_code and city_group cannot be combined.",
+                    "input": city_group.value,
+                    "ctx": {"error": "conflicting city filters"},
+                }
+            ]
+        )
     result = await CollectionQueryService(session).list(
         user_id=user_id,
         criteria=CollectionListCriteria(
+            search=search,
             city_hint=city_hint,
+            city_code=city_code,
+            city_group=city_group,
             city_pending=city_pending,
+            formal_city_pending=formal_city_pending,
             district=district,
             kind=kind,
             status=status,
@@ -635,6 +664,76 @@ async def get_collection(
     return CollectionDetailResponse(
         item=CollectionItemResponse.from_domain(result.item),
         sources=tuple(SourceSummaryResponse.from_domain(source) for source in result.sources),
+    )
+
+
+@api_router.get(
+    "/collections/{item_id}/poi-candidates",
+    response_model=PlaceCandidatesResponse,
+)
+async def get_collection_poi_candidates(
+    item_id: Annotated[str, Path(pattern=_COLLECTION_PATH)],
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> PlaceCandidatesResponse:
+    detail = await CollectionQueryService(session).get_detail(
+        user_id=user_id,
+        collection_item_id=item_id,
+    )
+    snapshot = detail.item.place_candidate_snapshot
+    if snapshot is None or not snapshot.candidates:
+        raise ResourceNotFoundError
+    return PlaceCandidatesResponse(
+        collection_item_id=detail.item.id,
+        expected_version=detail.item.version,
+        snapshot_fingerprint=snapshot.fingerprint,
+        queried_at=snapshot.queried_at,
+        candidates=tuple(
+            PlaceCandidateResponse.from_domain(candidate)
+            for candidate in snapshot.candidates
+        ),
+    )
+
+
+@api_router.post(
+    "/collections/{item_id}/poi-selection",
+    response_model=PlaceSelectionResponse,
+)
+async def select_collection_poi(
+    item_id: Annotated[str, Path(pattern=_COLLECTION_PATH)],
+    request: PlaceSelectionRequest,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> PlaceSelectionResponse:
+    detail = await CollectionQueryService(session).get_detail(
+        user_id=user_id,
+        collection_item_id=item_id,
+    )
+    snapshot = detail.item.place_candidate_snapshot
+    if snapshot is None or not snapshot.candidates or not detail.sources:
+        raise ResourceNotFoundError
+    # The query above opens SQLAlchemy's implicit read transaction. The
+    # selection service owns the write transaction and its concurrency checks.
+    await session.rollback()
+    result = await PlaceTargetSelectionService(session=session).apply_selection(
+        user_id=user_id,
+        collection_item_id=item_id,
+        source_id=detail.sources[0].id,
+        selections=(
+            PlaceSelection(
+                kind=request.selection_kind(),
+                provider=request.poi_provider(),
+                poi_id=request.poi_id,
+            ),
+        ),
+        queried_at=snapshot.queried_at,
+        snapshot_fingerprint=request.snapshot_fingerprint,
+        idempotency_key=request.idempotency_key,
+        expected_version=request.expected_version,
+    )
+    return PlaceSelectionResponse(
+        items=tuple(CollectionItemResponse.from_domain(item) for item in result.items),
+        replayed=result.replayed,
     )
 
 

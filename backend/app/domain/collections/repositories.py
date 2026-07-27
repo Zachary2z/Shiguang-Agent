@@ -15,6 +15,7 @@ from app.domain.collections.entities import (
     User,
 )
 from app.domain.collections.statuses import CollectionStatus
+from app.domain.collections.types import CollectionKind
 from app.domain.collections.writes import CollectionWriteOperation
 
 if TYPE_CHECKING:
@@ -104,6 +105,29 @@ class CollectionRepository(Protocol):
         user_id: str,
         include_inactive: bool = False,
     ) -> list[CollectionItem]: ...
+
+    async def query_collection_items(
+        self,
+        *,
+        user_id: str,
+        search: str | None,
+        city_hint: str | None,
+        city_code: str | None,
+        city_code_not: str | None,
+        include_flexible_brands: bool,
+        exclude_flexible_brands: bool,
+        city_pending: bool | None,
+        formal_city_pending: bool | None,
+        district: str | None,
+        kind: CollectionKind | None,
+        status: CollectionStatus | None,
+        tags: tuple[str, ...],
+        include_inactive: bool,
+        sort_field: str,
+        descending: bool,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[CollectionItem], int]: ...
 
     async def transition_collection_status(
         self,

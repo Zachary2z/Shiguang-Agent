@@ -6,8 +6,9 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
+from app.application.collection_queries import collection_formal_city_code
 from app.domain.collections import (
     CandidateField,
     CollectionItem,
@@ -25,7 +26,13 @@ from app.domain.collections import (
     UndoOutcome,
     UnsupportedReason,
 )
-from app.domain.places import PlaceCandidateSnapshot, PlaceTarget
+from app.domain.places import (
+    EvidenceOutcome,
+    PlaceMatchCandidate,
+    PlaceSelectionKind,
+    PoiProvider,
+    PoiType,
+)
 from app.domain.runs import AgentRunStatus, ToolRunStatus
 from nanobot_core.providers import FinishReason, TokenUsage
 
@@ -103,6 +110,8 @@ class CollectionItemResponse(ApiModel):
     title: str
     city_hint: str | None
     city_pending: bool
+    formal_city_code: str | None
+    city_group: str
     district: str | None
     address: str | None
     business_district: str | None
@@ -119,21 +128,55 @@ class CollectionItemResponse(ApiModel):
     tags: tuple[str, ...]
     missing_fields: tuple[CandidateField, ...]
     uncertainties: tuple[Uncertainty, ...]
-    place_target: PlaceTarget | None
-    place_candidate_snapshot: PlaceCandidateSnapshot | None
     status: CollectionStatus
     version: int
     created_at: datetime
     updated_at: datetime
+    planning_eligible: bool
+    planning_exclusion_reason: str | None
 
     @classmethod
     def from_domain(cls, item: CollectionItem) -> CollectionItemResponse:
+        formal_city_code = collection_formal_city_code(item)
+        planning_eligible = bool(
+            item.kind is CollectionKind.PLACE
+            and item.status is CollectionStatus.ACTIVE
+            and item.place_target is not None
+            and (
+                formal_city_code == "shenzhen"
+                or item.place_target.brand_identity is not None
+            )
+        )
+        exclusion_reason: str | None = None
+        if not planning_eligible:
+            if item.status in {
+                CollectionStatus.PENDING_SELECTION,
+                CollectionStatus.PENDING_DETAILS,
+            }:
+                exclusion_reason = "pending_confirmation"
+            elif formal_city_code is not None and formal_city_code != "shenzhen":
+                exclusion_reason = "other_city"
+            elif item.status is not CollectionStatus.ACTIVE:
+                exclusion_reason = "inactive"
+            else:
+                exclusion_reason = "city_or_location_unconfirmed"
         return cls(
             id=item.id,
             kind=item.kind,
             title=item.title,
             city_hint=item.city_hint,
             city_pending=item.city_hint is None,
+            formal_city_code=formal_city_code,
+            city_group=(
+                "shenzhen"
+                if item.place_target is not None
+                and item.place_target.brand_identity is not None
+                else "pending"
+                if formal_city_code is None
+                else "shenzhen"
+                if formal_city_code == "shenzhen"
+                else "other"
+            ),
             district=item.district,
             address=item.address,
             business_district=item.business_district,
@@ -150,12 +193,12 @@ class CollectionItemResponse(ApiModel):
             tags=item.tags,
             missing_fields=item.missing_fields,
             uncertainties=item.uncertainties,
-            place_target=item.place_target,
-            place_candidate_snapshot=item.place_candidate_snapshot,
             status=item.status,
             version=item.version,
             created_at=item.created_at,
             updated_at=item.updated_at,
+            planning_eligible=planning_eligible,
+            planning_exclusion_reason=exclusion_reason,
         )
 
 
@@ -256,6 +299,83 @@ class CollectionDetailResponse(ApiModel):
 class CollectionPatchRequest(ApiModel):
     expected_version: int = Field(ge=1)
     changes: CollectionItemPatch
+
+
+class PlaceCandidateResponse(ApiModel):
+    provider: PoiProvider
+    poi_id: str
+    name: str
+    branch_name: str | None
+    city_code: str
+    district: str | None
+    business_area: str | None
+    address: str
+    poi_type: PoiType
+    matching_clues: tuple[str, ...]
+
+    @classmethod
+    def from_domain(cls, candidate: PlaceMatchCandidate) -> PlaceCandidateResponse:
+        return cls(
+            provider=candidate.provider,
+            poi_id=candidate.poi_id,
+            name=candidate.name,
+            branch_name=candidate.branch_name,
+            city_code=candidate.city_code,
+            district=candidate.district,
+            business_area=candidate.business_area,
+            address=candidate.address,
+            poi_type=candidate.poi_type,
+            matching_clues=tuple(
+                evidence.field.value
+                for evidence in candidate.evidence
+                if evidence.outcome
+                in {EvidenceOutcome.MATCH, EvidenceOutcome.PARTIAL_MATCH}
+            ),
+        )
+
+
+class PlaceCandidatesResponse(ApiModel):
+    collection_item_id: str
+    expected_version: int
+    snapshot_fingerprint: str
+    queried_at: datetime
+    candidates: tuple[PlaceCandidateResponse, ...]
+
+
+class PlaceSelectionRequest(ApiModel):
+    expected_version: int = Field(ge=1)
+    snapshot_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    idempotency_key: IdempotencyKey = Field(repr=False)
+    choice: Literal["candidate", "none_of_above"]
+    provider: Literal["amap"] | None = None
+    poi_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_choice(self) -> PlaceSelectionRequest:
+        if self.choice == "candidate" and (
+            self.provider is None or self.poi_id is None
+        ):
+            raise ValueError("candidate choice requires provider and poi_id")
+        if self.choice == "none_of_above" and (
+            self.provider is not None or self.poi_id is not None
+        ):
+            raise ValueError("none_of_above cannot include a candidate identity")
+        return self
+
+    def selection_kind(self) -> PlaceSelectionKind:
+        return (
+            PlaceSelectionKind.CANDIDATE
+            if self.choice == "candidate"
+            else PlaceSelectionKind.NONE_OF_ABOVE
+        )
+
+    def poi_provider(self) -> PoiProvider | None:
+        return PoiProvider(self.provider) if self.provider is not None else None
+
+
+class PlaceSelectionResponse(ApiModel):
+    items: tuple[CollectionItemResponse, ...]
+    replayed: bool
 
 
 class UndoRequest(ApiModel):

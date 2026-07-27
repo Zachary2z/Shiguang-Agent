@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
 from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,10 +25,20 @@ class CollectionSort(StrEnum):
     UPDATED_DESC = "-updated_at"
 
 
+class CollectionCityGroup(StrEnum):
+    SHENZHEN = "shenzhen"
+    OTHER = "other"
+    PENDING = "pending"
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CollectionListCriteria:
+    search: str | None = None
     city_hint: str | None = None
+    city_code: str | None = None
+    city_group: CollectionCityGroup | None = None
     city_pending: bool | None = None
+    formal_city_pending: bool | None = None
     district: str | None = None
     kind: CollectionKind | None = None
     status: CollectionStatus | None = None
@@ -55,6 +63,17 @@ class CollectionDetail:
     sources: tuple[Source, ...]
 
 
+def collection_formal_city_code(item: CollectionItem) -> str | None:
+    """Return formal persisted city evidence without trusting free-text hints."""
+
+    target = item.place_target
+    if target is None:
+        return None
+    if target.poi is not None:
+        return str(target.poi.city_code)
+    return None
+
+
 class CollectionQueryService:
     """Apply stable filtering and pagination outside the HTTP route layer."""
 
@@ -70,18 +89,59 @@ class CollectionQueryService:
         owner = validate_user_id(user_id)
         if criteria.page < 1 or criteria.page_size < 1 or criteria.page_size > 100:
             raise ValueError("page must be positive and page_size must be from 1 to 100")
-        items = await self._repository.list_collection_items(
+        if criteria.city_code is not None and criteria.city_group is not None:
+            raise ValueError("city_code and city_group cannot be combined")
+        search = None if criteria.search is None else " ".join(criteria.search.split())
+        if search == "":
+            search = None
+        items, total = await self._repository.query_collection_items(
             user_id=owner,
-            include_inactive=criteria.include_inactive or criteria.status is not None,
+            search=search,
+            city_hint=criteria.city_hint,
+            city_code=(
+                "shenzhen"
+                if criteria.city_group is CollectionCityGroup.SHENZHEN
+                else criteria.city_code
+            ),
+            city_code_not=(
+                "shenzhen"
+                if criteria.city_group is CollectionCityGroup.OTHER
+                else None
+            ),
+            include_flexible_brands=(
+                criteria.city_group is CollectionCityGroup.SHENZHEN
+            ),
+            exclude_flexible_brands=(
+                criteria.city_group
+                in {CollectionCityGroup.OTHER, CollectionCityGroup.PENDING}
+            ),
+            city_pending=criteria.city_pending,
+            formal_city_pending=(
+                True
+                if criteria.city_group is CollectionCityGroup.PENDING
+                else criteria.formal_city_pending
+            ),
+            district=criteria.district,
+            kind=criteria.kind,
+            status=criteria.status,
+            tags=criteria.tags,
+            include_inactive=criteria.include_inactive,
+            sort_field=(
+                "created_at"
+                if criteria.sort
+                in {CollectionSort.CREATED_ASC, CollectionSort.CREATED_DESC}
+                else "updated_at"
+            ),
+            descending=criteria.sort
+            in {CollectionSort.CREATED_DESC, CollectionSort.UPDATED_DESC},
+            offset=(criteria.page - 1) * criteria.page_size,
+            limit=criteria.page_size,
         )
-        filtered = [item for item in items if self._matches(item, criteria)]
-        filtered.sort(key=self._sort_key(criteria.sort), reverse=self._reverse(criteria.sort))
-        start = (criteria.page - 1) * criteria.page_size
         return CollectionPage(
-            items=tuple(filtered[start : start + criteria.page_size]),
+            items=tuple(items),
             page=criteria.page,
             page_size=criteria.page_size,
-            total=len(filtered),
+            total=total,
         )
 
     async def get_detail(
@@ -111,32 +171,3 @@ class CollectionQueryService:
             if source is not None:
                 sources.append(source)
         return CollectionDetail(item=item, sources=tuple(sources))
-
-    @staticmethod
-    def _matches(item: CollectionItem, criteria: CollectionListCriteria) -> bool:
-        if criteria.city_hint is not None and item.city_hint != criteria.city_hint:
-            return False
-        if criteria.city_pending is True and item.city_hint is not None:
-            return False
-        if criteria.city_pending is False and item.city_hint is None:
-            return False
-        if criteria.district is not None and item.district != criteria.district:
-            return False
-        if criteria.kind is not None and item.kind is not criteria.kind:
-            return False
-        if criteria.status is not None and item.status is not criteria.status:
-            return False
-        item_tags = {tag.casefold() for tag in item.tags}
-        return all(tag.casefold() in item_tags for tag in criteria.tags)
-
-    @staticmethod
-    def _sort_key(
-        sort: CollectionSort,
-    ) -> Callable[[CollectionItem], tuple[datetime, str]]:
-        if sort in {CollectionSort.CREATED_ASC, CollectionSort.CREATED_DESC}:
-            return lambda item: (item.created_at, item.id)
-        return lambda item: (item.updated_at, item.id)
-
-    @staticmethod
-    def _reverse(sort: CollectionSort) -> bool:
-        return sort in {CollectionSort.CREATED_DESC, CollectionSort.UPDATED_DESC}

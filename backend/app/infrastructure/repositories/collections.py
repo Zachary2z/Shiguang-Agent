@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import String, cast, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.collections import (
@@ -392,6 +392,147 @@ class SqlAlchemyCollectionRepository:
             )
         ).all()
         return [self._collection_item(row) for row in rows]
+
+    async def query_collection_items(
+        self,
+        *,
+        user_id: str,
+        search: str | None,
+        city_hint: str | None,
+        city_code: str | None,
+        city_code_not: str | None,
+        include_flexible_brands: bool,
+        exclude_flexible_brands: bool,
+        city_pending: bool | None,
+        formal_city_pending: bool | None,
+        district: str | None,
+        kind: CollectionKind | None,
+        status: CollectionStatus | None,
+        tags: tuple[str, ...],
+        include_inactive: bool,
+        sort_field: str,
+        descending: bool,
+        offset: int,
+        limit: int,
+    ) -> tuple[list[CollectionItem], int]:
+        """Run the collection-library filters and stable page order in SQL."""
+
+        owner = validate_user_id(user_id)
+        if offset < 0 or limit < 1:
+            raise ValueError("offset and limit must be positive")
+        if sort_field not in {"created_at", "updated_at"}:
+            raise ValueError("unsupported collection sort field")
+
+        conditions = [CollectionItemModel.user_id == owner]
+        if status is not None:
+            conditions.append(CollectionItemModel.status == status.value)
+        elif not include_inactive:
+            conditions.append(
+                CollectionItemModel.status.in_(
+                    sorted(item.value for item in DEFAULT_COLLECTION_STATUSES)
+                )
+            )
+        if kind is not None:
+            conditions.append(CollectionItemModel.kind == kind.value)
+        if city_hint is not None:
+            conditions.append(CollectionItemModel.city_hint == city_hint)
+        if city_code is not None:
+            city_condition = CollectionItemModel.poi_city_code == city_code
+            if include_flexible_brands:
+                city_condition = or_(
+                    city_condition,
+                    CollectionItemModel.brand_id.is_not(None),
+                )
+            conditions.append(city_condition)
+        if city_code_not is not None:
+            conditions.extend(
+                (
+                    CollectionItemModel.poi_city_code.is_not(None),
+                    CollectionItemModel.poi_city_code != city_code_not,
+                )
+            )
+        if exclude_flexible_brands:
+            conditions.append(CollectionItemModel.brand_id.is_(None))
+        if city_pending is True:
+            conditions.append(CollectionItemModel.city_hint.is_(None))
+        elif city_pending is False:
+            conditions.append(CollectionItemModel.city_hint.is_not(None))
+        if formal_city_pending is True:
+            conditions.extend(
+                (
+                    CollectionItemModel.poi_city_code.is_(None),
+                    CollectionItemModel.brand_id.is_(None),
+                )
+            )
+        elif formal_city_pending is False:
+            conditions.append(
+                or_(
+                    CollectionItemModel.poi_city_code.is_not(None),
+                    CollectionItemModel.brand_id.is_not(None),
+                )
+            )
+        if district is not None:
+            conditions.append(CollectionItemModel.district == district)
+        for tag in tags:
+            if self._session.bind is not None and self._session.bind.dialect.name == "sqlite":
+                tag_rows = func.json_each(CollectionItemModel.tags_json).table_valued(
+                    "value"
+                )
+                conditions.append(
+                    select(1)
+                    .select_from(tag_rows)
+                    .where(func.lower(tag_rows.c.value) == tag.casefold())
+                    .exists()
+                )
+            else:
+                conditions.append(
+                    func.lower(cast(CollectionItemModel.tags_json, String)).like(
+                        f'%"{tag.casefold()}"%'
+                    )
+                )
+        if search is not None:
+            escaped = (
+                search.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            needle = f"%{escaped}%"
+            conditions.append(
+                or_(
+                    func.lower(CollectionItemModel.title).like(needle, escape="\\"),
+                    func.lower(CollectionItemModel.city_hint).like(needle, escape="\\"),
+                    func.lower(CollectionItemModel.district).like(needle, escape="\\"),
+                    func.lower(CollectionItemModel.address).like(needle, escape="\\"),
+                    func.lower(CollectionItemModel.business_district).like(needle, escape="\\"),
+                    func.lower(CollectionItemModel.landmark).like(needle, escape="\\"),
+                    func.lower(CollectionItemModel.metro_station).like(needle, escape="\\"),
+                    func.lower(cast(CollectionItemModel.tags_json, String)).like(
+                        needle, escape="\\"
+                    ),
+                )
+            )
+
+        total = int(
+            await self._session.scalar(
+                select(func.count()).select_from(CollectionItemModel).where(*conditions)
+            )
+            or 0
+        )
+        order_column = (
+            CollectionItemModel.created_at
+            if sort_field == "created_at"
+            else CollectionItemModel.updated_at
+        )
+        order = order_column.desc() if descending else order_column.asc()
+        id_order = CollectionItemModel.id.desc() if descending else CollectionItemModel.id.asc()
+        rows = (
+            await self._session.scalars(
+                select(CollectionItemModel)
+                .where(*conditions)
+                .order_by(order, id_order)
+                .offset(offset)
+                .limit(limit)
+            )
+        ).all()
+        return [self._collection_item(row) for row in rows], total
 
     async def transition_collection_status(
         self,

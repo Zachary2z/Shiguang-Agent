@@ -525,7 +525,7 @@ async def test_validation_and_request_logs_never_echo_message_or_undo_token(
 
 
 @pytest.mark.asyncio
-async def test_openapi_has_unique_routes_m1_sse_and_no_future_business_endpoints(
+async def test_openapi_has_unique_routes_m1_sse_and_m1_4_collection_endpoints(
     test_settings: Settings,
 ) -> None:
     async with _client(test_settings) as (api, client):
@@ -541,7 +541,8 @@ async def test_openapi_has_unique_routes_m1_sse_and_no_future_business_endpoints
     assert len(routable) == len(
         {(route.path, tuple(sorted(route.methods or ()))) for route in routable}
     )
-    assert "/api/v1/collections/{item_id}/poi-candidates" not in paths
+    assert "/api/v1/collections/{item_id}/poi-candidates" in paths
+    assert "/api/v1/collections/{item_id}/poi-selection" in paths
     assert "/api/v1/agent-runs/{trace_id}/events" in paths
     assert missing.status_code == 404
 
