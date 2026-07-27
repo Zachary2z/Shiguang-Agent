@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -86,6 +87,53 @@ function completedResult(collections: ReturnType<typeof collection>[]) {
     error_code: null,
     tool_steps: [],
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
+
+function queueCompletedImport(
+  collections: ReturnType<typeof collection>[],
+  mutationResponses: Promise<ReturnType<typeof collection>>[] = [],
+) {
+  request
+    .mockResolvedValueOnce(accepted)
+    .mockResolvedValueOnce(completedResult(collections));
+  for (const response of mutationResponses) {
+    request.mockReturnValueOnce(response);
+  }
+  connect.mockImplementationOnce((options: {
+    onEvent: (event: unknown) => void;
+  }) => {
+    window.setTimeout(
+      () =>
+        options.onEvent({
+          id: "4",
+          event: "run.completed",
+          sequence: 4,
+          data: { summary: { status: "succeeded" } },
+        }),
+      0,
+    );
+    return { cancel: vi.fn(), closed: new Promise<void>(() => {}) };
+  });
+}
+
+async function submitAndShowCollections() {
+  const user = userEvent.setup();
+  render(<AgentExperience />);
+  await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+  await user.type(screen.getByRole("textbox", { name: "收藏内容" }), "两个地点");
+  await user.click(screen.getByRole("button", { name: "发送" }));
+  await screen.findByText("本次整理出 2 项收藏");
+  return user;
 }
 
 describe("Agent experience", () => {
@@ -328,6 +376,135 @@ describe("Agent experience", () => {
     expect(mainInput).toHaveAttribute("autocomplete", "off");
     await user.click(screen.getByRole("button", { name: "继续添加" }));
     await waitFor(() => expect(mainInput).toHaveFocus());
+  });
+
+  it.each([
+    ["B 撤销先完成、A 修改后完成", "undo-first"],
+    ["A 修改先完成、B 撤销后完成", "edit-first"],
+  ])(
+    "keeps both collection updates when %s",
+    async (_label, completionOrder) => {
+      const first = collection(
+        "col_44444444444444444444444444444444",
+        "深圳天文台",
+      );
+      const second = collection(
+        "col_55555555555555555555555555555555",
+        "西涌海滩",
+        "pending_details",
+      );
+      const edited = { ...first, title: "深圳天文台 · 西涌", version: 2 };
+      const deleted = {
+        ...second,
+        status: "deleted" as const,
+        version: 2,
+      };
+      const editResponse = deferred<typeof edited>();
+      const undoResponse = deferred<typeof deleted>();
+      queueCompletedImport(
+        [first, second],
+        [editResponse.promise, undoResponse.promise],
+      );
+      const user = await submitAndShowCollections();
+      const firstCard = screen.getByText(first.title).closest("article");
+      const secondCard = screen.getByText(second.title).closest("article");
+      expect(firstCard).not.toBeNull();
+      expect(secondCard).not.toBeNull();
+
+      await user.click(within(firstCard!).getByRole("button", { name: "修改" }));
+      const title = within(firstCard!).getByRole("textbox", { name: "名称" });
+      await user.clear(title);
+      await user.type(title, edited.title);
+      await user.click(
+        within(firstCard!).getByRole("button", { name: "保存修改" }),
+      );
+      await user.click(
+        within(secondCard!).getByRole("button", { name: "撤销" }),
+      );
+
+      if (completionOrder === "undo-first") {
+        await act(async () => undoResponse.resolve(deleted));
+        await act(async () => editResponse.resolve(edited));
+      } else {
+        await act(async () => editResponse.resolve(edited));
+        await act(async () => undoResponse.resolve(deleted));
+      }
+
+      expect(
+        await screen.findByRole("heading", { name: edited.title }),
+      ).toBeInTheDocument();
+      expect(
+        within(secondCard!).getByRole("button", { name: "恢复收藏" }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("ignores a collection success that arrives after continuing", async () => {
+    const first = collection(
+      "col_66666666666666666666666666666666",
+      "深圳天文台",
+    );
+    const second = collection(
+      "col_77777777777777777777777777777777",
+      "西涌海滩",
+    );
+    const deleted = { ...second, status: "deleted" as const, version: 2 };
+    const undoResponse = deferred<typeof deleted>();
+    queueCompletedImport([first, second], [undoResponse.promise]);
+    const user = await submitAndShowCollections();
+    const secondCard = screen.getByText(second.title).closest("article");
+    expect(secondCard).not.toBeNull();
+
+    await user.click(within(secondCard!).getByRole("button", { name: "撤销" }));
+    await user.click(screen.getByRole("button", { name: "继续添加" }));
+    await act(async () => undoResponse.resolve(deleted));
+
+    expect(screen.queryByText("本次整理出 2 项收藏")).not.toBeInTheDocument();
+    expect(screen.queryByText(second.title)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(`已撤销“${second.title}”，你可以单独恢复。`),
+    ).not.toBeInTheDocument();
+  });
+
+  it("ignores an old collection failure after a new run starts", async () => {
+    const first = collection(
+      "col_88888888888888888888888888888888",
+      "深圳天文台",
+    );
+    const second = collection(
+      "col_99999999999999999999999999999999",
+      "西涌海滩",
+    );
+    const undoResponse = deferred<ReturnType<typeof collection>>();
+    queueCompletedImport([first, second], [undoResponse.promise]);
+    request.mockResolvedValueOnce({
+      ...accepted,
+      message_id: "msg_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      trace_id: "trc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      events_url:
+        "/api/v1/agent-runs/trc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/events",
+      result_url:
+        "/api/v1/agent-runs/trc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/result",
+    });
+    const user = await submitAndShowCollections();
+    const secondCard = screen.getByText(second.title).closest("article");
+    expect(secondCard).not.toBeNull();
+
+    await user.click(within(secondCard!).getByRole("button", { name: "撤销" }));
+    const input = screen.getByRole("textbox", { name: "收藏内容" });
+    await user.clear(input);
+    await user.type(input, "新的收藏");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByRole("heading", { name: "正在识别" });
+    await act(async () =>
+      undoResponse.reject(new ApiError("network_error", null, null)),
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "正在识别" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("网络连接中断，请重试。")).not.toBeInTheDocument();
+    expect(screen.queryByText("这次没有认出来")).not.toBeInTheDocument();
   });
 
   it("cancels the previous SSE connection before following a new run", async () => {

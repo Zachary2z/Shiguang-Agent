@@ -160,3 +160,30 @@ SSE Client、幂等边界和 Undo/Restore 写服务。
   多收藏混合状态与逐项版本冲突。
 - 当前浏览器矩阵仍限 macOS/Chromium；Node 20/22、Windows/Linux、
   Safari/Firefox 未覆盖。M1-3 继续标记“待主控验收”。
+
+## 多收藏并发状态覆盖 P1 修复
+
+修复基线为 `da60a6db0cdf450f1dc4630166e44f426d24eed1`。本次没有修改 HTTP
+契约、后端、数据库或迁移。
+
+旧 `replaceCollection` 从事件处理器闭包读取整份 `result`，再用该旧快照调用
+`setResult(next)`；因此不同收藏的并发响应反序完成时，后响应会把先完成项恢复为
+旧值。该路径已删除。唯一替换入口现在使用函数式
+`setResult(current => ...)`，在 React 提供的最新 current 上只映射目标 item。
+
+每个收藏请求发起时记录既有 operation generation、当前结果 trace id 和 collection
+id。响应必须仍属于该 generation，服务端返回 item id 必须等于请求 item id，
+函数式 updater 中的 current trace 必须一致且仍包含该收藏，才允许替换。继续添加
+和新 Run 已经递增同一个 generation，因此旧成功不会恢复旧结果，旧失败也不会写入
+新 Run 的 feedback。不同收藏的 updater 可以按任意顺序组合；同一收藏仍完全依赖
+请求中的 `expected_version` 和现有服务端冲突边界。
+
+结果状态标签由最新 `result` 纯计算用于显示；没有在 React state updater 内调用
+其他 setState，也没有增加第二份结果状态、API Client、Mutation Manager、收藏写
+服务、版本校验、全局禁用或人工顺序延迟。
+
+修复后前端 lint、typecheck、build 和 `npm audit --omit=dev` 均通过；Vitest
+`38 passed`，新增 4 项覆盖两种 A 修改/B 撤销反序、继续添加后的迟到成功及新 Run
+后的迟到失败。既有多收藏逐项修改/撤销/恢复、输入变化与不确定网络失败的
+idempotency key 回归继续通过。未修改后端，按要求只运行 M1-3 聚焦契约，
+`7 passed`。M1-3 继续为“待主控验收”。

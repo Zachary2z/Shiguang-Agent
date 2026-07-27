@@ -2301,3 +2301,23 @@ Session、稳定 CSRF、并发安全 Demo 恢复、跨浏览器所有权过滤�
   `20260727_0011` head；没有新增第二套 Provider、JobQueue、Worker、AgentRunner、
   ToolRegistry、workflow、SSE Client、Repository、幂等或 Undo/Restore 系统
 - 阶段状态：M1-3 继续为“待主控验收”；主控复测通过前不开始 M1-4
+
+#### 2026-07-27｜M1-3 多收藏并发状态覆盖 P1 修复｜待主控验收
+
+- 修复基线：`da60a6db0cdf450f1dc4630166e44f426d24eed1`；只修改 M1-3
+  Agent 前端、聚焦测试和交接记录，后端接口、数据库与迁移均未变化
+- 状态收敛：删除基于闭包旧 `result` 构造完整快照并覆盖状态的路径；收藏响应现在
+  只通过 `setResult(current => ...)` 合并到 React 提供的最新结果
+- 响应归属：每次修改、撤销、恢复记录现有 operation generation、trace id 和
+  collection id；成功响应只有三者仍属于当前结果时才替换对应项，响应 item id
+  不匹配时不写入
+- 生命周期：继续添加和新 Run 沿用既有 generation 失效旧请求；旧操作迟到成功
+  不会恢复已清空结果，迟到失败不会覆盖新 Run 状态或反馈
+- 并发：不同收藏的函数式 updater 可按任意响应顺序组合并保留两项最终状态；同一
+  收藏继续携带既有 `expected_version`，没有新增前端版本规则、全局禁用或顺序等待
+- 复杂度：结果派生展示使用普通纯计算；`setResult` updater 内没有其他 setState
+  或副作用，没有新增结果状态、API Client、Mutation Manager 或收藏写服务
+- 验证：前端 lint、typecheck、build、生产依赖 audit 通过，Vitest
+  `38 passed`，其中新增 4 项反序完成和跨 Run 迟到响应回归；M1-3 后端聚焦契约
+  `7 passed`
+- 阶段状态：M1-3 继续为“待主控验收”，不开始 M1-4

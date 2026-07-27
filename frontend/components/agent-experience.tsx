@@ -94,6 +94,12 @@ type RunEventData = {
   summary?: { stage?: string; status?: string; error_code?: string };
 };
 
+type CollectionMutationOwner = {
+  generation: number;
+  traceId: string;
+  collectionId: string;
+};
+
 type Conversation = {
   messages: Array<{
     run_status: ImportResult["run_status"];
@@ -381,16 +387,44 @@ export function AgentExperience() {
     setFeedback("");
   }
 
-  function replaceCollection(updated: CollectionItem) {
-    if (!result) return;
-    const next = {
-      ...result,
-      collections: result.collections.map((item) =>
-        item.id === updated.id ? updated : item,
-      ),
+  function mutationOwner(item: CollectionItem): CollectionMutationOwner | null {
+    if (!result?.collections.some((current) => current.id === item.id)) return null;
+    return {
+      generation: operationGeneration.current,
+      traceId: result.trace_id,
+      collectionId: item.id,
     };
-    setResult(next);
-    setState(resultState(next));
+  }
+
+  function mutationIsCurrent(
+    owner: CollectionMutationOwner,
+    updated?: CollectionItem,
+  ) {
+    return (
+      operationGeneration.current === owner.generation &&
+      (!updated || updated.id === owner.collectionId)
+    );
+  }
+
+  function replaceCollection(
+    owner: CollectionMutationOwner,
+    updated: CollectionItem,
+  ) {
+    setResult((current) => {
+      if (
+        updated.id !== owner.collectionId ||
+        current?.trace_id !== owner.traceId ||
+        !current.collections.some((item) => item.id === owner.collectionId)
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        collections: current.collections.map((item) =>
+          item.id === owner.collectionId ? updated : item,
+        ),
+      };
+    });
   }
 
   function beginEdit(item: CollectionItem) {
@@ -400,7 +434,8 @@ export function AgentExperience() {
   }
 
   async function saveEdit(item: CollectionItem) {
-    if (!item || !session || !draftTitle.trim()) return;
+    const owner = mutationOwner(item);
+    if (!owner || !session || !draftTitle.trim()) return;
     try {
       const updated = await apiClient.request<CollectionItem>(
         `/api/v1/collections/${item.id}`,
@@ -417,37 +452,45 @@ export function AgentExperience() {
           }),
         },
       );
-      replaceCollection(updated);
+      if (!mutationIsCurrent(owner, updated)) return;
+      replaceCollection(owner, updated);
       setEditingId(null);
     } catch (error) {
+      if (!mutationIsCurrent(owner)) return;
       setFeedback(errorMessage(error));
     }
   }
 
   async function undo(item: CollectionItem) {
-    if (!item || !session) return;
+    const owner = mutationOwner(item);
+    if (!owner || !session) return;
     try {
       const deleted = await apiClient.request<CollectionItem>(
         `/api/v1/collections/${item.id}?expected_version=${item.version}`,
         { method: "DELETE", csrfToken: session.csrf_token },
       );
-      replaceCollection(deleted);
+      if (!mutationIsCurrent(owner, deleted)) return;
+      replaceCollection(owner, deleted);
       setFeedback(`已撤销“${item.title}”，你可以单独恢复。`);
     } catch (error) {
+      if (!mutationIsCurrent(owner)) return;
       setFeedback(errorMessage(error));
     }
   }
 
   async function restore(item: CollectionItem) {
-    if (!item || !session) return;
+    const owner = mutationOwner(item);
+    if (!owner || !session) return;
     try {
       const restored = await apiClient.request<CollectionItem>(
         `/api/v1/collections/${item.id}/restore`,
         { method: "POST", csrfToken: session.csrf_token },
       );
-      replaceCollection(restored);
+      if (!mutationIsCurrent(owner, restored)) return;
+      replaceCollection(owner, restored);
       setFeedback(`已恢复“${item.title}”。`);
     } catch (error) {
+      if (!mutationIsCurrent(owner)) return;
       setFeedback(errorMessage(error));
     }
   }
@@ -473,6 +516,12 @@ export function AgentExperience() {
   const busy = ["recovering", "submitting", "queued", "processing"].includes(
     state,
   );
+  const displayState =
+    result &&
+    result.run_status !== "failed" &&
+    result.run_status !== "cancelled"
+      ? resultState(result)
+      : state;
 
   return (
     <section className="agent-page" aria-labelledby="agent-title">
@@ -493,7 +542,7 @@ export function AgentExperience() {
       </header>
 
       <div className="agent-conversation">
-        {state === "idle" && (
+        {displayState === "idle" && (
           <article className="welcome-card">
             <span className="welcome-index">01</span>
             <div>
@@ -617,7 +666,7 @@ export function AgentExperience() {
           </section>
         )}
 
-        {state === "failed" && (
+        {displayState === "failed" && (
           <article className="failure-card" role="status" aria-live="polite">
             <p className="process-kicker">这次没有认出来</p>
             <h2>换一种最短路径继续</h2>
@@ -687,7 +736,7 @@ export function AgentExperience() {
               取消上传
             </button>
           )}
-          {state !== "failed" && (
+          {displayState !== "failed" && (
             <p className="dock-feedback" aria-live="polite">{feedback}</p>
           )}
         </div>
