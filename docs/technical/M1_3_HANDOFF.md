@@ -187,3 +187,16 @@ id。响应必须仍属于该 generation，服务端返回 item id 必须等于�
 后的迟到失败。既有多收藏逐项修改/撤销/恢复、输入变化与不确定网络失败的
 idempotency key 回归继续通过。未修改后端，按要求只运行 M1-3 聚焦契约，
 `7 passed`。M1-3 继续为“待主控验收”。
+
+## 最终主控验收
+
+主控确认最终修复提交 `f761c9dcdca11ec9b296c7f1638ad9bfe04a8275` 线性继承
+阶段基线，并将阶段分支纯快进集成到 `main`。独立快照中前端 lint、typecheck、
+build、生产依赖 audit、Vitest `38 passed` 和 Playwright `14 passed`；M1-3 后端
+契约 `7 passed`，Alembic 唯一 head 为 `20260727_0011`。合并后 M1-3 契约与迁移
+`30 passed`，前端 Vitest `38 passed`，lint 通过。
+
+主控实际浏览器使用真实 FastAPI 与离线 Fake Provider 复核提交、权威结果、撤销和
+恢复，控制台无 warning/error。上一轮多收藏反序和跨 Run 迟到响应 P1 已关闭；
+当前无未关闭 P0/P1。验收过程未读取 `.env`，未调用真实模型、地图、网页或付费
+API，也未实现 M1-4。M1-3 正式完成，当前允许开始 M1-4 收藏库与地点消歧。

@@ -1,9 +1,10 @@
 # 拾光正式前端
 
-M1-2 使用 Next.js App Router、TypeScript strict 和单一响应式代码库，为 Web/H5
-提供正式前端基础。当前只有 `/agent`、`/collections`、`/plans`、`/me` 四个空业务
-路由，不包含内容导入、收藏、计划或“我的”业务。M1-2 已通过主控验收；当前允许
-开始 M1-3 Agent 与内容导入页面，M1-4 及后续阶段不得提前开发。
+前端使用 Next.js App Router、TypeScript strict 和单一响应式代码库，为 Web/H5
+提供正式体验。M1-2 已完成 App Shell、响应式布局和统一 API/SSE Client；M1-3
+已完成 `/agent` 的文字、URL、截图导入、后台进度、权威结果、修改、撤销、恢复与
+继续添加。当前允许开始 M1-4 收藏库与地点消歧；`/plans` 和 `/me` 仍不包含后续
+业务，M1-5 及以后不得提前开发。
 
 ## 本地运行
 
