@@ -1,4 +1,4 @@
-const STORAGE_KEY = 'shiguang-ux-review-notes-v1';
+const STORAGE_KEY = 'shiguang-ux-review-notes-v2';
 
 const screenDefinitions = [
   {
@@ -8,7 +8,7 @@ const screenDefinitions = [
     short: '输入与首次价值',
     nav: 'agent',
     purpose: '验证用户是否能快速理解：这里不是推荐信息流，而是把内容交给 Agent 的入口。',
-    checks: ['主输入是否足够突出', '三种输入方式是否容易理解', '用户是否知道收藏何时足以生成计划'],
+    checks: ['主输入和两个任务入口是否清楚', '三种输入方式是否容易理解', '用户是否知道收藏何时足以生成计划'],
     states: [
       ['default', '默认'],
       ['listening', '已输入要求'],
@@ -16,6 +16,7 @@ const screenDefinitions = [
     ],
     interactions: [
       ['发送内容', '进入识别结果'],
+      ['收藏一个地点 / 帮我安排时间', '明确选择任务'],
       ['查看或添加收藏', '有内容时看详情，无内容时添加'],
       ['底部导航', '切换一级页面']
     ],
@@ -28,11 +29,13 @@ const screenDefinitions = [
     short: '识别、修改与撤销',
     nav: 'agent',
     purpose: '验证 Agent 是否清楚说明识别结果、字段来源与接下来的可逆操作。',
-    checks: ['识别中不会过早宣称收藏成功', '修改和撤销是否容易发现', '待选择与失败状态是否给出最短恢复路径'],
+    checks: ['标题和阶段随识别状态变化', '撤销后可以真实恢复', '待补充、待选择与失败有不同恢复路径'],
     states: [
       ['saved', '已收藏'],
       ['recognizing', '识别中'],
       ['ambiguous', '待选择'],
+      ['needs_input', '待补充'],
+      ['undone', '已撤销'],
       ['failed', '识别失败']
     ],
     interactions: [
@@ -49,7 +52,7 @@ const screenDefinitions = [
     short: '搜索、筛选与状态',
     nav: 'collection',
     purpose: '验证收藏库能否让用户快速找到可规划地点，并区分待确认内容。',
-    checks: ['卡片信息密度是否合适', '状态是否比平台来源更重要', '待选择内容是否明显且不会误入规划'],
+    checks: ['多城市收藏是否容易理解', '每条收藏是否说明能否参与当前计划', '待选择内容是否明显且不会误入规划'],
     states: [
       ['default', '有内容'],
       ['pending', '含待确认'],
@@ -69,16 +72,18 @@ const screenDefinitions = [
     short: '确认准确地点',
     nav: 'collection',
     purpose: '验证只有店名或存在同名分店时，用户能否低成本完成地点确认。',
-    checks: ['候选差异是否足够清晰', '系统是否避免把第一名当作已确认', '用户能否继续修改结构化字段'],
+    checks: ['候选、任意分店和以上都不是是否完整', '系统是否真实记录用户选择', '修改、删除后能否返回原对话'],
     states: [
       ['ambiguous', '待选择'],
       ['selected', '已选择'],
+      ['any_branch', '任意分店'],
       ['missing', '需要补充']
     ],
     interactions: [
       ['选择候选地点', '绑定准确 POI'],
-      ['编辑字段', '纠正区域和标签'],
-      ['确认并保存', '返回收藏库']
+      ['任意分店 / 以上都不是', '记录品牌级或待补充选择'],
+      ['编辑或删除', '修改结构化字段或移除收藏'],
+      ['确认并保存', '返回原对话上下文']
     ],
     render: renderDetail
   },
@@ -92,8 +97,10 @@ const screenDefinitions = [
     checks: ['时间光轨是否易读', '高德补充是否显著但不过度打扰', '预算是否明确交给用户判断'],
     states: [
       ['draft', '计划草稿'],
+      ['alternatives', '查看备选'],
       ['generating', '生成中'],
       ['permission', '外部授权'],
+      ['collection_only', '仅用收藏'],
       ['failed', '工具失败']
     ],
     interactions: [
@@ -110,16 +117,22 @@ const screenDefinitions = [
     short: '执行、提醒与反馈',
     nav: 'plan',
     purpose: '验证确认后的行动入口是否集中，并解释反馈如何影响下一次规划。',
-    checks: ['路线、日历和提醒是否容易找到', '确认态和草稿态是否有明显差异', '反馈是否足够轻量且透明'],
+    checks: ['提醒是否在确认后单独授权', '版本、取消和分享是否可管理', '三种完成反馈是否有各自后续操作'],
     states: [
       ['confirmed', '已确认'],
+      ['reminder', '设置提醒'],
+      ['share_preview', '分享预览'],
+      ['share_active', '分享管理'],
+      ['versions', '版本与取消'],
       ['partial', '部分完成'],
+      ['incomplete', '未完成'],
       ['feedback', '完成反馈']
     ],
     interactions: [
       ['打开路线', '模拟高德导航'],
       ['设置提醒', '创建单次提醒'],
-      ['分享方案', '打开只读分享页']
+      ['分享方案', '先脱敏预览，再创建链接'],
+      ['版本与取消', '修改、查看历史或取消计划']
     ],
     render: renderConfirmed
   },
@@ -134,12 +147,13 @@ const screenDefinitions = [
     states: [
       ['default', '默认'],
       ['suggestion', '偏好待确认'],
+      ['memory', '记忆详情'],
       ['privacy', '隐私管理']
     ],
     interactions: [
       ['管理偏好', '查看、修改或删除记忆'],
       ['提醒设置', '开关单次与主动提醒'],
-      ['微信 ClawBot', '查看后续接入说明']
+      ['微信入口', '了解如何在微信里继续使用拾光']
     ],
     render: renderMe
   },
@@ -174,7 +188,10 @@ const stateByScreen = Object.fromEntries(
 
 let currentScreenId = 'agent';
 let currentView = 'single';
+let currentCanvas = 'mobile';
 let toastTimer;
+let reminderEnabled = false;
+let shareActive = false;
 
 const els = {
   screenList: document.getElementById('screenList'),
@@ -195,6 +212,7 @@ const els = {
   savedNotes: document.getElementById('savedNotes'),
   toast: document.getElementById('toast')
 };
+els.canvasSize = document.getElementById('canvasSize');
 
 function icon(name) {
   return '<svg aria-hidden="true"><use href="#i-' + name + '"></use></svg>';
@@ -206,14 +224,14 @@ function getScreen(id) {
   });
 }
 
-function screenHeader(kicker, title, actionIcon, action, brandTitle) {
+function screenHeader(kicker, title, actionIcon, action, brandTitle, actionLabel) {
   return [
     '<header class="mobile-header">',
       '<div class="mobile-header-copy">',
         '<p class="kicker">', kicker, '</p>',
         '<h1 class="', brandTitle ? 'brand-title' : '', '">', title, '</h1>',
       '</div>',
-      actionIcon ? '<button class="icon-button" type="button" data-action="' + (action || 'noop') + '" aria-label="页面操作">' + icon(actionIcon) + '</button>' : '',
+      actionIcon ? '<button class="icon-button" type="button" data-action="' + (action || 'noop') + '" aria-label="' + actionLabel + '">' + icon(actionIcon) + '</button>' : '',
     '</header>'
   ].join('');
 }
@@ -229,17 +247,18 @@ function bottomNav(active) {
     '<nav class="mobile-bottom-nav" aria-label="一级导航">',
       items.map(function (item) {
         const id = item[0];
-        return '<button type="button" class="nav-item ' + (id === active ? 'is-active' : '') + '" data-action="go-screen" data-screen="' + id + '">' + icon(item[1]) + '<span>' + item[2] + '</span></button>';
+        return '<button type="button" class="nav-item ' + (id === active ? 'is-active' : '') + '" data-action="go-screen" data-screen="' + id + '" ' + (id === active ? 'aria-current="page"' : '') + '>' + icon(item[1]) + '<span>' + item[2] + '</span></button>';
       }).join(''),
     '</nav>'
   ].join('');
 }
 
-function mobileShell(header, body, activeNav, share) {
+function mobileShell(header, body, activeNav, share, dock) {
   return [
-    '<div class="mobile-app ', share ? 'share-app' : '', '">',
+    '<div class="mobile-app ', share ? 'share-app ' : '', dock ? 'has-screen-dock' : '', '">',
       header,
       '<main class="screen-scroll ', activeNav ? '' : 'no-nav', '">', body, '</main>',
+      dock || '',
       activeNav ? bottomNav(activeNav) : '',
     '</div>'
   ].join('');
@@ -267,7 +286,7 @@ function statusCard(type, iconName, title, copy, actionLabel, action) {
 }
 
 function renderAgent(state) {
-  const header = screenHeader('SHENZHEN · MON 20 JUL', '晚上好，张子豪', 'settings', 'go-me');
+  const header = screenHeader('SHENZHEN · MON 20 JUL', '晚上好，张子豪', 'settings', 'go-me', false, '打开设置');
   const listeningBanner = state === 'listening'
     ? '<div class="state-inline-banner">' + icon('spark') + '<span>已记住本次条件：周六下午、福田优先、轻松一点。继续添加地点不会覆盖这些要求。</span></div>'
     : '';
@@ -319,7 +338,7 @@ function renderAgent(state) {
       '<div class="hero-kicker">', icon('spark'), ' PERSONAL CITY AGENT</div>',
       '<h2>把想去的地方发给我，或者告诉我你什么时候有空</h2>',
       '<div class="hero-input">',
-        '<input id="agentPrompt" aria-label="告诉拾光你的想法" value="', state === 'listening' ? '周六下午 5 小时，福田优先' : '', '" placeholder="店名、链接、截图或一句要求" />',
+        '<input id="agentPrompt" name="agent_prompt" autocomplete="off" aria-label="告诉拾光你的想法" value="', state === 'listening' ? '周六下午 5 小时，福田优先' : '', '" placeholder="店名、链接、截图或一句要求" />',
         '<button class="send-button" type="button" data-action="submit-import" aria-label="发送">', icon('send'), '</button>',
       '</div>',
       '<div class="attachment-actions">',
@@ -328,6 +347,10 @@ function renderAgent(state) {
       '</div>',
     '</section>',
     sectionLabel('快速开始', ''),
+    '<div class="task-entry-grid">',
+      '<button class="task-entry" type="button" data-action="focus-agent">', icon('bookmark'), '<span><strong>收藏一个地点</strong><small>发送店名、链接或截图</small></span>', icon('chevron'), '</button>',
+      '<button class="task-entry" type="button" data-action="go-plan-permission">', icon('calendar'), '<span><strong>帮我安排时间</strong><small>优先使用已有收藏</small></span>', icon('chevron'), '</button>',
+    '</div>',
     '<div class="chips">',
       '<button class="chip" type="button" data-action="set-prompt" data-value="周六下午 5 小时，福田优先">周六下午有空</button>',
       '<button class="chip" type="button" data-action="set-prompt" data-value="找个适合下雨天的室内活动">下雨天室内</button>',
@@ -335,11 +358,19 @@ function renderAgent(state) {
     '</div>',
     collectionSummary
   ].join('');
-  return mobileShell(header, body, 'agent');
+  return mobileShell(header, '<div class="agent-page-stack">' + body + '</div>', 'agent');
 }
 
 function renderImport(state) {
-  const header = screenHeader('AGENT CONVERSATION', '正在整理这条收藏', 'bookmark', 'go-collection');
+  const headerTitles = {
+    saved: '已完成收藏',
+    recognizing: '正在识别收藏',
+    ambiguous: '请选择准确地点',
+    needs_input: '还需要一点信息',
+    undone: '已撤销收藏',
+    failed: '未能识别'
+  };
+  const header = screenHeader('AGENT CONVERSATION', headerTitles[state] || '收藏结果', 'bookmark', 'go-collection', false, '打开收藏库');
   const userMessage = '<div class="message user">帮我收藏深圳当代艺术与城市规划馆</div>';
   let agentContent = '';
 
@@ -348,12 +379,35 @@ function renderImport(state) {
       '<div class="agent-line">',
         '<div class="agent-avatar">', icon('spark'), '</div>',
         '<div class="agent-bubble">',
-          '<p>我正在读取内容，并核对深圳范围内的准确地点。</p>',
+          '<p>我会先读取来源，再识别地点，最后判断是否需要你确认。</p>',
           '<div class="import-progress">',
-            '<div class="progress-header"><span>正在识别地点与开放信息</span><span>72%</span></div>',
-            '<div class="progress-track"><i></i></div>',
-            '<div class="skeleton line"></div><div class="skeleton line short"></div>',
+            '<div class="stage-progress-list">',
+              '<div class="is-done"><span>', icon('check'), '</span><div><strong>内容已收到</strong><small>图片安全检查完成</small></div></div>',
+              '<div class="is-current"><span>2</span><div><strong>正在识别地点</strong><small>核对名称、城市与来源线索</small></div></div>',
+              '<div><span>3</span><div><strong>整理收藏结果</strong><small>确认后才会进入收藏库</small></div></div>',
+            '</div>',
           '</div>',
+        '</div>',
+      '</div>'
+    ].join('');
+  } else if (state === 'needs_input') {
+    agentContent = [
+      '<div class="agent-line">',
+        '<div class="agent-avatar">', icon('spark'), '</div>',
+        '<div class="agent-bubble">',
+          '<p>我已经保留来源和店名，但信息还不足以确定具体位置。这不是识别失败。</p>',
+          statusCard('warning', 'map-pin', '收藏已保留，等待补充', '补充行政区、商圈、附近地标或地图链接中的任意一项即可继续。', '补充地点信息', 'go-detail-missing'),
+          '<button class="text-link-action" type="button" data-action="toast" data-message="已暂时保留，之后可以从收藏库继续补充">暂时保留</button>',
+        '</div>',
+      '</div>'
+    ].join('');
+  } else if (state === 'undone') {
+    agentContent = [
+      '<div class="agent-line">',
+        '<div class="agent-avatar">', icon('undo'), '</div>',
+        '<div class="agent-bubble">',
+          '<p>刚才的收藏已经撤销，原始对话仍然保留。</p>',
+          '<div class="undo-card"><div><strong>深圳当代艺术与城市规划馆</strong><small>撤销后尚未从本次对话移除</small></div><button type="button" data-action="restore-import">恢复收藏</button></div>',
         '</div>',
       '</div>'
     ].join('');
@@ -362,8 +416,9 @@ function renderImport(state) {
       '<div class="agent-line">',
         '<div class="agent-avatar">', icon('spark'), '</div>',
         '<div class="agent-bubble">',
-          '<p>这个页面暂时无法读取，没有创建收藏。</p>',
-          statusCard('error', 'link', '公开页面无法访问', '你可以发送包含店名和区域的截图，或直接告诉我地点名称。', '发送截图', 'toast'),
+          '<p>这个页面暂时无法读取，因此没有创建或保留收藏。</p>',
+          statusCard('error', 'link', '来源读取失败', '换成包含店名和区域的截图、直接输入地点名称，或稍后重试这个链接。', '换成截图', 'toast'),
+          '<button class="secondary-action full-action" type="button" data-action="submit-import">重新尝试</button>',
         '</div>',
       '</div>'
     ].join('');
@@ -407,49 +462,61 @@ function renderImport(state) {
     '<div class="message-list">',
       userMessage,
       agentContent,
-    '</div>',
-    '<div class="message-composer"><input aria-label="继续对话" placeholder="继续添加，或直接说出修改内容" /><button class="send-button" type="button" data-action="toast" data-message="已记录你的补充要求">', icon('send'), '</button></div>'
+    '</div>'
   ].join('');
-  return mobileShell(header, body, 'agent');
+  const dock = '<div class="message-composer screen-dock"><input name="message" autocomplete="off" aria-label="继续对话" placeholder="继续添加，或直接说出修改内容" /><button class="send-button" type="button" data-action="toast" data-message="已记录你的补充要求" aria-label="发送补充内容">' + icon('send') + '</button></div>';
+  return mobileShell(header, body, 'agent', false, dock);
 }
 
 function renderCollection(state) {
-  const header = screenHeader('YOUR CITY MEMORY', '收藏', 'plus', 'toast');
+  const header = screenHeader('YOUR CITY MEMORY', '收藏', 'plus', 'toast', false, '添加收藏');
   if (state === 'empty') {
     return mobileShell(header, '<div class="empty-state"><div><div class="empty-icon">' + icon('bookmark') + '</div><h3>收藏库还是空的</h3><p>从 Agent 页面发送一个店名、链接或截图，确认后会出现在这里。</p><button class="primary-action" type="button" data-action="go-agent">去添加第一个地点</button></div></div>', 'collection');
   }
 
   const pendingBanner = state === 'pending'
-    ? '<div class="state-inline-banner warning">' + icon('map-pin') + '<span>有 2 条收藏仍需确认地点。确认前不会进入路线计算。</span></div>'
+    ? '<div class="state-inline-banner warning">' + icon('map-pin') + '<span>有 2 条收藏需要处理：1 条待选择、1 条待补充。它们仍会保留，但不会进入深圳计划。</span></div>'
     : '';
   const body = [
-    '<div class="collection-count"><strong>12</strong><span>个深圳收藏 · 9 个可参与规划</span></div>',
+    '<div class="collection-overview"><div><strong>15</strong><span>个收藏</span></div><small>最近添加优先</small></div>',
+    '<button class="planning-scope-compact" type="button" data-action="toast" data-message="已展开每条收藏的参与状态和原因"><span class="scope-icon">', icon('check'), '</span><span class="scope-copy"><strong>本次深圳计划</strong><small>9 条可参与 · 3 条暂不参与</small></span><span class="scope-link">查看原因 ', icon('chevron'), '</span></button>',
     pendingBanner,
-    '<div class="search-field">', icon('search'), '<input aria-label="搜索收藏" placeholder="搜索名称、区域或标签" /></div>',
     '<div class="filter-tabs">',
-      '<button class="filter-tab is-active" type="button">想去 9</button>',
-      '<button class="filter-tab" type="button">已计划 2</button>',
+      '<button class="filter-tab is-active" type="button">全部 15</button>',
+      '<button class="filter-tab" type="button">想去 9</button>',
       '<button class="filter-tab" type="button">去过 1</button>',
     '</div>',
-    '<div class="chips">',
-      '<button class="chip is-active" type="button">全部</button>',
-      '<button class="chip" type="button">展览</button>',
-      '<button class="chip" type="button">室内</button>',
-      '<button class="chip" type="button">福田</button>',
+    '<div class="collection-tools">',
+      '<div class="search-field">', icon('search'), '<input name="collection_search" autocomplete="off" aria-label="搜索收藏" placeholder="搜索收藏" /></div>',
+      '<details class="collection-filter-panel">',
+        '<summary>筛选 <b>2</b></summary>',
+        '<div class="collection-filter-sheet">',
+          '<div class="filter-sheet-head"><strong>筛选收藏</strong><button type="button" data-action="toast" data-message="已清除全部筛选">清除</button></div>',
+          '<div class="filter-group"><span>城市</span><div class="filter-options"><button class="is-active" type="button">深圳 12</button><button type="button">广州 2</button><button type="button">待确认 1</button></div></div>',
+          '<div class="filter-group"><span>计划使用</span><div class="filter-options"><button class="is-active" type="button">可参与本次计划</button><button type="button">已计划 2</button><button type="button">暂不参与 3</button></div></div>',
+          '<div class="filter-group"><span>场景与区域</span><div class="filter-options"><button type="button">展览</button><button type="button">室内</button><button type="button">福田</button></div></div>',
+          '<button class="primary-action full-action" type="button" data-action="toast" data-message="已应用筛选，共 9 条结果">查看 9 条结果</button>',
+        '</div>',
+      '</details>',
     '</div>',
-    sectionLabel('按最近添加', '多选'),
+    sectionLabel('最近添加', '4 条结果'),
     '<div class="collection-list">',
-      placeCard('深圳当代艺术与城市规划馆', '福田 · 免费', ['展览', '室内'], false, 'default'),
-      placeCard('南头古城', '南山 · 约 ¥80', ['散步', '朋友'], false, 'city'),
-      placeCard('一尺花园 · 海上世界店', '南山 · 价格待确认', ['咖啡', '室内'], state === 'pending', 'default'),
-      placeCard('OCT-LOFT 创意文化园', '南山 · 免费', ['街区', '室外'], false, 'city'),
+      placeCard('深圳当代艺术与城市规划馆', '福田 · 免费', ['展览', '室内'], 'eligible', 'default', '可参与当前计划'),
+      placeCard('南头古城', '南山 · 约 ¥80', ['散步', '朋友'], 'eligible', 'city', '可参与当前计划'),
+      placeCard('一尺花园', '南山 · 价格待确认', ['咖啡', '室内'], state === 'pending' ? 'pending' : 'eligible', 'default', state === 'pending' ? '待选择具体分店，暂不参与计划' : '可参与当前计划'),
+      placeCard('广东美术馆新馆', '广州 · 免费', ['展览', '室内'], 'excluded', 'city', '收藏属于广州，当前深圳计划不会使用'),
     '</div>',
     '<button class="primary-action" style="width:100%;margin-top:14px" type="button" data-action="go-plan">用当前筛选生成计划</button>'
   ].join('');
-  return mobileShell(header, body, 'collection');
+  return mobileShell(header, '<div class="collection-page-stack">' + body + '</div>', 'collection');
 }
 
-function placeCard(title, meta, tags, needsAction, thumbType) {
+function placeCard(title, meta, tags, status, thumbType, reason) {
+  const statusLabel = {
+    eligible: '可参与计划',
+    pending: '待选择',
+    excluded: '暂不参与'
+  }[status];
   return [
     '<article class="place-card" role="button" tabindex="0" data-action="go-detail">',
       '<div class="place-thumb ', thumbType === 'city' ? 'city' : '', '"></div>',
@@ -458,64 +525,76 @@ function placeCard(title, meta, tags, needsAction, thumbType) {
         '<p>', meta, '</p>',
         '<div class="place-meta-row">',
           tags.map(function (tag) { return '<span class="tiny-tag">' + tag + '</span>'; }).join(''),
-          needsAction ? '<span class="tiny-tag needs-action">待确认地点</span>' : '<span class="tiny-tag">已确认</span>',
+          '<span class="tiny-tag ', status === 'pending' ? 'needs-action' : '', '">', statusLabel, '</span>',
         '</div>',
+        '<div class="participation-reason ', status, '">', reason, '</div>',
       '</div>',
     '</article>'
   ].join('');
 }
 
 function renderDetail(state) {
-  const header = screenHeader('COLLECTION DETAIL', state === 'missing' ? '补充地点信息' : '确认准确地点', 'bookmark', 'go-collection');
+  const header = screenHeader('COLLECTION DETAIL', state === 'missing' ? '补充地点信息' : '确认准确地点', 'bookmark', 'back-context', false, '返回原对话');
   if (state === 'missing') {
     const bodyMissing = [
-      '<div class="detail-visual"><div class="detail-visual-copy"><span>原始识别结果</span><h2>一尺花园</h2></div></div>',
-      statusCard('warning', 'map-pin', '还不能确定是哪家分店', '请补充行政区、商圈、附近地标，或粘贴地图分享链接。', '', ''),
+      '<div class="context-return-note">来自 Agent 对话 · 保存后返回刚才的位置</div>',
+      '<div class="detail-visual"><div class="detail-visual-copy"><span>原始识别结果已保留</span><h2>一尺花园</h2></div></div>',
+      statusCard('warning', 'map-pin', '收藏处于“待补充”', '请补充行政区、商圈、附近地标，或粘贴地图分享链接。暂时不补也不会丢失。', '', ''),
       sectionLabel('最少补充一项', ''),
       '<div class="editable-fields">',
-        '<div class="editable-field"><span>行政区</span><strong>请选择</strong></div>',
-        '<div class="editable-field"><span>商圈或地标</span><strong>例如：海上世界</strong></div>',
-        '<div class="editable-field"><span>地图链接</span><strong>粘贴链接</strong></div>',
+        '<button class="editable-field" type="button" data-action="toast" data-message="已选择南山区"><span>行政区</span><strong>请选择</strong></button>',
+        '<button class="editable-field" type="button" data-action="toast" data-message="可输入商圈或附近地标"><span>商圈或地标</span><strong>例如：海上世界</strong></button>',
+        '<button class="editable-field" type="button" data-action="toast" data-message="可粘贴高德或微信地图链接"><span>地图链接</span><strong>粘贴链接</strong></button>',
       '</div>',
-      '<button class="primary-action" style="width:100%;margin-top:12px" type="button" data-action="choose-candidate">重新查找候选</button>'
+      '<button class="primary-action full-action" type="button" data-action="choose-candidate">重新查找候选</button>',
+      '<button class="text-link-action" type="button" data-action="back-context">暂时保留，返回对话</button>'
     ].join('');
     return mobileShell(header, bodyMissing, 'collection');
   }
 
   const selected = state === 'selected';
+  const anyBranch = state === 'any_branch';
   const body = [
-    '<div class="detail-visual"><div class="detail-visual-copy"><span>原始内容识别 · 店名</span><h2>深圳当代艺术与城市规划馆</h2></div></div>',
-    '<div class="state-inline-banner ', selected ? '' : 'warning', '">',
-      icon(selected ? 'check' : 'map-pin'),
-      '<span>', selected ? '已选择第 1 个候选，可以继续修改识别字段。' : '存在 2 个合理候选。排名第一不等于位置已经确认。', '</span>',
+    '<div class="context-return-note">来自 Agent 对话 · 保存后返回刚才的位置</div>',
+    '<div class="detail-visual"><div class="detail-visual-copy"><span>原始内容识别 · 连锁品牌</span><h2>一尺花园</h2></div></div>',
+    '<div class="state-inline-banner ', selected || anyBranch ? '' : 'warning', '">',
+      icon(selected || anyBranch ? 'check' : 'map-pin'),
+      '<span>', selected ? '已选择海上世界店，可以继续修改识别字段。' : anyBranch ? '已记录“任意分店都可以”。规划时会在活动范围内选择具体分店。' : '存在多个合理分店。排名第一不等于位置已经确认。', '</span>',
     '</div>',
     sectionLabel('请选择准确地点', ''),
     '<div class="candidate-list">',
       '<article class="candidate-card ', selected ? 'is-selected' : '', '" data-action="choose-candidate" role="button" tabindex="0">',
         '<span class="radio-mark"></span>',
-        '<div><h3>深圳当代艺术与城市规划馆</h3><p>福田区福中路184号 · 与截图地标一致 · 1.2 km</p></div>',
+        '<div><h3>一尺花园 · 海上世界店</h3><p>南山区太子路 · 与来源中的海边地标一致 · 1.2 km</p></div>',
       '</article>',
       '<article class="candidate-card" data-action="choose-candidate" role="button" tabindex="0">',
         '<span class="radio-mark"></span>',
-        '<div><h3>深圳市当代艺术馆</h3><p>南山区 · 名称相近，但缺少来源中的建筑特征</p></div>',
+        '<div><h3>一尺花园 · 万象天地店</h3><p>南山区深南大道 · 名称一致，但来源没有商圈线索</p></div>',
+      '</article>',
+      '<article class="candidate-card choice-card ', anyBranch ? 'is-selected' : '', '" data-action="choose-any" role="button" tabindex="0">',
+        '<span class="radio-mark"></span><div><h3>任意分店都可以</h3><p>保存为品牌级收藏，生成计划时再按范围解析具体分店</p></div>',
+      '</article>',
+      '<article class="candidate-card choice-card" data-action="choose-none" role="button" tabindex="0">',
+        '<span class="radio-mark"></span><div><h3>以上都不是</h3><p>保留原始内容，并转为待补充状态</p></div>',
       '</article>',
     '</div>',
     sectionLabel('识别字段', '编辑'),
     '<div class="editable-fields">',
-      '<div class="editable-field"><span>区域</span><strong>福田区</strong></div>',
-      '<div class="editable-field"><span>价格</span><strong>免费</strong></div>',
-      '<div class="editable-field"><span>适用场景</span><strong>室内 · 独处 · 朋友</strong></div>',
+      '<button class="editable-field" type="button" data-action="toast" data-message="字段编辑会保留来源记录"><span>区域</span><strong>', anyBranch ? '规划时确定' : '南山区', '</strong></button>',
+      '<button class="editable-field" type="button" data-action="toast" data-message="已打开价格编辑"><span>价格</span><strong>约 ¥60–100</strong></button>',
+      '<button class="editable-field" type="button" data-action="toast" data-message="已打开场景标签编辑"><span>适用场景</span><strong>室内 · 独处 · 朋友</strong></button>',
     '</div>',
     '<div class="action-row">',
-      '<button class="ghost-action" type="button" data-action="go-collection">取消</button>',
-      '<button class="primary-action" type="button" data-action="save-place" ', selected ? '' : 'disabled', '>确认并保存</button>',
-    '</div>'
+      '<button class="danger-action" type="button" data-action="delete-place">删除收藏</button>',
+      '<button class="primary-action" type="button" data-action="save-place" ', selected || anyBranch ? '' : 'disabled', '>保存并返回对话</button>',
+    '</div>',
+    '<button class="text-link-action" type="button" data-action="back-context">取消修改，返回对话</button>'
   ].join('');
   return mobileShell(header, body, 'collection');
 }
 
 function renderPlan(state) {
-  const header = screenHeader('PLAN DRAFT · V1', '周六半日计划', 'edit', 'toast');
+  const header = screenHeader('PLAN DRAFT · V1', '周六半日计划', 'edit', 'toast', false, '编辑计划条件');
   if (state === 'generating') {
     const generating = [
       '<div class="plan-hero"><div class="plan-hero-top"><div><span class="eyebrow">正在生成</span><h2>把收藏排成一条轻松路线</h2><p>正在核对路线、营业时间和价格信息</p></div><div class="plan-score">···</div></div></div>',
@@ -532,10 +611,23 @@ function renderPlan(state) {
       '<div class="permission-card">',
         '<h3>可以使用高德补充固定地点</h3>',
         '<p>拾光会根据你的偏好搜索少量 Place，并明确标注来源。不会搜索外部展览或活动，也不会自动加入收藏。</p>',
-        '<div class="action-row"><button class="secondary-action" type="button" data-action="deny-external">只用收藏</button><button class="primary-action" type="button" data-action="allow-external">允许补充</button></div>',
+        '<div class="permission-actions"><button class="primary-action" type="button" data-action="allow-external">允许补充地点</button><button class="secondary-action" type="button" data-action="deny-external">仅用现有收藏生成</button><button class="text-link-action" type="button" data-action="go-collection">继续添加收藏</button></div>',
       '</div>'
     ].join('');
     return mobileShell(header, permission, 'plan');
+  }
+  if (state === 'collection_only') {
+    const collectionOnly = [
+      '<div class="state-inline-banner">', icon('check'), '<span>已按你的选择关闭外部地点补充。现有收藏仍然有效，没有发生错误。</span></div>',
+      '<section class="plan-hero">',
+        '<div class="plan-hero-top"><div><span class="eyebrow">COLLECTION ONLY</span><h2>只安排一个核心展览，也可以成行</h2><p>周六 14:00–17:00 · 福田区</p></div><div class="plan-score"><strong>84</strong><small>匹配度</small></div></div>',
+        '<div class="plan-conditions"><span>3 小时</span><span>只用收藏</span><span>预算未设置</span></div>',
+      '</section>',
+      '<div class="time-ribbon">', timelineItem('14:00', '深圳当代艺术与城市规划馆', '约 2 小时 · 免费', '你的收藏', false, '起点'), '</div>',
+      '<div class="risk-card"><strong>方案较短</strong><p>只有 1 个满足条件的收藏，因此没有安排中途休息。你可以确认这个轻量方案，或继续添加收藏。</p></div>',
+      '<div class="action-row"><button class="secondary-action" type="button" data-action="go-collection">继续添加收藏</button><button class="primary-action" type="button" data-action="confirm-plan">确认轻量方案</button></div>'
+    ].join('');
+    return mobileShell(header, collectionOnly, 'plan');
   }
   if (state === 'failed') {
     const failed = [
@@ -545,29 +637,41 @@ function renderPlan(state) {
     return mobileShell(header, failed, 'plan');
   }
 
+  const alternatives = state === 'alternatives'
+    ? [
+        '<div class="alternative-list">',
+          '<button class="alternative-card is-active" type="button" data-action="toast" data-message="当前正在查看主方案"><span>主方案</span><strong>展览 + 咖啡 + 可选散步</strong><small>步行较少 · ¥60–100</small></button>',
+          '<button class="alternative-card" type="button" data-action="toast" data-message="已切换为雨天备选，尚未确认"><span>备选 A</span><strong>展览 + 书店</strong><small>全程室内 · ¥30–70</small></button>',
+          '<button class="alternative-card" type="button" data-action="toast" data-message="已切换为零预算备选，尚未确认"><span>备选 B</span><strong>展览 + 市民中心</strong><small>全部免费 · 户外风险较高</small></button>',
+        '</div>'
+      ].join('')
+    : '';
   const body = [
     '<section class="plan-hero">',
       '<div class="plan-hero-top">',
         '<div><span class="eyebrow">MAIN PLAN</span><h2>一个展览，一次停留，再留点余地</h2><p>周六 14:00–19:00 · 福田区</p></div>',
-        '<div class="plan-score">92</div>',
+        '<button class="plan-score" type="button" data-action="toast" data-message="匹配度综合收藏命中、路程、时间余量与风险，不代表地点评分"><strong>92</strong><small>匹配度</small></button>',
       '</div>',
-      '<div class="plan-conditions"><span>5 小时</span><span>轻松一点</span><span>预算不限</span><span>公共交通</span></div>',
+      '<div class="plan-conditions"><span>5 小时</span><span>轻松一点</span><span>预算未设置</span><span>公共交通</span></div>',
     '</section>',
-    sectionLabel('时间光轨', '查看备选 2'),
+    '<button class="alternatives-trigger" type="button" data-action="show-alternatives"><span><strong>2 个备选方案</strong><small>雨天室内 · 零预算</small></span><span class="alternatives-open">查看 ', icon('chevron'), '</span></button>',
+    alternatives,
+    '<div class="timeline-heading"><div><span class="eyebrow">SAT · 14:00—19:00</span><h2>时间光轨</h2></div><div><strong>3 站</strong><small>步行约 2.1 km</small></div></div>',
     '<div class="time-ribbon">',
-      timelineItem('14:00', '深圳当代艺术与城市规划馆', '约 2 小时 · 免费 · 周一闭馆', '收藏', false, '起点'),
+      timelineItem('14:00', '深圳当代艺术与城市规划馆', '约 2 小时 · 免费 · 周一闭馆', '你的收藏', false, '起点'),
       timelineItem('16:30', 'One Avenue 咖啡休息', '约 1 小时 · ¥60–100 · 未收藏', '高德补充', true, '步行 12 分钟'),
-      timelineItem('18:00', '市民中心夜景散步', '约 45 分钟 · 免费', '收藏', false, '步行 8 分钟'),
+      timelineItem('18:00', '市民中心夜景散步', '可选延伸 · 约 45 分钟 · 下雨可跳过', '你的收藏', false, '步行 8 分钟'),
     '</div>',
     '<div class="budget-bar">',
       '<div class="budget-stat"><small>预计花费</small><strong>¥60–100</strong></div>',
       '<div class="budget-stat"><small>步行</small><strong>约 2.1 km</strong></div>',
       '<div class="budget-stat"><small>结束留白</small><strong>25 min</strong></div>',
     '</div>',
-    '<div class="explain-card"><strong>为什么这样安排</strong><p>核心展览来自你的收藏；咖啡店只为补足中途休息，并已标记为高德外部补充。预算未设置，因此仅展示估算。</p></div>',
+    '<div class="risk-card"><strong>出发前需要确认</strong><p>咖啡店价格与营业时间来自外部信息，可能变化；18:00 的散步受阵雨影响，是可跳过的延伸，不影响主计划。</p><small>事实最后核验：刚刚</small></div>',
+    '<div class="explain-card"><strong>为什么这样安排</strong><p>核心展览来自你的收藏；咖啡店只为补足中途休息，并已标记为高德补充且未加入收藏。预算未设置，因此仅展示估算。</p></div>',
     sectionLabel('继续调整', ''),
-    '<div class="adjust-composer"><input aria-label="调整计划" placeholder="例如：少走一点，不要咖啡店" /><button class="send-button" type="button" data-action="toast" data-message="已保留其他条件并重新计算">', icon('send'), '</button></div>',
-    '<div class="action-row"><button class="secondary-action" type="button" data-action="toast" data-message="已保存为备选方案">保存备选</button><button class="primary-action" type="button" data-action="confirm-plan">确认方案</button></div>'
+    '<div class="adjust-composer"><input name="plan_adjustment" autocomplete="off" aria-label="调整计划" placeholder="例如：少走一点，不要咖啡店" /><button class="send-button" type="button" data-action="toast" data-message="已保留其他条件并重新计算" aria-label="发送计划调整">', icon('send'), '</button></div>',
+    '<div class="plan-sticky-cta"><div><strong>确认当前方案</strong><small>不会自动设置提醒，也不会把外部地点加入收藏</small></div><button class="primary-action" type="button" data-action="confirm-plan">确认方案</button></div>'
   ].join('');
   return mobileShell(header, body, 'plan');
 }
@@ -581,22 +685,75 @@ function timelineItem(time, title, meta, source, external, travel) {
         '<header><h3>', title, '</h3><span class="source-label ', external ? 'external' : '', '">', source, '</span></header>',
         '<p>', meta, '</p>',
         '<div class="travel-row">', icon('route'), travel, '</div>',
+        external ? '<div class="external-actions"><button type="button" data-action="toast" data-message="补充原因：现有收藏缺少合适的中途休息地点">推荐原因</button><button type="button" data-action="toast" data-message="已打开外部地点替换列表">替换</button><button type="button" data-action="toast" data-message="已从当前草案删除，不影响收藏">删除</button><button type="button" data-action="toast" data-message="已加入收藏，可随时撤销">加入收藏</button></div>' : '',
       '</div>',
     '</article>'
   ].join('');
 }
 
 function renderConfirmed(state) {
-  const header = screenHeader('CONFIRMED · SAT 14:00', '周六计划', 'share', 'share-plan');
-  const partialBanner = state === 'partial'
-    ? '<div class="state-inline-banner warning">' + icon('check') + '<span>已标记部分完成：到访 2 个地点，跳过咖啡休息。计划记录不会自动改写长期偏好。</span></div>'
-    : '';
-  const feedback = state === 'feedback'
-    ? '<div class="feedback-card"><h3>这次安排怎么样？</h3><p>反馈只用于调整下次推荐排序，不会公开展示。</p><div class="feedback-options"><button data-action="feedback-done">已完成</button><button data-action="feedback-done">部分完成</button><button data-action="feedback-done">未完成</button></div></div>'
-    : '';
+  const header = screenHeader('CONFIRMED · SAT 14:00', '周六计划', 'share', 'show-share-preview', false, '分享计划');
+  let statePanel = '';
+  if (state === 'reminder') {
+    statePanel = [
+      '<div class="permission-card">',
+        '<span class="eyebrow">单独授权</span><h3>要设置行前提醒吗？</h3>',
+        '<p>只为这份计划设置一次提醒。确认计划本身不会自动开启提醒。</p>',
+        '<label class="select-field"><span>提醒时间</span><select name="reminder_time" aria-label="提醒时间"><option>出发前 60 分钟</option><option>出发前 30 分钟</option><option>当天上午 10:00</option></select></label>',
+        '<div class="action-row"><button class="secondary-action" type="button" data-action="skip-reminder">暂不设置</button><button class="primary-action" type="button" data-action="enable-reminder">设置提醒</button></div>',
+      '</div>'
+    ].join('');
+  } else if (state === 'share_preview') {
+    statePanel = [
+      '<div class="share-preview-card">',
+        '<span class="eyebrow">分享前预览</span><h3>确认将公开这些内容</h3>',
+        '<div class="share-columns"><div><strong>将会分享</strong><p>日期、时间线、公开地点、费用估算、路线入口、风险与更新时间</p></div><div><strong>不会分享</strong><p>姓名、收藏来源备注、完整对话、长期记忆、精确住址</p></div></div>',
+        '<div class="share-expiry-row"><span>失效时间</span><strong>计划结束 7 天后</strong></div>',
+        '<div class="action-row"><button class="secondary-action" type="button" data-action="close-state-panel">返回</button><button class="primary-action" type="button" data-action="create-share">确认并创建链接</button></div>',
+      '</div>'
+    ].join('');
+  } else if (state === 'share_active') {
+    statePanel = [
+      '<div class="share-management-card">',
+        '<div><span class="live-share-dot"></span><strong>分享链接有效</strong><small>最后更新：今天 15:30 · 7 月 26 日 19:00 失效</small></div>',
+        '<button type="button" data-action="open-share">查看分享页</button>',
+        '<button type="button" data-action="copy-link">复制链接</button>',
+        '<button class="danger-text" type="button" data-action="revoke-share">关闭分享</button>',
+      '</div>'
+    ].join('');
+  } else if (state === 'versions') {
+    statePanel = [
+      '<div class="version-card"><div><span>当前执行版本</span><strong>V2 · 今天 15:30 确认</strong><small>调整了咖啡休息时间；分享页已同步</small></div><button type="button" data-action="toast" data-message="已打开 V1 与 V2 的差异">历史版本</button></div>',
+      '<div class="action-row"><button class="secondary-action" type="button" data-action="go-plan">修改计划</button><button class="danger-action" type="button" data-action="cancel-plan">取消计划</button></div>'
+    ].join('');
+  } else if (state === 'feedback') {
+    statePanel = [
+      '<div class="feedback-card"><h3>这次计划完成得怎么样？</h3><p>请选择最符合实际情况的一项，之后仍可修改。</p>',
+        '<div class="feedback-options">',
+          '<button data-action="feedback-complete"><strong>已完成</strong><small>按计划到访主要地点</small></button>',
+          '<button data-action="feedback-partial"><strong>部分完成</strong><small>继续选择实际到访地点</small></button>',
+          '<button data-action="feedback-incomplete"><strong>未完成</strong><small>收藏保持原状态</small></button>',
+        '</div>',
+      '</div>'
+    ].join('');
+  } else if (state === 'partial') {
+    statePanel = [
+      '<div class="feedback-card"><h3>你实际去了哪些地方？</h3><p>只有选中的收藏会标记为去过；外部地点只更新本次计划记录。</p>',
+        '<label class="visit-choice"><input type="checkbox" name="visited_places" value="深圳当代艺术与城市规划馆" checked />深圳当代艺术与城市规划馆 <span>你的收藏</span></label>',
+        '<label class="visit-choice"><input type="checkbox" name="visited_places" value="One Avenue 咖啡休息" />One Avenue 咖啡休息 <span>外部未收藏</span></label>',
+        '<label class="visit-choice"><input type="checkbox" name="visited_places" value="市民中心夜景散步" checked />市民中心夜景散步 <span>你的收藏</span></label>',
+        '<button class="primary-action full-action" type="button" data-action="save-partial">保存部分完成</button>',
+      '</div>'
+    ].join('');
+  } else if (state === 'incomplete') {
+    statePanel = [
+      '<div class="state-inline-banner warning">', icon('calendar'), '<span>计划已标记为未完成。收藏保持“想去”，提醒已停止，之后仍可重新安排。</span></div>',
+      '<div class="action-row"><button class="secondary-action" type="button" data-action="go-plan">调整后重排</button><button class="primary-action" type="button" data-action="go-collection">继续看收藏</button></div>'
+    ].join('');
+  }
   const body = [
-    partialBanner,
-    '<div class="confirmed-banner"><div class="confirmed-icon">', icon('check'), '</div><div><h3>计划已确认</h3><p>行前提醒将在 13:30 发送</p></div></div>',
+    statePanel,
+    '<div class="confirmed-banner"><div class="confirmed-icon">', icon('check'), '</div><div><h3>计划已确认 · 当前 V2</h3><p>', reminderEnabled ? '提醒已设置：出发前 60 分钟' : '提醒尚未设置，可按需开启', '</p></div></div>',
     '<div class="weather-strip"><div><strong>周六 · 多云转阵雨</strong><br><span>26–31°C · 建议带伞</span></div><span>刚刚核验</span></div>',
     sectionLabel('今天的时间光轨', '查看详情'),
     '<div class="time-ribbon">',
@@ -608,11 +765,10 @@ function renderConfirmed(state) {
     '<div class="execution-actions">',
       executionCard('route', '打开高德路线', 'open-route'),
       executionCard('calendar', '下载日历', 'toast'),
-      executionCard('bell', '提醒已开启', 'toast'),
-      executionCard('share', '分享只读方案', 'share-plan'),
+      executionCard('bell', reminderEnabled ? '提醒已设置' : '设置提醒', 'show-reminder'),
+      executionCard('share', shareActive ? '管理分享' : '分享计划', shareActive ? 'show-share-management' : 'show-share-preview'),
     '</div>',
-    feedback,
-    state !== 'feedback' ? '<button class="primary-action" style="width:100%;margin-top:12px" type="button" data-action="show-feedback">完成后反馈</button>' : ''
+    '<div class="management-links"><button type="button" data-action="show-versions">修改与历史版本</button><button type="button" data-action="show-feedback">完成后反馈</button></div>'
   ].join('');
   return mobileShell(header, body, 'plan');
 }
@@ -622,23 +778,34 @@ function executionCard(iconName, label, action) {
 }
 
 function renderMe(state) {
-  const header = screenHeader('ACCOUNT & MEMORY', '我的', 'settings', 'toast');
+  const header = screenHeader('ACCOUNT & MEMORY', '我的', 'settings', 'toast', false, '打开账户设置');
   const suggestion = state === 'suggestion'
     ? '<div class="permission-card"><h3>要记住“你更喜欢室内展览”吗？</h3><p>这是根据最近 3 次反馈推断的长期偏好。确认前不会写入记忆。</p><div class="action-row"><button class="secondary-action" data-action="toast" data-message="已忽略这条建议">不记住</button><button class="primary-action" data-action="toast" data-message="已保存偏好，可随时删除">确认记住</button></div></div>'
     : '';
   const privacy = state === 'privacy'
     ? '<div class="state-inline-banner">' + icon('settings') + '<span>你可以导出或删除收藏、计划和记忆。删除操作会再次确认，不影响本机评审笔记。</span></div>'
     : '';
+  const memoryDetail = state === 'memory'
+    ? [
+        '<div class="memory-detail-card">',
+          '<div class="memory-detail-head"><span>', icon('spark'), '</span><div><strong>更喜欢室内展览</strong><small>已用于推荐</small></div></div>',
+          '<dl><div><dt>来源</dt><dd>你在 3 次计划反馈中确认</dd></div><div><dt>创建时间</dt><dd>2026-06-18</dd></div><div><dt>最近使用</dt><dd>今天的福田半日计划</dd></div><div><dt>影响过的计划</dt><dd>4 份 · 查看记录</dd></div></dl>',
+          '<div class="memory-actions"><button type="button" data-action="toast" data-message="已打开记忆编辑">修改</button><button type="button" data-action="toast" data-message="已停止将这条记忆用于推荐">停止用于推荐</button><button class="danger-text" type="button" data-action="toast" data-message="删除前会再次确认">删除</button></div>',
+        '</div>'
+      ].join('')
+    : '';
   const body = [
     suggestion,
     privacy,
+    memoryDetail,
     '<section class="profile-card">',
       '<h2>拾光正在逐步了解你</h2>',
       '<p>所有长期记忆都可以查看、修改或删除</p>',
       '<div class="profile-stats"><div><strong>12</strong><span>收藏</span></div><div><strong>08</strong><span>完成计划</span></div><div><strong>04</strong><span>已确认偏好</span></div></div>',
     '</section>',
-    sectionLabel('偏好记忆', '管理全部'),
-    chips([['偏好展览', 'accent'], ['喜欢室内', ''], ['轻松节奏', ''], ['少排队', 'lime']]),
+    sectionLabel('偏好记忆', '查看全部 4 条'),
+    '<button class="memory-summary" type="button" data-action="show-memory"><span>', icon('spark'), '</span><div><strong>更喜欢室内展览</strong><small>来自 3 次已确认反馈 · 今天使用过</small></div>', icon('chevron'), '</button>',
+    '<button class="memory-summary" type="button" data-action="toast" data-message="已打开“轻松节奏”的来源和使用记录"><span>', icon('clock'), '</span><div><strong>偏好轻松节奏</strong><small>由你在 2026-07-02 主动设置 · 影响 2 份计划</small></div>', icon('chevron'), '</button>',
     sectionLabel('提醒与计划', ''),
     '<div class="settings-card">',
       settingRow('bell', '周六半日计划', '行前 30 分钟提醒', '已开启', false),
@@ -646,8 +813,8 @@ function renderMe(state) {
     '</div>',
     sectionLabel('使用渠道', ''),
     '<div class="settings-card">',
-      settingRow('phone', 'Web / H5', '当前主要使用入口', '已连接', false),
-      settingRow('agent', '微信 ClawBot', '后续通过适配器连接同一 Agent', '未连接', true),
+      settingRow('phone', '网页版', '当前正在使用，收藏和计划会同步保留', '已连接', false),
+      settingRow('agent', '在微信里使用拾光', '以后可以直接把店名、链接和截图发给拾光', '尚未开放', true),
     '</div>',
     sectionLabel('数据与隐私', ''),
     '<div class="settings-card">',
@@ -669,7 +836,7 @@ function settingRow(iconName, title, detail, status, offline) {
 }
 
 function renderShare(state) {
-  const header = screenHeader('SHARED FROM SHIGUANG', '拾光', 'share', 'copy-link', true);
+  const header = screenHeader('SHARED FROM SHIGUANG', '拾光', 'share', 'copy-link', true, '复制分享链接');
   if (state !== 'valid') {
     const copy = {
       cancelled: ['这个计划已经取消', '分享者取消了原计划，因此路线不再提供。'],
@@ -689,6 +856,7 @@ function renderShare(state) {
       '<div class="share-cover-top"><div class="share-author"><span class="author-avatar">张</span>张子豪分享</div><span class="read-only-badge">READ ONLY</span></div>',
       '<h1>深圳周六<br>半日计划</h1>',
       '<p>7 月 25 日 · 14:00–19:00 · 福田区</p>',
+      '<div class="share-freshness"><span>最后更新：今天 15:30</span><span>7 月 26 日 19:00 失效</span></div>',
     '</section>',
     '<div class="privacy-note" style="margin-top:10px">', icon('check'), '<span>这是只读分享，不包含收藏库、历史反馈、私人记忆和精确住址。</span></div>',
     sectionLabel('行程安排', ''),
@@ -700,10 +868,10 @@ function renderShare(state) {
     '<div class="budget-bar">',
       '<div class="budget-stat"><small>预计花费</small><strong>¥60–100</strong></div>',
       '<div class="budget-stat"><small>总时长</small><strong>约 4.5 h</strong></div>',
-      '<div class="budget-stat"><small>更新</small><strong>15:30</strong></div>',
+      '<div class="budget-stat"><small>步行</small><strong>约 2.1 km</strong></div>',
     '</div>',
-    '<button class="primary-action lime" style="width:100%;margin-top:14px" type="button" data-action="go-agent">用拾光生成我的计划</button>',
-    '<button class="secondary-action" style="width:100%;margin-top:8px" type="button" data-action="copy-link">', icon('link'), '复制分享链接</button>'
+    '<button class="primary-action lime full-action" type="button" data-action="open-route">', icon('route'), '查看路线</button>',
+    '<div class="action-row"><button class="secondary-action" type="button" data-action="copy-link">', icon('link'), '复制链接</button><button class="secondary-action" type="button" data-action="go-agent">生成我的计划</button></div>'
   ].join('');
   return mobileShell(header, body, null, true);
 }
@@ -727,7 +895,8 @@ function renderScreen() {
 
 function renderStateControls(screen) {
   els.stateControls.innerHTML = screen.states.map(function (state) {
-    return '<button type="button" class="state-button ' + (stateByScreen[screen.id] === state[0] ? 'is-active' : '') + '" data-state="' + state[0] + '">' + state[1] + '</button>';
+    const isActive = stateByScreen[screen.id] === state[0];
+    return '<button type="button" class="state-button ' + (isActive ? 'is-active' : '') + '" data-state="' + state[0] + '" aria-pressed="' + String(isActive) + '">' + state[1] + '</button>';
   }).join('');
 }
 
@@ -740,8 +909,9 @@ function renderInteractions(screen) {
 
 function renderScreenList() {
   els.screenList.innerHTML = screenDefinitions.map(function (screen) {
+    const isActive = screen.id === currentScreenId;
     return [
-      '<button type="button" class="screen-link ', screen.id === currentScreenId ? 'is-active' : '', '" data-screen-link="', screen.id, '">',
+      '<button type="button" class="screen-link ', isActive ? 'is-active' : '', '" data-screen-link="', screen.id, '" ', isActive ? 'aria-current="page"' : '', '>',
         '<span class="screen-code">', screen.code, '</span>',
         '<div><strong>', screen.title, '</strong><small>', screen.short, '</small></div>',
       '</button>'
@@ -751,7 +921,13 @@ function renderScreenList() {
 
 function updateScreenList() {
   document.querySelectorAll('[data-screen-link]').forEach(function (button) {
-    button.classList.toggle('is-active', button.dataset.screenLink === currentScreenId);
+    const isActive = button.dataset.screenLink === currentScreenId;
+    button.classList.toggle('is-active', isActive);
+    if (isActive) {
+      button.setAttribute('aria-current', 'page');
+    } else {
+      button.removeAttribute('aria-current');
+    }
   });
 }
 
@@ -782,9 +958,23 @@ function setView(view) {
   els.singleView.classList.toggle('is-active', view === 'single');
   els.overviewView.classList.toggle('is-active', view === 'overview');
   document.querySelectorAll('[data-view]').forEach(function (button) {
-    button.classList.toggle('is-active', button.dataset.view === view);
+    const isActive = button.dataset.view === view;
+    button.classList.toggle('is-active', isActive);
+    button.setAttribute('aria-pressed', String(isActive));
   });
   if (view === 'overview') renderOverview();
+}
+
+function setCanvas(canvas) {
+  currentCanvas = canvas === 'desktop' ? 'desktop' : 'mobile';
+  document.body.classList.toggle('canvas-desktop', currentCanvas === 'desktop');
+  els.singleView.classList.toggle('desktop-canvas', currentCanvas === 'desktop');
+  els.canvasSize.textContent = currentCanvas === 'desktop' ? '960 × 760' : '390 × 844';
+  document.querySelectorAll('[data-canvas]').forEach(function (button) {
+    const isActive = button.dataset.canvas === currentCanvas;
+    button.classList.toggle('is-active', isActive);
+    button.setAttribute('aria-pressed', String(isActive));
+  });
 }
 
 function showToast(message) {
@@ -815,6 +1005,19 @@ function handlePrototypeAction(action, element) {
     goToScreen(element.dataset.screen);
     return;
   }
+  if (action === 'go-plan-permission') {
+    goToScreen('plan', 'permission');
+    return;
+  }
+  if (action === 'go-detail-missing') {
+    goToScreen('detail', 'missing');
+    return;
+  }
+  if (action === 'back-context') {
+    goToScreen('import', 'saved');
+    showToast('已返回刚才的对话位置');
+    return;
+  }
   if (action === 'submit-import') {
     goToScreen('import', 'recognizing');
     window.setTimeout(function () {
@@ -838,7 +1041,15 @@ function handlePrototypeAction(action, element) {
     return;
   }
   if (action === 'undo-import') {
-    showToast('已撤销本次收藏 · 5 秒内可恢复');
+    stateByScreen.import = 'undone';
+    renderScreen();
+    showToast('已撤销本次收藏，可以恢复');
+    return;
+  }
+  if (action === 'restore-import') {
+    stateByScreen.import = 'saved';
+    renderScreen();
+    showToast('收藏已恢复');
     return;
   }
   if (action === 'choose-candidate') {
@@ -847,14 +1058,37 @@ function handlePrototypeAction(action, element) {
     showToast('已选择福田区候选地点');
     return;
   }
+  if (action === 'choose-any') {
+    stateByScreen.detail = 'any_branch';
+    renderScreen();
+    showToast('已记录：任意分店都可以');
+    return;
+  }
+  if (action === 'choose-none') {
+    stateByScreen.detail = 'missing';
+    renderScreen();
+    showToast('候选均未采用，原始收藏已保留为待补充');
+    return;
+  }
   if (action === 'save-place') {
-    goToScreen('collection', 'default');
-    showToast('地点已确认并保存');
+    goToScreen('import', 'saved');
+    showToast('地点选择已保存，并返回原对话');
+    return;
+  }
+  if (action === 'delete-place') {
+    stateByScreen.import = 'undone';
+    goToScreen('import', 'undone');
+    showToast('收藏已删除，可以恢复');
     return;
   }
   if (action === 'confirm-plan') {
     goToScreen('confirmed', 'confirmed');
-    showToast('计划已确认，行前提醒已开启');
+    showToast('计划已确认；提醒尚未设置');
+    return;
+  }
+  if (action === 'show-alternatives') {
+    stateByScreen.plan = stateByScreen.plan === 'alternatives' ? 'draft' : 'alternatives';
+    renderScreen();
     return;
   }
   if (action === 'allow-external') {
@@ -870,9 +1104,9 @@ function handlePrototypeAction(action, element) {
     return;
   }
   if (action === 'deny-external') {
-    stateByScreen.plan = 'failed';
+    stateByScreen.plan = 'collection_only';
     renderScreen();
-    showToast('将只使用现有收藏');
+    showToast('已关闭外部补充，将只使用现有收藏');
     return;
   }
   if (action === 'retry-plan') {
@@ -885,10 +1119,88 @@ function handlePrototypeAction(action, element) {
     renderScreen();
     return;
   }
-  if (action === 'feedback-done') {
+  if (action === 'feedback-complete') {
+    stateByScreen.confirmed = 'confirmed';
+    renderScreen();
+    showToast('已记录完成；计划中的收藏地点已标记为去过');
+    return;
+  }
+  if (action === 'feedback-partial') {
     stateByScreen.confirmed = 'partial';
     renderScreen();
-    showToast('反馈已记录，仅用于调整下次排序');
+    return;
+  }
+  if (action === 'save-partial') {
+    stateByScreen.confirmed = 'confirmed';
+    renderScreen();
+    showToast('部分完成已保存，只更新了你选中的地点');
+    return;
+  }
+  if (action === 'feedback-incomplete') {
+    stateByScreen.confirmed = 'incomplete';
+    renderScreen();
+    return;
+  }
+  if (action === 'show-reminder') {
+    stateByScreen.confirmed = 'reminder';
+    renderScreen();
+    return;
+  }
+  if (action === 'enable-reminder') {
+    reminderEnabled = true;
+    stateByScreen.confirmed = 'confirmed';
+    renderScreen();
+    showToast('已设置出发前 60 分钟提醒');
+    return;
+  }
+  if (action === 'skip-reminder' || action === 'close-state-panel') {
+    stateByScreen.confirmed = 'confirmed';
+    renderScreen();
+    return;
+  }
+  if (action === 'show-share-preview') {
+    stateByScreen.confirmed = 'share_preview';
+    renderScreen();
+    return;
+  }
+  if (action === 'create-share') {
+    shareActive = true;
+    stateByScreen.confirmed = 'share_active';
+    renderScreen();
+    showToast('只读分享链接已创建');
+    return;
+  }
+  if (action === 'show-share-management') {
+    stateByScreen.confirmed = 'share_active';
+    renderScreen();
+    return;
+  }
+  if (action === 'open-share') {
+    goToScreen('share', 'valid');
+    return;
+  }
+  if (action === 'revoke-share') {
+    shareActive = false;
+    stateByScreen.share = 'revoked';
+    stateByScreen.confirmed = 'confirmed';
+    renderScreen();
+    showToast('分享已关闭，原链接不再显示计划');
+    return;
+  }
+  if (action === 'show-versions') {
+    stateByScreen.confirmed = 'versions';
+    renderScreen();
+    return;
+  }
+  if (action === 'cancel-plan') {
+    stateByScreen.share = 'cancelled';
+    goToScreen('share', 'cancelled');
+    showToast('计划已取消，分享页已同步停止');
+    return;
+  }
+  if (action === 'show-memory') {
+    stateByScreen.me = 'memory';
+    renderScreen();
     return;
   }
   if (action === 'open-route') {
@@ -1005,6 +1317,13 @@ function bindEvents() {
   document.querySelectorAll('[data-view]').forEach(function (button) {
     button.addEventListener('click', function () {
       setView(button.dataset.view);
+    });
+  });
+
+  document.querySelectorAll('[data-canvas]').forEach(function (button) {
+    button.addEventListener('click', function () {
+      setCanvas(button.dataset.canvas);
+      if (currentView !== 'single') setView('single');
     });
   });
 

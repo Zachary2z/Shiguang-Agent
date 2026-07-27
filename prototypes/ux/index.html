@@ -3,9 +3,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="拾光 UX/UI 浏览器评审原型" />
-    <title>拾光｜UX/UI 评审原型</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <meta name="description" content="拾光完整 UI/UX 浏览器评审原型 v2" />
+    <title>拾光｜完整 UI/UX 原型 v2</title>
+    <link rel="stylesheet" href="./styles.css?v=11" />
   </head>
   <body>
     <svg class="svg-sprite" aria-hidden="true">
@@ -61,17 +61,25 @@
       <div class="review-brand">
         <span class="brand-mark"><svg><use href="#i-spark"></use></svg></span>
         <div>
-          <strong>拾光 UX Lab</strong>
-          <span>浏览器评审原型 · 不接真实数据</span>
+          <strong>拾光完整原型 v2</strong>
+          <span>移动端与桌面端 · 不接真实数据</span>
         </div>
       </div>
 
       <div class="header-controls" aria-label="视图切换">
+        <div class="segmented-control" role="group" aria-label="产品画布">
+          <button class="segment canvas-segment is-active" type="button" data-canvas="mobile" aria-pressed="true">
+            <svg><use href="#i-phone"></use></svg>移动 H5
+          </button>
+          <button class="segment canvas-segment" type="button" data-canvas="desktop" aria-pressed="false">
+            <svg><use href="#i-grid"></use></svg>桌面 Web
+          </button>
+        </div>
         <div class="segmented-control" role="group" aria-label="原型视图">
-          <button class="segment is-active" type="button" data-view="single">
+          <button class="segment is-active" type="button" data-view="single" aria-pressed="true">
             <svg><use href="#i-phone"></use></svg>单页体验
           </button>
-          <button class="segment" type="button" data-view="overview">
+          <button class="segment" type="button" data-view="overview" aria-pressed="false">
             <svg><use href="#i-grid"></use></svg>全部页面
           </button>
         </div>
@@ -82,7 +90,7 @@
     <div class="review-layout">
       <aside class="screen-rail" aria-label="页面目录">
         <div class="rail-heading">
-          <span class="eyebrow">MOBILE FLOW</span>
+          <span class="eyebrow">RESPONSIVE FLOW</span>
           <h1>从收藏<br />走到行动</h1>
           <p>点击页面名称，或直接在中间的手机里完成主流程。</p>
         </div>
@@ -100,7 +108,7 @@
             <h2 id="stageTitle">Agent 首页</h2>
           </div>
           <div class="stage-meta">
-            <span>390 × 844</span>
+            <span id="canvasSize">390 × 844</span>
             <span class="stage-state" id="stageState">默认状态</span>
           </div>
         </div>
@@ -154,7 +162,7 @@
           </div>
           <label class="note-field">
             <span>关于 <b id="noteScreenName">M01 Agent 首页</b></span>
-            <textarea id="reviewNote" rows="4" placeholder="例如：输入框应该更突出；这张卡片信息太多……"></textarea>
+            <textarea id="reviewNote" name="review_note" rows="4" autocomplete="off" placeholder="例如：输入框应该更突出；这张卡片信息太多……"></textarea>
           </label>
           <div class="note-actions">
             <button class="secondary-button" id="saveNote" type="button">
@@ -170,6 +178,6 @@
     </div>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="./app.js"></script>
+    <script src="./app.js?v=11"></script>
   </body>
 </html>

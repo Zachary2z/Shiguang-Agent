@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f6f1" />
+    <meta
+      name="description"
+      content="拾光正式 Web/H5 UI/UX 方向评审稿，用于 M1-2 开始前确认视觉与响应式框架。"
+    />
+    <title>拾光｜正式 UI 方向 0.2</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <svg class="svg-sprite" aria-hidden="true">
+      <symbol id="i-spark" viewBox="0 0 24 24">
+        <path d="M12 2.75c.48 4.94 2.76 7.22 7.7 7.7-4.94.48-7.22 2.76-7.7 7.7-.48-4.94-2.76-7.22-7.7-7.7 4.94-.48 7.22-2.76 7.7-7.7Z" />
+        <path d="M19 16.5c.2 2.05 1.15 3 3.2 3.2-2.05.2-3 1.15-3.2 3.2-.2-2.05-1.15-3-3.2-3.2 2.05-.2 3-1.15 3.2-3.2Z" />
+      </symbol>
+      <symbol id="i-agent" viewBox="0 0 24 24">
+        <path d="M5 5.5h14a2.5 2.5 0 0 1 2.5 2.5v7a2.5 2.5 0 0 1-2.5 2.5h-7l-4.5 3v-3H5A2.5 2.5 0 0 1 2.5 15V8A2.5 2.5 0 0 1 5 5.5Z" />
+        <path d="M8 11.5h.01M12 11.5h.01M16 11.5h.01" />
+      </symbol>
+      <symbol id="i-bookmark" viewBox="0 0 24 24">
+        <path d="M6.5 3.5h11v17l-5.5-3.4-5.5 3.4v-17Z" />
+      </symbol>
+      <symbol id="i-calendar" viewBox="0 0 24 24">
+        <path d="M5 4.5h14a2 2 0 0 1 2 2v13H3v-13a2 2 0 0 1 2-2ZM7.5 2.5v4M16.5 2.5v4M3 9h18" />
+        <path d="M7 13h3M14 13h3M7 16.5h3" />
+      </symbol>
+      <symbol id="i-user" viewBox="0 0 24 24">
+        <circle cx="12" cy="8" r="4" />
+        <path d="M4.5 21a7.5 7.5 0 0 1 15 0" />
+      </symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24">
+        <path d="m9.5 14.5 5-5M7.8 17.2l-1 1a3.54 3.54 0 0 1-5-5l3.4-3.4a3.54 3.54 0 0 1 5 0M16.2 6.8l1-1a3.54 3.54 0 0 1 5 5l-3.4 3.4a3.54 3.54 0 0 1-5 0" />
+      </symbol>
+      <symbol id="i-image" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m3 16 4.5-4 4 3 3-2.5L21 17" />
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24"><path d="m3 4 18 8-18 8 3-8-3-8Z" /><path d="M6 12h15" /></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M5 17h14l-1.5-2.5V10a5.5 5.5 0 0 0-11 0v4.5L5 17ZM10 20h4" /></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" /></symbol>
+    </svg>
+
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+    <div class="direction-banner">
+      <span class="direction-mark" aria-hidden="true"><svg><use href="#i-spark"></use></svg></span>
+      <p><strong>正式 UI 方向 0.2</strong><span>保留原型视觉语言 · 不连接真实数据</span></p>
+      <div class="viewport-switch" role="group" aria-label="预览尺寸">
+        <button class="is-active" type="button" data-viewport="fluid">响应式</button>
+        <button type="button" data-viewport="mobile">390</button>
+        <button type="button" data-viewport="desktop">1440</button>
+      </div>
+    </div>
+
+    <div class="preview-stage" data-preview="fluid">
+      <div class="product-shell">
+        <aside class="desktop-rail" aria-label="主导航">
+          <div class="brand-lockup">
+            <span class="brand-symbol" aria-hidden="true"><svg><use href="#i-spark"></use></svg></span>
+            <div><strong>拾光</strong><small>把收藏变成行动</small></div>
+          </div>
+
+          <nav class="rail-nav">
+            <button class="nav-link is-active" type="button" data-view="agent">
+              <span aria-hidden="true"><svg><use href="#i-agent"></use></svg></span><strong>Agent</strong>
+            </button>
+            <button class="nav-link" type="button" data-view="collection">
+              <span aria-hidden="true"><svg><use href="#i-bookmark"></use></svg></span><strong>收藏</strong><b>12</b>
+            </button>
+            <button class="nav-link" type="button" data-view="plan">
+              <span aria-hidden="true"><svg><use href="#i-calendar"></use></svg></span><strong>计划</strong><b>1</b>
+            </button>
+            <button class="nav-link" type="button" data-view="system">
+              <span aria-hidden="true"><svg><use href="#i-user"></use></svg></span><strong>我的</strong>
+            </button>
+          </nav>
+
+          <div class="rail-note">
+            <span class="live-dot" aria-hidden="true"></span>
+            <p><strong>计划城市：深圳</strong><small>其他城市收藏仍会保留</small></p>
+          </div>
+
+          <button class="profile-button" type="button">
+            <span class="avatar">张</span>
+            <span><strong>张子豪</strong><small>个人空间</small></span>
+            <i aria-hidden="true">›</i>
+          </button>
+        </aside>
+
+        <header class="mobile-header">
+          <div class="brand-lockup">
+            <span class="brand-symbol" aria-hidden="true"><svg><use href="#i-spark"></use></svg></span>
+            <div><strong>拾光</strong><small>深圳 · 今天</small></div>
+          </div>
+          <button class="icon-button" type="button" aria-label="打开通知"><svg><use href="#i-bell"></use></svg></button>
+        </header>
+
+        <main id="main-content" class="main-canvas" tabindex="-1">
+          <section class="product-view is-active" data-product-view="agent" aria-labelledby="agent-title">
+            <div class="page-heading">
+              <div>
+                <p class="eyebrow">今天想从哪里开始？</p>
+                <h1 id="agent-title">晚上好，张子豪</h1>
+                <p>把刚看到的地方交给我，或者告诉我你什么时候有空。</p>
+              </div>
+              <button class="quiet-button desktop-only" type="button">查看 Agent 记录</button>
+            </div>
+
+            <section class="composer-card" aria-labelledby="composer-title">
+              <div class="composer-copy">
+                <span class="agent-orbit" aria-hidden="true"><svg><use href="#i-spark"></use></svg></span>
+                <div>
+                  <p class="hero-kicker">PERSONAL CITY AGENT</p>
+                  <h2 id="composer-title">把想去的地方发给我，或者告诉我你什么时候有空</h2>
+                </div>
+              </div>
+              <label class="composer-input">
+                <span class="sr-only">输入地点、链接或计划要求</span>
+                <textarea
+                  name="agent-message"
+                  rows="2"
+                  autocomplete="off"
+                  placeholder="例如：帮我收藏深圳当代艺术与城市规划馆…"
+                ></textarea>
+                <span class="composer-actions">
+                  <button type="button"><svg><use href="#i-image"></use></svg>图片</button>
+                  <button type="button"><svg><use href="#i-link"></use></svg>链接</button>
+                  <button class="send-button" type="button" aria-label="发送"><svg><use href="#i-send"></use></svg></button>
+                </span>
+              </label>
+            </section>
+
+            <div class="quick-start-heading">
+              <span>快速开始</span>
+              <small>选择任务，或直接在上方输入</small>
+            </div>
+            <div class="intent-grid">
+              <button class="intent-card collect" type="button">
+                <span class="intent-icon" aria-hidden="true"><svg><use href="#i-bookmark"></use></svg></span>
+                <span><strong>收藏一个地点</strong><small>店名、链接或截图都可以</small></span>
+                <i aria-hidden="true"><svg><use href="#i-chevron"></use></svg></i>
+              </button>
+              <button class="intent-card arrange" type="button">
+                <span class="intent-icon" aria-hidden="true"><svg><use href="#i-calendar"></use></svg></span>
+                <span><strong>帮我安排时间</strong><small>从已有收藏生成计划</small></span>
+                <i aria-hidden="true"><svg><use href="#i-chevron"></use></svg></i>
+              </button>
+            </div>
+
+            <div class="section-heading">
+              <div><p class="eyebrow">你的城市线索</p><h2>最近收藏</h2></div>
+              <button class="text-button" type="button" data-view="collection">查看全部</button>
+            </div>
+
+            <div class="recent-grid">
+              <article class="place-tile">
+                <div class="place-art museum" aria-hidden="true"><span>福田</span></div>
+                <div>
+                  <p class="status-line"><span class="status-dot confirmed"></span>地点已确认</p>
+                  <h3>深圳当代艺术与城市规划馆</h3>
+                  <p>免费 · 室内 · 周一闭馆待复核</p>
+                </div>
+                <button type="button" aria-label="查看深圳当代艺术与城市规划馆">›</button>
+              </article>
+              <article class="place-tile">
+                <div class="place-art town" aria-hidden="true"><span>南山</span></div>
+                <div>
+                  <p class="status-line"><span class="status-dot confirmed"></span>地点已确认</p>
+                  <h3>南头古城</h3>
+                  <p>约 ¥80 · 户外 · 适合朋友</p>
+                </div>
+                <button type="button" aria-label="查看南头古城">›</button>
+              </article>
+            </div>
+          </section>
+
+          <section class="product-view" data-product-view="collection" aria-labelledby="collection-title" hidden>
+            <div class="page-heading">
+              <div>
+                <p class="eyebrow">你的城市记忆</p>
+                <h1 id="collection-title">收藏</h1>
+                <p>先保留下来，等真正有空时再决定怎么去。</p>
+              </div>
+              <button class="primary-button" type="button">＋ 添加收藏</button>
+            </div>
+
+            <div class="collection-summary">
+              <div><strong>12</strong><span>全部收藏</span></div>
+              <div><strong>9</strong><span>可参与深圳计划</span></div>
+              <div><strong>3</strong><span>需要处理</span></div>
+            </div>
+
+            <div class="toolbar">
+              <label class="search-control">
+                <span aria-hidden="true">⌕</span>
+                <span class="sr-only">搜索收藏</span>
+                <input name="collection-search" autocomplete="off" placeholder="搜索名称、区域或标签…" />
+              </label>
+              <div class="city-tabs" role="group" aria-label="按城市筛选">
+                <button class="is-active" type="button">全部</button>
+                <button type="button">深圳 <span>9</span></button>
+                <button type="button">广州 <span>2</span></button>
+                <button type="button">城市待确认 <span>1</span></button>
+              </div>
+            </div>
+
+            <div class="collection-layout">
+              <div class="collection-cards">
+                <article class="collection-card">
+                  <div class="place-art museum" aria-hidden="true"><span>福田</span></div>
+                  <div class="collection-card-body">
+                    <p class="status-line"><span class="status-dot confirmed"></span>可参与深圳计划</p>
+                    <h2>深圳当代艺术与城市规划馆</h2>
+                    <p>福田区福中路 184 号</p>
+                    <div class="tag-row"><span>展览</span><span>室内</span><span>免费</span></div>
+                  </div>
+                  <button type="button" aria-label="查看收藏详情">›</button>
+                </article>
+
+                <article class="collection-card needs-action">
+                  <div class="place-art cafe" aria-hidden="true"><span>城市待确认</span></div>
+                  <div class="collection-card-body">
+                    <p class="status-line"><span class="status-dot pending"></span>暂不参与计划</p>
+                    <h2>一尺花园</h2>
+                    <p>找到了 3 个可能地点，需要确认分店。</p>
+                    <div class="tag-row"><span>待选择</span><span>咖啡</span></div>
+                  </div>
+                  <button class="resolve-button" type="button">确认地点</button>
+                </article>
+
+                <article class="collection-card excluded">
+                  <div class="place-art gallery" aria-hidden="true"><span>广州</span></div>
+                  <div class="collection-card-body">
+                    <p class="status-line"><span class="status-dot neutral"></span>不参与当前计划</p>
+                    <h2>广东美术馆新馆</h2>
+                    <p>收藏属于广州；当前计划城市为深圳。</p>
+                    <div class="tag-row"><span>展览</span><span>室内</span></div>
+                  </div>
+                  <button type="button" aria-label="查看收藏详情">›</button>
+                </article>
+              </div>
+
+              <aside class="context-card">
+                <p class="eyebrow">为什么有些收藏未参与？</p>
+                <h2>规则清楚，收藏不丢失</h2>
+                <ul>
+                  <li><span>1</span>地点或城市还没确认</li>
+                  <li><span>2</span>收藏城市不是深圳</li>
+                  <li><span>3</span>活动已经结束或时间不合适</li>
+                </ul>
+                <p>这些收藏仍会保留，可以继续编辑或留待以后使用。</p>
+              </aside>
+            </div>
+          </section>
+
+          <section class="product-view" data-product-view="plan" aria-labelledby="plan-title" hidden>
+            <div class="page-heading compact">
+              <div>
+                <p class="eyebrow">计划草案 · 尚未执行</p>
+                <h1 id="plan-title">周六的福田半日计划</h1>
+                <p>14:00–19:00 · 公共交通 · 预算未设置</p>
+              </div>
+              <button class="quiet-button" type="button">调整条件</button>
+            </div>
+
+            <div class="plan-layout">
+              <div class="plan-main">
+                <div class="plan-intro">
+                  <div>
+                    <span class="match-label">符合 5 项条件</span>
+                    <h2>一个核心展览，一次休息，留出回程余地。</h2>
+                    <p>优先使用了 2 个收藏；中途休息来自高德补充，尚未加入收藏。</p>
+                  </div>
+                  <button type="button">查看 2 个备选</button>
+                </div>
+
+                <ol class="light-trail">
+                  <li>
+                    <time>14:00</time>
+                    <span class="trail-node"></span>
+                    <article>
+                      <div class="stop-top"><span class="source-pill saved">你的收藏</span><span>预计 2 小时</span></div>
+                      <h3>深圳当代艺术与城市规划馆</h3>
+                      <p>免费 · 室内 · 开放状态将在出发前再次核验</p>
+                      <button type="button">查看地点</button>
+                    </article>
+                  </li>
+                  <li>
+                    <time>16:30</time>
+                    <span class="trail-node external"></span>
+                    <article class="external-stop">
+                      <div class="stop-top"><span class="source-pill external">高德补充 · 未收藏</span><span>步行 12 分钟</span></div>
+                      <h3>One Avenue 咖啡休息</h3>
+                      <p>补足中途休息；价格约 ¥60–100，营业时间待确认。</p>
+                      <div class="inline-actions">
+                        <button type="button">查看原因</button>
+                        <button type="button">替换</button>
+                        <button type="button">删除</button>
+                        <button type="button">加入收藏</button>
+                      </div>
+                    </article>
+                  </li>
+                  <li class="optional">
+                    <time>18:00</time>
+                    <span class="trail-node"></span>
+                    <article>
+                      <div class="stop-top"><span class="source-pill saved">你的收藏</span><span>可选延伸</span></div>
+                      <h3>市民中心夜景散步</h3>
+                      <p>约 45 分钟；下雨时可以直接跳过，不影响主计划。</p>
+                      <button type="button">查看地点</button>
+                    </article>
+                  </li>
+                </ol>
+              </div>
+
+              <aside class="plan-side">
+                <section class="metric-card">
+                  <p class="eyebrow">计划概览</p>
+                  <dl>
+                    <div><dt>预计花费</dt><dd>¥60–100</dd></div>
+                    <div><dt>交通与步行</dt><dd>约 2.1 km</dd></div>
+                    <div><dt>结束留白</dt><dd>25 分钟</dd></div>
+                  </dl>
+                </section>
+
+                <section class="risk-card">
+                  <p class="eyebrow">出发前需要留意</p>
+                  <h2>2 项待确认</h2>
+                  <ul>
+                    <li>咖啡店价格与营业时间来自外部信息</li>
+                    <li>傍晚可能有阵雨，散步为可选安排</li>
+                  </ul>
+                  <small>地点与天气刚刚核验</small>
+                </section>
+
+                <section class="reason-card">
+                  <p class="eyebrow">为什么这样安排</p>
+                  <p>核心展览来自收藏，路线集中在福田；没有为了填满 5 小时继续外搜。</p>
+                </section>
+              </aside>
+            </div>
+
+            <div class="sticky-action">
+              <div><strong>这是草案</strong><span>确认后才会生成路线与日历；提醒仍需单独设置。</span></div>
+              <button class="quiet-button" type="button">继续调整</button>
+              <button class="primary-button" type="button">确认这个计划</button>
+            </div>
+          </section>
+
+          <section class="product-view" data-product-view="system" aria-labelledby="system-title" hidden>
+            <div class="page-heading">
+              <div>
+                <p class="eyebrow">透明、可控、随时可以改</p>
+                <h1 id="system-title">状态与权限组件</h1>
+                <p>这一页用于确认正式产品面对不确定、授权和恢复时的共同语言。</p>
+              </div>
+            </div>
+
+            <div class="system-grid">
+              <section class="specimen-card">
+                <p class="eyebrow">收藏识别</p>
+                <h2>阶段式进度，不伪造百分比</h2>
+                <ol class="step-progress">
+                  <li class="done"><span>✓</span><div><strong>内容已收到</strong><small>图片安全检查完成</small></div></li>
+                  <li class="active"><span>2</span><div><strong>正在识别地点</strong><small>核对名称、区域和来源线索…</small></div></li>
+                  <li><span>3</span><div><strong>等待整理结果</strong><small>随后会显示可修改的收藏卡片</small></div></li>
+                </ol>
+              </section>
+
+              <section class="specimen-card">
+                <p class="eyebrow">外部补充授权</p>
+                <h2>收藏不够时，由你决定</h2>
+                <p>可以允许拾光从高德补充少量固定地点；不会搜索外部活动，也不会自动加入收藏。</p>
+                <div class="stack-actions">
+                  <button class="primary-button" type="button">允许补充地点</button>
+                  <button class="quiet-button" type="button">仅用现有收藏生成</button>
+                  <button class="text-button" type="button">继续添加收藏</button>
+                </div>
+              </section>
+
+              <section class="specimen-card">
+                <p class="eyebrow">计划确认后</p>
+                <h2>要设置行前提醒吗？</h2>
+                <p>建议在出发前 60 分钟提醒，仅对这份计划生效。</p>
+                <label class="field-row">
+                  <span>提醒时间</span>
+                  <select name="reminder-time">
+                    <option>出发前 60 分钟</option>
+                    <option>出发前 30 分钟</option>
+                    <option>出发前 2 小时</option>
+                  </select>
+                </label>
+                <div class="stack-actions horizontal">
+                  <button class="quiet-button" type="button">暂不设置</button>
+                  <button class="primary-button" type="button">设置提醒</button>
+                </div>
+              </section>
+
+              <section class="specimen-card">
+                <p class="eyebrow">完成反馈</p>
+                <h2>这次计划完成得怎么样？</h2>
+                <div class="feedback-options">
+                  <button type="button"><span aria-hidden="true">✓</span><strong>已完成</strong><small>标记实际到访地点</small></button>
+                  <button type="button"><span aria-hidden="true">◐</span><strong>部分完成</strong><small>继续选择到访地点</small></button>
+                  <button type="button"><span aria-hidden="true">–</span><strong>未完成</strong><small>收藏保持原状态</small></button>
+                </div>
+              </section>
+
+              <section class="specimen-card wide">
+                <p class="eyebrow">分享前预览</p>
+                <div class="share-preview">
+                  <div>
+                    <h2>将分享这些内容</h2>
+                    <ul><li>日期、公开地点和时间线</li><li>交通、费用、风险和路线入口</li><li>最新确认版本与更新时间</li></ul>
+                  </div>
+                  <div>
+                    <h2>不会分享</h2>
+                    <ul><li>私人起点、收藏来源和备注</li><li>完整收藏库、记忆和 Agent 对话</li><li>未确认草案和未入选候选</li></ul>
+                  </div>
+                </div>
+                <div class="share-expiry">
+                  <span>链接将在计划结束 7 天后失效</span>
+                  <button class="primary-button" type="button">确认并创建链接</button>
+                </div>
+              </section>
+            </div>
+          </section>
+        </main>
+
+        <aside class="desktop-context" aria-label="当前设计说明">
+          <p class="eyebrow">设计原则</p>
+          <h2>让每个状态都能继续往前走</h2>
+          <ol>
+            <li><span>01</span><div><strong>收藏优先</strong><p>不把外部推荐伪装成你的兴趣。</p></div></li>
+            <li><span>02</span><div><strong>信息透明</strong><p>来源、风险和待确认项同时出现。</p></div></li>
+            <li><span>03</span><div><strong>操作可逆</strong><p>自动保存、撤销和版本都能恢复。</p></div></li>
+            <li><span>04</span><div><strong>重要行为确认</strong><p>提醒、分享和长期记忆不默认开启。</p></div></li>
+            <li><span>05</span><div><strong>异常可恢复</strong><p>失败提供下一步，不让用户卡死。</p></div></li>
+          </ol>
+          <div class="token-strip">
+            <span style="--swatch:#f5f6f1"></span>
+            <span style="--swatch:#173f3a"></span>
+            <span style="--swatch:#c7ed6b"></span>
+            <span style="--swatch:#2f6f66"></span>
+            <span style="--swatch:#c85f4c"></span>
+          </div>
+        </aside>
+
+        <nav class="mobile-bottom-nav" aria-label="主导航">
+          <button class="is-active" type="button" data-view="agent"><span aria-hidden="true"><svg><use href="#i-agent"></use></svg></span><strong>Agent</strong></button>
+          <button type="button" data-view="collection"><span aria-hidden="true"><svg><use href="#i-bookmark"></use></svg></span><strong>收藏</strong></button>
+          <button type="button" data-view="plan"><span aria-hidden="true"><svg><use href="#i-calendar"></use></svg></span><strong>计划</strong></button>
+          <button type="button" data-view="system"><span aria-hidden="true"><svg><use href="#i-user"></use></svg></span><strong>我的</strong></button>
+        </nav>
+      </div>
+    </div>
+
+    <div class="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>
