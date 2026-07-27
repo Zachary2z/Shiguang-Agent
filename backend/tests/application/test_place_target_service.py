@@ -213,6 +213,33 @@ async def _record_result(
         )
 
 
+async def _attach_source(
+    database: Database,
+    *,
+    user: User,
+    item: CollectionItem,
+) -> Source:
+    source = Source(
+        id=generate_source_id(),
+        user_id=user.id,
+        type=SourceType.TEXT,
+        parse_status=SourceParseStatus.PARSED,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        await repository.add_source(user_id=user.id, source=source)
+        await repository.add_collection_source(
+            user_id=user.id,
+            collection_item_id=item.id,
+            source_id=source.id,
+            created_at=NOW,
+        )
+        await session.commit()
+    return source
+
+
 def _candidate_choice(index: int) -> PlaceSelection:
     candidate = _candidate(index)
     return PlaceSelection(
@@ -637,6 +664,12 @@ async def test_duplicate_exact_poi_reuses_collection_and_keeps_both_sources(
     database = Database(database_url)
     user, first_source, first_initial = await _seed_pending(database)
     _, second_source, second_initial = await _seed_pending(database, user=user)
+    third_source = await _attach_source(
+        database,
+        user=user,
+        item=second_initial,
+    )
+    _, foreign_source, _ = await _seed_pending(database)
     first_pending = await _record(database, user, first_source, first_initial)
     second_pending = await _record(database, user, second_source, second_initial)
 
@@ -662,18 +695,112 @@ async def test_duplicate_exact_poi_reuses_collection_and_keeps_both_sources(
             idempotency_key="exact-second",
             expected_version=second_pending.version,
         )
+    async with database.session() as session:
+        replay = await PlaceTargetSelectionService(session=session).apply_selection(
+            user_id=user.id,
+            collection_item_id=second_pending.id,
+            source_id=second_source.id,
+            selections=(_candidate_choice(0),),
+            queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(second_pending),
+            idempotency_key="exact-second",
+            expected_version=second_pending.version,
+        )
+        with pytest.raises(IdempotencyConflictError):
+            await PlaceTargetSelectionService(session=session).apply_selection(
+                user_id=user.id,
+                collection_item_id=second_pending.id,
+                source_id=second_source.id,
+                selections=(_candidate_choice(1),),
+                queried_at=NOW,
+                snapshot_fingerprint=_snapshot_fingerprint(second_pending),
+                idempotency_key="exact-second",
+                expected_version=second_pending.version,
+            )
 
     assert first.items[0].id == second.items[0].id
+    assert replay.replayed is True
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM collection_items WHERE place_scope = 'exact' "
             "AND poi_id = ? AND status <> 'deleted'",
             (M_STAND_COASTAL.poi_id,),
         ).fetchone() == (1,)
-        assert connection.execute(
-            "SELECT COUNT(*) FROM collection_sources WHERE collection_item_id = ?",
+        linked_sources = connection.execute(
+            "SELECT source_id FROM collection_sources WHERE collection_item_id = ? "
+            "ORDER BY source_id",
             (first.items[0].id,),
-        ).fetchone() == (2,)
+        ).fetchall()
+        assert linked_sources == sorted(
+            [(first_source.id,), (second_source.id,), (third_source.id,)]
+        )
+        assert (foreign_source.id,) not in linked_sources
+
+
+@pytest.mark.asyncio
+async def test_any_branch_merge_preserves_every_source_without_replay_duplicates(
+    target_database: tuple[str, Path],
+) -> None:
+    database_url, database_path = target_database
+    database = Database(database_url)
+    user, first_source, first_initial = await _seed_pending(database)
+    _, second_source, second_initial = await _seed_pending(database, user=user)
+    extra_source = await _attach_source(
+        database,
+        user=user,
+        item=second_initial,
+    )
+    first_pending = await _record(database, user, first_source, first_initial)
+    second_pending = await _record(database, user, second_source, second_initial)
+    selection = (PlaceSelection(kind=PlaceSelectionKind.ANY_BRANCH),)
+
+    async with database.session() as session:
+        first = await PlaceTargetSelectionService(session=session).apply_selection(
+            user_id=user.id,
+            collection_item_id=first_pending.id,
+            source_id=first_source.id,
+            selections=selection,
+            queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(first_pending),
+            idempotency_key="brand-all-sources-first",
+            expected_version=first_pending.version,
+            brand_identity=_brand(),
+        )
+    async with database.session() as session:
+        merged = await PlaceTargetSelectionService(session=session).apply_selection(
+            user_id=user.id,
+            collection_item_id=second_pending.id,
+            source_id=second_source.id,
+            selections=selection,
+            queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(second_pending),
+            idempotency_key="brand-all-sources-second",
+            expected_version=second_pending.version,
+            brand_identity=_brand(),
+        )
+    async with database.session() as session:
+        replay = await PlaceTargetSelectionService(session=session).apply_selection(
+            user_id=user.id,
+            collection_item_id=second_pending.id,
+            source_id=second_source.id,
+            selections=selection,
+            queried_at=NOW,
+            snapshot_fingerprint=_snapshot_fingerprint(second_pending),
+            idempotency_key="brand-all-sources-second",
+            expected_version=second_pending.version,
+            brand_identity=_brand(),
+        )
+
+    assert first.items[0].id == merged.items[0].id
+    assert replay.replayed is True
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT source_id FROM collection_sources WHERE collection_item_id = ? "
+            "ORDER BY source_id",
+            (first.items[0].id,),
+        ).fetchall() == sorted(
+            [(first_source.id,), (second_source.id,), (extra_source.id,)]
+        )
 
 
 @pytest.mark.asyncio

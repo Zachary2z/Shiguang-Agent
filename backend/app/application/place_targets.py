@@ -93,11 +93,10 @@ class PlaceTargetSelectionService:
                     poi_id=auto_candidate.poi_id,
                 )
                 if existing is not None:
-                    await self._repository.ensure_collection_source(
+                    await self._preserve_all_sources(
                         user_id=owner,
-                        collection_item_id=existing.id,
-                        source_id=source,
-                        created_at=snapshot.queried_at,
+                        original_item_id=item.id,
+                        target_item_id=existing.id,
                     )
                     await self._repository.delete_collection_item(
                         user_id=owner,
@@ -145,7 +144,7 @@ class PlaceTargetSelectionService:
         *,
         user_id: str,
         collection_item_id: str,
-        source_id: str,
+        source_id: str | None = None,
         selections: tuple[PlaceSelection, ...],
         queried_at: datetime,
         snapshot_fingerprint: str,
@@ -155,7 +154,11 @@ class PlaceTargetSelectionService:
     ) -> PlaceSelectionResult:
         owner = validate_user_id(user_id)
         identifier = validate_collection_item_id(collection_item_id)
-        source = validate_source_id(source_id)
+        source = await self._resolve_selection_source(
+            owner=owner,
+            collection_item_id=identifier,
+            source_id=source_id,
+        )
         expected_queried_at = require_aware_utc(queried_at)
         expected_snapshot_fingerprint = self._validate_snapshot_fingerprint(
             snapshot_fingerprint
@@ -265,7 +268,6 @@ class PlaceTargetSelectionService:
                 items = await self._choose_any_branch(
                     owner=owner,
                     item=item,
-                    source_id=source_id,
                     snapshot=snapshot,
                     expected_version=expected_version,
                     brand=brand_identity,
@@ -274,7 +276,6 @@ class PlaceTargetSelectionService:
                 items = await self._choose_exact(
                     owner=owner,
                     item=item,
-                    source_id=source_id,
                     snapshot=snapshot,
                     choices=choices,
                     expected_version=expected_version,
@@ -324,7 +325,6 @@ class PlaceTargetSelectionService:
         *,
         owner: str,
         item: CollectionItem,
-        source_id: str,
         snapshot: PlaceCandidateSnapshot,
         expected_version: int,
         brand: ConfirmedBrandIdentity,
@@ -334,11 +334,10 @@ class PlaceTargetSelectionService:
             brand=brand,
         )
         if existing is not None:
-            await self._repository.ensure_collection_source(
+            await self._preserve_all_sources(
                 user_id=owner,
-                collection_item_id=existing.id,
-                source_id=source_id,
-                created_at=snapshot.queried_at,
+                original_item_id=item.id,
+                target_item_id=existing.id,
             )
             if existing.id != item.id and item.status is not CollectionStatus.DELETED:
                 await self._repository.delete_collection_item(
@@ -384,7 +383,6 @@ class PlaceTargetSelectionService:
         *,
         owner: str,
         item: CollectionItem,
-        source_id: str,
         snapshot: PlaceCandidateSnapshot,
         choices: tuple[PlaceSelection, ...],
         expected_version: int,
@@ -403,11 +401,10 @@ class PlaceTargetSelectionService:
                 poi_id=candidate.poi_id,
             )
             if existing is not None:
-                await self._repository.ensure_collection_source(
+                await self._preserve_all_sources(
                     user_id=owner,
-                    collection_item_id=existing.id,
-                    source_id=source_id,
-                    created_at=snapshot.queried_at,
+                    original_item_id=item.id,
+                    target_item_id=existing.id,
                 )
                 results.append(existing)
                 original_used = original_used or existing.id == item.id
@@ -441,11 +438,10 @@ class PlaceTargetSelectionService:
                     user_id=owner,
                     item=self._new_exact_item(item, candidate, target, snapshot),
                 )
-                await self._repository.ensure_collection_source(
+                await self._preserve_all_sources(
                     user_id=owner,
-                    collection_item_id=stored.id,
-                    source_id=source_id,
-                    created_at=snapshot.queried_at,
+                    original_item_id=item.id,
+                    target_item_id=stored.id,
                 )
                 if write_operation is not None:
                     await self._repository.append_write_operation_item(
@@ -530,6 +526,47 @@ class PlaceTargetSelectionService:
         )
         if source_id not in {link.source_id for link in links}:
             raise ResourceNotFoundError
+
+    async def _resolve_selection_source(
+        self,
+        *,
+        owner: str,
+        collection_item_id: str,
+        source_id: str | None,
+    ) -> str:
+        if source_id is not None:
+            return validate_source_id(source_id)
+        links = await self._repository.list_collection_sources(
+            user_id=owner,
+            collection_item_id=collection_item_id,
+        )
+        if not links:
+            raise ResourceNotFoundError
+        source = links[0].source_id
+        # The selection service owns the following write transaction.
+        await self._session.rollback()
+        return source
+
+    async def _preserve_all_sources(
+        self,
+        *,
+        user_id: str,
+        original_item_id: str,
+        target_item_id: str,
+    ) -> None:
+        if original_item_id == target_item_id:
+            return
+        links = await self._repository.list_collection_sources(
+            user_id=user_id,
+            collection_item_id=original_item_id,
+        )
+        for link in links:
+            await self._repository.ensure_collection_source(
+                user_id=user_id,
+                collection_item_id=target_item_id,
+                source_id=link.source_id,
+                created_at=link.created_at,
+            )
 
     @staticmethod
     def _validated_choices(

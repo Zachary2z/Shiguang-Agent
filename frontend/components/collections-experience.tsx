@@ -4,6 +4,7 @@ import {
   type FormEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -89,6 +90,10 @@ type CandidatePage = {
 
 type DemoSession = { csrf_token: string };
 type LoadState = "loading" | "ready" | "error";
+type DetailOperationOwnership = {
+  detailGeneration: number;
+  collectionId: string;
+};
 
 const statusLabels: Record<CollectionStatus, string> = {
   active: "想去",
@@ -177,6 +182,7 @@ export function CollectionsExperience() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const queryString = searchParams.toString();
+  const selectedId = searchParams.get("item");
   const [csrf, setCsrf] = useState<string | null>(null);
   const [loadState, setLoadState] = useState<LoadState>("loading");
   const [pageData, setPageData] = useState<CollectionPage | null>(null);
@@ -193,11 +199,19 @@ export function CollectionsExperience() {
   const [draftTags, setDraftTags] = useState("");
   const listGeneration = useRef(0);
   const detailGeneration = useRef(0);
+  const activeDetailId = useRef<string | null>(selectedId);
   const detailCloseButton = useRef<HTMLButtonElement>(null);
   const selectionAttempt = useRef<{
     identity: string;
     idempotencyKey: string;
   } | null>(null);
+  useLayoutEffect(() => {
+    if (activeDetailId.current === selectedId) return;
+    activeDetailId.current = selectedId;
+    detailGeneration.current += 1;
+    selectionAttempt.current = null;
+    queueMicrotask(() => setSaving(false));
+  }, [selectedId]);
 
   const replaceQuery = useCallback(
     (changes: Record<string, string | null>, replace = false) => {
@@ -212,6 +226,32 @@ export function CollectionsExperience() {
     },
     [pathname, router, searchParams],
   );
+
+  const navigateDetail = useCallback(
+    (collectionId: string | null, replace = false) => {
+      activeDetailId.current = collectionId;
+      detailGeneration.current += 1;
+      selectionAttempt.current = null;
+      setSaving(false);
+      replaceQuery({ item: collectionId }, replace);
+    },
+    [replaceQuery],
+  );
+
+  function detailOperation(collectionId: string): DetailOperationOwnership {
+    return {
+      detailGeneration: detailGeneration.current,
+      collectionId,
+    };
+  }
+
+  function ownsDetailOperation(operation: DetailOperationOwnership): boolean {
+    return (
+      detailGeneration.current === operation.detailGeneration &&
+      (activeDetailId.current === operation.collectionId ||
+        activeDetailId.current === null)
+    );
+  }
 
   const loadList = useCallback(async () => {
     const generation = listGeneration.current + 1;
@@ -267,13 +307,11 @@ export function CollectionsExperience() {
     if (csrf) queueMicrotask(() => void loadList());
   }, [csrf, loadList]);
 
-  const selectedId = searchParams.get("item");
   useEffect(() => {
     if (!csrf || !selectedId) {
       return;
     }
-    const generation = detailGeneration.current + 1;
-    detailGeneration.current = generation;
+    const generation = detailGeneration.current;
     const controller = new AbortController();
     void (async () => {
       await Promise.resolve();
@@ -322,38 +360,45 @@ export function CollectionsExperience() {
   useEffect(() => {
     if (!selectedId) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") replaceQuery({ item: null });
+      if (event.key === "Escape") navigateDetail(null);
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [replaceQuery, selectedId]);
+  }, [navigateDetail, selectedId]);
 
-  async function mutate(
+  async function runDetailOperation(
+    collectionId: string,
     request: () => Promise<CollectionItem>,
-    success: string,
+    onSuccess: (result: CollectionItem) => void,
   ) {
     if (!csrf) return;
+    const operation = detailOperation(collectionId);
+    if (!ownsDetailOperation(operation)) return;
     setSaving(true);
     setFeedback("");
     try {
-      const item = await request();
-      setDetail((current) => (current ? { ...current, item } : current));
-      setFeedback(success);
+      const result = await request();
+      if (!ownsDetailOperation(operation)) return;
+      if (result.id !== collectionId) return;
+      onSuccess(result);
       await loadList();
     } catch (error) {
+      if (!ownsDetailOperation(operation)) return;
       setFeedback(errorCopy(error));
     } finally {
-      setSaving(false);
+      if (ownsDetailOperation(operation)) setSaving(false);
     }
   }
 
   async function saveDetail(event: FormEvent) {
     event.preventDefault();
     if (!detail || !csrf) return;
-    await mutate(
+    const collectionId = detail.item.id;
+    await runDetailOperation(
+      collectionId,
       () =>
         apiClient.request<CollectionItem>(
-          `/api/v1/collections/${detail.item.id}`,
+          `/api/v1/collections/${collectionId}`,
           {
             method: "PATCH",
             csrfToken: csrf,
@@ -373,46 +418,54 @@ export function CollectionsExperience() {
             }),
           },
         ),
-      "修改已保存，Agent 与收藏库会读取同一条数据。",
+      (item) => {
+        setDetail((current) => (current ? { ...current, item } : current));
+        setFeedback("修改已保存，Agent 与收藏库会读取同一条数据。");
+      },
     );
   }
 
   async function deleteCollection() {
     if (!detail || !csrf) return;
     const previous = detail.item;
-    await mutate(async () => {
-      const item = await apiClient.request<CollectionItem>(
-        `/api/v1/collections/${previous.id}?expected_version=${previous.version}`,
-        { method: "DELETE", csrfToken: csrf },
-      );
-      setDeletedItem(item);
-      return item;
-    }, "收藏已删除，你可以立即恢复。");
+    await runDetailOperation(
+      previous.id,
+      () =>
+        apiClient.request<CollectionItem>(
+          `/api/v1/collections/${previous.id}?expected_version=${previous.version}`,
+          { method: "DELETE", csrfToken: csrf },
+        ),
+      (item) => {
+        setDeletedItem(item);
+        setDetail((current) => (current ? { ...current, item } : current));
+        setFeedback("收藏已删除，你可以立即恢复。");
+      },
+    );
   }
 
   async function restoreCollection(target = deletedItem) {
     if (!target || !csrf) return;
-    setSaving(true);
-    try {
-      const item = await apiClient.request<CollectionItem>(
-        `/api/v1/collections/${target.id}/restore`,
-        { method: "POST", csrfToken: csrf },
-      );
-      setDeletedItem(null);
-      setFeedback("收藏已恢复到删除前的准确状态。");
-      setDetail((current) => (current ? { ...current, item } : current));
-      await loadList();
-    } catch (error) {
-      setFeedback(errorCopy(error));
-    } finally {
-      setSaving(false);
-    }
+    await runDetailOperation(
+      target.id,
+      () =>
+        apiClient.request<CollectionItem>(
+          `/api/v1/collections/${target.id}/restore`,
+          { method: "POST", csrfToken: csrf },
+        ),
+      (item) => {
+        setDeletedItem(null);
+        setFeedback("收藏已恢复到删除前的准确状态。");
+        setDetail((current) => (current ? { ...current, item } : current));
+      },
+    );
   }
 
   async function chooseCandidate(candidate: PlaceCandidate | null) {
     if (!candidates || !detail || !csrf) return;
+    const collectionId = detail.item.id;
+    const operation = detailOperation(collectionId);
     const identity = [
-      detail.item.id,
+      collectionId,
       candidates.snapshot_fingerprint,
       candidate?.provider ?? "none",
       candidate?.poi_id ?? "none",
@@ -429,7 +482,7 @@ export function CollectionsExperience() {
       const result = await apiClient.request<{
         items: CollectionItem[];
         replayed: boolean;
-      }>(`/api/v1/collections/${detail.item.id}/poi-selection`, {
+      }>(`/api/v1/collections/${collectionId}/poi-selection`, {
         method: "POST",
         csrfToken: csrf,
         headers: { "Content-Type": "application/json" },
@@ -443,6 +496,7 @@ export function CollectionsExperience() {
         }),
       });
       const item = result.items[0];
+      if (!item || !ownsDetailOperation(operation)) return;
       setDetail((current) => (current && item ? { ...current, item } : current));
       setCandidates(null);
       selectionAttempt.current = null;
@@ -451,11 +505,17 @@ export function CollectionsExperience() {
           ? "准确地点已保存。"
           : "候选均未采用，原收藏已保留为待补充。",
       );
+      if (item.id !== collectionId) {
+        navigateDetail(item.id, true);
+        await loadList();
+        return;
+      }
       await loadList();
     } catch (error) {
+      if (!ownsDetailOperation(operation)) return;
       setFeedback(errorCopy(error));
     } finally {
-      setSaving(false);
+      if (ownsDetailOperation(operation)) setSaving(false);
     }
   }
 
@@ -586,7 +646,7 @@ export function CollectionsExperience() {
               type="button"
               className="collection-card"
               key={item.id}
-              onClick={() => replaceQuery({ item: item.id })}
+              onClick={() => navigateDetail(item.id)}
             >
               <span className={`collection-kind ${item.kind}`}>{item.kind === "place" ? "P" : "E"}</span>
               <span className="collection-card-copy">
@@ -653,14 +713,14 @@ export function CollectionsExperience() {
                 ref={detailCloseButton}
                 type="button"
                 aria-label="关闭收藏详情"
-                onClick={() => replaceQuery({ item: null })}
+                onClick={() => navigateDetail(null)}
               >
                 关闭
               </button>
             </header>
             {detailState === "loading" ? <p role="status">正在读取详情…</p> : null}
             {detailState === "error" ? (
-              <div role="alert"><p>{feedback}</p><button type="button" onClick={() => replaceQuery({ item: null })}>返回列表</button></div>
+              <div role="alert"><p>{feedback}</p><button type="button" onClick={() => navigateDetail(null)}>返回列表</button></div>
             ) : null}
             {detailState === "ready" && detail ? (
               <>

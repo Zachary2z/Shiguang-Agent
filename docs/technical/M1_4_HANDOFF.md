@@ -1,5 +1,7 @@
 # M1-4 收藏库与地点消歧交接
 
+状态：**P1 修复完成，待主控复验**
+
 ## 范围与结论
 
 M1-4 在既有收藏、地点目标、候选快照、Session 和写入边界上完成，没有新增第二套
@@ -25,6 +27,8 @@ Repository、写服务、候选评分/选择、Undo/Restore、API Client 或前�
 - `POST /api/v1/collections/{item_id}/poi-selection`：输入
   `expected_version`、`snapshot_fingerprint`、`idempotency_key` 和
   `choice=candidate | none_of_above`，复用 `PlaceTargetSelectionService`。
+  HTTP 层不再挑选某一条来源；服务在用户隔离范围内确定关联来源，并在同一事务
+  中处理选择、收藏合并和全部来源迁移。
 
 所有读取和写入都以当前浏览器 Session 的 `user_id` 为首要约束；跨用户的收藏、
 来源和候选统一表现为不可见。
@@ -46,6 +50,9 @@ Repository、写服务、候选评分/选择、Undo/Restore、API Client 或前�
   编辑补充。
 - 同一幂等键和同一载荷稳定重放；同键不同载荷冲突。过期版本试图改变已确认选择
   返回版本冲突。
+- 选择具体候选或任意分店时，如果命中既有正式收藏，原待选收藏的全部
+  `CollectionSource` 关联都会在原选择事务内幂等补到目标收藏；既有目标来源不变，
+  跨用户来源不可读取或迁移。
 
 ## 前端状态与可访问性
 
@@ -56,6 +63,13 @@ Repository、写服务、候选评分/选择、Undo/Restore、API Client 或前�
 文本。详情打开后焦点进入关闭按钮，支持 Escape，交互目标保持 44px，并遵守
 `prefers-reduced-motion`。
 
+P1 修复后，PATCH、DELETE、restore 和候选选择统一使用绑定
+`detail generation + collection id` 的详情操作归属检查。关闭详情、切换详情以及
+URL 前进/后退都会使旧操作失效；迟到成功、失败和清理均不能修改新详情、
+feedback、saving 或候选状态。若候选选择合并到不同收藏，仍属于当前操作时只替换
+URL 的 `item`，保留搜索、筛选和页码，并加载服务端返回的正式收藏；同 ID 的
+“以上都不是”不触发额外导航。
+
 ## 数据库与迁移
 
 未新增迁移。现有 `collection_items` 已包含版本、逻辑删除/恢复状态、
@@ -65,12 +79,12 @@ Repository、写服务、候选评分/选择、Undo/Restore、API Client 或前�
 
 ## 验证
 
-- M1-4 后端契约：5 项。
-- 前端 Vitest：47 项，其中 M1-4 组件 9 项。
+- 指定后端组合回归：78 项。
+- 前端 Vitest：53 项，其中 M1-4 组件 15 项；新增覆盖保存迟到成功/失败，
+  删除、恢复和候选选择迟到，合并后 URL/详情/刷新一致，以及同 ID 不导航。
 - Playwright：22 项，其中 M1-4 8 项，覆盖 320/390/768/1024/1440px、URL
   历史、恶意文本、候选恢复路径、删除恢复、键盘焦点和 reduced motion。
-- 后端完整离线回归：`1576 passed, 11 skipped, 2 deselected`；M1-3 回归 7 项，
-  迁移往返 23 项。
+- 后端完整离线回归：`1577 passed, 11 skipped, 2 deselected`。
 - pip check、Ruff、mypy、前端 lint/typecheck/build、生产依赖 audit 均通过。
   全部使用 Fake/Fixture 和本地临时数据库，不调用真实模型、地图、网页或付费 API。
 
@@ -83,4 +97,7 @@ Repository、写服务、候选评分/选择、Undo/Restore、API Client 或前�
   相同，后续规模化可在不改变 Repository 契约的前提下增加 PostgreSQL JSON 索引。
 - 本阶段没有新增迁移、全局状态框架、前端业务筛选、候选评分、Undo/Restore 或
   Session/CSRF 实现；没有样本白名单、供应商原文或敏感字段输出。
+- P1 修复只增加一套详情操作归属机制，并扩展既有
+  `PlaceTargetSelectionService`；没有新增 Mutation Manager、合并服务、来源迁移
+  路径、Repository、幂等记录或来源模型。
 - 未实现 M1-5、真实登录、分享、提醒、微信、日历或“我的”业务。

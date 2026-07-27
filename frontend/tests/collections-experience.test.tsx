@@ -1,4 +1,5 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -55,6 +56,39 @@ const baseItem = {
 const emptyPage = { items: [], page: 1, page_size: 8, total: 0 };
 const filledPage = { items: [baseItem], page: 1, page_size: 8, total: 1 };
 const session = { csrf_token: "csrf-token" };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
+
+function candidatePage(itemId: string) {
+  return {
+    collection_item_id: itemId,
+    expected_version: 1,
+    snapshot_fingerprint: "c".repeat(64),
+    queried_at: "2026-07-27T00:00:00Z",
+    candidates: [
+      {
+        provider: "amap",
+        poi_id: "poi-one",
+        name: "一尺花园",
+        branch_name: "海上世界店",
+        city_code: "shenzhen",
+        district: "南山区",
+        business_area: "海上世界",
+        address: "太子路118号",
+        poi_type: "cafe",
+        matching_clues: [],
+      },
+    ],
+  };
+}
 
 function mockBootstrap(page: object = filledPage) {
   return vi
@@ -225,6 +259,7 @@ describe("CollectionsExperience", () => {
     expect(screen.getByText(/南山区 · 海上世界 · 太子路118号/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /以上都不是/ }));
     expect(await screen.findByText(/原收藏已保留为待补充/)).toBeInTheDocument();
+    expect(replace).not.toHaveBeenCalled();
   });
 
   it("keeps a version conflict recoverable", async () => {
@@ -300,6 +335,216 @@ describe("CollectionsExperience", () => {
     expect(JSON.parse(bodies[0]).idempotency_key).toBe(
       JSON.parse(bodies[1]).idempotency_key,
     );
+  });
+
+  it.each([
+    ["success", null],
+    ["failure", new ApiError("conflict", 409, "late-a")],
+  ])(
+    "does not let a late A save %s overwrite the newly opened B detail",
+    async (_outcome, lateError) => {
+      const itemB = {
+        ...baseItem,
+        id: "col_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        title: "收藏 B",
+      };
+      const late = deferred<typeof baseItem>();
+      currentQuery = `item=${baseItem.id}`;
+      vi.spyOn(apiClient, "request").mockImplementation(
+        async (path, options) => {
+          if (path === "/api/v1/demo/sessions") return session as never;
+          if (path.startsWith("/api/v1/collections?")) {
+            return { ...filledPage, items: [baseItem, itemB], total: 2 } as never;
+          }
+          if (path === `/api/v1/collections/${baseItem.id}`) {
+            if (options?.method === "PATCH") return late.promise as never;
+            return { item: baseItem, sources: [] } as never;
+          }
+          if (path === `/api/v1/collections/${itemB.id}`) {
+            return { item: itemB, sources: [] } as never;
+          }
+          throw new Error(`unexpected request: ${path}`);
+        },
+      );
+
+      const view = render(<CollectionsExperience />);
+      const dialog = await screen.findByRole("dialog");
+      await userEvent.click(
+        await within(dialog).findByRole("button", { name: "保存修改" }),
+      );
+      currentQuery = `item=${itemB.id}`;
+      view.rerender(<CollectionsExperience />);
+      expect(
+        await within(dialog).findByRole("textbox", { name: "名称" }),
+      ).toHaveValue("收藏 B");
+
+      await act(async () => {
+        if (lateError) late.reject(lateError);
+        else late.resolve({ ...baseItem, title: "迟到的收藏 A", version: 2 });
+        await Promise.resolve();
+      });
+      expect(within(dialog).getByRole("textbox", { name: "名称" })).toHaveValue(
+        "收藏 B",
+      );
+      expect(screen.queryByText(/Agent 与收藏库会读取同一条数据/)).toBeNull();
+      expect(screen.queryByText(/刚刚被更新/)).toBeNull();
+      expect(
+        within(dialog).getByRole("button", { name: "保存修改" }),
+      ).toBeEnabled();
+    },
+  );
+
+  it.each(["delete", "restore", "selection"] as const)(
+    "keeps B untouched when A %s completes late",
+    async (operation) => {
+      const itemA =
+        operation === "restore"
+          ? { ...baseItem, status: "deleted" }
+          : operation === "selection"
+            ? {
+                ...baseItem,
+                title: "一尺花园",
+                status: "pending_selection",
+                planning_eligible: false,
+              }
+            : baseItem;
+      const itemB = {
+        ...baseItem,
+        id: "col_cccccccccccccccccccccccccccccccc",
+        title: "收藏 B",
+      };
+      const late = deferred<object>();
+      currentQuery = `item=${itemA.id}`;
+      vi.spyOn(apiClient, "request").mockImplementation(
+        async (path, options) => {
+          if (path === "/api/v1/demo/sessions") return session as never;
+          if (path.startsWith("/api/v1/collections?")) {
+            return { ...filledPage, items: [itemA, itemB], total: 2 } as never;
+          }
+          if (path.endsWith("/poi-candidates")) {
+            return candidatePage(itemA.id) as never;
+          }
+          if (
+            path.endsWith("/poi-selection") ||
+            path.endsWith("/restore") ||
+            options?.method === "DELETE"
+          ) {
+            return late.promise as never;
+          }
+          if (path === `/api/v1/collections/${itemA.id}`) {
+            return { item: itemA, sources: [] } as never;
+          }
+          if (path === `/api/v1/collections/${itemB.id}`) {
+            return { item: itemB, sources: [] } as never;
+          }
+          throw new Error(`unexpected request: ${path}`);
+        },
+      );
+
+      const view = render(<CollectionsExperience />);
+      const dialog = await screen.findByRole("dialog");
+      const action =
+        operation === "delete"
+          ? await within(dialog).findByRole("button", { name: "删除收藏" })
+          : operation === "restore"
+            ? await within(dialog).findByRole("button", { name: "恢复收藏" })
+            : await within(dialog).findByRole("button", {
+                name: /海上世界店/,
+              });
+      await userEvent.click(action);
+      currentQuery = `item=${itemB.id}`;
+      view.rerender(<CollectionsExperience />);
+      expect(
+        await within(dialog).findByRole("textbox", { name: "名称" }),
+      ).toHaveValue("收藏 B");
+
+      await act(async () => {
+        if (operation === "selection") {
+          late.resolve({
+            items: [{ ...itemA, status: "active", version: 2 }],
+            replayed: false,
+          });
+        } else {
+          late.resolve({
+            ...itemA,
+            status: operation === "delete" ? "deleted" : "active",
+            version: 2,
+          });
+        }
+        await Promise.resolve();
+      });
+      expect(within(dialog).getByRole("textbox", { name: "名称" })).toHaveValue(
+        "收藏 B",
+      );
+      expect(screen.queryByText(/收藏已删除|收藏已恢复|准确地点已保存/)).toBeNull();
+      expect(screen.queryByText(/请选择准确地点/)).toBeNull();
+      expect(
+        within(dialog).getByRole("button", { name: "保存修改" }),
+      ).toBeEnabled();
+    },
+  );
+
+  it("replaces only the item URL after selection merges into another collection", async () => {
+    const pending = {
+      ...baseItem,
+      title: "一尺花园",
+      status: "pending_selection",
+      planning_eligible: false,
+    };
+    const merged = {
+      ...baseItem,
+      id: "col_dddddddddddddddddddddddddddddddd",
+      title: "一尺花园（海上世界店）",
+      version: 4,
+    };
+    currentQuery = `search=%E8%8A%B1%E5%9B%AD&city_group=pending&page=2&item=${pending.id}`;
+    vi.spyOn(apiClient, "request").mockImplementation(
+      async (path) => {
+        if (path === "/api/v1/demo/sessions") return session as never;
+        if (path.startsWith("/api/v1/collections?")) {
+          return { ...filledPage, items: [merged] } as never;
+        }
+        if (path.endsWith("/poi-candidates")) {
+          return candidatePage(pending.id) as never;
+        }
+        if (path.endsWith("/poi-selection")) {
+          return { items: [merged], replayed: false } as never;
+        }
+        if (path === `/api/v1/collections/${pending.id}`) {
+          return { item: pending, sources: [] } as never;
+        }
+        if (path === `/api/v1/collections/${merged.id}`) {
+          return { item: merged, sources: [] } as never;
+        }
+        throw new Error(`unexpected request: ${path}`);
+      },
+    );
+
+    const view = render(<CollectionsExperience />);
+    const detailDialog = await screen.findByRole("dialog");
+    await userEvent.click(
+      await within(detailDialog).findByRole("button", {
+        name: /海上世界店/,
+      }),
+    );
+    expect(replace).toHaveBeenCalledWith(
+      `/collections?search=%E8%8A%B1%E5%9B%AD&city_group=pending&page=2&item=${merged.id}`,
+    );
+
+    currentQuery = `search=%E8%8A%B1%E5%9B%AD&city_group=pending&page=2&item=${merged.id}`;
+    view.rerender(<CollectionsExperience />);
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      await within(dialog).findByRole("textbox", { name: "名称" }),
+    ).toHaveValue("一尺花园（海上世界店）");
+
+    view.unmount();
+    render(<CollectionsExperience />);
+    expect(
+      await within(await screen.findByRole("dialog")).findByRole("textbox", {
+        name: "名称",
+      }),
+    ).toHaveValue("一尺花园（海上世界店）");
   });
 
   it("ignores an older list response after the URL query changes", async () => {

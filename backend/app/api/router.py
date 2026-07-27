@@ -710,15 +710,11 @@ async def select_collection_poi(
         collection_item_id=item_id,
     )
     snapshot = detail.item.place_candidate_snapshot
-    if snapshot is None or not snapshot.candidates or not detail.sources:
+    if snapshot is None or not snapshot.candidates:
         raise ResourceNotFoundError
-    # The query above opens SQLAlchemy's implicit read transaction. The
-    # selection service owns the write transaction and its concurrency checks.
-    await session.rollback()
     result = await PlaceTargetSelectionService(session=session).apply_selection(
         user_id=user_id,
         collection_item_id=item_id,
-        source_id=detail.sources[0].id,
         selections=(
             PlaceSelection(
                 kind=request.selection_kind(),
