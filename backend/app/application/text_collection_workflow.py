@@ -51,7 +51,7 @@ from app.domain.time import utc_now
 from app.domain.web import WebFetchFailure, WebPageContent
 from app.domain.web.security import UrlPolicyError, validate_web_url
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
-from app.providers.storage import StorageProvider, StorageProviderError
+from app.providers.storage import PrivateFileMetadata, StorageProvider, StorageProviderError
 from app.providers.web import WebContentProvider
 from nanobot_core.providers import ModelProvider, ProviderError, StructuredOutputMode
 
@@ -101,6 +101,15 @@ class TextCollectionWorkflowResult:
     auto_save_result: AutoSaveResult | None
     recovery_actions: tuple[str, ...] = ()
     error_code: str | None = None
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PreparedCollectionImport:
+    message: Message
+    trace_id: str
+    run_status: AgentRunStatus
+    run_created_at: datetime
     replayed: bool
 
 
@@ -243,7 +252,7 @@ class TextCollectionWorkflow:
         self,
         *,
         session: AsyncSession,
-        provider: ModelProvider,
+        provider: ModelProvider | None,
         pricing: PricingPolicy,
         locks: IdempotencyLockRegistry,
         timeout_seconds: float,
@@ -264,6 +273,29 @@ class TextCollectionWorkflow:
         self._structured_output_mode = structured_output_mode
         self._now = now
         self._repository = SqlAlchemyCollectionRepository(session)
+
+    def _require_provider(self) -> ModelProvider:
+        if self._provider is None:
+            raise ApplicationRunFailureError(error_code="MODEL_PROVIDER_NOT_CONFIGURED")
+        return self._provider
+
+    @classmethod
+    def message_id_for(
+        cls, *, user_id: str, session_id: str, idempotency_key: str
+    ) -> str:
+        return cls._opaque_id("msg", user_id, session_id, idempotency_key)
+
+    @classmethod
+    def source_id_for(
+        cls, *, user_id: str, session_id: str, idempotency_key: str
+    ) -> str:
+        return cls._opaque_id("src", user_id, session_id, idempotency_key)
+
+    @classmethod
+    def trace_id_for(
+        cls, *, user_id: str, session_id: str, idempotency_key: str
+    ) -> str:
+        return cls._trace_id(user_id, session_id, idempotency_key)
 
     async def submit(
         self,
@@ -289,6 +321,7 @@ class TextCollectionWorkflow:
         session_id: str,
         idempotency_key: str,
         input: CollectionInput,
+        resume_queued: bool = False,
     ) -> TextCollectionWorkflowResult:
         idempotency_key = validate_idempotency_key(idempotency_key)
         async with self._locks.lock(
@@ -301,6 +334,172 @@ class TextCollectionWorkflow:
                 session_id=session_id,
                 idempotency_key=idempotency_key,
                 input=input,
+                resume_queued=resume_queued,
+            )
+
+    async def fail_queued(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        trace_id: str,
+        error_code: str,
+    ) -> None:
+        """Finalize an import that failed before its durable job was created."""
+
+        run_service = AgentRunService(
+            session=self._session,
+            runner=None,
+            pricing=self._pricing,
+            timeout_seconds=self._timeout_seconds,
+            now=self._now,
+        )
+
+        async def fail_operation(
+            observer: ApplicationRunObserver,
+        ) -> _OperationResult:
+            del observer
+            raise ApplicationRunFailureError(error_code=error_code)
+
+        try:
+            await run_service.execute_application(
+                AgentRunCreate(
+                    trace_id=trace_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                    intent="collect_content",
+                    workflow="m0_4d_unified_input",
+                ),
+                fail_operation,
+                outcome=self._run_outcome,
+                reuse_queued=True,
+            )
+        except ApplicationRunFailureError:
+            raise TextCollectionRunError(
+                trace_id=trace_id,
+                error_code=error_code,
+            ) from None
+
+    async def read_result(
+        self,
+        *,
+        user_id: str,
+        message_id: str,
+        source_id: str,
+        idempotency_key: str,
+    ) -> TextCollectionWorkflowResult:
+        """Read the authoritative persisted state without rerunning any provider."""
+
+        message = await self._repository.get_message(
+            user_id=user_id,
+            message_id=message_id,
+        )
+        if message is None or message.trace_id is None:
+            raise ResourceNotFoundError
+        run = await AgentRunService(
+            session=self._session,
+            runner=None,
+            pricing=self._pricing,
+            timeout_seconds=self._timeout_seconds,
+            now=self._now,
+        ).get_by_trace_id(user_id=user_id, trace_id=message.trace_id)
+        if run is None:
+            raise ResourceNotFoundError
+        source = await self._repository.get_source(
+            user_id=user_id,
+            source_id=source_id,
+        )
+        saved = await CollectionWriteService(
+            session=self._session,
+            now=self._now,
+        ).get_idempotent_result(
+            user_id=user_id,
+            idempotency_key=idempotency_key,
+        )
+        if saved is None and source is not None:
+            saved = AutoSaveResult(source_id=source.id, replayed=True)
+        return TextCollectionWorkflowResult(
+            message=message,
+            source=source,
+            trace_id=message.trace_id,
+            run_status=run.status,
+            extraction_result=self._extraction_from_source(source, saved),
+            auto_save_result=saved,
+            recovery_actions=(
+                () if source is None else source.metadata.workflow_recovery_actions
+            ),
+            error_code=run.error_code,
+            replayed=True,
+        )
+
+    async def prepare_input(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        idempotency_key: str,
+        input: CollectionInput,
+    ) -> PreparedCollectionImport:
+        """Persist the user message and queued AgentRun without doing provider work."""
+
+        idempotency_key = validate_idempotency_key(idempotency_key)
+        async with self._locks.lock(
+            user_id=user_id,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+        ):
+            owned_session = await self._repository.get_session(
+                user_id=user_id,
+                session_id=session_id,
+            )
+            if owned_session is None:
+                await self._session.rollback()
+                raise ResourceNotFoundError
+            message_id = self.message_id_for(
+                user_id=user_id,
+                session_id=session_id,
+                idempotency_key=idempotency_key,
+            )
+            trace_id = self.trace_id_for(
+                user_id=user_id,
+                session_id=session_id,
+                idempotency_key=idempotency_key,
+            )
+            message_content, content_type = self._message_projection(input)
+            desired = Message(
+                id=message_id,
+                session_id=session_id,
+                role=MessageRole.USER,
+                content_type=content_type,
+                content=message_content,
+                trace_id=trace_id,
+                created_at=self._now(),
+            )
+            message, message_replayed = await self._ensure_message(
+                user_id=user_id,
+                desired=desired,
+            )
+            run = await AgentRunService(
+                session=self._session,
+                runner=None,
+                pricing=self._pricing,
+                timeout_seconds=self._timeout_seconds,
+                now=self._now,
+            ).queue_application(
+                AgentRunCreate(
+                    trace_id=trace_id,
+                    user_id=user_id,
+                    session_id=session_id,
+                    intent="collect_content",
+                    workflow="m1_3_content_import",
+                )
+            )
+            return PreparedCollectionImport(
+                message=message,
+                trace_id=trace_id,
+                run_status=run.status,
+                run_created_at=run.created_at,
+                replayed=message_replayed,
             )
 
     async def _submit_locked(
@@ -310,6 +509,7 @@ class TextCollectionWorkflow:
         session_id: str,
         idempotency_key: str,
         input: CollectionInput,
+        resume_queued: bool = False,
     ) -> TextCollectionWorkflowResult:
         owned_session = await self._repository.get_session(
             user_id=user_id,
@@ -319,9 +519,21 @@ class TextCollectionWorkflow:
             await self._session.rollback()
             raise ResourceNotFoundError
 
-        message_id = self._opaque_id("msg", user_id, session_id, idempotency_key)
-        source_id = self._opaque_id("src", user_id, session_id, idempotency_key)
-        trace_id = self._trace_id(user_id, session_id, idempotency_key)
+        message_id = self.message_id_for(
+            user_id=user_id,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+        )
+        source_id = self.source_id_for(
+            user_id=user_id,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+        )
+        trace_id = self.trace_id_for(
+            user_id=user_id,
+            session_id=session_id,
+            idempotency_key=idempotency_key,
+        )
         message_content, content_type = self._message_projection(input)
         desired_message = Message(
             id=message_id,
@@ -358,7 +570,9 @@ class TextCollectionWorkflow:
             user_id=user_id,
             trace_id=trace_id,
         )
-        if existing_run is not None:
+        if existing_run is not None and not (
+            resume_queued and existing_run.status is AgentRunStatus.QUEUED
+        ):
             return await self._replay(
                 user_id=user_id,
                 idempotency_key=scoped_key,
@@ -405,6 +619,7 @@ class TextCollectionWorkflow:
                 ),
                 operation,
                 outcome=self._run_outcome,
+                reuse_queued=resume_queued,
             )
         except ProviderError as exc:
             raise TextCollectionProviderError(
@@ -448,10 +663,11 @@ class TextCollectionWorkflow:
         input: TextInput,
         observer: ApplicationRunObserver,
     ) -> _OperationResult:
+        await observer.set_stage("place_recognition")
         timestamp = self._now()
         try:
             extraction = await TextExtractionService(
-                self._provider,
+                self._require_provider(),
                 structured_output_mode=self._structured_output_mode,
                 response_observer=observer.record_model_response,
             ).extract(input.text)
@@ -482,6 +698,7 @@ class TextCollectionWorkflow:
             extraction=extraction,
             recovery_actions=recovery_actions,
         )
+        await observer.set_stage("result_organizing")
         saved = await self._save_extraction(
             user_id=user_id,
             idempotency_key=idempotency_key,
@@ -515,6 +732,7 @@ class TextCollectionWorkflow:
             operation=lambda: web_provider.fetch(input.url),
             summarize=self._summarize_web_fetch,
         )
+        await observer.set_stage("place_recognition")
         timestamp = self._now()
         if isinstance(fetched, WebFetchFailure):
             recovery_actions = tuple(action.value for action in fetched.recovery_actions)
@@ -551,7 +769,7 @@ class TextCollectionWorkflow:
         )
         try:
             extraction = await TextExtractionService(
-                self._provider,
+                self._require_provider(),
                 structured_output_mode=self._structured_output_mode,
                 response_observer=observer.record_model_response,
             ).extract(fetched.text[:MAX_TEXT_INPUT_CHARS])
@@ -580,6 +798,7 @@ class TextCollectionWorkflow:
             extraction=extraction,
             recovery_actions=recovery_actions,
         )
+        await observer.set_stage("result_organizing")
         saved = await self._save_extraction(
             user_id=user_id,
             idempotency_key=idempotency_key,
@@ -608,21 +827,60 @@ class TextCollectionWorkflow:
         storage_config = self._storage_config
         metadata = None
         try:
-            metadata, extraction = await observer.run_tool(
-                tool_name="image_recognition",
-                arguments_fingerprint=self._input_fingerprint(input),
-                input_summary=(f'{{"input_type":"image","media_type":"{input.content_type}"}}'),
-                operation=lambda: ImageRecognitionService(
-                    provider=self._provider,
+            await observer.set_stage("place_recognition")
+            staged_source = await self._repository.get_source(
+                user_id=user_id,
+                source_id=source_id,
+            )
+            staged_payload = input.payload
+            staged = (
+                staged_source is not None
+                and staged_source.type is SourceType.IMAGE
+                and staged_source.file_key is not None
+                and staged_source.parse_status is SourceParseStatus.PENDING
+            )
+            if staged:
+                assert staged_source is not None
+                assert staged_source.file_key is not None
+                metadata, staged_payload = await storage.read_private(
+                    staged_source.file_key
+                )
+                if (
+                    metadata.content_type != input.content_type
+                    or hashlib.sha256(staged_payload).hexdigest()
+                    != hashlib.sha256(input.payload).hexdigest()
+                ):
+                    raise ApplicationRunFailureError(
+                        error_code="IMAGE_STAGED_CONTENT_MISMATCH"
+                    )
+
+            async def recognize_image() -> tuple[PrivateFileMetadata, ExtractionResult]:
+                service = ImageRecognitionService(
+                    provider=self._require_provider(),
                     storage=storage,
                     storage_config=storage_config,
                     clock=self._now,
                     structured_output_mode=self._structured_output_mode,
                     response_observer=observer.record_model_response,
-                ).recognize(
+                )
+                if staged:
+                    staged_metadata = metadata
+                    assert staged_metadata is not None
+                    staged_extraction = await service.recognize_existing(
+                        _single_chunk(staged_payload),
+                        metadata=staged_metadata,
+                    )
+                    return staged_metadata, staged_extraction
+                return await service.recognize(
                     _single_chunk(input.payload),
                     content_type=input.content_type,
-                ),
+                )
+
+            metadata, extraction = await observer.run_tool(
+                tool_name="image_recognition",
+                arguments_fingerprint=self._input_fingerprint(input),
+                input_summary=(f'{{"input_type":"image","media_type":"{input.content_type}"}}'),
+                operation=recognize_image,
                 summarize=lambda result: ApplicationToolOutcome(
                     succeeded=True,
                     output_summary=(
@@ -631,6 +889,7 @@ class TextCollectionWorkflow:
                     ),
                 ),
             )
+            assert metadata is not None
             timestamp = self._now()
             recovery_actions = (
                 ()
@@ -650,12 +909,20 @@ class TextCollectionWorkflow:
                         byte_size=metadata.byte_size,
                         content_sha256=metadata.content_sha256,
                     ),
-                    created_at=timestamp,
+                    created_at=(
+                        staged_source.created_at
+                        if staged and staged_source is not None
+                        else timestamp
+                    ),
                     updated_at=timestamp,
                 ),
                 extraction=extraction,
                 recovery_actions=recovery_actions,
             )
+            if staged:
+                await self._repository.update_source(user_id=user_id, source=source)
+                await self._session.commit()
+            await observer.set_stage("result_organizing")
             saved = await self._save_extraction(
                 user_id=user_id,
                 idempotency_key=idempotency_key,
@@ -669,7 +936,7 @@ class TextCollectionWorkflow:
                 recovery_actions=recovery_actions,
             )
         except asyncio.CancelledError as cancellation:
-            if metadata is not None:
+            if metadata is not None and not staged:
                 await self._cleanup_image_after_cancellation(
                     metadata.file_key,
                     cancellation,
@@ -680,7 +947,7 @@ class TextCollectionWorkflow:
         except (ImageRecognitionError, StorageProviderError) as exc:
             raise ApplicationRunFailureError(error_code=exc.code.value) from None
         except Exception:
-            if metadata is not None:
+            if metadata is not None and not staged:
                 await self._cleanup_image(metadata.file_key)
             raise
 
@@ -1063,6 +1330,7 @@ __all__ = [
     "IdempotencyLockRegistry",
     "IdempotentRequestInProgressError",
     "MAX_RICH_INPUT_WORKFLOW_SECONDS",
+    "PreparedCollectionImport",
     "TextCollectionProviderError",
     "TextCollectionRunError",
     "TextCollectionTimeoutError",

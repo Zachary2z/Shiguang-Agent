@@ -186,5 +186,9 @@ class StorageProvider(ABC):
         """Return controlled access metadata, never a local path or fabricated URL."""
 
     @abstractmethod
+    async def read_private(self, file_key: str) -> tuple[PrivateFileMetadata, bytes]:
+        """Read one private object for an internal workflow, never for an API response."""
+
+    @abstractmethod
     async def delete(self, file_key: str) -> PrivateFileDeleteResult:
         """Delete an object; an already absent valid key is a successful no-op."""

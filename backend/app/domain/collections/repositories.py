@@ -73,6 +73,13 @@ class CollectionRepository(Protocol):
         updated_at: datetime,
     ) -> Source: ...
 
+    async def update_source(
+        self,
+        *,
+        user_id: str,
+        source: Source,
+    ) -> Source: ...
+
     async def add_collection_item(
         self,
         *,
@@ -118,6 +125,14 @@ class CollectionRepository(Protocol):
         collection_item_id: str,
         updated_at: datetime,
         expected_version: int | None = None,
+    ) -> CollectionItem: ...
+
+    async def restore_collection_item(
+        self,
+        *,
+        user_id: str,
+        collection_item_id: str,
+        updated_at: datetime,
     ) -> CollectionItem: ...
 
     async def add_collection_source(

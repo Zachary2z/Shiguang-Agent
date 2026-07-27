@@ -247,6 +247,39 @@ class SqlAlchemyCollectionRepository:
         await self._session.flush()
         return self._source(row)
 
+    async def update_source(
+        self,
+        *,
+        user_id: str,
+        source: Source,
+    ) -> Source:
+        """Update one owned Source while keeping its input identity immutable."""
+
+        owner = validate_user_id(user_id)
+        if source.user_id != owner:
+            raise ValueError("user_id must match Source.user_id")
+        row = await self._session.scalar(
+            select(SourceModel).where(
+                SourceModel.id == source.id,
+                SourceModel.user_id == owner,
+            )
+        )
+        if row is None:
+            raise ResourceNotFoundError
+        if (
+            row.type != source.type.value
+            or row.url != source.url
+            or row.file_key != source.file_key
+        ):
+            raise ValueError("Source input identity cannot be changed")
+        row.platform = source.platform
+        row.parse_status = source.parse_status.value
+        row.fetched_at = source.fetched_at
+        row.metadata_json = source.metadata.model_dump(mode="json", exclude_none=True)
+        row.updated_at = source.updated_at
+        await self._session.flush()
+        return self._source(row)
+
     async def add_collection_item(
         self,
         *,
@@ -526,6 +559,7 @@ class SqlAlchemyCollectionRepository:
             update(CollectionItemModel)
             .where(*conditions)
             .values(
+                deleted_from_status=CollectionItemModel.status,
                 status=CollectionStatus.DELETED.value,
                 version=CollectionItemModel.version + 1,
                 updated_at=timestamp,
@@ -542,6 +576,38 @@ class SqlAlchemyCollectionRepository:
             raise VersionConflictError
         ensure_collection_transition(current, CollectionStatus.DELETED)
         raise VersionConflictError
+
+    async def restore_collection_item(
+        self,
+        *,
+        user_id: str,
+        collection_item_id: str,
+        updated_at: datetime,
+    ) -> CollectionItem:
+        owner = validate_user_id(user_id)
+        identifier = validate_collection_item_id(collection_item_id)
+        timestamp = require_aware_utc(updated_at)
+        rowcount = await execute_dml_rowcount(
+            self._session,
+            update(CollectionItemModel)
+            .where(
+                CollectionItemModel.id == identifier,
+                CollectionItemModel.user_id == owner,
+                CollectionItemModel.status == CollectionStatus.DELETED.value,
+                CollectionItemModel.deleted_from_status.is_not(None),
+            )
+            .values(
+                status=CollectionItemModel.deleted_from_status,
+                deleted_from_status=None,
+                version=CollectionItemModel.version + 1,
+                updated_at=timestamp,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        updated = await self._refresh_collection_item(owner, identifier)
+        if rowcount == 1 or CollectionStatus(updated.status) is not CollectionStatus.DELETED:
+            return self._collection_item(updated)
+        raise ResourceNotFoundError
 
     async def add_collection_source(
         self,

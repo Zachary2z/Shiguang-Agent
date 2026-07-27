@@ -24,10 +24,8 @@ export function AppShell({ children }: { children: ReactNode }) {
       </main>
 
       <aside className="context-panel" aria-label="页面上下文">
-        <h2>当前阶段</h2>
-        <p>
-          正式前端基础已就位。业务内容将在后续阶段按来源、风险与授权规则逐步接入。
-        </p>
+        <h2>收藏入口</h2>
+        <p>输入文字、HTTP(S) 链接或截图。识别结果来自后台任务的权威终态。</p>
       </aside>
 
       <div className="mobile-nav-wrap">

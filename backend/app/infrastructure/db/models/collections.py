@@ -202,6 +202,11 @@ class CollectionItemModel(Base):
             name="ck_collection_items_status",
         ),
         CheckConstraint(
+            "deleted_from_status IS NULL OR deleted_from_status IN "
+            "('active', 'pending_selection', 'pending_details')",
+            name="ck_collection_items_deleted_from_status",
+        ),
+        CheckConstraint(
             "city_hint IS NULL OR "
             "(city_hint = trim(city_hint) AND length(city_hint) BETWEEN 1 AND 100)",
             name="ck_collection_items_city_hint",
@@ -387,6 +392,7 @@ class CollectionItemModel(Base):
         DateTime(timezone=True), nullable=True
     )
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    deleted_from_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now

@@ -146,6 +146,23 @@ class CollectionWriteService:
             required_collection_item_id=None,
         )
 
+    async def restore(
+        self,
+        *,
+        user_id: str,
+        collection_item_id: str,
+    ) -> CollectionItem:
+        """Restore the exact pre-delete status through the existing write boundary."""
+
+        owner = validate_user_id(user_id)
+        identifier = validate_collection_item_id(collection_item_id)
+        async with self._session.begin():
+            return await self._repository.restore_collection_item(
+                user_id=owner,
+                collection_item_id=identifier,
+                updated_at=self._now(),
+            )
+
     async def undo_collection_item(
         self,
         *,

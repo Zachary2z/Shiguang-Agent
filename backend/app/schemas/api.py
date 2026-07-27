@@ -176,6 +176,55 @@ class MessageCreateResponse(ApiModel):
     replayed: bool
 
 
+class ContentImportAcceptedResponse(ApiModel):
+    message_id: str
+    trace_id: str
+    input_type: MessageContentType
+    run_status: AgentRunStatus
+    events_url: str
+    result_url: str
+    replayed: bool
+
+
+class ContentImportToolStepResponse(ApiModel):
+    tool_name: str
+    stage: str
+    status: ToolRunStatus
+    source: str
+    duration_ms: int | None
+    error_code: str | None
+
+
+class ContentImportResultResponse(ApiModel):
+    message_id: str
+    trace_id: str
+    input_type: MessageContentType
+    run_status: AgentRunStatus
+    extraction: ExtractionSummaryResponse | None
+    collections: tuple[CollectionItemResponse, ...]
+    source_id: str | None = None
+    source_type: SourceType | None = None
+    source_parse_status: SourceParseStatus | None = None
+    recovery_actions: tuple[str, ...] = ()
+    error_code: str | None = None
+    tool_steps: tuple[ContentImportToolStepResponse, ...] = ()
+
+
+class ConversationMessageResponse(ApiModel):
+    message_id: str
+    input_type: MessageContentType
+    content: str = Field(repr=False)
+    trace_id: str
+    run_status: AgentRunStatus
+    events_url: str
+    result_url: str
+    created_at: datetime
+
+
+class ConversationResponse(ApiModel):
+    messages: tuple[ConversationMessageResponse, ...]
+
+
 class CollectionListResponse(ApiModel):
     items: tuple[CollectionItemResponse, ...]
     page: int

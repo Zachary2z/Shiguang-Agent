@@ -467,7 +467,6 @@ async def test_two_cookie_jars_cannot_cross_read_or_write_demo_resources(
             )
             item_id = created.json()["collections"][0]["id"]
             trace_id = created.json()["trace_id"]
-            undo_token = created.json()["undo_token"]
 
             cross_session = await _submit(
                 second_client,
@@ -482,7 +481,7 @@ async def test_two_cookie_jars_cannot_cross_read_or_write_demo_resources(
             )
             cross_undo = await second_client.post(
                 f"/api/v1/collections/{item_id}/undo",
-                json={"undo_token": undo_token},
+                json={"undo_token": "not-available"},
             )
             second_list = await second_client.get("/api/v1/collections")
             first_list = await first_client.get("/api/v1/collections")

@@ -17,9 +17,13 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
-from sqlalchemy import text
 
 from app.application.collection_writes import CollectionWriteService
+from app.application.content_import_jobs import (
+    CONTENT_IMPORT_JOB_TYPE,
+    ContentImportJobHandler,
+)
+from app.application.pricing import ConfiguredPricingPolicy
 from app.config import Settings
 from app.domain.collections import (
     CandidateField,
@@ -39,8 +43,10 @@ from app.domain.collections import (
 from app.domain.identifiers import generate_trace_id
 from app.domain.runs import AgentRunCreate
 from app.domain.time import utc_now
+from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.repositories import AgentRunRepository, SqlAlchemyCollectionRepository
 from app.main import create_app
+from app.worker.service import JobWorker
 from nanobot_core.providers import (
     Message,
     ModelProvider,
@@ -50,6 +56,7 @@ from nanobot_core.providers import (
     StructuredOutput,
     ToolDefinition,
 )
+from tests.contract.async_import_client import CompletingImportClient
 from tests.core.fakes import FakeProvider, fake_response
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -154,7 +161,31 @@ async def _client(
     api = create_app(settings, text_provider=provider)
     async with api.router.lifespan_context(api):
         transport = httpx.ASGITransport(app=api)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        if provider is None:
+            client: httpx.AsyncClient = httpx.AsyncClient(
+                transport=transport,
+                base_url="http://test",
+            )
+        else:
+            handler = ContentImportJobHandler(
+                session_factory=api.state.demo_database.session_factory,
+                provider=provider,
+                pricing=ConfiguredPricingPolicy.from_settings(settings),
+                locks=api.state.idempotency_locks,
+                timeout_seconds=settings.agent_timeout_seconds,
+                structured_output_mode=settings.extraction_structured_output_mode(),
+            )
+            client = CompletingImportClient(
+                worker=JobWorker(
+                    queue=PostgresJobQueue(api.state.demo_database.session_factory),
+                    worker_id="worker_m0_2d_contract",
+                    handlers={CONTENT_IMPORT_JOB_TYPE: handler},
+                    poll_seconds=0.01,
+                ),
+                transport=transport,
+                base_url="http://test",
+            )
+        async with client:
             yield api, client
 
 
@@ -208,8 +239,8 @@ async def test_demo_session_works_without_model_config_and_rejects_client_user_i
     assert first.json()["resumed"] is False and second.json()["resumed"] is True
     assert spoofed.status_code == 422
     assert "usr_0123456789abcdef0123456789abcdef" not in spoofed.text
-    assert unavailable.status_code == 503
-    assert unavailable.json()["error_code"] == "PROVIDER_NOT_CONFIGURED"
+    assert unavailable.status_code == 202
+    assert unavailable.json()["run_status"] == "queued"
 
 
 @pytest.mark.asyncio
@@ -229,8 +260,6 @@ async def test_place_flow_run_detail_patch_delete_and_undo_are_safe(
         payload = created.json()
         item = payload["collections"][0]
         item_id = item["id"]
-        token = payload["undo_token"]
-
         run = await client.get(f"/api/v1/agent-runs/{payload['trace_id']}")
         detail = await client.get(f"/api/v1/collections/{item_id}")
         patched = await client.patch(
@@ -252,14 +281,11 @@ async def test_place_flow_run_detail_patch_delete_and_undo_are_safe(
             f"/api/v1/collections/{item_id}",
             params={"expected_version": patched.json()["version"]},
         )
-        undone = await client.post(
-            f"/api/v1/collections/{item_id}/undo",
-            json={"undo_token": token},
-        )
+        restored = await client.post(f"/api/v1/collections/{item_id}/restore")
 
     assert payload["run_status"] == "succeeded"
     assert payload["extraction"]["outcome"] == "candidates"
-    assert token and token not in run.text and token not in detail.text
+    assert payload["undo_token"] is None
     assert run.status_code == 200 and run.json()["status"] == "succeeded"
     assert run.json()["model_calls"][0]["model_name"] == "fixture-model"
     assert "user_id" not in run.text
@@ -271,7 +297,8 @@ async def test_place_flow_run_detail_patch_delete_and_undo_are_safe(
     assert stale.status_code == 409 and stale.json()["error_code"] == "VERSION_CONFLICT"
     assert deleted.json()["status"] == repeated_delete.json()["status"] == "deleted"
     assert deleted.json()["version"] == repeated_delete.json()["version"] == 3
-    assert undone.status_code == 200 and undone.json()["outcome"] == "undone"
+    assert restored.status_code == 200
+    assert restored.json()["status"] == item["status"]
 
 
 @pytest.mark.asyncio
@@ -304,7 +331,7 @@ async def test_sequential_and_concurrent_idempotency_do_not_repeat_data(
     assert len({response["message_id"] for response in responses}) == 1
     assert len({response["trace_id"] for response in responses}) == 1
     assert len({response["collections"][0]["id"] for response in responses}) == 1
-    assert sum(response["undo_token"] is not None for response in responses) == 1
+    assert all(response["undo_token"] is None for response in responses)
     assert conflict.status_code == 409
     assert conflict.json()["error_code"] == "IDEMPOTENCY_CONFLICT"
 
@@ -429,29 +456,20 @@ async def test_wrong_item_random_and_repeated_undo_are_safe(
         first_data = first.json()
         second_id = second.json()["collections"][0]["id"]
         first_id = first_data["collections"][0]["id"]
-        token = first_data["undo_token"]
-
         wrong_item = await client.post(
-            f"/api/v1/collections/{second_id}/undo",
-            json={"undo_token": token},
+            "/api/v1/collections/col_0123456789abcdef0123456789abcdef/restore"
         )
-        random_token = await client.post(
-            f"/api/v1/collections/{first_id}/undo",
-            json={"undo_token": "opaque-random-token"},
-        )
-        valid = await client.post(
-            f"/api/v1/collections/{first_id}/undo",
-            json={"undo_token": token},
-        )
-        repeated = await client.post(
-            f"/api/v1/collections/{first_id}/undo",
-            json={"undo_token": token},
+        deleted = await client.delete(f"/api/v1/collections/{first_id}")
+        repeated_delete = await client.delete(f"/api/v1/collections/{first_id}")
+        restored = await client.post(f"/api/v1/collections/{first_id}/restore")
+        repeated_restore = await client.post(
+            f"/api/v1/collections/{first_id}/restore"
         )
 
-    assert wrong_item.status_code == random_token.status_code == 404
-    assert token not in wrong_item.text and token not in random_token.text
-    assert valid.json()["outcome"] == "undone"
-    assert repeated.json()["outcome"] == "already_undone"
+    assert wrong_item.status_code == 404
+    assert deleted.json()["status"] == repeated_delete.json()["status"] == "deleted"
+    assert restored.json()["status"] == repeated_restore.json()["status"]
+    assert second_id != first_id
 
 
 @pytest.mark.asyncio
@@ -783,13 +801,12 @@ async def test_mid_transaction_failure_rolls_back_all_collection_artifacts(
     )
     async with _client(test_settings, provider) as (_api, client):
         session_id = await _demo(client)
-        with pytest.raises(RuntimeError, match="transaction-fixture-failure"):
-            await _submit(
-                client,
-                session_id,
-                key="rollback-artifacts",
-                content="两个具体地点",
-            )
+        response = await _submit(
+            client,
+            session_id,
+            key="rollback-artifacts",
+            content="两个具体地点",
+        )
 
     database_path = _demo_database_path(test_settings)
     with sqlite3.connect(database_path) as connection:
@@ -806,6 +823,7 @@ async def test_mid_transaction_failure_rolls_back_all_collection_artifacts(
         run = connection.execute("SELECT status, error_code FROM agent_runs").fetchone()
     assert counts == (0, 0, 0, 0, 0)
     assert run == ("failed", "RUN_INTERNAL_ERROR")
+    assert response.status_code == 500
 
 
 @pytest.mark.asyncio
@@ -818,7 +836,7 @@ async def test_concurrent_undo_is_idempotent_and_expired_token_is_unavailable(
             _response(_place(title="Expired")),
         ]
     )
-    async with _client(test_settings, provider) as (api, client):
+    async with _client(test_settings, provider) as (_api, client):
         session_id = await _demo(client)
         created = await _submit(
             client,
@@ -828,53 +846,22 @@ async def test_concurrent_undo_is_idempotent_and_expired_token_is_unavailable(
         )
         data = created.json()
         path_item = data["collections"][0]["id"]
-        token = data["undo_token"]
+        version = data["collections"][0]["version"]
         first, second = await asyncio.gather(
-            client.post(
-                f"/api/v1/collections/{path_item}/undo",
-                json={"undo_token": token},
+            client.delete(
+                f"/api/v1/collections/{path_item}",
+                params={"expected_version": version},
             ),
-            client.post(
-                f"/api/v1/collections/{path_item}/undo",
-                json={"undo_token": token},
+            client.delete(
+                f"/api/v1/collections/{path_item}",
+                params={"expected_version": version},
             ),
         )
+        restored = await client.post(f"/api/v1/collections/{path_item}/restore")
+        repeated = await client.post(f"/api/v1/collections/{path_item}/restore")
 
-        expiring = await _submit(
-            client,
-            session_id,
-            key="expired-undo-api",
-            content="过期地点",
-        )
-        expiring_data = expiring.json()
-        async with api.state.demo_database.session() as db_session:
-            await db_session.execute(
-                text(
-                    "UPDATE collection_write_operations "
-                    "SET created_at = :created, undo_expires_at = :expired "
-                    "WHERE idempotency_key = :key"
-                ),
-                {
-                    "created": "2000-01-01T00:00:00+00:00",
-                    "expired": "2000-01-01T00:10:00+00:00",
-                    "key": "expired-undo-api",
-                },
-            )
-            await db_session.commit()
-        expired = await client.post(
-            f"/api/v1/collections/{expiring_data['collections'][0]['id']}/undo",
-            json={"undo_token": expiring_data["undo_token"]},
-        )
-
-    assert {first.json()["outcome"], second.json()["outcome"]} == {
-        "undone",
-        "already_undone",
-    }
-    assert set(first.json()["collection_item_ids"]) == {
-        item["id"] for item in data["collections"]
-    }
-    assert expired.status_code == 404
-    assert expiring_data["undo_token"] not in expired.text
+    assert first.json()["status"] == second.json()["status"] == "deleted"
+    assert restored.json()["status"] == repeated.json()["status"]
 
 
 @pytest.mark.asyncio

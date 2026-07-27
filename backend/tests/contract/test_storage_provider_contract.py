@@ -44,7 +44,7 @@ def test_storage_provider_has_one_minimal_private_contract() -> None:
         if getattr(member, "__isabstractmethod__", False)
     }
 
-    assert methods == {"put_private", "get_private_access", "delete"}
+    assert methods == {"put_private", "read_private", "get_private_access", "delete"}
 
 
 def test_private_metadata_contains_lifecycle_fields_without_a_path_or_url() -> None:

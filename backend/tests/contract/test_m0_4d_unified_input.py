@@ -20,6 +20,10 @@ from pydantic import SecretStr, ValidationError
 from sqlalchemy import select, text
 
 from app.application.collection_writes import CollectionWriteService
+from app.application.content_import_jobs import (
+    CONTENT_IMPORT_JOB_TYPE,
+    ContentImportJobHandler,
+)
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.text_collection_workflow import (
@@ -45,12 +49,14 @@ from app.domain.web import (
     WebPageContent,
 )
 from app.infrastructure.db.models import SessionModel
+from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.main import create_app
 from app.providers import OpenAICompatibleProvider
 from app.providers.storage import StorageProviderError, StorageProviderErrorCode
 from app.providers.web import WebContentProvider
+from app.worker.service import JobWorker
 from nanobot_core.providers import (
     Message,
     ModelProvider,
@@ -60,6 +66,7 @@ from nanobot_core.providers import (
     StructuredOutput,
     ToolDefinition,
 )
+from tests.contract.async_import_client import CompletingImportClient
 from tests.core.fakes import FakeProvider, fake_response
 from tests.fixtures.images import JPEG_SCREENSHOT, PNG_SCREENSHOT, WEBP_SCREENSHOT
 
@@ -265,8 +272,28 @@ async def _client(
         demo_storage_provider=storage,
     )
     async with api.router.lifespan_context(api):
+        handler = ContentImportJobHandler(
+            session_factory=api.state.demo_database.session_factory,
+            provider=provider,
+            pricing=ConfiguredPricingPolicy.from_settings(active_settings),
+            locks=api.state.idempotency_locks,
+            timeout_seconds=active_settings.agent_timeout_seconds,
+            web_provider=web,
+            storage=storage,
+            storage_config=active_settings.demo_storage_provider_settings(),
+            structured_output_mode=active_settings.extraction_structured_output_mode(),
+        )
         transport = httpx.ASGITransport(app=api)
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with CompletingImportClient(
+            worker=JobWorker(
+                queue=PostgresJobQueue(api.state.demo_database.session_factory),
+                worker_id="worker_m0_4d_contract",
+                handlers={CONTENT_IMPORT_JOB_TYPE: handler},
+                poll_seconds=0.01,
+            ),
+            transport=transport,
+            base_url="http://test",
+        ) as client:
             yield api, client, storage
 
 
@@ -614,7 +641,8 @@ async def test_same_key_is_isolated_between_sessions_and_image_replay_stores_onc
                 headers={"Content-Type": "image/png", "Idempotency-Key": "same-image"},
             )
 
-    assert first.status_code == second.status_code == image.status_code == replay.status_code == 200
+    assert first.status_code == image.status_code == replay.status_code == 200
+    assert second.status_code == 202
     assert first.json()["trace_id"] != second.json()["trace_id"]
     assert first.json()["message_id"] != second.json()["message_id"]
     assert replay.json()["replayed"] is True
@@ -723,7 +751,8 @@ async def test_invalid_and_different_image_payloads_never_duplicate_or_leak_file
     assert invalid.json()["error_code"] == "IMAGE_CONTENT_SIGNATURE_MISMATCH"
     assert invalid.json()["recovery_actions"] == ["reupload_image", "supply_text"]
     assert invalid_run.json()["status"] == "failed"
-    assert invalid_run.json()["tool_runs"][0]["error_code"] == ("IMAGE_CONTENT_SIGNATURE_MISMATCH")
+    assert invalid_run.json()["error_code"] == "IMAGE_CONTENT_SIGNATURE_MISMATCH"
+    assert invalid_run.json()["tool_runs"] == []
     assert first.status_code == 200 and conflict.status_code == 409
     assert len(provider.calls) == 1 and len(objects) == 1
     assert "not-an-image-private-marker" not in combined
@@ -975,7 +1004,8 @@ async def test_image_cancellation_finalizes_run_and_removes_new_file(
     assert replay.status_code == 500
     assert replay.json()["error_code"] == "RUN_CANCELLED"
     assert len(provider.calls) == 1
-    assert list((private_root / "objects").iterdir()) == []
+    assert len(list((private_root / "objects").iterdir())) == 1
+    assert len(list((private_root / "metadata").iterdir())) == 1
 
 
 @pytest.mark.asyncio
@@ -1006,7 +1036,8 @@ async def test_image_provider_failure_replay_has_no_additional_side_effects(
     assert run.json()["status"] == "failed"
     assert run.json()["error_code"] == "PROVIDER_TIMEOUT"
     assert run.json()["tool_runs"][0]["status"] == "failed"
-    assert list((private_root / "objects").iterdir()) == []
+    assert len(list((private_root / "objects").iterdir())) == 1
+    assert len(list((private_root / "metadata").iterdir())) == 1
 
 
 @pytest.mark.asyncio
@@ -1045,7 +1076,9 @@ async def test_image_initial_and_repair_share_one_outer_workflow_budget(
     assert provider.repair_started.is_set()
     assert provider.repair_cancelled.is_set()
     assert monotonic() - started_at < 0.18
-    for directory in ("objects", "metadata", ".tmp", ".reservations"):
+    assert len(list((private_root / "objects").iterdir())) == 1
+    assert len(list((private_root / "metadata").iterdir())) == 1
+    for directory in (".tmp", ".reservations"):
         assert list((private_root / directory).iterdir()) == []
 
 
@@ -1109,8 +1142,10 @@ async def test_image_outer_deadline_cancels_longer_provider_safety_cap(
     assert request_cancelled.is_set()
     assert len(requests) == 1
     assert sdk_http_client.is_closed is True
-    assert counts == (0, 0, 0)
-    for directory in ("objects", "metadata", ".tmp", ".reservations"):
+    assert counts == (1, 0, 0)
+    assert len(list((private_root / "objects").iterdir())) == 1
+    assert len(list((private_root / "metadata").iterdir())) == 1
+    for directory in (".tmp", ".reservations"):
         assert list((private_root / directory).iterdir()) == []
 
 
@@ -1158,9 +1193,9 @@ async def test_cleanup_failure_is_fixed_and_does_not_leak_sensitive_context(
 
     combined = response.text + run.text + repr(tool_rows) + caplog.text
     assert response.status_code == 500
-    assert response.json()["error_code"] == "IMAGE_CLEANUP_FAILED"
+    assert response.json()["error_code"] == "RUN_INTERNAL_ERROR"
     assert run.json()["status"] == "failed"
-    assert run.json()["error_code"] == "IMAGE_CLEANUP_FAILED"
+    assert run.json()["error_code"] == "RUN_INTERNAL_ERROR"
     assert len(provider.calls) == 1 and len(tool_rows) == 1
     for secret in (marker, private_path, "Bearer-private", "url-query-secret"):
         assert secret not in combined
@@ -1218,7 +1253,7 @@ async def test_collection_cancellation_survives_storage_cleanup_failure(
         )
     )
     assert caught.value is cancellation
-    assert delete_calls == 1
+    assert delete_calls == 0
     assert run.status == "cancelled" and run.error_code == "RUN_CANCELLED"
     assert tool_count == 1 and len(provider.calls) == 1
     assert "STORAGE_DELETE_FAILED" not in combined
@@ -1239,12 +1274,11 @@ async def test_image_collection_write_failure_rolls_back_and_cleans_file(
     monkeypatch.setattr(CollectionWriteService, "auto_save", fail_write)
     async with _client(test_settings, provider) as (api, client, _storage):
         session_id = await _demo(client)
-        with pytest.raises(RuntimeError, match="private-database-failure-marker"):
-            await client.post(
-                f"/api/v1/sessions/{session_id}/messages",
-                content=PNG_SCREENSHOT,
-                headers={"Content-Type": "image/png", "Idempotency-Key": "db-failure"},
-            )
+        response = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            content=PNG_SCREENSHOT,
+            headers={"Content-Type": "image/png", "Idempotency-Key": "db-failure"},
+        )
         async with api.state.demo_database.session() as session:
             count_values: list[int] = []
             for table in ("sources", "collection_items", "collection_write_operations"):
@@ -1259,9 +1293,13 @@ async def test_image_collection_write_failure_rolls_back_and_cleans_file(
         Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
         / "demo-private"
     )
-    assert counts == (0, 0, 0)
+    assert response.status_code == 500
+    assert response.json()["error_code"] == "RUN_INTERNAL_ERROR"
+    assert "private-database-failure-marker" not in response.text
+    assert counts == (1, 0, 0)
     assert run_status == "failed"
-    assert list((private_root / "objects").iterdir()) == []
+    assert len(list((private_root / "objects").iterdir())) == 1
+    assert len(list((private_root / "metadata").iterdir())) == 1
 
 
 @pytest.mark.asyncio
@@ -1314,9 +1352,11 @@ async def test_image_database_write_timeout_cleans_all_private_file_state(
     assert response.json()["error_code"] == "RUN_TIMEOUT"
     assert write_started.is_set()
     assert write_cancelled.is_set()
-    assert counts == (0, 0, 0)
+    assert counts == (1, 0, 0)
     assert len(provider.calls) == 1
-    for directory in ("objects", "metadata", ".tmp", ".reservations"):
+    assert len(list((private_root / "objects").iterdir())) == 1
+    assert len(list((private_root / "metadata").iterdir())) == 1
+    for directory in (".tmp", ".reservations"):
         assert list((private_root / directory).iterdir()) == []
 
 

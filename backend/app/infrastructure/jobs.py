@@ -275,6 +275,19 @@ class PostgresJobQueue:
             )
             return None if row is None else _scheduled_job(row)
 
+    async def get_by_trace(
+        self, *, user_id: str, trace_id: str
+    ) -> ScheduledJob | None:
+        owner = validate_user_id(user_id)
+        async with self._session_factory() as session:
+            row = await session.scalar(
+                select(ScheduledJobModel).where(
+                    ScheduledJobModel.user_id == owner,
+                    ScheduledJobModel.trace_id == trace_id,
+                )
+            )
+            return None if row is None else _scheduled_job(row)
+
 
 def _request_fingerprint(request: JobCreate) -> str:
     value = {

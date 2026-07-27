@@ -6,7 +6,7 @@ import json
 from datetime import timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, Header, Path, Query, Request, Response
+from fastapi import APIRouter, Body, Depends, Header, Path, Query, Request, Response, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
 from pydantic import TypeAdapter, ValidationError
@@ -22,8 +22,6 @@ from app.api.dependencies import (
     get_idempotency_locks,
     get_pricing,
     get_storage_provider,
-    get_text_provider,
-    get_web_provider,
 )
 from app.api.errors import UndoNotAvailableError
 from app.application.collection_queries import (
@@ -32,6 +30,10 @@ from app.application.collection_queries import (
     CollectionSort,
 )
 from app.application.collection_writes import CollectionWriteService
+from app.application.content_import_jobs import (
+    ContentImportJobPayload,
+    ContentImportSubmissionService,
+)
 from app.application.demo_sessions import DemoSessionService
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
 from app.application.pricing import ConfiguredPricingPolicy
@@ -54,20 +56,25 @@ from app.domain.collections import (
 )
 from app.domain.identity import SESSION_COOKIE_NAME, CurrentPrincipal
 from app.infrastructure.db import Database
+from app.infrastructure.jobs import PostgresJobQueue
+from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.providers.storage import StorageProvider
-from app.providers.web import WebContentProvider
 from app.schemas.api import (
     AgentRunResponse,
     CollectionDetailResponse,
     CollectionItemResponse,
     CollectionListResponse,
     CollectionPatchRequest,
+    ContentImportAcceptedResponse,
+    ContentImportResultResponse,
+    ContentImportToolStepResponse,
+    ConversationMessageResponse,
+    ConversationResponse,
     DemoSessionCreateRequest,
     DemoSessionResponse,
     ExtractionSummaryResponse,
     JsonMessageCreateRequest,
     MessageCreateRequest,
-    MessageCreateResponse,
     PublicModelCallResponse,
     PublicToolRunResponse,
     SourceSummaryResponse,
@@ -75,7 +82,6 @@ from app.schemas.api import (
     UndoResponse,
     WebSessionRevokedResponse,
 )
-from nanobot_core.providers import ModelProvider
 
 _SESSION_PATH = r"^ses_[a-f0-9]{32}$"
 _COLLECTION_PATH = r"^col_[a-f0-9]{32}$"
@@ -88,11 +94,9 @@ DemoDbSession = Annotated[AsyncSession, Depends(get_demo_db_session)]
 CurrentUserId = Annotated[str, Depends(get_current_user_id)]
 Principal = Annotated[CurrentPrincipal, Depends(get_current_principal)]
 CurrentDatabase = Annotated[Database, Depends(get_current_database)]
-TextProvider = Annotated[ModelProvider, Depends(get_text_provider)]
 Pricing = Annotated[ConfiguredPricingPolicy, Depends(get_pricing)]
 Locks = Annotated[IdempotencyLockRegistry, Depends(get_idempotency_locks)]
 AgentTimeout = Annotated[float, Depends(get_agent_timeout_seconds)]
-WebProvider = Annotated[WebContentProvider | None, Depends(get_web_provider)]
 PrivateStorage = Annotated[StorageProvider | None, Depends(get_storage_provider)]
 
 _JSON_MESSAGE_ADAPTER: TypeAdapter[JsonMessageCreateRequest] = TypeAdapter(JsonMessageCreateRequest)
@@ -208,7 +212,8 @@ async def revoke_current_web_session(
 
 @api_router.post(
     "/sessions/{session_id}/messages",
-    response_model=MessageCreateResponse,
+    response_model=ContentImportAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
     openapi_extra={
         "requestBody": _MESSAGE_REQUEST_BODY,
         "parameters": [
@@ -227,37 +232,80 @@ async def create_message(
     request: Request,
     session: DbSession,
     user_id: CurrentUserId,
-    provider: TextProvider,
-    web_provider: WebProvider,
     storage: PrivateStorage,
     pricing: Pricing,
     locks: Locks,
     timeout_seconds: AgentTimeout,
-) -> MessageCreateResponse:
+    database: CurrentDatabase,
+) -> ContentImportAcceptedResponse:
     idempotency_key, collection_input = await _parse_collection_input(request)
-    settings: Settings = request.app.state.settings
-    result = await TextCollectionWorkflow(
+    result = await ContentImportSubmissionService(
         session=session,
-        provider=provider,
+        session_factory=database.session_factory,
         pricing=pricing,
         locks=locks,
         timeout_seconds=timeout_seconds,
-        web_provider=web_provider,
         storage=storage,
-        storage_config=settings.storage_provider_settings(),
-        structured_output_mode=settings.extraction_structured_output_mode(),
-    ).submit_input(
+    ).submit(
         user_id=user_id,
         session_id=session_id,
-        idempotency_key=idempotency_key,
+        client_idempotency_key=idempotency_key,
         input=collection_input,
     )
+    return ContentImportAcceptedResponse(
+        message_id=result.message_id,
+        trace_id=result.trace_id,
+        input_type=result.input_type,
+        run_status=result.run_status,
+        events_url=f"/api/v1/agent-runs/{result.trace_id}/events",
+        result_url=f"/api/v1/agent-runs/{result.trace_id}/result",
+        replayed=result.replayed,
+    )
+
+
+@api_router.get(
+    "/agent-runs/{trace_id}/result",
+    response_model=ContentImportResultResponse,
+)
+async def get_content_import_result(
+    trace_id: Annotated[str, Path(pattern=_TRACE_PATH)],
+    session: DbSession,
+    user_id: CurrentUserId,
+    database: CurrentDatabase,
+    pricing: Pricing,
+    locks: Locks,
+    timeout_seconds: AgentTimeout,
+) -> ContentImportResultResponse:
+    job = await PostgresJobQueue(database.session_factory).get_by_trace(
+        user_id=user_id,
+        trace_id=trace_id,
+    )
+    if job is None:
+        raise ResourceNotFoundError
+    payload = ContentImportJobPayload.model_validate(job.payload, strict=True)
+    workflow = TextCollectionWorkflow(
+        session=session,
+        provider=None,
+        pricing=pricing,
+        locks=locks,
+        timeout_seconds=timeout_seconds,
+    )
+    result = await workflow.read_result(
+        user_id=user_id,
+        message_id=payload.message_id,
+        source_id=payload.source_id,
+        idempotency_key=job.idempotency_key,
+    )
+    run = await AgentRunService(
+        session=session,
+        runner=None,
+        pricing=pricing,
+    ).get_by_trace_id(user_id=user_id, trace_id=trace_id)
+    if run is None:
+        raise ResourceNotFoundError
     extraction = result.extraction_result
     saved = result.auto_save_result
-    plaintext_token = None
-    if saved is not None and saved.undo_token is not None:
-        plaintext_token = saved.undo_token.get_secret_value()
-    return MessageCreateResponse(
+    return ContentImportResultResponse(
         message_id=result.message.id,
         trace_id=result.trace_id,
         input_type=result.message.content_type,
@@ -280,13 +328,74 @@ async def create_message(
         ),
         source_id=None if result.source is None else result.source.id,
         source_type=None if result.source is None else result.source.type,
-        source_parse_status=(None if result.source is None else result.source.parse_status),
+        source_parse_status=None if result.source is None else result.source.parse_status,
         recovery_actions=result.recovery_actions,
         error_code=result.error_code,
-        undo_token=plaintext_token,
-        undo_expires_at=None if saved is None else saved.undo_expires_at,
-        replayed=result.replayed,
+        tool_steps=tuple(
+            ContentImportToolStepResponse(
+                tool_name=tool.tool_name,
+                stage=_tool_stage(tool.tool_name),
+                status=tool.status,
+                source="user_submission",
+                duration_ms=tool.latency_ms,
+                error_code=tool.error_code,
+            )
+            for tool in run.tool_runs
+        ),
     )
+
+
+def _tool_stage(tool_name: str) -> str:
+    return {
+        "web_content_fetch": "content_receiving",
+        "image_recognition": "place_recognition",
+    }.get(tool_name, "result_organizing")
+
+
+@api_router.get(
+    "/sessions/{session_id}/messages",
+    response_model=ConversationResponse,
+)
+async def list_conversation_messages(
+    session_id: Annotated[str, Path(pattern=_SESSION_PATH)],
+    session: DbSession,
+    user_id: CurrentUserId,
+    pricing: Pricing,
+) -> ConversationResponse:
+    repository = SqlAlchemyCollectionRepository(session)
+    if await repository.get_session(user_id=user_id, session_id=session_id) is None:
+        raise ResourceNotFoundError
+    run_service = AgentRunService(session=session, runner=None, pricing=pricing)
+    messages: list[ConversationMessageResponse] = []
+    for message in await repository.list_messages(
+        user_id=user_id,
+        session_id=session_id,
+    ):
+        if message.trace_id is None:
+            continue
+        run = await run_service.get_by_trace_id(
+            user_id=user_id,
+            trace_id=message.trace_id,
+        )
+        if run is None:
+            continue
+        messages.append(
+            ConversationMessageResponse(
+                message_id=message.id,
+                input_type=message.content_type,
+                content=(
+                    "已上传截图"
+                    if message.content_type.value == "image"
+                    else message.content
+                ),
+                trace_id=message.trace_id,
+                run_status=run.status,
+                events_url=f"/api/v1/agent-runs/{message.trace_id}/events",
+                result_url=f"/api/v1/agent-runs/{message.trace_id}/result",
+                created_at=message.created_at,
+            )
+        )
+    return ConversationResponse(messages=tuple(messages))
 
 
 async def _parse_collection_input(
@@ -544,6 +653,22 @@ async def patch_collection(
         collection_item_id=item_id,
         expected_version=request.expected_version,
         patch=request.changes,
+    )
+    return CollectionItemResponse.from_domain(item)
+
+
+@api_router.post(
+    "/collections/{item_id}/restore",
+    response_model=CollectionItemResponse,
+)
+async def restore_collection(
+    item_id: Annotated[str, Path(pattern=_COLLECTION_PATH)],
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> CollectionItemResponse:
+    item = await CollectionWriteService(session=session).restore(
+        user_id=user_id,
+        collection_item_id=item_id,
     )
     return CollectionItemResponse.from_domain(item)
 

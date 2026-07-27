@@ -48,5 +48,9 @@ class JobQueue(Protocol):
 
     async def get(self, *, user_id: str, job_id: str) -> ScheduledJob | None: ...
 
+    async def get_by_trace(
+        self, *, user_id: str, trace_id: str
+    ) -> ScheduledJob | None: ...
+
 
 __all__ = ["JobQueue"]

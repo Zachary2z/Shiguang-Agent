@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import warnings
 from collections.abc import AsyncIterable, Callable
 from datetime import UTC, datetime, timedelta
@@ -281,6 +282,46 @@ class ImageRecognitionService:
         if public_error is not None:
             raise public_error
         raise AssertionError("unreachable screenshot recognition state")
+
+    async def recognize_existing(
+        self,
+        file: AsyncIterable[bytes],
+        *,
+        metadata: PrivateFileMetadata,
+    ) -> ExtractionResult:
+        """Recognize an API-staged private image without creating a second object."""
+
+        self._validate_content_type(metadata.content_type)
+        image_bytes = await self._read_bounded(file)
+        if (
+            len(image_bytes) != metadata.byte_size
+            or hashlib.sha256(image_bytes).hexdigest() != metadata.content_sha256
+        ):
+            raise ImageRecognitionError(
+                code=ImageRecognitionErrorCode.PROCESSING_FAILED
+            )
+        try:
+            dimensions = self._validate_image(
+                image_bytes,
+                content_type=metadata.content_type,
+            )
+            inference_bytes, inference_content_type = self._prepare_inference_image(
+                image_bytes,
+                content_type=metadata.content_type,
+                dimensions=dimensions,
+            )
+            return await self._extract(
+                inference_bytes,
+                content_type=inference_content_type,
+            )
+        except asyncio.CancelledError:
+            raise
+        except (ProviderError, ImageRecognitionError):
+            raise
+        except Exception:
+            raise ImageRecognitionError(
+                code=ImageRecognitionErrorCode.PROCESSING_FAILED
+            ) from None
 
     async def _extract(
         self,

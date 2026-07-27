@@ -215,6 +215,32 @@ class LocalPrivateStorageProvider(StorageProvider):
         )
         return PrivateFileAccess(file=metadata, method=method)
 
+    async def read_private(self, file_key: str) -> tuple[PrivateFileMetadata, bytes]:
+        """Read a verified object for the background import workflow."""
+
+        access = await self.get_private_access(file_key)
+        if access.method is PrivateAccessMethod.EXPIRED:
+            raise StorageProviderError(code=StorageProviderErrorCode.NOT_FOUND)
+        payload: bytes | None = None
+        corrupt = False
+        try:
+            payload = _read_bounded_file(
+                self._objects,
+                file_key,
+                limit=self._max_file_size_bytes,
+            )
+            corrupt = (
+                len(payload) != access.file.byte_size
+                or sha256(payload).hexdigest() != access.file.content_sha256
+            )
+        except StorageProviderError:
+            raise
+        except OSError:
+            corrupt = True
+        if corrupt or payload is None:
+            raise StorageProviderError(code=StorageProviderErrorCode.CORRUPT_OBJECT)
+        return access.file, payload
+
     async def delete(self, file_key: str) -> PrivateFileDeleteResult:
         validate_storage_file_key(file_key)
         delete_failed = False
@@ -567,6 +593,30 @@ def _read_small_file(directory: Path, name: str) -> bytes:
         if len(payload) > _MAX_METADATA_BYTES:
             raise ValueError
         return payload
+    finally:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
+        os.close(directory_fd)
+
+
+def _read_bounded_file(directory: Path, name: str, *, limit: int) -> bytes:
+    directory_fd = _open_directory(directory)
+    file_descriptor = -1
+    try:
+        file_descriptor = os.open(name, _READ_FLAGS, dir_fd=directory_fd)
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(file_descriptor, min(64 * 1024, limit + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > limit:
+                raise StorageProviderError(
+                    code=StorageProviderErrorCode.CORRUPT_OBJECT
+                )
+        return b"".join(chunks)
     finally:
         if file_descriptor >= 0:
             os.close(file_descriptor)

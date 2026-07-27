@@ -11,6 +11,7 @@ from math import isfinite
 from time import monotonic
 from typing import Generic, TypeVar
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.pricing import PricingPolicy
@@ -108,9 +109,15 @@ class ApplicationRunObserver:
         collector: _RunEventCollector,
         *,
         clock: Callable[[], float],
+        stage_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._collector = collector
         self._clock = clock
+        self._stage_callback = stage_callback
+
+    async def set_stage(self, stage: str) -> None:
+        if self._stage_callback is not None:
+            await self._stage_callback(stage)
 
     def record_model_response(self, response: ModelResponse) -> None:
         self._collector.record_model_response(response)
@@ -615,22 +622,51 @@ class AgentRunService:
         operation: Callable[[ApplicationRunObserver], Awaitable[T]],
         *,
         outcome: Callable[[T], tuple[AgentRunStatus, str | None]] | None = None,
+        reuse_queued: bool = False,
     ) -> TrackedApplicationExecution[T]:
         """Track one synchronous application workflow without a second AgentRunner."""
 
-        queued_at = self._now()
-        row = await self._repository.create_queued(request, now=queued_at)
-        await self._session.commit()
+        if request.user_id is None or request.trace_id is None:
+            raise ValueError("application runs require user_id and trace_id")
+        run_id: str | None = None
+        trace_id = request.trace_id
+        if reuse_queued:
+            existing = await self._repository.get_by_trace_id(
+                user_id=request.user_id,
+                trace_id=request.trace_id,
+            )
+            if existing is not None:
+                if existing.status is not AgentRunStatus.QUEUED:
+                    raise RuntimeError("reused application run must be queued")
+                run_id = existing.id
+        if run_id is None:
+            queued_at = self._now()
+            row = await self._repository.create_queued(request, now=queued_at)
+            await self._session.commit()
+            run_id = row.id
+            trace_id = row.trace_id
 
         started_at = self._now()
-        await self._repository.mark_running(row.id, started_at=started_at)
-        await self._record_start_events(row.id, started_at=started_at)
+        await self._repository.mark_running(run_id, started_at=started_at)
+        await self._record_start_events(run_id, started_at=started_at)
         await self._session.commit()
-        run_id = row.id
-        trace_id = row.trace_id
 
         collector = _RunEventCollector(self._pricing, now=self._now)
-        observer = ApplicationRunObserver(collector, clock=self._clock)
+
+        async def persist_stage(stage: str) -> None:
+            await self._events.append_for_run(
+                run_id=run_id,
+                event_type=RunEventType.STAGE_CHANGED,
+                summary=StageChangedSummary(stage=stage),
+                created_at=self._now(),
+            )
+            await self._session.commit()
+
+        observer = ApplicationRunObserver(
+            collector,
+            clock=self._clock,
+            stage_callback=persist_stage,
+        )
         execution_started = self._clock()
         try:
             result = await asyncio.wait_for(
@@ -696,6 +732,34 @@ class AgentRunService:
             duration_ms=self._elapsed_ms(execution_started),
         )
         return TrackedApplicationExecution(trace_id=trace_id, result=result)
+
+    async def queue_application(self, request: AgentRunCreate) -> AgentRunSummary:
+        """Create or return one durable queued run before background execution."""
+
+        if request.user_id is None or request.trace_id is None:
+            raise ValueError("application runs require user_id and trace_id")
+        existing = await self.get_by_trace_id(
+            user_id=request.user_id,
+            trace_id=request.trace_id,
+        )
+        if existing is not None:
+            return existing
+        try:
+            row = await self._repository.create_queued(request, now=self._now())
+            await self._session.commit()
+            stored = await self._repository.get_by_trace_id(
+                user_id=request.user_id,
+                trace_id=row.trace_id,
+            )
+        except IntegrityError:
+            await self._session.rollback()
+            stored = await self._repository.get_by_trace_id(
+                user_id=request.user_id,
+                trace_id=request.trace_id,
+            )
+        if stored is None:
+            raise RuntimeError("queued AgentRun could not be read")
+        return self._summary(stored)
 
     async def get_by_trace_id(
         self,
@@ -790,7 +854,7 @@ class AgentRunService:
         await self._events.append_for_run(
             run_id=run_id,
             event_type=RunEventType.STAGE_CHANGED,
-            summary=StageChangedSummary(stage="execution"),
+            summary=StageChangedSummary(stage="content_receiving"),
             created_at=started_at,
         )
 

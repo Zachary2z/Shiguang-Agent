@@ -105,7 +105,7 @@ async function delay(ms: number, signal: AbortSignal) {
 export class SseClient {
   constructor(
     private readonly baseUrl = API_BASE_URL,
-    private readonly fetcher: FetchLike = fetch,
+    private readonly fetcher: FetchLike = (...arguments_) => fetch(...arguments_),
   ) {}
 
   connect<T>(options: SseClientOptions<T>) {

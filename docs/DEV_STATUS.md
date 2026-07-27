@@ -4,8 +4,8 @@
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-3 Agent 与内容导入页面 |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 状态 | M1-3 待主控验收 |
+| 当前分支 | codex/m1-3-agent-import |
 | 最近更新 | 2026-07-27 |
 | 阻塞项 | 无；M1-2 已通过主控验收，当前唯一允许阶段为 M1-3 |
 
@@ -17,8 +17,9 @@ M0-0A 至 M0-5D、M0-Gate、Event 日期粒度和富输入截止策略均已通�
 RunEvent/SSE replay 和最小 Docker Compose。M1-1 已通过主控验收：浏览器
 Session、稳定 CSRF、并发安全 Demo 恢复、跨浏览器所有权过滤及 Demo/真实物理
 隔离均已复核。M1-2 正式前端基础、响应式布局、统一 API/SSE Client 和可访问性
-边界已通过主控验收。当前唯一允许阶段为 M1-3 Agent 与内容导入页面；M1-3 尚未
-开始，M1-4 及后续阶段不得提前开发。
+边界已通过主控验收。M1-3 已完成开发并等待主控验收：正式 Agent 首页已接通
+202 Job、SSE 和权威结果查询，支持文字、URL、截图、会话恢复、修改、撤销、恢复
+与继续添加；M1-4 及后续阶段不得提前开发。
 
 ## M0 状态
 
@@ -41,7 +42,7 @@ Session、稳定 CSRF、并发安全 Demo 恢复、跨浏览器所有权过滤�
 | M1-0 PostgreSQL 与任务基础 | 已完成 | 主控独立复验锁生命周期、PostgreSQL、Job/Worker、SSE replay、Compose、安全和净复杂度通过 |
 | M1-1 Web Session | 已完成 | 主控复核稳定凭据、CSRF、并发恢复、隔离、PostgreSQL 与 Compose 通过 |
 | M1-2 Next.js 前端 | 已完成 | 主控复核响应式、可访问性、API/SSE 错误边界、离线测试、构建和浏览器 E2E 通过 |
-| M1-3 Agent 与内容导入 | 未开始 | 当前唯一允许阶段；不得提前实现 M1-4 及后续业务 |
+| M1-3 Agent 与内容导入 | M1-3 待主控验收 | 202 Job、SSE、权威结果、会话恢复与 Agent 页面闭环已完成；不得提前实现 M1-4 |
 
 状态只允许使用：未开始、进行中、待验收、待主控验收、已完成、阻塞。
 
@@ -88,10 +89,10 @@ Session、稳定 CSRF、并发安全 Demo 恢复、跨浏览器所有权过滤�
 
 ## 下一步
 
-从最新 `main` 创建 `codex/m1-3-agent-import`，只实现 M1-3 Agent 与内容导入页面：
-首次引导、文字/URL/截图输入、识别中 SSE 状态、收藏结果状态、修改、撤销、继续
-添加和按需展开的工具过程。复用 M1-2 唯一 API/SSE Client 与既有后端契约，不展示
-思维链，不提前实现 M1-4 收藏库、M1-5 计划、真实登录或微信功能。
+主控从 `codex/m1-3-agent-import` 的阶段提交独立复测 M1-3：重点检查 202 异步
+契约、SSE replay、刷新/重复提交、截图私有存储、终态权威结果、修改/撤销/恢复、
+移动与桌面输入坞、安全 DTO 和离线真实 FastAPI 浏览器闭环。验收前不合并、不
+推送，不开始 M1-4 收藏库、M1-5 计划或后续业务。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -2228,3 +2229,34 @@ Session、稳定 CSRF、并发安全 Demo 恢复、跨浏览器所有权过滤�
   Safari/Firefox 或真实后端联调
 - 结论：当前无未关闭 P0/P1，M1-2 完成；当前唯一允许阶段改为 M1-3 Agent 与内容
   导入页面，M1-3 尚未开始，M1-4 及后续阶段不得提前开发
+
+#### 2026-07-27｜M1-3 Agent 与内容导入页面｜待主控验收
+
+- 分支与基线：`codex/m1-3-agent-import`，精确继承
+  `d1832e9ae8355fe1e58faae0e101b9f8e0a4d2c8`
+- 后端：消息提交收敛为 `202 Accepted`，复用唯一 JobQueue、Worker、AgentRun、
+  RunEvent 与 TextCollectionWorkflow；新增权威结果和当前对话查询，并在既有
+  CollectionWriteService 增加公开恢复动作
+- 前端：正式 M01/M02 产品内层支持 Demo Session 创建/恢复、内存 CSRF、文字、
+  HTTP(S) URL、JPEG/PNG/WebP、SSE 产品阶段、有限重连、终态权威结果、修改、
+  撤销、恢复、继续添加和默认折叠的安全工具步骤
+- 状态机：`idle → submitting → queued/processing → saved |
+  pending_selection | pending_details | failed | undone`；SSE 不推测收藏内容，
+  成功只由终态结果查询触发
+- 迁移：新增 `20260727_0011`，仅为 `collection_items` 保存删除前精确状态；
+  现有表无法在 `active`、`pending_selection`、`pending_details` 等状态间完成
+  无损恢复；Alembic 保持单一 head
+- 验证：后端 pip、Ruff、mypy、core 120 项、迁移 23 项及完整离线回归通过；
+  前端生产依赖 audit 0、lint、typecheck、29 项 Vitest、生产构建通过；
+  Playwright 14 项通过，其中一项连接真实 FastAPI 与离线 Fake Provider，覆盖
+  首次进入、识别、权威收藏、修改、撤销、恢复和继续添加
+- 安全与幂等：Job payload 只含安全 ID 和输入类型，图片/Base64、正文、URL、
+  Cookie、CSRF、存储 key 与供应商响应不进入任务载荷或公开工具 DTO；同一用户、
+  Session 和幂等键复用 Message、Job、Source、文件及收藏；原始 HTML 按文本渲染
+- 范围：未实现 M1-4 收藏库/完整详情/候选消歧、M1-5 计划、真实登录、微信、
+  分享、提醒或“我的”业务；未调用真实或付费 API，未合并、未推送
+- 已知风险：截图一旦完整写入私有存储即进入既有 30 天保留策略；后台识别失败
+  不产生临时文件或重复文件，但已登记原图不会立即物理删除。尚未覆盖 Node 20/22、
+  Windows/Linux、Safari/Firefox 或生产 PostgreSQL 浏览器联调
+- 下一步：主控独立复核接口、刷新/断线/重复提交、安全 DTO、恢复迁移、响应式和
+  真实 FastAPI 离线浏览器闭环；验收前不开始 M1-4

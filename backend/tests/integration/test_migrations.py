@@ -12,7 +12,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-HEAD_REVISION = "20260727_0010"
+HEAD_REVISION = "20260727_0011"
 PREVIOUS_REVISION = "20260726_0009"
 EVENT_REVISION = "20260724_0007"
 EVENT_PREVIOUS_REVISION = "20260722_0006"
@@ -1500,10 +1500,11 @@ def test_collection_migration_has_exact_fields_named_constraints_and_useful_inde
             "place_confirmed_by",
             "place_confirmed_at",
             "place_candidate_snapshot_json",
-            "candidate_count",
-            "candidates_queried_at",
-            "status",
-            "version",
+                "candidate_count",
+                "candidates_queried_at",
+                "status",
+                "deleted_from_status",
+                "version",
             "created_at",
             "updated_at",
         },

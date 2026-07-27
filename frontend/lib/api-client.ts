@@ -78,7 +78,7 @@ function createRequestSignal(
 export class ApiClient {
   constructor(
     private readonly baseUrl = API_BASE_URL,
-    private readonly fetcher: FetchLike = fetch,
+    private readonly fetcher: FetchLike = (...arguments_) => fetch(...arguments_),
   ) {}
 
   async request<T>(
