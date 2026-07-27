@@ -486,6 +486,590 @@ a {
   }
 }
 
+.plans-page {
+  display: grid;
+  gap: var(--space-5);
+  padding-bottom: 6rem;
+}
+
+.plans-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-top: var(--space-4);
+}
+
+.plans-heading h1 {
+  max-width: 13ch;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(2rem, 7vw, 3.25rem);
+  line-height: 1.08;
+}
+
+.plans-heading p:not(.eyebrow) {
+  margin: var(--space-2) 0 0;
+  color: var(--color-ink-muted);
+}
+
+.eyebrow {
+  margin: 0 0 var(--space-2);
+  color: var(--color-bay);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.plan-status {
+  flex: 0 0 auto;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-pill);
+  color: var(--color-bay-deep);
+  background: var(--color-surface-glass);
+  font-size: var(--text-xs);
+  font-weight: 800;
+}
+
+.plan-status.confirmed {
+  border-color: var(--color-bay-deep);
+  color: var(--color-surface);
+  background: var(--color-bay-deep);
+}
+
+.plan-compose {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.plan-form,
+.constraint-card,
+.plan-progress,
+.approval-card,
+.plan-result,
+.adjust-card,
+.plan-empty {
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-glass-strong);
+  box-shadow: var(--shadow-card);
+}
+
+.plan-form {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-5);
+}
+
+.plan-section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.plan-section-title span {
+  color: var(--color-bay);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 800;
+}
+
+.plan-section-title h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+}
+
+.plan-form-grid {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.plan-form-grid label {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--color-ink-muted);
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+
+.plan-form input,
+.plan-form select,
+.adjust-card input {
+  width: 100%;
+  min-height: var(--touch-target);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  color: var(--color-ink);
+  background: var(--color-surface);
+}
+
+.plan-form .plan-check {
+  display: flex;
+  min-height: var(--touch-target);
+  align-items: center;
+  gap: var(--space-2);
+  padding-top: var(--space-5);
+}
+
+.plan-check input {
+  width: 1.25rem;
+  min-height: 1.25rem;
+}
+
+.plan-primary {
+  min-height: var(--touch-target);
+  border-radius: var(--radius-sm);
+}
+
+.constraint-card {
+  position: relative;
+  overflow: hidden;
+  padding: var(--space-5);
+}
+
+.constraint-card::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0.3rem;
+  background: var(--color-light);
+  content: "";
+}
+
+.constraint-card h2,
+.plan-progress h2,
+.approval-card h2,
+.plan-empty h2 {
+  margin: 0;
+  font-family: var(--font-display);
+}
+
+.constraint-card dl {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-5) 0;
+}
+
+.constraint-card dl > div {
+  display: grid;
+  grid-template-columns: 6rem minmax(0, 1fr);
+  gap: var(--space-3);
+  padding-bottom: var(--space-2);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.constraint-card dt {
+  color: var(--color-ink-muted);
+  font-size: var(--text-sm);
+}
+
+.constraint-card dd {
+  margin: 0;
+  font-weight: 700;
+}
+
+.constraint-actions,
+.approval-card > div {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.constraint-actions button,
+.approval-card button,
+.plan-progress button,
+.option-tabs button,
+.version-strip button,
+.adjust-card button,
+.plan-confirm-bar button,
+.plan-empty button {
+  min-height: var(--touch-target);
+  padding-inline: var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+}
+
+.constraint-actions button,
+.approval-card button,
+.plan-progress button {
+  flex: 1;
+  background: var(--color-surface);
+}
+
+.plan-progress {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: center;
+  min-height: 12rem;
+  padding: var(--space-6);
+}
+
+.plan-progress p:not(.eyebrow),
+.approval-card p,
+.adjust-card p,
+.plan-empty p {
+  margin: var(--space-2) 0 0;
+  color: var(--color-ink-muted);
+  font-size: var(--text-sm);
+}
+
+.plan-progress button {
+  grid-column: 2;
+  justify-self: start;
+  flex: initial;
+}
+
+.plan-orbit {
+  width: 3.5rem;
+  height: 3.5rem;
+  border: 2px solid var(--color-line);
+  border-top-color: var(--color-bay);
+  border-radius: 50%;
+  animation: plan-orbit 1s linear infinite;
+}
+
+@keyframes plan-orbit {
+  to { transform: rotate(360deg); }
+}
+
+.approval-card {
+  padding: var(--space-6);
+  border-color: #e8d5ac;
+  background: var(--color-warning-soft);
+}
+
+.approval-note {
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--color-warning) !important;
+  background: var(--color-surface-glass);
+}
+
+.approval-card > div {
+  margin-top: var(--space-5);
+}
+
+.version-strip,
+.option-tabs {
+  display: flex;
+  gap: var(--space-2);
+  overflow-x: auto;
+  padding-bottom: var(--space-1);
+}
+
+.version-strip button,
+.option-tabs button {
+  flex: 0 0 auto;
+  color: var(--color-ink-muted);
+  background: var(--color-surface);
+}
+
+.version-strip button[aria-current="page"],
+.option-tabs button[aria-selected="true"] {
+  border-color: var(--color-bay-deep);
+  color: var(--color-surface);
+  background: var(--color-bay-deep);
+}
+
+.plan-result {
+  overflow: hidden;
+}
+
+.plan-result > header {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.plan-result h2 {
+  margin: 0;
+  font-family: var(--font-display);
+}
+
+.cost-stamp {
+  display: grid;
+  flex: 0 0 auto;
+  align-content: center;
+  text-align: right;
+}
+
+.cost-stamp span {
+  color: var(--color-ink-muted);
+  font-size: var(--text-xs);
+}
+
+.cost-stamp strong {
+  color: var(--color-bay-deep);
+  font-family: var(--font-display);
+  font-size: var(--text-xl);
+}
+
+.time-rail {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: var(--space-5);
+  list-style: none;
+}
+
+.time-rail > li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 3.25rem 2rem minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.time-rail > li:not(:last-child)::after {
+  position: absolute;
+  top: 2rem;
+  bottom: 0;
+  left: 4.2rem;
+  width: 1px;
+  background: var(--color-line);
+  content: "";
+}
+
+.time-rail time {
+  padding-top: var(--space-2);
+  color: var(--color-bay-deep);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: 800;
+}
+
+.rail-node {
+  z-index: 1;
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border-radius: 50% 50% 50% 0;
+  color: var(--color-bay-deep);
+  background: var(--color-light);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 800;
+}
+
+.rail-card {
+  min-width: 0;
+  margin-bottom: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.rail-title {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.rail-title h3 {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-display);
+}
+
+.source-collection,
+.source-external {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-pill);
+  color: var(--color-bay-deep);
+  background: var(--color-surface-muted);
+  font-size: var(--text-xs);
+  font-weight: 800;
+}
+
+.source-external {
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
+}
+
+.rail-card p {
+  margin: var(--space-2) 0 0;
+  color: var(--color-ink-muted);
+  font-size: var(--text-sm);
+}
+
+.selection-reason {
+  font-style: italic;
+}
+
+.risk-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.risk-list li,
+.option-risk {
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  color: var(--color-warning);
+  background: var(--color-warning-soft);
+  font-size: var(--text-xs);
+}
+
+.option-risk {
+  margin: 0 var(--space-5) var(--space-5);
+}
+
+.adjust-card {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-5);
+}
+
+.adjust-card > label {
+  font-family: var(--font-display);
+  font-size: var(--text-lg);
+  font-weight: 800;
+}
+
+.adjust-card > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+}
+
+.adjust-card button {
+  color: var(--color-bay-deep);
+  background: var(--color-light);
+  font-weight: 800;
+}
+
+.adjust-card button:disabled,
+.plan-confirm-bar button:disabled {
+  opacity: 0.5;
+}
+
+.plan-confirm-bar {
+  position: sticky;
+  z-index: 2;
+  bottom: 5.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  background: var(--color-paper-glass);
+  box-shadow: var(--shadow-nav);
+  backdrop-filter: blur(16px);
+}
+
+.plan-confirm-bar > div {
+  display: grid;
+}
+
+.plan-confirm-bar span {
+  color: var(--color-ink-muted);
+  font-size: var(--text-xs);
+}
+
+.plan-feedback {
+  margin: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  color: var(--color-bay-deep);
+  background: var(--color-surface-muted);
+}
+
+.plan-empty {
+  display: grid;
+  min-height: 14rem;
+  place-content: center;
+  justify-items: center;
+  padding: var(--space-6);
+  text-align: center;
+}
+
+@media (width >= 48rem) {
+  .plan-form-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .plan-compose {
+    grid-template-columns: minmax(0, 1.2fr) minmax(18rem, 0.8fr);
+    align-items: start;
+  }
+
+  .constraint-card {
+    position: sticky;
+    top: var(--space-5);
+  }
+
+  .plan-confirm-bar {
+    bottom: var(--space-4);
+  }
+}
+
+@media (width < 34rem) {
+  .plans-heading,
+  .plan-result > header,
+  .plan-confirm-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .constraint-actions,
+  .approval-card > div {
+    flex-direction: column-reverse;
+  }
+
+  .plan-progress {
+    grid-template-columns: 1fr;
+    justify-items: start;
+  }
+
+  .plan-progress button {
+    grid-column: 1;
+  }
+
+  .cost-stamp {
+    text-align: left;
+  }
+
+  .adjust-card > div {
+    grid-template-columns: 1fr;
+  }
+
+  .time-rail {
+    padding-inline: var(--space-3);
+  }
+
+  .time-rail > li {
+    grid-template-columns: 2.75rem 1.75rem minmax(0, 1fr);
+  }
+
+  .time-rail > li:not(:last-child)::after {
+    left: 3.62rem;
+  }
+
+  .rail-node {
+    width: 1.75rem;
+    height: 1.75rem;
+  }
+
+  .rail-title {
+    flex-direction: column;
+  }
+}
+
 button,
 input,
 textarea,

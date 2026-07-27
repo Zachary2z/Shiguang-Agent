@@ -13,6 +13,7 @@ from app.api.dependencies import (
     DemoNotAvailableError,
     ProviderNotConfiguredError,
 )
+from app.application.plan_adjustments import PlanAdjustmentNotUnderstoodError
 from app.application.text_collection_workflow import (
     IdempotentRequestInProgressError,
     TextCollectionProviderError,
@@ -23,6 +24,11 @@ from app.domain.collections import (
     IdempotencyConflictError,
     ResourceNotFoundError,
     VersionConflictError,
+)
+from app.domain.plans import (
+    PlanExecutionNotAllowedError,
+    PlanNotReadyError,
+    PlanVersionConflictError,
 )
 
 
@@ -37,6 +43,16 @@ def install_error_handlers(api: FastAPI) -> None:
     api.add_exception_handler(UndoNotAvailableError, _undo_not_available)
     api.add_exception_handler(IdempotencyConflictError, _idempotency_conflict)
     api.add_exception_handler(VersionConflictError, _version_conflict)
+    api.add_exception_handler(PlanVersionConflictError, _plan_version_conflict)
+    api.add_exception_handler(PlanNotReadyError, _plan_not_ready)
+    api.add_exception_handler(
+        PlanExecutionNotAllowedError,
+        _plan_execution_not_allowed,
+    )
+    api.add_exception_handler(
+        PlanAdjustmentNotUnderstoodError,
+        _plan_adjustment_not_understood,
+    )
     api.add_exception_handler(
         IdempotentRequestInProgressError,
         _idempotent_request_in_progress,
@@ -112,6 +128,44 @@ async def _idempotency_conflict(request: Request, exc: Exception) -> JSONRespons
 async def _version_conflict(request: Request, exc: Exception) -> JSONResponse:
     del request, exc
     return _error(409, "VERSION_CONFLICT", "Collection version conflict.")
+
+
+async def _plan_version_conflict(request: Request, exc: Exception) -> JSONResponse:
+    del request, exc
+    return _error(
+        409,
+        "PLAN_VERSION_CONFLICT",
+        "The requested plan version is no longer current.",
+    )
+
+
+async def _plan_not_ready(request: Request, exc: Exception) -> JSONResponse:
+    del request, exc
+    return _error(409, "PLAN_NOT_READY", "The plan version is not ready to confirm.")
+
+
+async def _plan_execution_not_allowed(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    del request, exc
+    return _error(
+        409,
+        "PLAN_NOT_CONFIRMED",
+        "The plan must be explicitly confirmed before execution.",
+    )
+
+
+async def _plan_adjustment_not_understood(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    del request, exc
+    return _error(
+        422,
+        "PLAN_ADJUSTMENT_NOT_UNDERSTOOD",
+        "The requested plan adjustment was not understood.",
+    )
 
 
 async def _idempotent_request_in_progress(

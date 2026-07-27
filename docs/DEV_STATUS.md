@@ -2451,3 +2451,37 @@ Client，不建立第二套规划器或前端状态框架；不得提前实现 M
   提示、弹层 overscroll 和非认证表单 autocomplete 作为统一 UI 收口债务登记
 - 下一步：M1-5 前置条件满足；从本次文档提交后的最新 `main` 创建
   `codex/m1-5-plan-experience`，只实现计划生成、调整和明确确认
+
+#### 2026-07-28｜M1-5 计划生成、调整和确认｜待主控验收
+
+- 基线与分支：从指定 `26a8ac15b367dc9cc012238314d3304a54de98b7`
+  创建 `codex/m1-5-plan-experience`；开始时 `main`、`origin/main` 和工作区门禁
+  全部通过，M1-4 已完成且 M1-5 为唯一允许阶段
+- 后端：新增正式计划版本、计划项和 Approval 持久化；提供生成、列表、详情、调整、
+  明确确认及外部地点授权 API；自然语言调整只应用明确识别的字段并保留其余
+  `PlanConstraints`
+- 异步链路：复用唯一 JobQueue、JobWorker、AgentRun、RunEvent 和 SSE；每个计划
+  版本绑定独立 trace，迟到结果只能更新仍处于 generating 的绑定版本，计划任务不
+  自动重试
+- 规划复用：继续组合 `StructuredCollectionRetrievalService`、
+  `ExternalPlaceSupplementService` 和 `PlanDraftService`；地图事实解析器只提供
+  原领域服务所需的动态事实，没有新增第二套规划器、排序、预算或硬约束规则
+- 版本与确认：调整创建不可变子版本，数据库约束版本链、每条链最多一个 confirmed、
+  确认幂等和跨用户外键；未确认版本无法通过未来执行边界，确认外部地点不创建收藏
+- 前端：正式 `/plans` 覆盖条件输入/确认、SSE 进度恢复、主备方案、时间光轨、
+  费用/路线/来源/风险、外部补充授权、自然语言调整、版本切换和明确确认；刷新和
+  重新进入读取权威后端状态，operation generation 拒绝旧响应
+- 数据库：新增单一向前迁移 `20260728_0012`，直接继承 `20260727_0011`；
+  upgrade、current、check、downgrade/upgrade 往返通过，Alembic 唯一 head 为
+  `20260728_0012`
+- 验证：pip check、Ruff、mypy 通过；完整离线后端
+  `1585 passed, 11 skipped, 2 deselected`，迁移 `23 passed`；仓库外临时插件
+  封锁 DNS 和 socket 后规划聚焦 `177 passed`
+- 前端验证：`npm ci`、lint、typecheck、build 通过，Vitest `58 passed`，
+  Playwright `25 passed`；生产依赖 audit 为 0
+- 安全与范围：未读取 `.env`，未调用真实模型、地图、网页或付费 API；未实现
+  M1-6、M1-7、分享、提醒、微信、云部署、多城市或自动收藏外部地点
+- 复杂度：没有第二套 Provider、AgentRunner、ToolRegistry、Plan DTO、Approval、
+  Job/Worker、SSE Client、API Client 或前端全局状态；当前无已知未关闭 P0/P1
+- 交接：详见 `docs/technical/M1_5_HANDOFF.md`；阶段状态保持“待主控验收”，
+  不自行标记完成，不开始 M1-6

@@ -38,6 +38,7 @@ from app.application.content_import_jobs import (
 from app.application.demo_sessions import DemoSessionService
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
 from app.application.place_targets import PlaceTargetSelectionService
+from app.application.plan_experience import PlanExperienceService
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.run_events import RunEventService
 from app.application.run_tracking import AgentRunService
@@ -53,17 +54,25 @@ from app.domain.collections import (
     CollectionKind,
     CollectionStatus,
     IdempotencyKey,
+    PlanCity,
     ResourceNotFoundError,
     UndoOutcome,
 )
 from app.domain.identity import SESSION_COOKIE_NAME, CurrentPrincipal
 from app.domain.places import PlaceSelection
+from app.domain.plans import ActivityArea, PlanConstraints
+from app.domain.time import utc_now
 from app.infrastructure.db import Database
 from app.infrastructure.jobs import PostgresJobQueue
-from app.infrastructure.repositories import SqlAlchemyCollectionRepository
+from app.infrastructure.repositories import (
+    SqlAlchemyCollectionRepository,
+    SqlAlchemyPlanRepository,
+)
 from app.providers.storage import StorageProvider
 from app.schemas.api import (
     AgentRunResponse,
+    ApprovalDecisionRequest,
+    ApprovalDecisionResponse,
     CollectionDetailResponse,
     CollectionItemResponse,
     CollectionListResponse,
@@ -82,6 +91,14 @@ from app.schemas.api import (
     PlaceCandidatesResponse,
     PlaceSelectionRequest,
     PlaceSelectionResponse,
+    PlanAcceptedResponse,
+    PlanAdjustmentRequest,
+    PlanApprovalResponse,
+    PlanConfirmationResponse,
+    PlanConfirmRequest,
+    PlanCreateRequest,
+    PlanListResponse,
+    PlanResponse,
     PublicModelCallResponse,
     PublicToolRunResponse,
     SourceSummaryResponse,
@@ -93,6 +110,8 @@ from app.schemas.api import (
 _SESSION_PATH = r"^ses_[a-f0-9]{32}$"
 _COLLECTION_PATH = r"^col_[a-f0-9]{32}$"
 _TRACE_PATH = r"^trc_[A-Za-z0-9_-]{32}$"
+_PLAN_PATH = r"^pln_[a-f0-9]{32}$"
+_APPROVAL_PATH = r"^apr_[a-f0-9]{32}$"
 
 api_router = APIRouter(prefix="/api/v1")
 
@@ -586,6 +605,216 @@ def _parse_last_event_id(value: str | None) -> int:
             ]
         )
     return int(value)
+
+
+@api_router.post(
+    "/plans",
+    response_model=PlanAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_plan(
+    payload: PlanCreateRequest,
+    session: DbSession,
+    user_id: CurrentUserId,
+    database: CurrentDatabase,
+    pricing: Pricing,
+) -> PlanAcceptedResponse:
+    now = utc_now()
+    constraints = PlanConstraints(
+        city_code=PlanCity.SHENZHEN,
+        start_at=payload.start_at,
+        end_at=payload.end_at,
+        area=(
+            None
+            if payload.area is None
+            else ActivityArea(
+                districts=payload.area.districts,
+                labels=payload.area.labels,
+            )
+        ),
+        origin=payload.origin,
+        budget=payload.budget,
+        pace=payload.pace,
+        transport_modes=payload.transport_modes,
+        include=payload.include,
+        exclude=payload.exclude,
+        collection_only=payload.collection_only,
+        created_at=now,
+        expires_at=max(now + timedelta(hours=1), payload.end_at + timedelta(hours=1)),
+    )
+    submission = await PlanExperienceService(
+        session=session,
+        session_factory=database.session_factory,
+        pricing=pricing,
+    ).create(
+        user_id=user_id,
+        constraints=constraints,
+        client_idempotency_key=payload.idempotency_key,
+    )
+    plan = submission.plan
+    return PlanAcceptedResponse(
+        plan_id=plan.id,
+        trace_id=plan.trace_id,
+        events_url=f"/api/v1/agent-runs/{plan.trace_id}/events",
+        result_url=f"/api/v1/plans/{plan.id}",
+        replayed=submission.replayed,
+    )
+
+
+@api_router.get("/plans", response_model=PlanListResponse)
+async def list_plans(
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> PlanListResponse:
+    repository = SqlAlchemyPlanRepository(session)
+    items: list[PlanResponse] = []
+    for plan in await repository.list_latest(user_id=user_id):
+        versions = await repository.list_versions(
+            user_id=user_id,
+            root_plan_id=plan.root_plan_id,
+        )
+        approval = await repository.get_external_approval(
+            user_id=user_id,
+            plan_id=plan.id,
+        )
+        items.append(
+            PlanResponse.from_domain(
+                plan,
+                is_current_version=True,
+                versions=versions,
+                approval=approval,
+            )
+        )
+    return PlanListResponse(items=tuple(items))
+
+
+@api_router.get("/plans/{plan_id}", response_model=PlanResponse)
+async def get_plan(
+    plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> PlanResponse:
+    repository = SqlAlchemyPlanRepository(session)
+    requested = await repository.require(user_id=user_id, plan_id=plan_id)
+    versions = await repository.list_versions(
+        user_id=user_id,
+        root_plan_id=requested.root_plan_id,
+    )
+    current = versions[-1]
+    approval = await repository.get_external_approval(
+        user_id=user_id,
+        plan_id=requested.id,
+    )
+    return PlanResponse.from_domain(
+        requested,
+        is_current_version=requested.id == current.id,
+        versions=versions,
+        approval=approval,
+    )
+
+
+@api_router.post(
+    "/plans/{plan_id}/adjustments",
+    response_model=PlanAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def adjust_plan(
+    plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
+    payload: PlanAdjustmentRequest,
+    session: DbSession,
+    user_id: CurrentUserId,
+    database: CurrentDatabase,
+    pricing: Pricing,
+) -> PlanAcceptedResponse:
+    submission = await PlanExperienceService(
+        session=session,
+        session_factory=database.session_factory,
+        pricing=pricing,
+    ).adjust(
+        user_id=user_id,
+        base_plan_id=plan_id,
+        instruction=payload.instruction,
+        client_idempotency_key=payload.idempotency_key,
+    )
+    plan = submission.plan
+    return PlanAcceptedResponse(
+        plan_id=plan.id,
+        trace_id=plan.trace_id,
+        events_url=f"/api/v1/agent-runs/{plan.trace_id}/events",
+        result_url=f"/api/v1/plans/{plan.id}",
+        replayed=submission.replayed,
+    )
+
+
+@api_router.post(
+    "/plans/{plan_id}/confirm",
+    response_model=PlanConfirmationResponse,
+)
+async def confirm_plan(
+    plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
+    payload: PlanConfirmRequest,
+    session: DbSession,
+    user_id: CurrentUserId,
+    database: CurrentDatabase,
+    pricing: Pricing,
+) -> PlanConfirmationResponse:
+    plan, replayed = await PlanExperienceService(
+        session=session,
+        session_factory=database.session_factory,
+        pricing=pricing,
+    ).confirm(
+        user_id=user_id,
+        plan_id=plan_id,
+        client_idempotency_key=payload.idempotency_key,
+    )
+    versions = await SqlAlchemyPlanRepository(session).list_versions(
+        user_id=user_id,
+        root_plan_id=plan.root_plan_id,
+    )
+    return PlanConfirmationResponse(
+        plan=PlanResponse.from_domain(
+            plan,
+            is_current_version=versions[-1].id == plan.id,
+            versions=versions,
+        ),
+        replayed=replayed,
+    )
+
+
+@api_router.post(
+    "/approvals/{approval_id}/decision",
+    response_model=ApprovalDecisionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def decide_plan_approval(
+    approval_id: Annotated[str, Path(pattern=_APPROVAL_PATH)],
+    payload: ApprovalDecisionRequest,
+    session: DbSession,
+    user_id: CurrentUserId,
+    database: CurrentDatabase,
+    pricing: Pricing,
+) -> ApprovalDecisionResponse:
+    submission = await PlanExperienceService(
+        session=session,
+        session_factory=database.session_factory,
+        pricing=pricing,
+    ).decide_external_approval(
+        user_id=user_id,
+        approval_id=approval_id,
+        approved=payload.decision == "approved",
+    )
+    target = submission.approval.target_plan_id
+    return ApprovalDecisionResponse(
+        approval=PlanApprovalResponse.from_domain(submission.approval),
+        trace_id=submission.trace_id,
+        events_url=(
+            None
+            if submission.trace_id is None
+            else f"/api/v1/agent-runs/{submission.trace_id}/events"
+        ),
+        result_url=f"/api/v1/plans/{target}",
+        replayed=submission.replayed,
+    )
 
 
 @api_router.get("/collections", response_model=CollectionListResponse)

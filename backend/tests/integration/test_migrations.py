@@ -12,7 +12,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-HEAD_REVISION = "20260727_0011"
+HEAD_REVISION = "20260728_0012"
 PREVIOUS_REVISION = "20260726_0009"
 EVENT_REVISION = "20260724_0007"
 EVENT_PREVIOUS_REVISION = "20260722_0006"
@@ -38,7 +38,12 @@ LEGACY_TABLES = {
 }
 PREVIOUS_TABLES = LEGACY_TABLES | {"run_events", "scheduled_jobs"}
 M03D_PREVIOUS_TABLES = LEGACY_TABLES - {"place_selection_operations"}
-HEAD_TABLES = PREVIOUS_TABLES | {"web_sessions"}
+HEAD_TABLES = PREVIOUS_TABLES | {
+    "approvals",
+    "plan_items",
+    "plans",
+    "web_sessions",
+}
 
 
 def current_revision(database_path: Path) -> str | None:

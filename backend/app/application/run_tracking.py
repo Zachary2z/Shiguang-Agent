@@ -22,6 +22,7 @@ from app.domain.runs.contracts import (
     ToolRunSummary,
 )
 from app.domain.runs.events import (
+    ApprovalRequiredSummary,
     ResultUpdatedSummary,
     RunCompletedSummary,
     RunEventSummary,
@@ -110,14 +111,20 @@ class ApplicationRunObserver:
         *,
         clock: Callable[[], float],
         stage_callback: Callable[[str], Awaitable[None]] | None = None,
+        approval_callback: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._collector = collector
         self._clock = clock
         self._stage_callback = stage_callback
+        self._approval_callback = approval_callback
 
     async def set_stage(self, stage: str) -> None:
         if self._stage_callback is not None:
             await self._stage_callback(stage)
+
+    async def require_approval(self, approval_id: str) -> None:
+        if self._approval_callback is not None:
+            await self._approval_callback(approval_id)
 
     def record_model_response(self, response: ModelResponse) -> None:
         self._collector.record_model_response(response)
@@ -662,10 +669,20 @@ class AgentRunService:
             )
             await self._session.commit()
 
+        async def persist_approval(approval_id: str) -> None:
+            await self._events.append_for_run(
+                run_id=run_id,
+                event_type=RunEventType.APPROVAL_REQUIRED,
+                summary=ApprovalRequiredSummary(approval_id=approval_id),
+                created_at=self._now(),
+            )
+            await self._session.commit()
+
         observer = ApplicationRunObserver(
             collector,
             clock=self._clock,
             stage_callback=persist_stage,
+            approval_callback=persist_approval,
         )
         execution_started = self._clock()
         try:

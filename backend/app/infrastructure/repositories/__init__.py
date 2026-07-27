@@ -1,6 +1,10 @@
 """Application persistence repositories."""
 
 from app.infrastructure.repositories.collections import SqlAlchemyCollectionRepository
+from app.infrastructure.repositories.plans import (
+    SqlAlchemyPlanRepository,
+    plan_request_fingerprint,
+)
 from app.infrastructure.repositories.runs import (
     AgentRunRepository,
     RunEventRepository,
@@ -14,8 +18,10 @@ __all__ = [
     "AgentRunRepository",
     "RunFinalization",
     "RunEventRepository",
+    "SqlAlchemyPlanRepository",
     "SqlAlchemyCollectionRepository",
     "SqlAlchemyWebSessionRepository",
     "StoredAgentRun",
     "ToolRunWrite",
+    "plan_request_fingerprint",
 ]

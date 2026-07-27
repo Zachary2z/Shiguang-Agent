@@ -33,6 +33,17 @@ from app.domain.plans.drafts import (
     PlanRiskCode,
     PlanSelectionReasonCode,
 )
+from app.domain.plans.experience import (
+    ApprovalAction,
+    ApprovalStatus,
+    PlanApproval,
+    PlanExecutionNotAllowedError,
+    PlanNotReadyError,
+    PlanOperation,
+    PlanStatus,
+    PlanVersion,
+    PlanVersionConflictError,
+)
 from app.domain.plans.retrieval import (
     AvailabilityAssessment,
     CandidateFactValues,
@@ -72,6 +83,15 @@ __all__ = [
     "parse_plan_constraints",
     "parse_plan_constraints_json",
     "resolve_plan_constraints",
+    "ApprovalAction",
+    "ApprovalStatus",
+    "PlanApproval",
+    "PlanExecutionNotAllowedError",
+    "PlanNotReadyError",
+    "PlanOperation",
+    "PlanStatus",
+    "PlanVersion",
+    "PlanVersionConflictError",
     "AvailabilityAssessment",
     "CandidateFactValues",
     "CandidateOutcome",

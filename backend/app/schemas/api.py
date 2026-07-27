@@ -27,11 +27,21 @@ from app.domain.collections import (
     UnsupportedReason,
 )
 from app.domain.places import (
+    Coordinate,
     EvidenceOutcome,
     PlaceMatchCandidate,
     PlaceSelectionKind,
     PoiProvider,
     PoiType,
+    TransportMode,
+)
+from app.domain.plans import (
+    ApprovalStatus,
+    PlanApproval,
+    PlanDraftResult,
+    PlanPace,
+    PlanStatus,
+    PlanVersion,
 )
 from app.domain.runs import AgentRunStatus, ToolRunStatus
 from nanobot_core.providers import FinishReason, TokenUsage
@@ -69,6 +79,258 @@ class DemoSessionResponse(ApiModel):
 
 class WebSessionRevokedResponse(ApiModel):
     status: Literal["revoked"] = "revoked"
+
+
+class PlanAreaRequest(ApiModel):
+    districts: tuple[str, ...] = ()
+    labels: tuple[str, ...] = ()
+
+    @field_validator("districts", "labels", mode="before")
+    @classmethod
+    def json_arrays(cls, value: object) -> object:
+        return _json_arrays_as_domain_tuples(value)
+
+
+class PlanCreateRequest(ApiModel):
+    idempotency_key: IdempotencyKey = Field(repr=False)
+    start_at: datetime
+    end_at: datetime
+    area: PlanAreaRequest | None = None
+    origin: Coordinate | None = Field(default=None, repr=False)
+    budget: Decimal | None = Field(default=None, ge=0)
+    pace: PlanPace = PlanPace.BALANCED
+    transport_modes: tuple[TransportMode, ...] = ()
+    include: tuple[str, ...] = ()
+    exclude: tuple[str, ...] = ()
+    collection_only: bool = False
+
+    @field_validator("start_at", "end_at", mode="before")
+    @classmethod
+    def json_datetimes(cls, value: object) -> object:
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except ValueError:
+                return value
+        return value
+
+    @field_validator("pace", mode="before")
+    @classmethod
+    def json_pace(cls, value: object) -> object:
+        if isinstance(value, str):
+            try:
+                return PlanPace(value)
+            except ValueError:
+                return value
+        return value
+
+    @field_validator("origin", mode="before")
+    @classmethod
+    def json_origin(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return Coordinate.model_validate(value, strict=False)
+        return value
+
+    @field_validator("transport_modes", mode="before")
+    @classmethod
+    def json_transport_modes(cls, value: object) -> object:
+        normalized = _json_arrays_as_domain_tuples(value)
+        if isinstance(normalized, tuple):
+            try:
+                return tuple(TransportMode(item) for item in normalized)
+            except (TypeError, ValueError):
+                return normalized
+        return normalized
+
+    @field_validator("include", "exclude", mode="before")
+    @classmethod
+    def json_text_tuples(cls, value: object) -> object:
+        return _json_arrays_as_domain_tuples(value)
+
+    @field_validator("budget", mode="before")
+    @classmethod
+    def decimal_budget(cls, value: object) -> object:
+        if value is None or isinstance(value, Decimal):
+            return value
+        if isinstance(value, bool) or not isinstance(value, int | float | str):
+            raise ValueError("budget must be a decimal amount")
+        return Decimal(str(value))
+
+
+class PlanAdjustmentRequest(ApiModel):
+    idempotency_key: IdempotencyKey = Field(repr=False)
+    instruction: str = Field(min_length=1, max_length=1000, repr=False)
+
+    @field_validator("instruction")
+    @classmethod
+    def normalize_instruction(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized:
+            raise ValueError("instruction cannot be blank")
+        return normalized
+
+
+class PlanConfirmRequest(ApiModel):
+    idempotency_key: IdempotencyKey = Field(repr=False)
+
+
+class ApprovalDecisionRequest(ApiModel):
+    decision: Literal["approved", "rejected"]
+
+
+class PlanConstraintsResponse(ApiModel):
+    city_code: str
+    start_at: datetime
+    end_at: datetime
+    area_districts: tuple[str, ...]
+    area_labels: tuple[str, ...]
+    has_exact_origin: bool
+    budget: Decimal | None
+    budget_currency: Literal["CNY"] | None
+    pace: PlanPace
+    transport_modes: tuple[TransportMode, ...]
+    include: tuple[str, ...]
+    exclude: tuple[str, ...]
+    collection_only: bool
+
+
+class PlanApprovalResponse(ApiModel):
+    id: str
+    action: str
+    display_text: str
+    status: ApprovalStatus
+    expires_at: datetime
+    decided_at: datetime | None
+
+    @classmethod
+    def from_domain(cls, approval: PlanApproval) -> PlanApprovalResponse:
+        return cls(
+            id=approval.id,
+            action=approval.action.value,
+            display_text=approval.display_text,
+            status=approval.status,
+            expires_at=approval.expires_at,
+            decided_at=approval.decided_at,
+        )
+
+
+class PlanVersionSummaryResponse(ApiModel):
+    id: str
+    version: int
+    status: PlanStatus
+    adjustment_text: str | None
+    created_at: datetime
+    confirmed_at: datetime | None
+
+
+class PlanResponse(ApiModel):
+    id: str
+    root_plan_id: str
+    parent_plan_id: str | None
+    version: int
+    status: PlanStatus
+    constraints: PlanConstraintsResponse
+    adjustment_text: str | None
+    draft: PlanDraftResult | None
+    trace_id: str
+    events_url: str
+    result_url: str
+    error_code: str | None
+    created_at: datetime
+    updated_at: datetime
+    confirmed_at: datetime | None
+    is_current_version: bool
+    versions: tuple[PlanVersionSummaryResponse, ...] = ()
+    approval: PlanApprovalResponse | None = None
+
+    @classmethod
+    def from_domain(
+        cls,
+        plan: PlanVersion,
+        *,
+        is_current_version: bool,
+        versions: tuple[PlanVersion, ...] = (),
+        approval: PlanApproval | None = None,
+    ) -> PlanResponse:
+        constraints = plan.constraints
+        return cls(
+            id=plan.id,
+            root_plan_id=plan.root_plan_id,
+            parent_plan_id=plan.parent_plan_id,
+            version=plan.version,
+            status=plan.status,
+            constraints=PlanConstraintsResponse(
+                city_code=constraints.city_code.value,
+                start_at=constraints.start_at,
+                end_at=constraints.end_at,
+                area_districts=(
+                    () if constraints.area is None else constraints.area.districts
+                ),
+                area_labels=(
+                    () if constraints.area is None else constraints.area.labels
+                ),
+                has_exact_origin=constraints.origin is not None,
+                budget=constraints.budget,
+                budget_currency=None if constraints.budget is None else "CNY",
+                pace=constraints.pace,
+                transport_modes=constraints.transport_modes,
+                include=constraints.include,
+                exclude=constraints.exclude,
+                collection_only=constraints.collection_only,
+            ),
+            adjustment_text=plan.adjustment_text,
+            draft=plan.draft,
+            trace_id=plan.trace_id,
+            events_url=f"/api/v1/agent-runs/{plan.trace_id}/events",
+            result_url=f"/api/v1/plans/{plan.id}",
+            error_code=plan.error_code,
+            created_at=plan.created_at,
+            updated_at=plan.updated_at,
+            confirmed_at=plan.confirmed_at,
+            is_current_version=is_current_version,
+            versions=tuple(
+                PlanVersionSummaryResponse(
+                    id=item.id,
+                    version=item.version,
+                    status=item.status,
+                    adjustment_text=item.adjustment_text,
+                    created_at=item.created_at,
+                    confirmed_at=item.confirmed_at,
+                )
+                for item in versions
+            ),
+            approval=(
+                None
+                if approval is None
+                else PlanApprovalResponse.from_domain(approval)
+            ),
+        )
+
+
+class PlanAcceptedResponse(ApiModel):
+    plan_id: str
+    trace_id: str
+    run_status: Literal["queued"] = "queued"
+    events_url: str
+    result_url: str
+    replayed: bool
+
+
+class PlanListResponse(ApiModel):
+    items: tuple[PlanResponse, ...]
+
+
+class PlanConfirmationResponse(ApiModel):
+    plan: PlanResponse
+    replayed: bool
+
+
+class ApprovalDecisionResponse(ApiModel):
+    approval: PlanApprovalResponse
+    trace_id: str | None
+    events_url: str | None
+    result_url: str
+    replayed: bool
 
 
 class MessageCreateRequest(ApiModel):

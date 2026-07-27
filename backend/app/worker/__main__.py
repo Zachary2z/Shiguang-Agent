@@ -10,6 +10,12 @@ from app.application.content_import_jobs import (
     CONTENT_IMPORT_JOB_TYPE,
     ContentImportJobHandler,
 )
+from app.application.map_plan_facts import MapPlanFactResolver
+from app.application.plan_experience import (
+    PLAN_GENERATION_JOB_TYPE,
+    ExistingPlanServicesExecutor,
+    PlanGenerationJobHandler,
+)
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.text_collection_workflow import IdempotencyLockRegistry
 from app.config import Settings, load_settings
@@ -17,6 +23,7 @@ from app.infrastructure.db import Database
 from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.providers import (
+    AmapMapProvider,
     HttpxWebContentProvider,
     OpenAICompatibleProvider,
     SystemHostResolver,
@@ -52,6 +59,11 @@ async def _run() -> None:
     for signal_number in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(signal_number, stop.set)
     provider = _configured_model_provider(settings)
+    map_provider = (
+        None
+        if settings.amap_api_key is None
+        else AmapMapProvider.from_settings(settings)
+    )
     pricing = ConfiguredPricingPolicy.from_settings(settings)
     locks = IdempotencyLockRegistry()
     web_client = create_web_http_client()
@@ -74,6 +86,20 @@ async def _run() -> None:
             structured_output_mode=settings.extraction_structured_output_mode(),
         ),
     }
+    if map_provider is not None:
+        handlers[PLAN_GENERATION_JOB_TYPE] = PlanGenerationJobHandler(
+            session_factory=database.session_factory,
+            pricing=pricing,
+            executor_factory=lambda session: ExistingPlanServicesExecutor(
+                session=session,
+                map_provider=map_provider,
+                matching_policy=settings.place_matching_policy(),
+                facts=MapPlanFactResolver(
+                    session=session,
+                    map_provider=map_provider,
+                ),
+            ),
+        )
     workers = [
         JobWorker(
             queue=PostgresJobQueue(database.session_factory),
@@ -86,26 +112,41 @@ async def _run() -> None:
         demo_storage = LocalPrivateStorageProvider(
             config=settings.demo_storage_provider_settings()
         )
+        demo_handlers: dict[str, JobHandler] = {
+            "deterministic.noop": deterministic_noop,
+            CONTENT_IMPORT_JOB_TYPE: ContentImportJobHandler(
+                session_factory=demo_database.session_factory,
+                provider=provider,
+                pricing=pricing,
+                locks=locks,
+                timeout_seconds=settings.agent_timeout_seconds,
+                web_provider=web_provider,
+                storage=demo_storage,
+                storage_config=settings.demo_storage_provider_settings(),
+                structured_output_mode=(
+                    settings.extraction_structured_output_mode()
+                ),
+            ),
+        }
+        if map_provider is not None:
+            demo_handlers[PLAN_GENERATION_JOB_TYPE] = PlanGenerationJobHandler(
+                session_factory=demo_database.session_factory,
+                pricing=pricing,
+                executor_factory=lambda session: ExistingPlanServicesExecutor(
+                    session=session,
+                    map_provider=map_provider,
+                    matching_policy=settings.place_matching_policy(),
+                    facts=MapPlanFactResolver(
+                        session=session,
+                        map_provider=map_provider,
+                    ),
+                ),
+            )
         workers.append(
             JobWorker(
                 queue=PostgresJobQueue(demo_database.session_factory),
                 worker_id=f"worker_demo_{secrets.token_hex(8)}",
-                handlers={
-                    "deterministic.noop": deterministic_noop,
-                    CONTENT_IMPORT_JOB_TYPE: ContentImportJobHandler(
-                        session_factory=demo_database.session_factory,
-                        provider=provider,
-                        pricing=pricing,
-                        locks=locks,
-                        timeout_seconds=settings.agent_timeout_seconds,
-                        web_provider=web_provider,
-                        storage=demo_storage,
-                        storage_config=settings.demo_storage_provider_settings(),
-                        structured_output_mode=(
-                            settings.extraction_structured_output_mode()
-                        ),
-                    ),
-                },
+                handlers=demo_handlers,
                 poll_seconds=settings.worker_poll_seconds,
             )
         )
@@ -115,6 +156,8 @@ async def _run() -> None:
             await demo_database.connect()
         await asyncio.gather(*(worker.run_forever(stop) for worker in workers))
     finally:
+        if map_provider is not None:
+            await map_provider.close()
         await web_client.aclose()
         if demo_database is not None:
             await demo_database.close()
