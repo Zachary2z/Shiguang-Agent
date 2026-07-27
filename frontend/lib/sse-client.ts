@@ -187,17 +187,20 @@ export class SseClient {
         throw new SseClientError("disconnected");
       } catch (error) {
         if (signal.aborted) break;
+        const clientError =
+          error instanceof SseClientError
+            ? error
+            : new SseClientError("network_error", null);
         const retryable =
-          !(error instanceof SseClientError) ||
-          error.code === "disconnected" ||
-          error.code === "network_error";
+          clientError.code === "disconnected" ||
+          clientError.code === "network_error";
         if (!retryable || reconnects >= maxAttempts) {
           options.onStateChange?.(
-            error instanceof SseClientError && error.code === "disconnected"
+            clientError.code === "disconnected"
               ? "disconnected"
               : "error",
           );
-          throw error;
+          throw clientError;
         }
         reconnects += 1;
         options.onStateChange?.("disconnected");

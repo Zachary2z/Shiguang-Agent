@@ -92,6 +92,7 @@ a {
 .brand-lockup {
   display: inline-flex;
   align-items: center;
+  min-height: var(--touch-target);
   gap: var(--space-3);
   text-decoration: none;
 }

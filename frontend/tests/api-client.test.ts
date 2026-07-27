@@ -10,6 +10,25 @@ function jsonResponse(body: unknown, init: ResponseInit = {}) {
   });
 }
 
+function hangingJsonResponse(signal: AbortSignal) {
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const onAbort = () => {
+        signal.removeEventListener("abort", onAbort);
+        controller.error(new DOMException("aborted", "AbortError"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    },
+  });
+  return new Response(body, {
+    headers: {
+      "Content-Type": "application/json",
+      "X-Request-ID": "request-body",
+    },
+  });
+}
+
 describe("ApiClient", () => {
   it("uses the central base URL, browser credentials, and CSRF header", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
@@ -78,6 +97,86 @@ describe("ApiClient", () => {
     });
     controller.abort();
     await expect(pending).rejects.toMatchObject({ code: "aborted" });
+  });
+
+  it("keeps the timeout active while a response body remains unfinished", async () => {
+    vi.useFakeTimers();
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      const fetcher = vi.fn<typeof fetch>().mockImplementation(
+        async (_input, init) => hangingJsonResponse(init?.signal as AbortSignal),
+      );
+      const client = new ApiClient("", fetcher);
+      const pending = client.request("/api/v1/slow-body", { timeoutMs: 50 });
+      const rejection = expect(pending).rejects.toMatchObject({
+        code: "timeout",
+        status: null,
+        requestId: "request-body",
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      await rejection;
+
+      expect(clearTimeoutSpy).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      clearTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("removes the external abort listener and timer after body cancellation", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const addListenerSpy = vi.spyOn(controller.signal, "addEventListener");
+    const removeListenerSpy = vi.spyOn(controller.signal, "removeEventListener");
+    try {
+      const fetcher = vi.fn<typeof fetch>().mockImplementation(
+        async (_input, init) => hangingJsonResponse(init?.signal as AbortSignal),
+      );
+      const client = new ApiClient("", fetcher);
+      const pending = client.request("/api/v1/slow-body", {
+        signal: controller.signal,
+        timeoutMs: 5_000,
+      });
+      const rejection = expect(pending).rejects.toMatchObject({
+        code: "aborted",
+        status: null,
+        requestId: "request-body",
+      });
+
+      controller.abort();
+      await rejection;
+
+      expect(addListenerSpy).toHaveBeenCalledOnce();
+      expect(removeListenerSpy).toHaveBeenCalledWith(
+        "abort",
+        addListenerSpy.mock.calls[0][1],
+      );
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      addListenerSpy.mockRestore();
+      removeListenerSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps malformed JSON mapped to invalid_response", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("{broken", {
+        headers: {
+          "Content-Type": "application/json",
+          "X-Request-ID": "request-invalid",
+        },
+      }),
+    );
+    const client = new ApiClient("", fetcher);
+
+    await expect(client.request("/api/v1/resource")).rejects.toMatchObject({
+      code: "invalid_response",
+      status: 200,
+      requestId: "request-invalid",
+    });
   });
 
   it("maps transport failures without exposing error messages", async () => {

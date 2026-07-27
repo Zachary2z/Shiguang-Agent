@@ -43,12 +43,22 @@ for (const width of [320, 390, 768, 1024, 1440]) {
 
     const visibleNav = width < 768 ? page.locator(".mobile-nav") : page.locator(".desktop-sidebar nav");
     await expect(visibleNav).toBeVisible();
-    const boxes = await visibleNav.locator(".nav-link").evaluateAll((links) =>
-      links.map((link) => {
-        const rect = link.getBoundingClientRect();
-        return { width: rect.width, height: rect.height };
-      }),
+    const boxes = await page.locator(".app-shell a, .app-shell button").evaluateAll(
+      (targets) =>
+        targets.flatMap((target) => {
+          const rect = target.getBoundingClientRect();
+          const style = getComputedStyle(target);
+          const visible =
+            style.display !== "none" &&
+            style.visibility !== "hidden" &&
+            rect.width > 0 &&
+            rect.height > 0;
+          return visible
+            ? [{ width: rect.width, height: rect.height }]
+            : [];
+        }),
     );
+    expect(boxes.length).toBeGreaterThan(0);
     for (const box of boxes) {
       expect(box.width).toBeGreaterThanOrEqual(44);
       expect(box.height).toBeGreaterThanOrEqual(44);

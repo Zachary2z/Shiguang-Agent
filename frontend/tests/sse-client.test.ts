@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { SseClient } from "@/lib/sse-client";
+import { SseClient, SseClientError } from "@/lib/sse-client";
 
 function streamResponse(chunks: string[], status = 200) {
   const encoder = new TextEncoder();
@@ -79,6 +79,63 @@ describe("SseClient", () => {
     });
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(states.at(-1)).toBe("disconnected");
+  });
+
+  it("sanitizes transport failures after reconnect attempts are exhausted", async () => {
+    const transportDetails =
+      "GET https://private.example/api?token=secret failed";
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(new DOMException(transportDetails, "NetworkError"));
+    const states: string[] = [];
+    const connection = new SseClient("", fetcher).connect({
+      path: "/api/v1/agent-runs/private-trace/events",
+      maxReconnectAttempts: 1,
+      reconnectDelayMs: 0,
+      onEvent: vi.fn(),
+      onStateChange: (state) => states.push(state),
+    });
+
+    const error = await connection.closed.catch((reason) => reason);
+
+    expect(error).toBeInstanceOf(SseClientError);
+    expect(error).toMatchObject({ code: "network_error", status: null });
+    expect(error.message).toBe("network_error");
+    expect(JSON.stringify(error)).not.toContain(transportDetails);
+    expect(String(error)).not.toContain("private.example");
+    expect(String(error)).not.toContain("private-trace");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(states.at(-1)).toBe("error");
+  });
+
+  it("sanitizes reader failures after reconnect attempts are exhausted", async () => {
+    const readerDetails = "stream for /private-endpoint exposed bearer-secret";
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.error(new Error(readerDetails));
+        },
+      });
+      return new Response(body, {
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    });
+    const connection = new SseClient("", fetcher).connect({
+      path: "/api/v1/agent-runs/private-trace/events",
+      maxReconnectAttempts: 1,
+      reconnectDelayMs: 0,
+      onEvent: vi.fn(),
+    });
+
+    const error = await connection.closed.catch((reason) => reason);
+
+    expect(error).toBeInstanceOf(SseClientError);
+    expect(error).toMatchObject({ code: "network_error", status: null });
+    expect(String(error)).toBe("SseClientError: network_error");
+    expect(JSON.stringify(error)).not.toContain(readerDetails);
+    expect(String(error)).not.toContain("private-endpoint");
+    expect(String(error)).not.toContain("private-trace");
+    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it("reconnects with the last delivered sequence", async () => {

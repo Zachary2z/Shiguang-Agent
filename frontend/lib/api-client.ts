@@ -96,39 +96,47 @@ export class ApiClient {
     if (csrfToken) headers.set(CSRF_HEADER_NAME, csrfToken);
 
     const requestSignal = createRequestSignal(externalSignal, timeoutMs);
-    let response: Response;
     try {
-      response = await this.fetcher(`${this.baseUrl}${path}`, {
-        ...init,
-        credentials: "include",
-        headers,
-        signal: requestSignal.signal,
-      });
-    } catch {
-      if (requestSignal.didTimeOut()) {
-        throw new ApiError("timeout", null, null);
+      let response: Response;
+      try {
+        response = await this.fetcher(`${this.baseUrl}${path}`, {
+          ...init,
+          credentials: "include",
+          headers,
+          signal: requestSignal.signal,
+        });
+      } catch {
+        if (requestSignal.didTimeOut()) {
+          throw new ApiError("timeout", null, null);
+        }
+        if (externalSignal?.aborted || requestSignal.signal.aborted) {
+          throw new ApiError("aborted", null, null);
+        }
+        throw new ApiError("network_error", null, null);
       }
-      if (externalSignal?.aborted || requestSignal.signal.aborted) {
-        throw new ApiError("aborted", null, null);
+
+      const requestId = response.headers.get("X-Request-ID");
+      if (!response.ok) {
+        const code =
+          statusCodes[response.status] ??
+          (response.status >= 500 ? "server_error" : "request_failed");
+        throw new ApiError(code, response.status, requestId);
       }
-      throw new ApiError("network_error", null, null);
+
+      if (response.status === 204) return undefined as T;
+      try {
+        return (await response.json()) as T;
+      } catch {
+        if (requestSignal.didTimeOut()) {
+          throw new ApiError("timeout", null, requestId);
+        }
+        if (externalSignal?.aborted || requestSignal.signal.aborted) {
+          throw new ApiError("aborted", null, requestId);
+        }
+        throw new ApiError("invalid_response", response.status, requestId);
+      }
     } finally {
       requestSignal.cleanup();
-    }
-
-    const requestId = response.headers.get("X-Request-ID");
-    if (!response.ok) {
-      const code =
-        statusCodes[response.status] ??
-        (response.status >= 500 ? "server_error" : "request_failed");
-      throw new ApiError(code, response.status, requestId);
-    }
-
-    if (response.status === 204) return undefined as T;
-    try {
-      return (await response.json()) as T;
-    } catch {
-      throw new ApiError("invalid_response", response.status, requestId);
     }
   }
 }

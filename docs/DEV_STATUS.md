@@ -2170,3 +2170,34 @@ M1-2，M1-3 及后续阶段未开始。
   剩余告警仅来自开发期 ESLint 依赖链；生产依赖 audit 为 0
 - 下一步：主控使用本记录命令独立复测并检查阶段范围、唯一公共入口和净复杂度；
   通过前不合并、不推送、不开始 M1-3
+
+#### 2026-07-27｜M1-2 主控 QA 修复｜待主控验收
+
+- 分支与提交：在 `codex/m1-2-frontend-foundation` 的候选提交
+  `493a92099c294d3b0e922f1b44d963692c9509e6` 上修复；本记录与修复代码位于同一个
+  独立 QA 修复提交，完整 SHA 见阶段最终交接
+- API Client：唯一 `lib/api-client.ts` 继续使用同一个 `AbortController` 和总截止；
+  cleanup 延后至响应状态和正文消费全部结束。响应头返回后正文悬挂会稳定映射
+  `timeout`，正文阶段外部取消映射 `aborted`，损坏 JSON 保持
+  `invalid_response`；自动化确认超时/取消后定时器归零且外部监听器移除
+- SSE Client：唯一 `lib/sse-client.ts` 在既有有限重连边界内把未知 Fetch/Reader
+  传输异常收敛为 `SseClientError("network_error", null)`；最终错误不携带原始消息、
+  URL、endpoint 或传输细节，`http_error`、`invalid_event`、`disconnected`、取消、
+  Last-Event-ID、序列去重和终态行为不变
+- 触控与浏览器验证：品牌图形及文字视觉尺寸不变，仅把品牌链接有效高度提升至
+  44px；Playwright 改为检查 App Shell 内全部可见产品链接和按钮，不包含 App Shell
+  外的 Next.js 开发工具。320、390、768、1024、1440px 均无横向溢出，13 个 E2E
+  全部通过，控制台错误为 0，键盘焦点、`aria-current`、前进后退和 reduced motion
+  保持通过
+- 完整验证：使用仓库外临时 npm 缓存执行 `npm ci --ignore-scripts` 成功；
+  `npm run lint`、`npm run typecheck`、`npm run build` 均退出 0，7 个静态页面生成；
+  Vitest 3 个文件共 `27 passed`，Playwright `13 passed`；
+  `npm audit --omit=dev --audit-level=high` 为 `found 0 vulnerabilities`
+- 范围与冗余：API Client、SSE Client、Token、导航和状态体系仍各只有一套；测试
+  全部使用 Mock/Fake 或本地 Next 服务，没有真实 API、模型、地图、网页或付费调用。
+  后端文件与迁移无变化；Git 不包含 `.env`、`node_modules`、`.next`、截图、测试
+  报告或构建产物；未实现 M1-3 或后续业务
+- 已知风险：本次仍只在 macOS、Node 25.8.0、npm 11.11.0 与 Chromium 145 验证，
+  未新增 Node 20/22、Windows/Linux、Safari/Firefox 或真实后端联调覆盖；开发依赖
+  完整 audit 仍有既有 ESLint 依赖链告警，但要求的生产依赖 audit 为 0
+- 阶段状态：M1-2 保持“待主控验收”，当前唯一允许阶段仍为 M1-2；M1-3 未开始
