@@ -60,6 +60,13 @@ class JobWorker:
         try:
             summary = await self._execute_with_heartbeat(job, handler)
         except asyncio.CancelledError:
+            await asyncio.shield(
+                self._queue.cancel(
+                    user_id=job.user_id,
+                    job_id=job.id,
+                    now=utc_now(),
+                )
+            )
             raise
         except JobLeaseLostError:
             return None

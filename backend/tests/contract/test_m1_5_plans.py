@@ -10,6 +10,7 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 
+from app.application.plan_adjustments import PlanAdjustmentParser
 from app.application.plan_experience import (
     PLAN_GENERATION_JOB_TYPE,
     PlanExperienceService,
@@ -52,6 +53,11 @@ from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.repositories import SqlAlchemyPlanRepository
 from app.providers.jobs import JobQueue
 from app.worker.service import JobWorker
+from nanobot_core.providers import (
+    ProviderError,
+    ProviderErrorCode,
+    StructuredOutputMode,
+)
 from tests.contract.test_m0_2d_api import _client, _demo
 from tests.core.fakes import FakeProvider, fake_response
 
@@ -151,9 +157,10 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
 
     async with _client(test_settings) as (api, client):
         api.state.map_provider = object()
-        api.state.text_provider = FakeProvider(
+        provider = FakeProvider(
             [fake_response(content='{"pace":"relaxed"}')]
         )
+        api.state.text_provider = provider
         await _demo(client)
         created = await client.post("/api/v1/plans", json=_request("m15-create"))
         replay = await client.post("/api/v1/plans", json=_request("m15-create"))
@@ -167,6 +174,10 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
             session_factory=database.session_factory,
             pricing=ConfiguredPricingPolicy.from_settings(test_settings),
             executor_factory=lambda session: DraftExecutor(),
+            adjustment_parser=PlanAdjustmentParser(
+                provider,
+                structured_output_mode=StructuredOutputMode.JSON_OBJECT,
+            ),
         )
         worker = JobWorker(
             queue=PostgresJobQueue(database.session_factory),
@@ -195,8 +206,13 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
             },
         )
         assert adjusted.status_code == 202
-        adjusted_id = adjusted.json()["plan_id"]
+        assert adjusted.json()["base_plan_id"] == plan_id
+        assert "plan_id" not in adjusted.json()
+        assert len(provider.calls) == 0
         assert await worker.run_once() is not None
+        assert len(provider.calls) == 1
+        listed = await client.get("/api/v1/plans")
+        adjusted_id = listed.json()["items"][0]["id"]
         current = await client.get(f"/api/v1/plans/{adjusted_id}")
         assert current.status_code == 200
         body = current.json()
@@ -209,14 +225,33 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
         assert body["constraints"]["exclude"] == ["商场"]
         assert body["constraints"]["budget"] is None
 
-        listed = await client.get("/api/v1/plans")
         assert [item["id"] for item in listed.json()["items"]] == [adjusted_id]
+        async with database.session_factory() as session:
+            run = await session.scalar(
+                select(AgentRunModel).where(
+                    AgentRunModel.trace_id == adjusted.json()["trace_id"]
+                )
+            )
+            assert run is not None
+            assert run.total_tokens == 5
+            assert run.duration_ms is not None
+            assert run.model_calls_json[0]["model_name"] == "fixture-model"
+            assert run.model_calls_json[0]["latency_ms"] == 4
+            assert run.model_calls_json[0]["finish_reason"] == "stop"
 
 
 @pytest.mark.asyncio
 async def test_location_adjustment_is_recoverable_without_creating_a_version(
     test_settings,
 ) -> None:
+    class DraftExecutor:
+        async def execute(self, *, user_id, constraints, approval):
+            del user_id, constraints, approval
+            return PlanGenerationResult(
+                outcome=PlanGenerationOutcome.DRAFT,
+                draft=_draft(),
+            )
+
     provider = FakeProvider([fake_response(content="{}")])
     async with _client(test_settings) as (api, client):
         api.state.map_provider = object()
@@ -224,6 +259,22 @@ async def test_location_adjustment_is_recoverable_without_creating_a_version(
         await _demo(client)
         created = await client.post("/api/v1/plans", json=_request("location-base"))
         plan_id = created.json()["plan_id"]
+        handler = PlanGenerationJobHandler(
+            session_factory=api.state.demo_database.session_factory,
+            pricing=ConfiguredPricingPolicy.from_settings(test_settings),
+            executor_factory=lambda session: DraftExecutor(),
+            adjustment_parser=PlanAdjustmentParser(
+                provider,
+                structured_output_mode=StructuredOutputMode.JSON_OBJECT,
+            ),
+        )
+        worker = JobWorker(
+            queue=PostgresJobQueue(api.state.demo_database.session_factory),
+            worker_id="worker_m15_unsupported",
+            handlers={PLAN_GENERATION_JOB_TYPE: handler},
+            poll_seconds=0.01,
+        )
+        assert await worker.run_once() is not None
 
         unsupported = await client.post(
             f"/api/v1/plans/{plan_id}/adjustments",
@@ -232,19 +283,234 @@ async def test_location_adjustment_is_recoverable_without_creating_a_version(
                 "instruction": "把地点换成广州塔",
             },
         )
+        assert unsupported.status_code == 202
+        assert len(provider.calls) == 0
+        terminal = await worker.run_once()
+        assert terminal is not None
+        assert terminal.status.value == "succeeded"
         async with api.state.demo_database.session_factory() as session:
             plan_count = int(await session.scalar(select(func.count(PlanModel.id))) or 0)
             job_count = int(
                 await session.scalar(select(func.count(ScheduledJobModel.id))) or 0
             )
+            run = await session.scalar(
+                select(AgentRunModel).where(
+                    AgentRunModel.trace_id == unsupported.json()["trace_id"]
+                )
+            )
 
-    assert unsupported.status_code == 422
-    assert unsupported.json()["error_code"] == "PLAN_ADJUSTMENT_UNSUPPORTED"
-    assert "Create a new plan" in unsupported.json()["message"]
+    assert unsupported.json()["base_plan_id"] == plan_id
     assert plan_count == 1
-    assert job_count == 1
+    assert job_count == 2
     assert len(provider.calls) == 1
+    assert run is not None
+    assert run.status == "failed"
+    assert run.error_code == "PLAN_ADJUSTMENT_UNSUPPORTED"
+    assert len(run.model_calls_json) == 1
     assert "location_intent" not in str(provider.calls[0].response_format)
+
+
+@pytest.mark.asyncio
+async def test_adjustment_concurrent_and_serial_replay_runs_model_and_version_once(
+    test_settings,
+) -> None:
+    class DraftExecutor:
+        async def execute(self, *, user_id, constraints, approval):
+            del user_id, constraints, approval
+            return PlanGenerationResult(
+                outcome=PlanGenerationOutcome.DRAFT,
+                draft=_draft(),
+            )
+
+    provider = FakeProvider([fake_response(content='{"pace":"relaxed"}')])
+    async with _client(test_settings) as (api, client):
+        api.state.map_provider = object()
+        api.state.text_provider = provider
+        await _demo(client)
+        created = await client.post("/api/v1/plans", json=_request("replay-base"))
+        plan_id = created.json()["plan_id"]
+        database = api.state.demo_database
+        handler = PlanGenerationJobHandler(
+            session_factory=database.session_factory,
+            pricing=ConfiguredPricingPolicy.from_settings(test_settings),
+            executor_factory=lambda session: DraftExecutor(),
+            adjustment_parser=PlanAdjustmentParser(
+                provider,
+                structured_output_mode=StructuredOutputMode.JSON_OBJECT,
+            ),
+        )
+        worker = JobWorker(
+            queue=PostgresJobQueue(database.session_factory),
+            worker_id="worker_m15_replay",
+            handlers={PLAN_GENERATION_JOB_TYPE: handler},
+            poll_seconds=0.01,
+        )
+        assert await worker.run_once() is not None
+
+        request = {
+            "idempotency_key": "same-adjustment",
+            "instruction": "节奏轻松一点",
+        }
+        first, concurrent_replay = await asyncio.gather(
+            client.post(f"/api/v1/plans/{plan_id}/adjustments", json=request),
+            client.post(f"/api/v1/plans/{plan_id}/adjustments", json=request),
+        )
+        assert first.status_code == concurrent_replay.status_code == 202
+        assert first.json()["trace_id"] == concurrent_replay.json()["trace_id"]
+        assert len(provider.calls) == 0
+        async with database.session_factory() as session:
+            assert await session.scalar(select(func.count()).select_from(PlanModel)) == 1
+            assert (
+                await session.scalar(select(func.count()).select_from(AgentRunModel))
+                == 2
+            )
+            assert (
+                await session.scalar(select(func.count()).select_from(ScheduledJobModel))
+                == 2
+            )
+
+        assert await worker.run_once() is not None
+        assert await worker.run_once() is None
+        assert len(provider.calls) == 1
+        serial_replay = await client.post(
+            f"/api/v1/plans/{plan_id}/adjustments",
+            json=request,
+        )
+        assert serial_replay.status_code == 202
+        assert serial_replay.json()["trace_id"] == first.json()["trace_id"]
+        assert serial_replay.json()["replayed"] is True
+        conflict = await client.post(
+            f"/api/v1/plans/{plan_id}/adjustments",
+            json={
+                "idempotency_key": "same-adjustment",
+                "instruction": "改成紧凑节奏",
+            },
+        )
+        assert conflict.status_code == 409
+        stale = await client.post(
+            f"/api/v1/plans/{plan_id}/adjustments",
+            json={
+                "idempotency_key": "stale-adjustment",
+                "instruction": "改成紧凑节奏",
+            },
+        )
+        assert stale.status_code == 409
+        assert stale.json()["error_code"] == "PLAN_VERSION_CONFLICT"
+        assert len(provider.calls) == 1
+        async with database.session_factory() as session:
+            assert await session.scalar(select(func.count()).select_from(PlanModel)) == 2
+            assert (
+                await session.scalar(select(func.count()).select_from(AgentRunModel))
+                == 2
+            )
+            assert (
+                await session.scalar(select(func.count()).select_from(ScheduledJobModel))
+                == 2
+            )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_outcome", "expected_run_status", "expected_error", "cancelled"),
+    [
+        (
+            ProviderError(code=ProviderErrorCode.TIMEOUT),
+            "failed",
+            "PROVIDER_TIMEOUT",
+            False,
+        ),
+        (
+            ProviderError(code=ProviderErrorCode.AUTHENTICATION_FAILED),
+            "failed",
+            "PROVIDER_AUTHENTICATION_FAILED",
+            False,
+        ),
+        (
+            ProviderError(code=ProviderErrorCode.RATE_LIMITED),
+            "failed",
+            "PROVIDER_RATE_LIMITED",
+            False,
+        ),
+        (
+            fake_response(content="not-json"),
+            "failed",
+            "PLAN_ADJUSTMENT_NOT_UNDERSTOOD",
+            False,
+        ),
+        (asyncio.CancelledError(), "cancelled", "RUN_CANCELLED", True),
+    ],
+)
+async def test_adjustment_worker_failures_never_create_a_version_or_live_job(
+    test_settings,
+    provider_outcome,
+    expected_run_status,
+    expected_error,
+    cancelled,
+) -> None:
+    class DraftExecutor:
+        async def execute(self, *, user_id, constraints, approval):
+            del user_id, constraints, approval
+            return PlanGenerationResult(
+                outcome=PlanGenerationOutcome.DRAFT,
+                draft=_draft(),
+            )
+
+    provider = FakeProvider([provider_outcome])
+    async with _client(test_settings) as (api, client):
+        api.state.map_provider = object()
+        api.state.text_provider = provider
+        await _demo(client)
+        created = await client.post("/api/v1/plans", json=_request("failure-base"))
+        plan_id = created.json()["plan_id"]
+        database = api.state.demo_database
+        handler = PlanGenerationJobHandler(
+            session_factory=database.session_factory,
+            pricing=ConfiguredPricingPolicy.from_settings(test_settings),
+            executor_factory=lambda session: DraftExecutor(),
+            adjustment_parser=PlanAdjustmentParser(
+                provider,
+                structured_output_mode=StructuredOutputMode.JSON_OBJECT,
+            ),
+        )
+        worker = JobWorker(
+            queue=PostgresJobQueue(database.session_factory),
+            worker_id="worker_m15_failure",
+            handlers={PLAN_GENERATION_JOB_TYPE: handler},
+            poll_seconds=0.01,
+        )
+        assert await worker.run_once() is not None
+        accepted = await client.post(
+            f"/api/v1/plans/{plan_id}/adjustments",
+            json={
+                "idempotency_key": "failing-adjustment",
+                "instruction": "节奏轻松一点",
+            },
+        )
+        assert accepted.status_code == 202
+        if cancelled:
+            with pytest.raises(asyncio.CancelledError):
+                await worker.run_once()
+        else:
+            assert await worker.run_once() is not None
+        async with database.session_factory() as session:
+            assert await session.scalar(select(func.count()).select_from(PlanModel)) == 1
+            run = await session.scalar(
+                select(AgentRunModel).where(
+                    AgentRunModel.trace_id == accepted.json()["trace_id"]
+                )
+            )
+            job = await session.scalar(
+                select(ScheduledJobModel).where(
+                    ScheduledJobModel.trace_id == accepted.json()["trace_id"]
+                )
+            )
+            assert run is not None
+            assert job is not None
+            assert run.status == expected_run_status
+            assert run.error_code == expected_error
+            assert job.status in {"failed", "succeeded", "cancelled"}
+            assert job.status != "queued"
+            assert job.status != "running"
 
 
 @pytest.mark.asyncio

@@ -62,6 +62,7 @@ class RecordingQueue:
         self.job: ScheduledJob | None = job
         self.summary: JobResultSummary | None = None
         self.failed = False
+        self.cancelled = False
         self.renewals = 0
         self.allow_renewal = True
         self.renew_error: Exception | None = None
@@ -116,7 +117,8 @@ class RecordingQueue:
 
     async def cancel(self, *, user_id: str, job_id: str, now: datetime) -> bool:
         del user_id, job_id, now
-        return False
+        self.cancelled = True
+        return True
 
     async def recover_stale(self, *, now: datetime) -> int:
         del now
@@ -186,6 +188,7 @@ async def test_worker_propagates_cancellation() -> None:
     assert caught.value is cancellation
     assert queue.summary is None
     assert queue.failed is False
+    assert queue.cancelled is True
 
 
 @pytest.mark.asyncio

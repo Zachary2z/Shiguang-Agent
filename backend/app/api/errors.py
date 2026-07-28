@@ -14,10 +14,6 @@ from app.api.dependencies import (
     PlanProviderNotConfiguredError,
     ProviderNotConfiguredError,
 )
-from app.application.plan_adjustments import (
-    PlanAdjustmentNotUnderstoodError,
-    PlanAdjustmentUnsupportedError,
-)
 from app.application.text_collection_workflow import (
     IdempotentRequestInProgressError,
     TextCollectionProviderError,
@@ -29,6 +25,7 @@ from app.domain.collections import (
     ResourceNotFoundError,
     VersionConflictError,
 )
+from app.domain.jobs import JobConflictError
 from app.domain.plans import (
     PlanExecutionNotAllowedError,
     PlanNotReadyError,
@@ -46,20 +43,13 @@ def install_error_handlers(api: FastAPI) -> None:
     api.add_exception_handler(ResourceNotFoundError, _resource_not_found)
     api.add_exception_handler(UndoNotAvailableError, _undo_not_available)
     api.add_exception_handler(IdempotencyConflictError, _idempotency_conflict)
+    api.add_exception_handler(JobConflictError, _idempotency_conflict)
     api.add_exception_handler(VersionConflictError, _version_conflict)
     api.add_exception_handler(PlanVersionConflictError, _plan_version_conflict)
     api.add_exception_handler(PlanNotReadyError, _plan_not_ready)
     api.add_exception_handler(
         PlanExecutionNotAllowedError,
         _plan_execution_not_allowed,
-    )
-    api.add_exception_handler(
-        PlanAdjustmentNotUnderstoodError,
-        _plan_adjustment_not_understood,
-    )
-    api.add_exception_handler(
-        PlanAdjustmentUnsupportedError,
-        _plan_adjustment_unsupported,
     )
     api.add_exception_handler(
         IdempotentRequestInProgressError,
@@ -165,30 +155,6 @@ async def _plan_execution_not_allowed(
         409,
         "PLAN_NOT_CONFIRMED",
         "The plan must be explicitly confirmed before execution.",
-    )
-
-
-async def _plan_adjustment_not_understood(
-    request: Request,
-    exc: Exception,
-) -> JSONResponse:
-    del request, exc
-    return _error(
-        422,
-        "PLAN_ADJUSTMENT_NOT_UNDERSTOOD",
-        "The requested plan adjustment was not understood.",
-    )
-
-
-async def _plan_adjustment_unsupported(
-    request: Request,
-    exc: Exception,
-) -> JSONResponse:
-    del request, exc
-    return _error(
-        422,
-        "PLAN_ADJUSTMENT_UNSUPPORTED",
-        "Create a new plan to change the activity area or exact place.",
     )
 
 

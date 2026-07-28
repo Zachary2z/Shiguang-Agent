@@ -2594,3 +2594,33 @@ Client，不建立第二套规划器或前端状态框架；不得提前实现 M
   收藏中更晚但软偏好更高的候选可能未进入最终排序，本轮按要求不新增第二套预排序
 - 安全与状态：未读取本机 `.env`，真实模型、地图、网页、DNS、socket 和其他外部/
   付费 API 调用均为 0；无未关闭 P0/P1。阶段继续为“待主控验收”
+
+#### 2026-07-28｜M1-5 最终异步调整链修复｜待主控验收
+
+- 线性基线：继承 `771cc5c403fd3b5f00eeb8bf927f134d3dbc5a98`，仅追加本次
+  M1-5 修复；未 amend、未合并 `main`、未推送、未开始 M1-6
+- 异步边界：删除调整 API 对 ModelProvider / `PlanAdjustmentParser` 的注入和同步
+  调用。API 只做本地格式、权限、当前版本和幂等检查，持久化或重放既有 AgentRun、
+  ScheduledJob 与 trace 后立即返回语义准确的 202；响应使用 `base_plan_id`，
+  不把尚不存在的 V2 冒充为已接受结果
+- Worker：唯一 `PlanGenerationJobHandler` 根据既有计划 Job payload 在 Worker 内
+  调用唯一 Parser，使用 `ApplicationRunObserver.record_model_response` 保存模型、
+  Token、耗时、完成原因和费用估算。合法 patch 后重新锁定当前 base，才创建 V2、
+  保留其他约束并调用既有规划器
+- 安全恢复：地点/活动范围调整以 `PLAN_ADJUSTMENT_UNSUPPORTED` 终结且不创建 V2；
+  已发生模型调用的 AgentRun 和 Job 作为正确审计记录保留。超时、鉴权、限流、
+  格式错误和 CancelledError 均在 Worker/Run 生命周期内终结，不留下 queued 或
+  running 后台任务
+- 幂等与并发：用户作用域幂等键产生稳定 trace，ScheduledJob 唯一约束继续作为最终
+  边界。同请求串行及并发重放只产生一个调整 Job、一个 AgentRun、一次模型调用和
+  一个 V2；同键不同 instruction 返回 409；旧 base 不会覆盖新版本
+- 前端：SSE 终态后先读取 base 的权威版本索引，再切换到实际产生的 V2；unsupported
+  或其他 Worker 失败继续展示原版本及明确恢复提示
+- 验证：`pip check`、Ruff、strict mypy（126 个源文件）通过；指定聚焦与回归
+  `107 passed`；后端非真实全集
+  `1609 passed / 11 skipped / 2 deselected`；迁移专测 `23 passed`，唯一 head
+  `20260728_0014`。前端 lint、typecheck、build 通过，Vitest `60 passed`，
+  Playwright `26 passed`
+- 唯一性与安全：未新增 Provider、Parser、Planner、JobQueue、Worker、AgentRun、
+  Matcher、锁或状态机；API 层同步 Parser 和模型异常映射已删除。未读取 `.env`，
+  Fake/Stub 之外真实模型、地图、网页及付费 API 调用为 0。阶段继续为“待主控验收”

@@ -317,6 +317,14 @@ class PlanAcceptedResponse(ApiModel):
     replayed: bool
 
 
+class PlanAdjustmentAcceptedResponse(ApiModel):
+    base_plan_id: str
+    trace_id: str
+    run_status: Literal["queued"] = "queued"
+    events_url: str
+    replayed: bool
+
+
 class PlanListResponse(ApiModel):
     items: tuple[PlanResponse, ...]
 

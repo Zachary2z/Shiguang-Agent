@@ -39,7 +39,6 @@ from app.application.content_import_jobs import (
 from app.application.demo_sessions import DemoSessionService
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
 from app.application.place_targets import PlaceTargetSelectionService
-from app.application.plan_adjustments import PlanAdjustmentParser
 from app.application.plan_experience import PlanExperienceService
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.run_events import RunEventService
@@ -94,6 +93,7 @@ from app.schemas.api import (
     PlaceSelectionRequest,
     PlaceSelectionResponse,
     PlanAcceptedResponse,
+    PlanAdjustmentAcceptedResponse,
     PlanAdjustmentRequest,
     PlanApprovalResponse,
     PlanConfirmationResponse,
@@ -108,7 +108,6 @@ from app.schemas.api import (
     UndoResponse,
     WebSessionRevokedResponse,
 )
-from nanobot_core.providers import ModelProvider
 
 _SESSION_PATH = r"^ses_[a-f0-9]{32}$"
 _COLLECTION_PATH = r"^col_[a-f0-9]{32}$"
@@ -720,7 +719,7 @@ async def get_plan(
 
 @api_router.post(
     "/plans/{plan_id}/adjustments",
-    response_model=PlanAcceptedResponse,
+    response_model=PlanAdjustmentAcceptedResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def adjust_plan(
@@ -731,32 +730,22 @@ async def adjust_plan(
     user_id: CurrentUserId,
     database: CurrentDatabase,
     pricing: Pricing,
-) -> PlanAcceptedResponse:
+) -> PlanAdjustmentAcceptedResponse:
     _require_plan_providers(request, adjustment=True)
-    provider: ModelProvider | None = request.app.state.text_provider
-    if provider is None:
-        raise PlanProviderNotConfiguredError
-    settings: Settings = request.app.state.settings
     submission = await PlanExperienceService(
         session=session,
         session_factory=database.session_factory,
         pricing=pricing,
-        adjustment_parser=PlanAdjustmentParser(
-            provider,
-            structured_output_mode=settings.extraction_structured_output_mode(),
-        ),
     ).adjust(
         user_id=user_id,
         base_plan_id=plan_id,
         instruction=payload.instruction,
         client_idempotency_key=payload.idempotency_key,
     )
-    plan = submission.plan
-    return PlanAcceptedResponse(
-        plan_id=plan.id,
-        trace_id=plan.trace_id,
-        events_url=f"/api/v1/agent-runs/{plan.trace_id}/events",
-        result_url=f"/api/v1/plans/{plan.id}",
+    return PlanAdjustmentAcceptedResponse(
+        base_plan_id=submission.base_plan_id,
+        trace_id=submission.trace_id,
+        events_url=f"/api/v1/agent-runs/{submission.trace_id}/events",
         replayed=submission.replayed,
     )
 

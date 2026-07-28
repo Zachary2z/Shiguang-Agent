@@ -22,6 +22,7 @@ from app.application.content_import_jobs import (
     ContentImportJobHandler,
 )
 from app.application.map_plan_facts import MapPlanFactResolver
+from app.application.plan_adjustments import PlanAdjustmentParser
 from app.application.plan_experience import (
     PLAN_GENERATION_JOB_TYPE,
     ExistingPlanServicesExecutor,
@@ -204,7 +205,7 @@ def build_app() -> FastAPI:
     adjustment_provider = FakeProvider(
         [
             fake_response(content='{"pace":"relaxed"}'),
-            fake_response(content="not-json"),
+            fake_response(content="{}"),
         ]
     )
     map_provider = _plan_map_provider()
@@ -245,6 +246,12 @@ def build_app() -> FastAPI:
                         session=session,
                         map_provider=map_provider,
                         matching_policy=settings.place_matching_policy(),
+                    ),
+                ),
+                adjustment_parser=PlanAdjustmentParser(
+                    adjustment_provider,
+                    structured_output_mode=(
+                        settings.extraction_structured_output_mode()
                     ),
                 ),
             )

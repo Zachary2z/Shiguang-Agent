@@ -7,7 +7,7 @@ import hashlib
 from collections.abc import Callable
 from datetime import timedelta
 from enum import StrEnum
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import model_validator
 from sqlalchemy.exc import IntegrityError
@@ -16,7 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.application.external_place_supplement import ExternalPlaceSupplementService
 from app.application.place_matching import PlaceMatchingService
 from app.application.plan_adjustments import (
+    PlanAdjustmentNotUnderstoodError,
     PlanAdjustmentParser,
+    PlanAdjustmentUnsupportedError,
     apply_plan_adjustment,
 )
 from app.application.plan_drafts import PlanDraftService
@@ -30,7 +32,7 @@ from app.application.structured_collection_retrieval import (
     StructuredCollectionRetrievalService,
 )
 from app.domain.identifiers import generate_approval_id, generate_plan_id, generate_trace_id
-from app.domain.jobs import JobCreate, JobResultSummary, ScheduledJob
+from app.domain.jobs import JobConflictError, JobCreate, JobResultSummary, ScheduledJob
 from app.domain.places import PlaceMatchingPolicy
 from app.domain.plans import (
     ApprovalAction,
@@ -196,11 +198,24 @@ class ExistingPlanServicesExecutor:
 
 
 class PlanJobPayload(PlanContract):
+    operation: Literal["generate"] = "generate"
     plan_id: str
+
+
+class PlanAdjustmentJobPayload(PlanContract):
+    operation: Literal["adjust"] = "adjust"
+    base_plan_id: str
+    instruction: str
 
 
 class PlanSubmission(PlanContract):
     plan: PlanVersion
+    replayed: bool
+
+
+class PlanAdjustmentSubmission(PlanContract):
+    base_plan_id: str
+    trace_id: str
     replayed: bool
 
 
@@ -223,14 +238,12 @@ class PlanExperienceService:
         session_factory: async_sessionmaker[AsyncSession],
         pricing: PricingPolicy,
         queue: JobQueue | None = None,
-        adjustment_parser: PlanAdjustmentParser | None = None,
     ) -> None:
         self._session = session
         self._session_factory = session_factory
         self._pricing = pricing
         self._queue = queue or PostgresJobQueue(session_factory)
         self._plans = SqlAlchemyPlanRepository(session)
-        self._adjustment_parser = adjustment_parser
 
     async def create(
         self,
@@ -295,82 +308,97 @@ class PlanExperienceService:
         base_plan_id: str,
         instruction: str,
         client_idempotency_key: str,
-    ) -> PlanSubmission:
+    ) -> PlanAdjustmentSubmission:
         key = scoped_plan_key(user_id=user_id, client_key=client_idempotency_key)
         base = await self._plans.require(user_id=user_id, plan_id=base_plan_id)
-        fingerprint = plan_request_fingerprint(
-            {
-                "operation": "adjust",
-                "base_plan_id": base_plan_id,
-                "instruction": instruction,
-            }
-        )
-        existing = await self._plans.find_by_idempotency_key(
-            user_id=user_id,
-            idempotency_key=key,
-            request_fingerprint=fingerprint,
-        )
-        if existing is not None:
-            await self._ensure_generating_job(existing)
-            return PlanSubmission(plan=existing, replayed=True)
-        versions = await self._plans.list_versions(
-            user_id=user_id,
-            root_plan_id=base.root_plan_id,
-        )
-        if not versions or versions[-1].id != base_plan_id:
-            from app.domain.plans import PlanVersionConflictError
-
-            raise PlanVersionConflictError
-        parser = self._adjustment_parser
-        if parser is None:
-            raise RuntimeError("plan adjustment parser is not configured")
-        await self._session.rollback()
-        patch = await parser.parse(
-            constraints=base.constraints,
+        trace_id = f"trc_{hashlib.sha256(key.encode()).hexdigest()[:32]}"
+        payload = PlanAdjustmentJobPayload(
+            base_plan_id=base_plan_id,
             instruction=instruction,
         )
-        adjusted_constraints = apply_plan_adjustment(base.constraints, patch)
-        base = await self._plans.require(user_id=user_id, plan_id=base_plan_id)
+        request = JobCreate(
+            user_id=user_id,
+            idempotency_key=key,
+            job_type=PLAN_GENERATION_JOB_TYPE,
+            payload=payload.model_dump(mode="json"),
+            run_at=base.created_at,
+            trace_id=trace_id,
+            max_attempts=1,
+        )
+        existing_job = await self._queue.get_by_trace(
+            user_id=user_id,
+            trace_id=trace_id,
+        )
+        if existing_job is not None:
+            replay = await self._queue.create(request)
+            return PlanAdjustmentSubmission(
+                base_plan_id=base_plan_id,
+                trace_id=trace_id,
+                replayed=replay.replayed,
+            )
         versions = await self._plans.list_versions(
             user_id=user_id,
             root_plan_id=base.root_plan_id,
-            lock=True,
         )
         if not versions or versions[-1].id != base_plan_id:
             from app.domain.plans import PlanVersionConflictError
 
             raise PlanVersionConflictError
-        timestamp = utc_now()
-        plan = PlanVersion(
-            id=generate_plan_id(),
-            root_plan_id=base.root_plan_id,
-            parent_plan_id=base.id,
-            user_id=user_id,
-            version=base.version + 1,
-            operation=PlanOperation.ADJUST,
-            status=PlanStatus.GENERATING,
-            constraints=adjusted_constraints,
-            adjustment_text=instruction,
-            trace_id=generate_trace_id(),
-            idempotency_key=key,
-            created_at=timestamp,
-            updated_at=timestamp,
+        await AgentRunService(
+            session=self._session,
+            runner=None,
+            pricing=self._pricing,
+        ).queue_application(
+            AgentRunCreate(
+                trace_id=trace_id,
+                user_id=user_id,
+                intent=PlanOperation.ADJUST.value,
+                workflow="plan.experience",
+            )
         )
         try:
-            await self._plans.add(plan, request_fingerprint=fingerprint)
-        except IntegrityError:
-            await self._session.rollback()
-            replay = await self._plans.find_by_idempotency_key(
-                user_id=user_id,
-                idempotency_key=key,
-                request_fingerprint=fingerprint,
+            job = await self._queue.create(request)
+        except BaseException as error:
+            existing_job = await asyncio.shield(
+                self._queue.get_by_trace(
+                    user_id=user_id,
+                    trace_id=trace_id,
+                )
             )
-            if replay is None:
+            if existing_job is None:
+                await asyncio.shield(
+                    self._compensate_unqueued_run(
+                        user_id=user_id,
+                        trace_id=trace_id,
+                    )
+                )
+            if (
+                isinstance(error, (asyncio.CancelledError, JobConflictError))
+                or existing_job is None
+            ):
                 raise
-            await self._ensure_generating_job(replay)
-            return PlanSubmission(plan=replay, replayed=True)
-        await self._queue_plan(plan)
-        return PlanSubmission(plan=plan, replayed=False)
+            job = existing_job
+        if job.trace_id != trace_id:
+            raise RuntimeError("plan adjustment job trace does not match its queued run")
+        return PlanAdjustmentSubmission(
+            base_plan_id=base_plan_id,
+            trace_id=trace_id,
+            replayed=job.replayed,
+        )
+
+    async def _compensate_unqueued_run(
+        self,
+        *,
+        user_id: str,
+        trace_id: str,
+    ) -> None:
+        async with self._session_factory() as cleanup:
+            await AgentRunRepository(cleanup).delete_queued_by_trace_id(
+                user_id=user_id,
+                trace_id=trace_id,
+            )
+            await cleanup.commit()
+        await self._session.rollback()
 
     async def confirm(
         self,
@@ -531,31 +559,111 @@ class PlanGenerationJobHandler:
         session_factory: async_sessionmaker[AsyncSession],
         pricing: PricingPolicy,
         executor_factory: Callable[[AsyncSession], PlanDraftExecutor],
+        adjustment_parser: PlanAdjustmentParser | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._pricing = pricing
         self._executor_factory = executor_factory
+        self._adjustment_parser = adjustment_parser
 
     async def __call__(self, job: ScheduledJob) -> JobResultSummary:
-        payload = PlanJobPayload.model_validate(job.payload, strict=True)
+        trace_id = job.trace_id
+        if trace_id is None:
+            raise ValueError("plan jobs require a trace id")
+        operation = job.payload.get("operation", "generate")
+        generation_payload: PlanJobPayload | None = None
+        adjustment_payload: PlanAdjustmentJobPayload | None = None
+        if operation == "generate":
+            generation_payload = PlanJobPayload.model_validate(job.payload, strict=True)
+        else:
+            adjustment_payload = PlanAdjustmentJobPayload.model_validate(
+                job.payload,
+                strict=True,
+            )
         async with self._session_factory() as session:
             plans = SqlAlchemyPlanRepository(session)
-            plan = await plans.require(user_id=job.user_id, plan_id=payload.plan_id)
-            if plan.status is PlanStatus.WAITING_APPROVAL:
-                await plans.resume_after_approval(
+            plan: PlanVersion | None = None
+            if generation_payload is not None:
+                plan = await plans.require(
                     user_id=job.user_id,
-                    plan_id=plan.id,
-                    now=utc_now(),
+                    plan_id=generation_payload.plan_id,
                 )
-                await session.commit()
-                plan = await plans.require(user_id=job.user_id, plan_id=plan.id)
-            approval = await plans.get_external_approval(
-                user_id=job.user_id,
-                plan_id=plan.id,
-            )
+                if plan.status is PlanStatus.WAITING_APPROVAL:
+                    await plans.resume_after_approval(
+                        user_id=job.user_id,
+                        plan_id=plan.id,
+                        now=utc_now(),
+                    )
+                    await session.commit()
+                    plan = await plans.require(user_id=job.user_id, plan_id=plan.id)
             executor: PlanDraftExecutor = self._executor_factory(session)
 
             async def generate(observer: ApplicationRunObserver) -> PlanGenerationResult:
+                nonlocal plan
+                if adjustment_payload is not None:
+                    parser = self._adjustment_parser
+                    if parser is None:
+                        raise RuntimeError("plan adjustment parser is not configured")
+                    base = await plans.require(
+                        user_id=job.user_id,
+                        plan_id=adjustment_payload.base_plan_id,
+                    )
+                    await observer.set_stage("adjustment.parsing")
+                    try:
+                        patch = await parser.parse(
+                            constraints=base.constraints,
+                            instruction=adjustment_payload.instruction,
+                            response_observer=observer.record_model_response,
+                        )
+                    except PlanAdjustmentUnsupportedError:
+                        return PlanGenerationResult(
+                            outcome=PlanGenerationOutcome.FAILED,
+                            error_code="PLAN_ADJUSTMENT_UNSUPPORTED",
+                        )
+                    except PlanAdjustmentNotUnderstoodError:
+                        return PlanGenerationResult(
+                            outcome=PlanGenerationOutcome.FAILED,
+                            error_code="PLAN_ADJUSTMENT_NOT_UNDERSTOOD",
+                        )
+                    adjusted_constraints = apply_plan_adjustment(base.constraints, patch)
+                    versions = await plans.list_versions(
+                        user_id=job.user_id,
+                        root_plan_id=base.root_plan_id,
+                        lock=True,
+                    )
+                    if not versions or versions[-1].id != base.id:
+                        return PlanGenerationResult(
+                            outcome=PlanGenerationOutcome.FAILED,
+                            error_code="STALE_VERSION",
+                        )
+                    timestamp = utc_now()
+                    plan = PlanVersion(
+                        id=generate_plan_id(),
+                        root_plan_id=base.root_plan_id,
+                        parent_plan_id=base.id,
+                        user_id=job.user_id,
+                        version=base.version + 1,
+                        operation=PlanOperation.ADJUST,
+                        status=PlanStatus.GENERATING,
+                        constraints=adjusted_constraints,
+                        adjustment_text=adjustment_payload.instruction,
+                        trace_id=trace_id,
+                        idempotency_key=job.idempotency_key,
+                        created_at=timestamp,
+                        updated_at=timestamp,
+                    )
+                    await plans.add(
+                        plan,
+                        request_fingerprint=plan_request_fingerprint(
+                            adjustment_payload.model_dump(mode="json")
+                        ),
+                    )
+                    await session.commit()
+                assert plan is not None
+                approval = await plans.get_external_approval(
+                    user_id=job.user_id,
+                    plan_id=plan.id,
+                )
                 await observer.set_stage("collections.filtered")
                 result = await observer.run_tool(
                     tool_name="plan_draft",
@@ -635,15 +743,19 @@ class PlanGenerationJobHandler:
                 return result
 
             try:
+                intent = PlanOperation.ADJUST.value
+                if adjustment_payload is None:
+                    assert plan is not None
+                    intent = plan.operation.value
                 execution = await AgentRunService(
                     session=session,
                     runner=None,
                     pricing=self._pricing,
                 ).execute_application(
                     AgentRunCreate(
-                        trace_id=job.trace_id,
+                        trace_id=trace_id,
                         user_id=job.user_id,
-                        intent=plan.operation.value,
+                        intent=intent,
                         workflow="plan.experience",
                     ),
                     generate,
@@ -658,21 +770,23 @@ class PlanGenerationJobHandler:
                     ),
                 )
             except asyncio.CancelledError:
-                await plans.cancel_generation(
-                    user_id=job.user_id,
-                    plan_id=plan.id,
-                    now=utc_now(),
-                )
-                await asyncio.shield(session.commit())
+                if plan is not None:
+                    await plans.cancel_generation(
+                        user_id=job.user_id,
+                        plan_id=plan.id,
+                        now=utc_now(),
+                    )
+                    await asyncio.shield(session.commit())
                 raise
             except Exception:
-                await plans.fail_generation(
-                    user_id=job.user_id,
-                    plan_id=plan.id,
-                    error_code="PLAN_GENERATION_FAILED",
-                    now=utc_now(),
-                )
-                await session.commit()
+                if plan is not None:
+                    await plans.fail_generation(
+                        user_id=job.user_id,
+                        plan_id=plan.id,
+                        error_code="PLAN_GENERATION_FAILED",
+                        now=utc_now(),
+                    )
+                    await session.commit()
                 raise
             return JobResultSummary(outcome=execution.result.outcome.value)
 
@@ -682,6 +796,8 @@ __all__ = [
     "PLAN_GENERATION_JOB_TYPE",
     "PlanDraftExecutor",
     "PlanApprovalSubmission",
+    "PlanAdjustmentJobPayload",
+    "PlanAdjustmentSubmission",
     "PlanExperienceService",
     "PlanFactResolver",
     "PlanGenerationFacts",

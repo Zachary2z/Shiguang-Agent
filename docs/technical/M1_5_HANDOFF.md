@@ -4,15 +4,16 @@
 
 ## 本次主控缺陷修复
 
-本轮最后修复线性继承候选 `2646f1d70248bff3b59cd9585b78c5f7ce165fa6`，不改写
+本轮异步调整链修复线性继承候选
+`771cc5c403fd3b5f00eeb8bf927f134d3dbc5a98`，不改写
 历史、不合并或推送，也不开始 M1-6。
 
 - `SqlAlchemyPlanRepository` 的 DML 行数统一通过仓库既有
   `execute_dml_rowcount` 获取，失败候选的 3 个 strict mypy 错误已消除。
-- 创建和调整仍只使用现有 AgentRun、JobQueue 与 Worker。Job 创建异常或取消且按
-  trace 确认没有 Job 时，补偿删除仍为 generating 的 Plan 和 queued AgentRun；
-  补偿自身一次瞬时失败会重试。原幂等键随后可安全重用、同请求可重放，不留无 Job
-  的 generating Plan 或 AgentRun。
+- 创建和调整仍只使用现有 AgentRun、JobQueue 与 Worker。生成 Job 创建异常或取消
+  且按 trace 确认没有 Job 时，既有补偿删除 generating Plan 和 queued AgentRun；
+  调整尚未创建 V2，因此只补偿本次 queued AgentRun。原幂等键随后可安全重用，
+  不留无 Job 的 generating Plan 或 queued Run。
 - 生产自然语言短语正则已删除。唯一 `PlanAdjustmentParser` 通过既有
   `ModelProvider` 和严格 JSON Schema 生成最小 `PlanConstraints` patch；未提及
   字段保持不变，完整约束最终只验证一次。
@@ -34,13 +35,27 @@
   原因也冻结在同一事实中：Provider 超时/不可用、正常无结果和有结果但证据不足
   分别保持 `BRANCH_PROVIDER_FAILED`、`BRANCH_NOT_FOUND` 和
   `BRANCH_EVIDENCE_INSUFFICIENT`。
-- `PlanAdjustmentParser` 使用 `Settings.extraction_structured_output_mode()` 和公共
+- `POST /plans/{id}/adjustments` 不再构造或调用 ModelProvider /
+  `PlanAdjustmentParser`。API 只校验本地格式、用户、当前版本和幂等键，使用确定性
+  trace 创建或重放既有 AgentRun 与 ScheduledJob，并立即返回只含
+  `base_plan_id / trace_id / events_url` 的语义准确 202；尚不存在 V2 时不再把
+  base ID 冒充新版本 ID。
+- 唯一 `PlanAdjustmentParser` 只在既有 `PlanGenerationJobHandler` 内运行，使用
+  `Settings.extraction_structured_output_mode()` 和公共
   `structured_response_format`。百炼默认明确请求已验证的 `json_object`，schema
   写入 Prompt，返回后仍由严格 Pydantic 契约校验；没有探测、fallback 或重试。
   `PlanAdjustmentPatch` 不接受 `location_intent`、`Coordinate` 或 `ActivityArea`，
-  发送给模型的当前约束也排除 origin。唯一 Parser 在新版本持久化前运行；精确地点
-  或活动范围调整返回 `PLAN_ADJUSTMENT_UNSUPPORTED` 并提示新建计划，不留下已知
-  必失败的 Plan、AgentRun、幂等键或 Job。Worker 只消费已验证的约束，不重复解析。
+  发送给模型的当前约束也排除 origin。解析后 Worker 再锁定并确认 base 仍是当前
+  版本，才创建不可变 V2 并调用既有规划器；未修改约束继续保留。
+- 精确地点或活动范围调整以 `PLAN_ADJUSTMENT_UNSUPPORTED` 终结，不创建 V2；由于
+  模型调用已经真实发生，对应 AgentRun 和 Job 均保留为审计记录。AgentRun 通过
+  `ApplicationRunObserver.record_model_response` 记录模型名、Token、模型耗时、
+  完成原因和费用估算。Provider 超时、鉴权、限流、结构错误及取消均在 Worker /
+  AgentRun 生命周期内结束，Job 不停留在 queued/running。
+- 调整 trace 由用户作用域幂等键确定，ScheduledJob 的既有唯一约束承担并发最终
+  边界：同用户、同键、同 base 与 instruction 的串行/并发重放只产生一个 Job、
+  AgentRun、模型调用和 V2；同键不同 instruction 返回幂等冲突。API 层没有新增锁、
+  Parser、Provider、队列或状态机。
 - Event 仍是单一 Event 收藏。文本/截图保存后，经同一 `PlaceMatchingService`、
   `PlaceCandidateSnapshot` 和 `PlaceTargetSelectionService` 产生地点候选；只有
   用户明确选择一个 exact POI 后才可进入计划，未选择、日期不完整或仅日期 Event
@@ -101,7 +116,7 @@ Next.js、FastAPI、JobQueue、Worker、临时 SQLite 与 StubMapProvider，覆�
 
 1. 创建 root 计划并由 Worker 完成；
 2. SSE 进度与权威结果恢复；
-3. 自然语言调整并创建 V2；
+3. 202 接受自然语言调整，Worker 解析并创建 V2，SSE 终态后按版本索引读取权威 V2；
 4. V1/V2 切换与明确确认；
 5. 新建第二份独立 root 计划；
 6. 第二条链请求修改精确地点时收到可恢复提示，继续停留在 V1 且不产生 V2。
@@ -110,7 +125,8 @@ Next.js、FastAPI、JobQueue、Worker、临时 SQLite 与 StubMapProvider，覆�
 
 - `pip check`、Ruff：通过。
 - strict mypy：`126 source files`，0 错误。
-- 后端完整离线：`1603 passed, 13 skipped`。
+- 指定调整链与回归聚焦：`107 passed`。
+- 后端非真实完整离线：`1609 passed, 11 skipped, 2 deselected`。
 - 迁移专测：`23 passed`；upgrade/current/check、downgrade/upgrade 和唯一 head
   均通过。
 - 仓库外 DNS/socket 封锁插件：非真实全集
@@ -124,10 +140,12 @@ check`，结果为 `20260728_0014 (head)` 且无待生成操作。
 
 ## 复杂度、安全与范围
 
-原生产短语解析路径和 Worker 内重复调整解析路径已删除。没有新增第二套规划器、
+原生产短语解析路径、API 层 Parser 注入/同步模型调用及同步模型异常映射已删除。
+没有新增第二套规划器、
 规则引擎、Plan DTO、Approval 服务、Job/Worker/SSE 状态机、Provider、Matcher、
 Parser、排序器、AgentRunner、ToolRegistry、API Client 或前端全局状态；地图事实层
-只负责有限、可测试的 Provider 事实读取。
+只负责有限、可测试的 Provider 事实读取。调整仍复用唯一 JobQueue、Worker、
+AgentRunService、PlanAdjustmentParser、PlanConstraints 和 PlanDraftService。
 
 离线 QA 显式使用 `_env_file=None`，未读取本机 `.env` 内容；真实模型、地图、网页
 及其他外部/付费 API 调用为 0。计划表单 input/select/checkbox 已具有稳定 `name`。

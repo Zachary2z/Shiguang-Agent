@@ -88,6 +88,11 @@ type Accepted = {
   events_url: `/${string}`;
   result_url: `/${string}`;
 };
+type AdjustmentAccepted = {
+  base_plan_id: string;
+  trace_id: string;
+  events_url: `/${string}`;
+};
 type PlanList = { items: Plan[] };
 type ApprovalDecision = {
   trace_id: string | null;
@@ -103,7 +108,7 @@ type Phase =
   | "ready"
   | "waiting"
   | "failed";
-type RunData = { summary?: { stage?: string; status?: string } };
+type RunData = { summary?: { stage?: string; status?: string; error_code?: string } };
 
 const paceLabels = { relaxed: "松弛", balanced: "适中", packed: "紧凑" };
 const transportLabels: Record<string, string> = {
@@ -196,9 +201,20 @@ export function PlansExperience() {
   }, []);
 
   const follow = useCallback(
-    (accepted: Accepted, owner: number) => {
+    (
+      accepted: Accepted,
+      owner: number,
+      resolveResult?: (errorCode: string | undefined) => void,
+    ) => {
       cancelSse.current?.();
       setPhase("following");
+      let resultResolved = false;
+      const resolveOnce = (errorCode: string | undefined) => {
+        if (resultResolved) return;
+        resultResolved = true;
+        if (resolveResult) resolveResult(errorCode);
+        else void readPlan(accepted.result_url, owner);
+      };
       const connection = sseClient.connect<RunData>({
         path: accepted.events_url,
         maxReconnectAttempts: 2,
@@ -211,19 +227,19 @@ export function PlansExperience() {
             void readPlan(accepted.result_url, owner);
           }
           if (event.event === "run.completed" || event.event === "run.failed") {
-            void readPlan(accepted.result_url, owner);
+            resolveOnce(event.data.summary?.error_code);
           }
         },
         onStateChange: (state) => {
           if (generation.current !== owner) return;
           if (state === "disconnected") setFeedback("进度连接中断，正在恢复。");
-          if (state === "error") void readPlan(accepted.result_url, owner);
+          if (state === "error") resolveOnce(undefined);
         },
       });
       cancelSse.current = connection.cancel;
       void connection.closed.catch(() => {
         if (generation.current === owner) {
-          void readPlan(accepted.result_url, owner);
+          resolveOnce(undefined);
         }
       });
     },
@@ -358,7 +374,7 @@ export function PlansExperience() {
     setPhase("submitting");
     setStage("正在创建新版本");
     try {
-      const accepted = await apiClient.request<Accepted>(
+      const accepted = await apiClient.request<AdjustmentAccepted>(
         `/api/v1/plans/${plan.id}/adjustments`,
         {
           method: "POST",
@@ -372,15 +388,46 @@ export function PlansExperience() {
       );
       if (generation.current !== owner) return;
       setAdjustment("");
-      follow(accepted, owner);
+      follow(
+        {
+          plan_id: accepted.base_plan_id,
+          trace_id: accepted.trace_id,
+          events_url: accepted.events_url,
+          result_url: `/api/v1/plans/${accepted.base_plan_id}`,
+        },
+        owner,
+        (errorCode) => {
+          void (async () => {
+            const base = await apiClient.request<Plan>(
+              `/api/v1/plans/${accepted.base_plan_id}`,
+            );
+            if (generation.current !== owner) return;
+            const latest = base.versions.at(-1);
+            await readPlan(
+              latest && latest.id !== base.id
+                ? `/api/v1/plans/${latest.id}`
+                : `/api/v1/plans/${base.id}`,
+              owner,
+            );
+            if (
+              generation.current === owner &&
+              errorCode === "PLAN_ADJUSTMENT_UNSUPPORTED"
+            ) {
+              setPhase("ready");
+              setFeedback(
+                "暂不支持直接调整精确地点，请新建计划修改活动范围。",
+              );
+            } else if (generation.current === owner && errorCode) {
+              setPhase("ready");
+              setFeedback("这次调整未完成，已保留当前版本，请稍后重试。");
+            }
+          })();
+        },
+      );
     } catch (error) {
       if (generation.current !== owner) return;
       setPhase("ready");
-      setFeedback(
-        error instanceof ApiError && error.status === 422
-          ? "暂不支持直接调整精确地点，请新建计划修改活动范围。"
-          : messageFor(error),
-      );
+      setFeedback(messageFor(error));
     }
   }
 

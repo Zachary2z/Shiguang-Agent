@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PlansExperience } from "@/components/plans-experience";
-import { ApiError, apiClient } from "@/lib/api-client";
+import { apiClient } from "@/lib/api-client";
 import { sseClient } from "@/lib/sse-client";
 
 const session = { csrf_token: "csrf-token" };
@@ -211,13 +211,26 @@ describe("PlansExperience", () => {
       if (path === "/api/v1/plans" && !options?.method) return { items: [plan] } as never;
       if (path.endsWith("/adjustments")) {
         return {
-          plan_id: "pln_1123456789abcdef0123456789abcdef",
+          base_plan_id: plan.id,
           trace_id: "trc_1123456789abcdef0123456789abcdef",
           events_url: "/api/v1/agent-runs/new/events",
-          result_url: "/api/v1/plans/new",
         } as never;
       }
-      if (path === "/api/v1/plans/new") {
+      if (path === `/api/v1/plans/${plan.id}`) {
+        return {
+          ...plan,
+          versions: [
+            ...plan.versions,
+            {
+              id: "pln_1123456789abcdef0123456789abcdef",
+              version: 2,
+              status: "draft",
+              adjustment_text: "节奏轻松一点",
+            },
+          ],
+        } as never;
+      }
+      if (path === "/api/v1/plans/pln_1123456789abcdef0123456789abcdef") {
         return {
           ...plan,
           id: "pln_1123456789abcdef0123456789abcdef",
@@ -247,12 +260,22 @@ describe("PlansExperience", () => {
   });
 
   it("keeps the current version when an exact-place adjustment is unsupported", async () => {
+    const callbacks: Array<(event: never) => void> = [];
+    vi.spyOn(sseClient, "connect").mockImplementation((options) => {
+      callbacks.push(options.onEvent as (event: never) => void);
+      return { cancel: vi.fn(), closed: new Promise<void>(() => {}) };
+    });
     vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
       if (path === "/api/v1/demo/sessions") return session as never;
       if (path === "/api/v1/plans" && !options?.method) return { items: [plan] } as never;
       if (path.endsWith("/adjustments")) {
-        throw new ApiError("request_failed", 422, "request-id");
+        return {
+          base_plan_id: plan.id,
+          trace_id: "trc_2123456789abcdef0123456789abcdef",
+          events_url: "/api/v1/agent-runs/unsupported/events",
+        } as never;
       }
+      if (path === `/api/v1/plans/${plan.id}`) return plan as never;
       throw new Error(`unexpected ${path}`);
     });
     render(<PlansExperience />);
@@ -262,6 +285,17 @@ describe("PlansExperience", () => {
       "把地点换成广州塔",
     );
     await userEvent.click(screen.getByRole("button", { name: "生成新版本" }));
+    callbacks[0]?.({
+      id: "1",
+      event: "run.failed",
+      sequence: 1,
+      data: {
+        summary: {
+          status: "failed",
+          error_code: "PLAN_ADJUSTMENT_UNSUPPORTED",
+        },
+      },
+    } as never);
 
     expect(
       await screen.findByText("暂不支持直接调整精确地点，请新建计划修改活动范围。"),
