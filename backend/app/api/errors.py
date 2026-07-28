@@ -28,6 +28,7 @@ from app.domain.collections import (
 from app.domain.jobs import JobConflictError
 from app.domain.plans import (
     PlanExecutionNotAllowedError,
+    PlanFeedbackSelectionError,
     PlanNotReadyError,
     PlanVersionConflictError,
 )
@@ -51,6 +52,7 @@ def install_error_handlers(api: FastAPI) -> None:
         PlanExecutionNotAllowedError,
         _plan_execution_not_allowed,
     )
+    api.add_exception_handler(PlanFeedbackSelectionError, _feedback_selection_error)
     api.add_exception_handler(
         IdempotentRequestInProgressError,
         _idempotent_request_in_progress,
@@ -155,6 +157,18 @@ async def _plan_execution_not_allowed(
         409,
         "PLAN_NOT_CONFIRMED",
         "The plan must be explicitly confirmed before execution.",
+    )
+
+
+async def _feedback_selection_error(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    del request, exc
+    return _error(
+        422,
+        "PLAN_FEEDBACK_SELECTION_INVALID",
+        "The selected plan items do not match the completion status.",
     )
 
 

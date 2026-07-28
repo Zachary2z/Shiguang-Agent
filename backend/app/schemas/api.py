@@ -39,7 +39,10 @@ from app.domain.places import (
 from app.domain.plans import (
     ApprovalStatus,
     PlanApproval,
+    PlanCompletionStatus,
     PlanDraftResult,
+    PlanExecutionItem,
+    PlanFeedback,
     PlanPace,
     PlanStatus,
     PlanVersion,
@@ -332,6 +335,40 @@ class PlanListResponse(ApiModel):
 class PlanConfirmationResponse(ApiModel):
     plan: PlanResponse
     replayed: bool
+
+
+class PlanFeedbackRequest(ApiModel):
+    idempotency_key: IdempotencyKey = Field(repr=False)
+    completion_status: PlanCompletionStatus
+    visited_plan_item_ids: tuple[str, ...] = ()
+    reason: str | None = Field(default=None, max_length=500)
+    expected_revision: int | None = Field(default=None, ge=1)
+
+    @field_validator("completion_status", mode="before")
+    @classmethod
+    def json_completion_status(cls, value: object) -> object:
+        if isinstance(value, str):
+            try:
+                return PlanCompletionStatus(value)
+            except ValueError:
+                return value
+        return value
+
+    @field_validator("visited_plan_item_ids", mode="before")
+    @classmethod
+    def json_item_ids(cls, value: object) -> object:
+        return _json_arrays_as_domain_tuples(value)
+
+
+class PlanFeedbackResponse(ApiModel):
+    feedback: PlanFeedback
+    replayed: bool
+
+
+class PlanExecutionResponse(ApiModel):
+    plan_id: str
+    items: tuple[PlanExecutionItem, ...]
+    feedback: PlanFeedback | None
 
 
 class ApprovalDecisionResponse(ApiModel):

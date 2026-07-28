@@ -54,6 +54,9 @@ from app.domain.places import (
     Poi,
     PoiProvider,
     PoiType,
+    RouteRequest,
+    RouteResult,
+    TransportMode,
     WeatherRequest,
     WeatherResult,
 )
@@ -87,22 +90,22 @@ def _candidate_response():
     )
 
 
-def _plan_place(user_id: str) -> CollectionItem:
+def _plan_place(user_id: str, *, second: bool = False) -> CollectionItem:
     now = datetime.now(UTC)
     poi = Poi(
         provider=PoiProvider.AMAP,
-        poi_id=f"e2e_seaworld_{user_id[-8:]}",
-        name="海上世界散步公园",
+        poi_id=f"e2e_{'culture' if second else 'seaworld'}_{user_id[-8:]}",
+        name="海上世界文化艺术中心" if second else "海上世界散步公园",
         city_code="shenzhen",
         district="南山区",
         business_area="海上世界",
-        address="南山区海上世界广场",
+        address="望海路1187号" if second else "南山区海上世界广场",
         coordinate=Coordinate(
-            latitude=22.4794,
-            longitude=113.9188,
+            latitude=22.4798 if second else 22.4794,
+            longitude=113.9158 if second else 113.9188,
             coordinate_system=CoordinateSystem.GCJ_02,
         ),
-        poi_type=PoiType.PARK,
+        poi_type=PoiType.MUSEUM if second else PoiType.PARK,
         opening_hours_summary="全天开放",
     )
     target = PlaceTarget(
@@ -129,7 +132,7 @@ def _plan_place(user_id: str) -> CollectionItem:
         city_hint="深圳",
         district=poi.district,
         address=poi.address,
-        tags=("散步", "公园", "海上世界"),
+        tags=("艺术", "展览", "海上世界") if second else ("散步", "公园", "海上世界"),
         place_target=target,
         status=CollectionStatus.ACTIVE,
         created_at=now,
@@ -151,7 +154,36 @@ def _plan_map_provider() -> StubMapProvider:
             condition="晴",
             temperature_celsius=27,
         )
-    return StubMapProvider(weather_results=weather_results)
+    seaworld = Coordinate(
+        latitude=22.4794,
+        longitude=113.9188,
+        coordinate_system=CoordinateSystem.GCJ_02,
+    )
+    culture = Coordinate(
+        latitude=22.4798,
+        longitude=113.9158,
+        coordinate_system=CoordinateSystem.GCJ_02,
+    )
+    route_results = {}
+    for origin, destination in ((seaworld, culture), (culture, seaworld)):
+        request = RouteRequest(
+            city=CityScope(city_code="shenzhen"),
+            origin=origin,
+            destination=destination,
+            mode=TransportMode.TRANSIT,
+        )
+        route_results[request] = RouteResult(
+            city_code="shenzhen",
+            origin=origin,
+            destination=destination,
+            mode=TransportMode.TRANSIT,
+            duration_seconds=600,
+            distance_meters=900,
+        )
+    return StubMapProvider(
+        weather_results=weather_results,
+        route_results=route_results,
+    )
 
 
 async def _seed_plan_collections(application: FastAPI, stop: asyncio.Event) -> None:
@@ -163,10 +195,11 @@ async def _seed_plan_collections(application: FastAPI, stop: asyncio.Event) -> N
             for user_id in user_ids:
                 if user_id in seeded:
                     continue
-                await repository.add_collection_item(
-                    user_id=user_id,
-                    item=_plan_place(user_id),
-                )
+                for second in (False, True):
+                    await repository.add_collection_item(
+                        user_id=user_id,
+                        item=_plan_place(user_id, second=second),
+                    )
                 seeded.add(user_id)
             await session.commit()
         try:

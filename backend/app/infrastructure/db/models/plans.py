@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -75,15 +76,19 @@ class PlanModel(Base):
             name="ck_plans_version_shape",
         ),
         CheckConstraint(
-            "(status IN ('draft', 'confirmed', 'superseded') AND draft_json IS NOT NULL) "
-            "OR (status NOT IN ('draft', 'confirmed', 'superseded') "
+            "(status IN ('draft', 'confirmed', 'superseded', 'completed', "
+            "'partially_completed', 'not_completed') AND draft_json IS NOT NULL) "
+            "OR (status NOT IN ('draft', 'confirmed', 'superseded', 'completed', "
+            "'partially_completed', 'not_completed') "
             "AND draft_json IS NULL)",
             name="ck_plans_draft_shape",
         ),
         CheckConstraint(
-            "(status = 'confirmed' AND confirmed_at IS NOT NULL) OR "
+            "(status IN ('confirmed', 'completed', 'partially_completed', "
+            "'not_completed') AND confirmed_at IS NOT NULL) OR "
             "(status = 'superseded') OR "
-            "(status NOT IN ('confirmed', 'superseded') AND confirmed_at IS NULL)",
+            "(status NOT IN ('confirmed', 'completed', 'partially_completed', "
+            "'not_completed', 'superseded') AND confirmed_at IS NULL)",
             name="ck_plans_confirmation_shape",
         ),
         CheckConstraint(
@@ -97,8 +102,14 @@ class PlanModel(Base):
             "uq_plans_one_confirmed_per_root",
             "root_plan_id",
             unique=True,
-            sqlite_where=text("status = 'confirmed'"),
-            postgresql_where=text("status = 'confirmed'"),
+            sqlite_where=text(
+                "status IN ('confirmed', 'completed', 'partially_completed', "
+                "'not_completed')"
+            ),
+            postgresql_where=text(
+                "status IN ('confirmed', 'completed', 'partially_completed', "
+                "'not_completed')"
+            ),
         ),
     )
 
@@ -136,6 +147,7 @@ class PlanModel(Base):
 class PlanItemModel(Base):
     __tablename__ = "plan_items"
     __table_args__ = (
+        UniqueConstraint("id", "user_id", name="uq_plan_items_id_user"),
         ForeignKeyConstraint(
             ["plan_id", "user_id"],
             ["plans.id", "plans.user_id"],
@@ -151,6 +163,10 @@ class PlanItemModel(Base):
         CheckConstraint("option_index >= 0", name="ck_plan_items_option_index"),
         CheckConstraint("item_index >= 0", name="ck_plan_items_item_index"),
         CheckConstraint("end_at > start_at", name="ck_plan_items_time_order"),
+        CheckConstraint(
+            "execution_status IN ('pending', 'visited', 'not_visited')",
+            name="ck_plan_items_execution_status",
+        ),
         Index("ix_plan_items_plan_position", "plan_id", "option_index", "item_index"),
     )
 
@@ -163,9 +179,141 @@ class PlanItemModel(Base):
     end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_kind: Mapped[str] = mapped_column(String(32), nullable=False)
     snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    execution_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )
+
+
+class PlanFeedbackStateModel(Base):
+    __tablename__ = "plan_feedback_states"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["plan_id", "user_id"],
+            ["plans.id", "plans.user_id"],
+            name="fk_plan_feedback_states_plan_owner",
+            ondelete="CASCADE",
+        ),
+        CheckConstraint("revision >= 1", name="ck_plan_feedback_states_revision"),
+        CheckConstraint(
+            "completion_status IN ('completed', 'partially_completed', 'not_completed')",
+            name="ck_plan_feedback_states_completion_status",
+        ),
+        Index("ix_plan_feedback_states_owner_updated", "user_id", "updated_at"),
+    )
+
+    plan_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    current_feedback_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    completion_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    preference_suggestion_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class PlanFeedbackAuditModel(Base):
+    __tablename__ = "plan_feedback_audits"
+    __table_args__ = (
+        UniqueConstraint("id", "user_id", name="uq_plan_feedback_audits_id_user"),
+        ForeignKeyConstraint(
+            ["plan_id", "user_id"],
+            ["plans.id", "plans.user_id"],
+            name="fk_plan_feedback_audits_plan_owner",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "plan_id", "revision", name="uq_plan_feedback_audits_plan_revision"
+        ),
+        UniqueConstraint(
+            "user_id", "idempotency_key", name="uq_plan_feedback_audits_owner_key"
+        ),
+        CheckConstraint("revision >= 1", name="ck_plan_feedback_audits_revision"),
+        CheckConstraint(
+            "completion_status IN ('completed', 'partially_completed', 'not_completed')",
+            name="ck_plan_feedback_audits_completion_status",
+        ),
+        Index("ix_plan_feedback_audits_plan_created", "plan_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    plan_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    completion_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    visited_plan_item_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    preference_suggestion_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    corrects_feedback_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey(
+            "plan_feedback_audits.id",
+            name="fk_plan_feedback_audits_corrects",
+        ),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CollectionVisitStateModel(Base):
+    __tablename__ = "collection_visit_states"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["collection_item_id", "user_id"],
+            ["collection_items.id", "collection_items.user_id"],
+            name="fk_collection_visit_states_collection_owner",
+            ondelete="CASCADE",
+        ),
+    )
+
+    collection_item_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    baseline_visited: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class CollectionVisitSourceModel(Base):
+    __tablename__ = "collection_visit_sources"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["plan_item_id", "user_id"],
+            ["plan_items.id", "plan_items.user_id"],
+            name="fk_collection_visit_sources_plan_item_owner",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["collection_item_id", "user_id"],
+            ["collection_items.id", "collection_items.user_id"],
+            name="fk_collection_visit_sources_collection_owner",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["feedback_id", "user_id"],
+            ["plan_feedback_audits.id", "plan_feedback_audits.user_id"],
+            name="fk_collection_visit_sources_feedback_owner",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_collection_visit_sources_collection",
+            "collection_item_id",
+            "user_id",
+        ),
+    )
+
+    plan_item_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    collection_item_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    feedback_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ApprovalModel(Base):

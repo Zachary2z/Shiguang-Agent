@@ -98,6 +98,41 @@ const plan = {
   approval: null,
 };
 
+const confirmedPlan = {
+  ...plan,
+  status: "confirmed",
+  versions: [{ ...plan.versions[0], status: "confirmed" }],
+};
+
+const execution = {
+  plan_id: plan.id,
+  items: [
+    {
+      id: "pit_0123456789abcdef0123456789abcdef",
+      title: "海边咖啡",
+      start_at: "2026-07-29T02:15:00Z",
+      end_at: "2026-07-29T03:15:00Z",
+      address: "南山区海上世界广场",
+      collection_item_ids: ["col_0123456789abcdef0123456789abcdef"],
+      is_external: false,
+      status: "pending",
+      navigation_uri: "geo:22.479400,113.918800?q=22.479400,113.918800%28poi-one%29",
+    },
+    {
+      id: "pit_1123456789abcdef0123456789abcdef",
+      title: "外部花园",
+      start_at: "2026-07-29T03:30:00Z",
+      end_at: "2026-07-29T04:30:00Z",
+      address: null,
+      collection_item_ids: [],
+      is_external: true,
+      status: "pending",
+      navigation_uri: null,
+    },
+  ],
+  feedback: null,
+};
+
 beforeEach(() => {
   vi.restoreAllMocks();
 });
@@ -302,5 +337,91 @@ describe("PlansExperience", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText("V2 · 当前版本")).not.toBeInTheDocument();
     expect(screen.getByText("V1 · 当前版本")).toBeInTheDocument();
+  });
+
+  it("downloads the calendar, opens exact navigation, and submits selected visits", async () => {
+    const requests = vi
+      .spyOn(apiClient, "request")
+      .mockResolvedValueOnce(session)
+      .mockResolvedValueOnce({ items: [confirmedPlan] })
+      .mockResolvedValueOnce(execution)
+      .mockResolvedValueOnce({
+        feedback: {
+          id: "fdb_0123456789abcdef0123456789abcdef",
+          plan_id: plan.id,
+          revision: 1,
+          completion_status: "partially_completed",
+          visited_plan_item_ids: [execution.items[0].id],
+          reason: null,
+          preference_suggestion: {
+            content: "是否要把本次完成情况作为以后计划的长期偏好依据？",
+            confirmation_status: "pending",
+          },
+          created_at: "2026-07-29T12:00:00Z",
+        },
+        replayed: false,
+      })
+      .mockResolvedValueOnce({
+        ...execution,
+        items: [
+          { ...execution.items[0], status: "visited" },
+          { ...execution.items[1], status: "not_visited" },
+        ],
+        feedback: {
+          id: "fdb_0123456789abcdef0123456789abcdef",
+          plan_id: plan.id,
+          revision: 1,
+          completion_status: "partially_completed",
+          visited_plan_item_ids: [execution.items[0].id],
+          reason: null,
+          preference_suggestion: {
+            content: "是否要把本次完成情况作为以后计划的长期偏好依据？",
+            confirmation_status: "pending",
+          },
+          created_at: "2026-07-29T12:00:00Z",
+        },
+      });
+    render(<PlansExperience />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "查看路线、日历与完成反馈" }),
+    );
+    expect(await screen.findByRole("link", { name: /下载日历/ })).toHaveAttribute(
+      "href",
+      `/api/v1/plans/${plan.id}/calendar.ics`,
+    );
+    expect(screen.getByRole("link", { name: /打开地点/ })).toHaveAttribute(
+      "href",
+      execution.items[0].navigation_uri,
+    );
+    expect(screen.getByText(/没有准确 POI，不生成导航入口/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("radio", { name: /部分完成/ }));
+    await userEvent.click(screen.getByRole("checkbox", { name: /海边咖啡/ }));
+    await userEvent.click(screen.getByRole("button", { name: "保存完成反馈" }));
+
+    await waitFor(() => expect(screen.getByText("完成反馈已保存。")).toBeInTheDocument());
+    expect(screen.getByText("待确认的长期偏好建议")).toBeInTheDocument();
+    expect(screen.getByText("本阶段不会自动写入长期记忆。")).toBeInTheDocument();
+    expect(requests).toHaveBeenNthCalledWith(
+      4,
+      `/api/v1/plans/${plan.id}/feedback`,
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining(execution.items[0].id),
+      }),
+    );
+    const submittedBody = JSON.parse(
+      (requests.mock.calls[3]?.[1]?.body as string) ?? "{}",
+    ) as {
+      completion_status?: string;
+      visited_plan_item_ids?: string[];
+      expected_revision?: number | null;
+    };
+    expect(submittedBody).toMatchObject({
+      completion_status: "partially_completed",
+      visited_plan_item_ids: [execution.items[0].id],
+      expected_revision: null,
+    });
   });
 });

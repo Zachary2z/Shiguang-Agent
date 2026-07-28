@@ -20,7 +20,10 @@ type PlanStatus =
   | "confirmed"
   | "superseded"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "completed"
+  | "partially_completed"
+  | "not_completed";
 type PlanItem = {
   title: string;
   start_at: string;
@@ -99,6 +102,34 @@ type ApprovalDecision = {
   events_url: `/${string}` | null;
   result_url: `/${string}`;
 };
+type CompletionStatus = "completed" | "partially_completed" | "not_completed";
+type ExecutionItem = {
+  id: string;
+  title: string;
+  start_at: string;
+  end_at: string;
+  address: string | null;
+  collection_item_ids: string[];
+  is_external: boolean;
+  status: "pending" | "visited" | "not_visited";
+  navigation_uri: string | null;
+};
+type FeedbackRecord = {
+  id: string;
+  revision: number;
+  completion_status: CompletionStatus;
+  reason: string | null;
+  visited_plan_item_ids: string[];
+  preference_suggestion: {
+    content: string;
+    confirmation_status: "pending";
+  } | null;
+};
+type Execution = {
+  plan_id: string;
+  items: ExecutionItem[];
+  feedback: FeedbackRecord | null;
+};
 type Phase =
   | "recovering"
   | "editing"
@@ -116,6 +147,12 @@ const transportLabels: Record<string, string> = {
   cycling: "骑行",
   transit: "公共交通",
   driving: "驾车",
+};
+const completionLabels: Partial<Record<PlanStatus, string>> = {
+  confirmed: "已确认",
+  completed: "已完成",
+  partially_completed: "部分完成",
+  not_completed: "未完成",
 };
 
 function localInput(offsetHours: number) {
@@ -166,6 +203,11 @@ export function PlansExperience() {
   const [adjustment, setAdjustment] = useState("");
   const [optionIndex, setOptionIndex] = useState(0);
   const [feedback, setFeedback] = useState("");
+  const [execution, setExecution] = useState<Execution | null>(null);
+  const [feedbackMode, setFeedbackMode] = useState<CompletionStatus | null>(null);
+  const [visitedItems, setVisitedItems] = useState<Set<string>>(new Set());
+  const [incompleteReason, setIncompleteReason] = useState("");
+  const [executionBusy, setExecutionBusy] = useState(false);
   const [stage, setStage] = useState("正在读取计划");
   const [dirty, setDirty] = useState(false);
   const generation = useRef(0);
@@ -177,6 +219,8 @@ export function PlansExperience() {
       const authoritative = await apiClient.request<Plan>(path);
       if (generation.current !== owner) return;
       setPlan(authoritative);
+      setExecution(null);
+      setFeedbackMode(null);
       setOptionIndex(0);
       setPhase(
         authoritative.status === "waiting_approval"
@@ -511,6 +555,8 @@ export function PlansExperience() {
     requestController.current?.abort();
     cancelSse.current?.();
     setPlan(null);
+    setExecution(null);
+    setFeedbackMode(null);
     setAdjustment("");
     setFeedback("");
     setDirty(false);
@@ -519,6 +565,80 @@ export function PlansExperience() {
 
   const option = plan?.draft?.options[optionIndex];
   const busy = ["recovering", "submitting", "following"].includes(phase);
+  const executable = plan !== null && [
+    "confirmed",
+    "completed",
+    "partially_completed",
+    "not_completed",
+  ].includes(plan.status);
+
+  async function loadExecution() {
+    if (!plan) return;
+    setExecutionBusy(true);
+    try {
+      const loaded = await apiClient.request<Execution>(
+        `/api/v1/plans/${plan.id}/execution`,
+      );
+      setExecution(loaded);
+      setVisitedItems(new Set(loaded.feedback?.visited_plan_item_ids ?? []));
+      setIncompleteReason(loaded.feedback?.reason ?? "");
+      setFeedbackMode(loaded.feedback?.completion_status ?? null);
+      setFeedback("");
+    } catch (error) {
+      setFeedback(messageFor(error));
+    } finally {
+      setExecutionBusy(false);
+    }
+  }
+
+  async function submitFeedback() {
+    if (!session || !plan || !execution || !feedbackMode) return;
+    if (
+      feedbackMode === "partially_completed" &&
+      (visitedItems.size === 0 || visitedItems.size === execution.items.length)
+    ) {
+      setFeedback("部分完成需要选择至少一项、但不能选择全部地点。");
+      return;
+    }
+    setExecutionBusy(true);
+    try {
+      const result = await apiClient.request<{ feedback: FeedbackRecord }>(
+        `/api/v1/plans/${plan.id}/feedback`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            idempotency_key: crypto.randomUUID(),
+            completion_status: feedbackMode,
+            visited_plan_item_ids:
+              feedbackMode === "completed" ? [] : [...visitedItems],
+            reason: incompleteReason.trim() || null,
+            expected_revision: execution.feedback?.revision ?? null,
+          }),
+          csrfToken: session.csrf_token,
+        },
+      );
+      const loaded = await apiClient.request<Execution>(
+        `/api/v1/plans/${plan.id}/execution`,
+      );
+      setExecution(loaded);
+      setVisitedItems(new Set(loaded.feedback?.visited_plan_item_ids ?? []));
+      setPlan((current) =>
+        current
+          ? { ...current, status: result.feedback.completion_status }
+          : current,
+      );
+      setFeedback(
+        result.feedback.revision > 1
+          ? "反馈已更正，相关状态已重新计算并保留记录。"
+          : "完成反馈已保存。",
+      );
+    } catch (error) {
+      setFeedback(messageFor(error));
+    } finally {
+      setExecutionBusy(false);
+    }
+  }
 
   return (
     <section className="plans-page" aria-busy={busy}>
@@ -530,7 +650,7 @@ export function PlansExperience() {
         </div>
         {plan && (
           <div className="plan-heading-actions">
-            <span className={`plan-status ${plan.status}`}>V{plan.version} · {plan.status === "confirmed" ? "已确认" : plan.is_current_version ? "当前版本" : "历史版本"}</span>
+            <span className={`plan-status ${plan.status}`}>V{plan.version} · {completionLabels[plan.status] ?? (plan.is_current_version ? "当前版本" : "历史版本")}</span>
             {plan.draft && (
               <button type="button" onClick={startNewPlan}>新建计划</button>
             )}
@@ -606,7 +726,7 @@ export function PlansExperience() {
         <nav className="version-strip" aria-label="计划版本">
           {plan.versions.map((version) => (
             <button key={version.id} type="button" aria-current={version.id === plan.id ? "page" : undefined} onClick={() => void switchVersion(version.id)}>
-              V{version.version}{version.status === "confirmed" ? " · 已确认" : version.status === "failed" || version.status === "cancelled" ? " · 失败" : ""}
+              V{version.version}{completionLabels[version.status] ? ` · ${completionLabels[version.status]}` : version.status === "failed" || version.status === "cancelled" ? " · 失败" : ""}
             </button>
           ))}
         </nav>
@@ -645,7 +765,7 @@ export function PlansExperience() {
               {option.risks.length > 0 && <p className="option-risk">出发前留意：{option.risks.join("；")}</p>}
             </article>
           )}
-          {plan.is_current_version && plan.status !== "confirmed" && (
+          {plan.is_current_version && plan.status === "draft" && (
             <form className="adjust-card" onSubmit={adjustPlan}>
               <label htmlFor="plan-adjustment">想怎么调整？</label>
               <div><input id="plan-adjustment" name="instruction" value={adjustment} onChange={(event) => setAdjustment(event.target.value)} autoComplete="off" placeholder="例如：节奏轻松一点，预算改成 300" /><button type="submit" disabled={!adjustment.trim()}>生成新版本</button></div>
@@ -653,10 +773,140 @@ export function PlansExperience() {
             </form>
           )}
           <div className="plan-confirm-bar">
-            <div><strong>{plan.status === "confirmed" ? "这一版已确认" : plan.is_current_version ? "确认当前版本" : "这是历史版本"}</strong><span>{plan.status === "confirmed" ? "已记录你的明确选择" : "未确认计划不会产生执行动作"}</span></div>
-            <button className="primary-button" type="button" disabled={!plan.is_current_version || plan.status !== "draft"} onClick={() => void confirmPlan()}>{plan.status === "confirmed" ? "已确认" : "明确确认 V" + plan.version}</button>
+            <div><strong>{executable ? "这一版已确认" : plan.is_current_version ? "确认当前版本" : "这是历史版本"}</strong><span>{executable ? "执行入口与反馈只属于这一确认版本" : "未确认计划不会产生执行动作"}</span></div>
+            <button className="primary-button" type="button" disabled={!plan.is_current_version || plan.status !== "draft"} onClick={() => void confirmPlan()}>{executable ? "已确认" : "明确确认 V" + plan.version}</button>
           </div>
         </>
+      )}
+
+      {executable && ["ready", "failed"].includes(phase) && (
+        <section className="execution-panel" aria-label="计划执行与完成反馈">
+          <div className="plan-section-title"><span>06</span><h2>行动入口</h2></div>
+          {!execution ? (
+            <button className="primary-button" type="button" disabled={executionBusy} onClick={() => void loadExecution()}>
+              {executionBusy ? "正在准备执行入口" : "查看路线、日历与完成反馈"}
+            </button>
+          ) : (
+            <>
+              <div className="execution-actions">
+                <a
+                  className="execution-action"
+                  href={apiClient.url(`/api/v1/plans/${plan.id}/calendar.ics`)}
+                  download={`shiguang-${plan.id}.ics`}
+                >
+                  <strong>下载日历</strong>
+                  <span>完整计划 · Asia/Shanghai</span>
+                </a>
+                {execution.items.map((item, index) =>
+                  item.navigation_uri ? (
+                    <a
+                      className="execution-action"
+                      href={item.navigation_uri}
+                      key={item.id}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      <strong>{index === 0 ? "打开地点" : "打开下一段路线"}</strong>
+                      <span>{item.title} · {item.address}</span>
+                    </a>
+                  ) : (
+                    <div className="execution-action unavailable" key={item.id}>
+                      <strong>地点待确认</strong>
+                      <span>{item.title} 没有准确 POI，不生成导航入口</span>
+                    </div>
+                  ),
+                )}
+              </div>
+
+              <div className="feedback-card">
+                <header>
+                  <div>
+                    <p className="eyebrow">Manual feedback</p>
+                    <h2>{execution.feedback ? "更正完成反馈" : "这次计划完成得怎么样？"}</h2>
+                  </div>
+                  {execution.feedback && <span>第 {execution.feedback.revision} 次记录</span>}
+                </header>
+                <div className="feedback-options" role="radiogroup" aria-label="完成状态">
+                  {([
+                    ["completed", "已完成", "按计划到访全部地点"],
+                    ["partially_completed", "部分完成", "继续选择实际到访项"],
+                    ["not_completed", "未完成", "收藏保持原状态"],
+                  ] as const).map(([value, label, detail]) => (
+                    <label key={value}>
+                      <input
+                        type="radio"
+                        name="completion_status"
+                        value={value}
+                        checked={feedbackMode === value}
+                        onChange={() => {
+                          setFeedbackMode(value);
+                          if (value !== "not_completed") setIncompleteReason("");
+                          if (value === "completed") {
+                            setVisitedItems(new Set(execution.items.map((item) => item.id)));
+                          }
+                          if (value === "not_completed") setVisitedItems(new Set());
+                        }}
+                      />
+                      <strong>{label}</strong>
+                      <span>{detail}</span>
+                    </label>
+                  ))}
+                </div>
+                {feedbackMode === "partially_completed" && (
+                  <fieldset className="visited-choices">
+                    <legend>选择实际到访的 PlanItem</legend>
+                    {execution.items.map((item) => (
+                      <label key={item.id}>
+                        <input
+                          type="checkbox"
+                          name="visited_plan_items"
+                          value={item.id}
+                          checked={visitedItems.has(item.id)}
+                          onChange={(event) => {
+                            setVisitedItems((current) => {
+                              const next = new Set(current);
+                              if (event.target.checked) next.add(item.id);
+                              else next.delete(item.id);
+                              return next;
+                            });
+                          }}
+                        />
+                        <span>{item.title}<small>{item.is_external ? "外部未收藏 · 只更新计划项" : "你的收藏 · 到访后标记去过"}</small></span>
+                      </label>
+                    ))}
+                  </fieldset>
+                )}
+                {feedbackMode === "not_completed" && (
+                  <label className="feedback-reason">
+                    未完成原因（选填）
+                    <textarea
+                      name="incomplete_reason"
+                      maxLength={500}
+                      value={incompleteReason}
+                      onChange={(event) => setIncompleteReason(event.target.value)}
+                      placeholder="例如：临时有事、天气变化；留空也可以提交"
+                    />
+                  </label>
+                )}
+                <button
+                  className="primary-button"
+                  type="button"
+                  disabled={!feedbackMode || executionBusy}
+                  onClick={() => void submitFeedback()}
+                >
+                  {executionBusy ? "正在保存" : execution.feedback ? "保存更正" : "保存完成反馈"}
+                </button>
+                {execution.feedback?.preference_suggestion && (
+                  <aside className="preference-suggestion">
+                    <strong>待确认的长期偏好建议</strong>
+                    <p>{execution.feedback.preference_suggestion.content}</p>
+                    <span>本阶段不会自动写入长期记忆。</span>
+                  </aside>
+                )}
+              </div>
+            </>
+          )}
+        </section>
       )}
 
       {feedback && <p className="plan-feedback" role="status">{feedback}</p>}

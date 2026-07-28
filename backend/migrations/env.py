@@ -17,9 +17,15 @@ from app.infrastructure.db.models import (
     BrowserSessionModel,
     CollectionItemModel,
     CollectionSourceModel,
+    CollectionVisitSourceModel,
+    CollectionVisitStateModel,
     CollectionWriteOperationItemModel,
     CollectionWriteOperationModel,
     MessageModel,
+    PlanFeedbackAuditModel,
+    PlanFeedbackStateModel,
+    PlanItemModel,
+    PlanModel,
     RunEventModel,
     ScheduledJobModel,
     SessionModel,
@@ -49,6 +55,12 @@ assert CollectionItemModel.metadata is target_metadata
 assert CollectionSourceModel.metadata is target_metadata
 assert CollectionWriteOperationModel.metadata is target_metadata
 assert CollectionWriteOperationItemModel.metadata is target_metadata
+assert PlanModel.metadata is target_metadata
+assert PlanItemModel.metadata is target_metadata
+assert PlanFeedbackStateModel.metadata is target_metadata
+assert PlanFeedbackAuditModel.metadata is target_metadata
+assert CollectionVisitStateModel.metadata is target_metadata
+assert CollectionVisitSourceModel.metadata is target_metadata
 
 
 def ensure_sqlite_directory(database_url: str) -> None:

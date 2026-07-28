@@ -19,6 +19,7 @@ _OPAQUE_ID_PATTERNS = {
     "pln": re.compile(r"^pln_[a-f0-9]{32}$"),
     "pit": re.compile(r"^pit_[a-f0-9]{32}$"),
     "apr": re.compile(r"^apr_[a-f0-9]{32}$"),
+    "fdb": re.compile(r"^fdb_[a-f0-9]{32}$"),
 }
 
 
@@ -78,6 +79,10 @@ def generate_approval_id() -> str:
     return _generate_opaque_id("apr")
 
 
+def generate_feedback_id() -> str:
+    return _generate_opaque_id("fdb")
+
+
 def validate_agent_run_id(value: str) -> str:
     return _validate_opaque_id(value, "arn", "agent_run_id")
 
@@ -120,6 +125,10 @@ def validate_plan_item_id(value: str) -> str:
 
 def validate_approval_id(value: str) -> str:
     return _validate_opaque_id(value, "apr", "approval_id")
+
+
+def validate_feedback_id(value: str) -> str:
+    return _validate_opaque_id(value, "fdb", "feedback_id")
 
 
 def _generate_opaque_id(prefix: str) -> str:

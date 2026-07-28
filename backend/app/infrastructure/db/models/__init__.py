@@ -13,7 +13,15 @@ from app.infrastructure.db.models.collections import (
 )
 from app.infrastructure.db.models.identity import BrowserSessionModel
 from app.infrastructure.db.models.jobs import ScheduledJobModel
-from app.infrastructure.db.models.plans import ApprovalModel, PlanItemModel, PlanModel
+from app.infrastructure.db.models.plans import (
+    ApprovalModel,
+    CollectionVisitSourceModel,
+    CollectionVisitStateModel,
+    PlanFeedbackAuditModel,
+    PlanFeedbackStateModel,
+    PlanItemModel,
+    PlanModel,
+)
 from app.infrastructure.db.models.runs import AgentRunModel, RunEventModel, ToolRunModel
 
 __all__ = [
@@ -24,9 +32,13 @@ __all__ = [
     "CollectionSourceModel",
     "CollectionWriteOperationItemModel",
     "CollectionWriteOperationModel",
+    "CollectionVisitSourceModel",
+    "CollectionVisitStateModel",
     "MessageModel",
     "PlanItemModel",
     "PlanModel",
+    "PlanFeedbackAuditModel",
+    "PlanFeedbackStateModel",
     "PlaceSelectionOperationModel",
     "RunEventModel",
     "SessionModel",

@@ -27,6 +27,9 @@ class PlanStatus(StrEnum):
     SUPERSEDED = "superseded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    COMPLETED = "completed"
+    PARTIALLY_COMPLETED = "partially_completed"
+    NOT_COMPLETED = "not_completed"
 
 
 class PlanOperation(StrEnum):
@@ -103,6 +106,9 @@ class PlanVersion(PlanContract):
             PlanStatus.DRAFT,
             PlanStatus.CONFIRMED,
             PlanStatus.SUPERSEDED,
+            PlanStatus.COMPLETED,
+            PlanStatus.PARTIALLY_COMPLETED,
+            PlanStatus.NOT_COMPLETED,
         } and self.draft is None:
             raise ValueError("viewable plan versions require a draft")
         if self.status in {
@@ -115,7 +121,14 @@ class PlanVersion(PlanContract):
         if self.status is PlanStatus.CONFIRMED and self.confirmed_at is None:
             raise ValueError("confirmed versions require confirmed_at")
         if (
-            self.status not in {PlanStatus.CONFIRMED, PlanStatus.SUPERSEDED}
+            self.status
+            not in {
+                PlanStatus.CONFIRMED,
+                PlanStatus.SUPERSEDED,
+                PlanStatus.COMPLETED,
+                PlanStatus.PARTIALLY_COMPLETED,
+                PlanStatus.NOT_COMPLETED,
+            }
             and self.confirmed_at is not None
         ):
             raise ValueError("only confirmed history carries confirmed_at")

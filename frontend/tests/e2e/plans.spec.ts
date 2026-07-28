@@ -105,7 +105,7 @@ test("refreshed plan shows authoritative rail and explicit confirmation", async 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/plans");
 
-  await expect(page.getByText("来自收藏")).toBeVisible();
+  await expect(page.getByText("来自收藏").first()).toBeVisible();
   await expect(page.getByText(/公共交通 · 15 分钟 · 3.2 km/)).toBeVisible();
   await expect(page.getByText("未知", { exact: true })).toBeVisible();
   const confirm = page.getByRole("button", { name: "明确确认 V1" });
@@ -125,7 +125,7 @@ test("real offline stack creates, adjusts, confirms, restarts, and recovers a pl
   await expect(page.getByRole("heading", { level: 3, name: "海上世界散步公园" })).toBeVisible({
     timeout: 20_000,
   });
-  await expect(page.getByText("来自收藏")).toBeVisible();
+  await expect(page.getByText("来自收藏").first()).toBeVisible();
 
   await page
     .getByLabel("想怎么调整？")
@@ -144,6 +144,35 @@ test("real offline stack creates, adjusts, confirms, restarts, and recovers a pl
   await page.getByRole("button", { name: "V2", exact: true }).click();
   await page.getByRole("button", { name: "明确确认 V2" }).click();
   await expect(page.getByText("这一版已确认")).toBeVisible();
+
+  await page.getByRole("button", { name: "查看路线、日历与完成反馈" }).click();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("link", { name: /下载日历/ }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^shiguang-.*\.ics$/);
+
+  const navigation = page.getByRole("link", { name: /打开地点/ }).first();
+  await expect(navigation).toHaveAttribute("href", /^geo:/);
+  await navigation.click();
+
+  await page.getByRole("radio", { name: /部分完成/ }).click();
+  const visits = page.getByRole("checkbox");
+  await expect(visits).toHaveCount(2);
+  await visits.first().check();
+  await page.getByRole("button", { name: "保存完成反馈" }).click();
+  await expect(page.getByText("完成反馈已保存。")).toBeVisible();
+
+  await page.reload();
+  await page.getByRole("button", { name: "查看路线、日历与完成反馈" }).click();
+  await expect(page.getByText("第 1 次记录")).toBeVisible();
+  await expect(page.getByRole("checkbox").first()).toBeChecked();
+  await expect(page.getByRole("checkbox").nth(1)).not.toBeChecked();
+
+  await page.getByRole("radio", { name: /未完成/ }).click();
+  await page.getByLabel("未完成原因（选填）").fill("临时改变安排");
+  await page.getByRole("button", { name: "保存更正" }).click();
+  await expect(page.getByText(/反馈已更正/)).toBeVisible();
+  await expect(page.getByText("第 2 次记录")).toBeVisible();
 
   await page.getByRole("button", { name: "新建计划" }).click();
   await page.getByRole("button", { name: "检查生成条件" }).click();

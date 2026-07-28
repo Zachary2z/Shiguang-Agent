@@ -81,6 +81,10 @@ export class ApiClient {
     private readonly fetcher: FetchLike = (...arguments_) => fetch(...arguments_),
   ) {}
 
+  url(path: `/${string}`): string {
+    return `${this.baseUrl}${path}`;
+  }
+
   async request<T>(
     path: `/${string}`,
     options: ApiRequestOptions = {},

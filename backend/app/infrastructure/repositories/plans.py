@@ -133,10 +133,15 @@ class SqlAlchemyPlanRepository:
         user_id: str,
         plan_id: str,
     ) -> PlanVersion:
-        """The sole future execution boundary; M1-5 exposes no execution action."""
+        """The sole execution boundary for confirmed and subsequently completed plans."""
 
         plan = await self.require(user_id=user_id, plan_id=plan_id)
-        if plan.status is not PlanStatus.CONFIRMED:
+        if plan.status not in {
+            PlanStatus.CONFIRMED,
+            PlanStatus.COMPLETED,
+            PlanStatus.PARTIALLY_COMPLETED,
+            PlanStatus.NOT_COMPLETED,
+        }:
             raise PlanExecutionNotAllowedError
         return plan
 

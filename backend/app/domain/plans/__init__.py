@@ -33,6 +33,14 @@ from app.domain.plans.drafts import (
     PlanRiskCode,
     PlanSelectionReasonCode,
 )
+from app.domain.plans.execution import (
+    PlanCompletionStatus,
+    PlanExecutionItem,
+    PlanFeedback,
+    PlanFeedbackSelectionError,
+    PlanItemExecutionStatus,
+    PreferenceSuggestion,
+)
 from app.domain.plans.experience import (
     ApprovalAction,
     ApprovalStatus,
@@ -87,6 +95,12 @@ __all__ = [
     "ApprovalStatus",
     "PlanApproval",
     "PlanExecutionNotAllowedError",
+    "PlanCompletionStatus",
+    "PlanExecutionItem",
+    "PlanFeedback",
+    "PlanFeedbackSelectionError",
+    "PlanItemExecutionStatus",
+    "PreferenceSuggestion",
     "PlanNotReadyError",
     "PlanOperation",
     "PlanStatus",

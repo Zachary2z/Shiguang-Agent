@@ -39,6 +39,11 @@ from app.application.content_import_jobs import (
 from app.application.demo_sessions import DemoSessionService
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
 from app.application.place_targets import PlaceTargetSelectionService
+from app.application.plan_execution import (
+    PlanCalendarService,
+    PlanFeedbackService,
+    PlanNavigationService,
+)
 from app.application.plan_experience import PlanExperienceService
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.run_events import RunEventService
@@ -99,6 +104,9 @@ from app.schemas.api import (
     PlanConfirmationResponse,
     PlanConfirmRequest,
     PlanCreateRequest,
+    PlanExecutionResponse,
+    PlanFeedbackRequest,
+    PlanFeedbackResponse,
     PlanListResponse,
     PlanResponse,
     PublicModelCallResponse,
@@ -782,6 +790,81 @@ async def confirm_plan(
             versions=versions,
         ),
         replayed=replayed,
+    )
+
+
+@api_router.get("/plans/{plan_id}/calendar.ics")
+async def download_plan_calendar(
+    plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> Response:
+    content = await PlanCalendarService().generate(
+        session=session,
+        user_id=user_id,
+        plan_id=plan_id,
+    )
+    return Response(
+        content=content,
+        media_type="text/calendar; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="shiguang-{plan_id}.ics"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@api_router.get(
+    "/plans/{plan_id}/execution",
+    response_model=PlanExecutionResponse,
+)
+async def get_plan_execution(
+    plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
+    request: Request,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> PlanExecutionResponse:
+    map_provider = request.app.state.map_provider
+    if map_provider is None:
+        raise PlanProviderNotConfiguredError
+    items = await PlanNavigationService().list_entries(
+        session=session,
+        user_id=user_id,
+        plan_id=plan_id,
+        map_provider=map_provider,
+    )
+    feedback = await PlanFeedbackService().current(
+        session=session,
+        user_id=user_id,
+        plan_id=plan_id,
+    )
+    return PlanExecutionResponse(plan_id=plan_id, items=items, feedback=feedback)
+
+
+@api_router.post(
+    "/plans/{plan_id}/feedback",
+    response_model=PlanFeedbackResponse,
+)
+async def submit_plan_feedback(
+    plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
+    payload: PlanFeedbackRequest,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> PlanFeedbackResponse:
+    submission = await PlanFeedbackService().submit(
+        session=session,
+        user_id=user_id,
+        plan_id=plan_id,
+        completion_status=payload.completion_status,
+        visited_plan_item_ids=payload.visited_plan_item_ids,
+        reason=payload.reason,
+        client_idempotency_key=payload.idempotency_key,
+        expected_revision=payload.expected_revision,
+    )
+    return PlanFeedbackResponse(
+        feedback=submission.feedback,
+        replayed=submission.replayed,
     )
 
 
