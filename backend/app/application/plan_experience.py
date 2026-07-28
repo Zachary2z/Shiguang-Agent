@@ -48,7 +48,6 @@ from app.domain.plans import (
     PlanDraftResult,
     PlanningFactSnapshot,
     PlanOperation,
-    PlanPace,
     PlanStatus,
     PlanVersion,
     RequiredPlanGap,
@@ -150,29 +149,15 @@ class ExistingPlanServicesExecutor:
         now = utc_now()
         memory_service = MemoryPlanningService(self._session)
         memories = await memory_service.effective(user_id=user_id, at=now)
-        effective_constraints = constraints
         memory_usages: dict[str, str] = {}
-        pace_memories = [
-            memory for memory in memories if memory.type.value == "pace_preference"
-        ]
-        if pace_memories:
-            selected_pace = pace_memories[-1]
-            preferred_pace = PlanPace(selected_pace.value)
-            if preferred_pace is not constraints.pace:
-                effective_constraints = constraints.model_copy(
-                    update={"pace": preferred_pace}
-                )
-                memory_usages[selected_pace.id] = (
-                    f"计划节奏采用已确认偏好：{selected_pace.content}"
-                )
         facts = await self._facts.resolve(
-            user_id=user_id, constraints=effective_constraints
+            user_id=user_id, constraints=constraints
         )
         collections = await StructuredCollectionRetrievalService(
             repository=SqlAlchemyCollectionRepository(self._session),
         ).retrieve(
             user_id=user_id,
-            constraints=effective_constraints,
+            constraints=constraints,
             facts=facts.retrieval,
             now=now,
             memories=memories,
@@ -194,7 +179,7 @@ class ExistingPlanServicesExecutor:
             place_matching=self._matching,
             plan_drafts=PlanDraftService(),
         ).generate(
-            constraints=effective_constraints,
+            constraints=constraints,
             collections=collections,
             facts=facts.draft,
             required_gap=facts.required_gap,

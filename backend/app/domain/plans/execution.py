@@ -33,9 +33,9 @@ class PlanItemExecutionStatus(StrEnum):
 
 class PreferenceSuggestion(PlanContract):
     content: str = Field(min_length=1, max_length=500)
-    memory_type: MemoryType
-    value: str = Field(min_length=1, max_length=100)
-    evidence_summary: str = Field(min_length=1, max_length=500)
+    memory_type: MemoryType | None = None
+    value: str | None = Field(default=None, min_length=1, max_length=100)
+    evidence_summary: str | None = Field(default=None, min_length=1, max_length=500)
     confirmation_status: str = Field(default="pending", pattern=r"^pending$")
 
 

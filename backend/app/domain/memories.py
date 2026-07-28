@@ -152,9 +152,9 @@ class MemoryUsage(MemoryContract):
 class MemorySuggestion(MemoryContract):
     id: str
     plan_id: str
-    memory_type: MemoryType
+    memory_type: MemoryType | None = None
     content: str = Field(min_length=1, max_length=500)
-    value: str = Field(min_length=1, max_length=100)
+    value: str | None = Field(default=None, min_length=1, max_length=100)
     evidence_summary: str = Field(min_length=1, max_length=500)
     created_at: datetime
 

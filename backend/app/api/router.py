@@ -986,6 +986,11 @@ async def decide_memory_suggestion(
         user_id=user_id,
         suggestion_id=suggestion_id,
         decision=MemorySuggestionDecision(payload.decision),
+        memory_type=(
+            None if payload.memory_type is None else MemoryType(payload.memory_type)
+        ),
+        content=payload.content,
+        value=payload.value,
         client_idempotency_key=payload.idempotency_key,
     )
     return MemorySuggestionDecisionResponse(

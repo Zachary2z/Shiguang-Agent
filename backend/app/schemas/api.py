@@ -121,6 +121,23 @@ class MemoryDeleteRequest(ApiModel):
 class MemorySuggestionDecisionRequest(ApiModel):
     idempotency_key: IdempotencyKey = Field(repr=False)
     decision: Literal["confirmed", "rejected"]
+    memory_type: Literal[
+        "positive_preference",
+        "negative_preference",
+        "pace_preference",
+        "usual_area",
+    ] | None = None
+    content: str | None = Field(default=None, min_length=1, max_length=500)
+    value: str | None = Field(default=None, min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def require_confirmed_memory(self) -> MemorySuggestionDecisionRequest:
+        fields = (self.memory_type, self.content, self.value)
+        if self.decision == "confirmed" and any(value is None for value in fields):
+            raise ValueError("confirmed suggestion requires explicit memory fields")
+        if self.decision == "rejected" and any(value is not None for value in fields):
+            raise ValueError("rejected suggestion cannot include memory fields")
+        return self
 
 
 class MemoryResponse(ApiModel):

@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.collections import CollectionStatus, IdempotencyConflictError
 from app.domain.identifiers import generate_feedback_id
-from app.domain.memories import MemoryType
 from app.domain.places import CityScope, NavigationRequest
 from app.domain.plans import (
     PlanCompletionStatus,
@@ -204,34 +203,8 @@ class PlanNavigationService:
         return tuple(result)
 
 
-class PreferenceSuggestionService:
-    """Create a reviewable suggestion only; this service never writes Memory."""
-
-    def suggest(
-        self,
-        *,
-        completion_status: PlanCompletionStatus,
-        reason: str | None,
-    ) -> PreferenceSuggestion | None:
-        if completion_status is PlanCompletionStatus.COMPLETED and reason is None:
-            return None
-        return PreferenceSuggestion(
-            content="以后优先安排更轻松、留白更多的计划",
-            memory_type=MemoryType.PACE_PREFERENCE,
-            value="relaxed",
-            evidence_summary=(
-                f"来自你对本次计划的反馈：{reason}"
-                if reason is not None
-                else "来自本次计划的部分完成或未完成反馈"
-            ),
-        )
-
-
 class PlanFeedbackService:
     """Atomically submit or correct one plan's explicit completion feedback."""
-
-    def __init__(self) -> None:
-        self._suggestions = PreferenceSuggestionService()
 
     async def submit(
         self,
@@ -313,10 +286,6 @@ class PlanFeedbackService:
         revision = 1 if state is None else state.revision + 1
         feedback_id = generate_feedback_id()
         now = utc_now()
-        suggestion = self._suggestions.suggest(
-            completion_status=completion_status,
-            reason=reason,
-        )
         audit = PlanFeedbackAuditModel(
             id=feedback_id,
             plan_id=plan_id,
@@ -325,9 +294,7 @@ class PlanFeedbackService:
             completion_status=completion_status.value,
             reason=reason,
             visited_plan_item_ids_json=sorted(requested),
-            preference_suggestion_json=(
-                None if suggestion is None else suggestion.model_dump(mode="json")
-            ),
+            preference_suggestion_json=None,
             idempotency_key=key,
             request_fingerprint=fingerprint,
             corrects_feedback_id=None if state is None else state.current_feedback_id,
@@ -343,11 +310,7 @@ class PlanFeedbackService:
                     revision=revision,
                     completion_status=completion_status.value,
                     reason=reason,
-                    preference_suggestion_json=(
-                        None
-                        if suggestion is None
-                        else suggestion.model_dump(mode="json")
-                    ),
+                    preference_suggestion_json=None,
                     created_at=now,
                     updated_at=now,
                 )
@@ -357,9 +320,7 @@ class PlanFeedbackService:
             state.revision = revision
             state.completion_status = completion_status.value
             state.reason = reason
-            state.preference_suggestion_json = (
-                None if suggestion is None else suggestion.model_dump(mode="json")
-            )
+            state.preference_suggestion_json = None
             state.updated_at = now
         try:
             await session.flush()
@@ -619,5 +580,4 @@ __all__ = [
     "PlanCalendarService",
     "PlanFeedbackService",
     "PlanNavigationService",
-    "PreferenceSuggestionService",
 ]

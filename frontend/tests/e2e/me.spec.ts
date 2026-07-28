@@ -3,10 +3,10 @@ import { expect, type Page, test } from "@playwright/test";
 const suggestion = {
   id: "fdb_0123456789abcdef0123456789abcdef",
   plan_id: "pln_0123456789abcdef0123456789abcdef",
-  memory_type: "pace_preference",
+  memory_type: null,
   content: "以后优先安排更轻松、留白更多的计划",
-  value: "relaxed",
-  evidence_summary: "来自你对本次计划的反馈：节奏太赶",
+  value: null,
+  evidence_summary: "来自一次历史反馈建议，尚未形成长期偏好",
   created_at: "2026-07-28T08:00:00Z",
 };
 
@@ -110,7 +110,11 @@ test("M07 memory and data controls survive refresh on mobile", async ({ page }) 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/me");
 
-  await expect(page.getByText("未经确认，不会进入计划")).toBeVisible();
+  await expect(page.getByText(/未经确认，不会进入计划/)).toBeVisible();
+  await page.getByRole("combobox", { name: "记忆类型" }).selectOption(
+    "pace_preference",
+  );
+  await page.getByRole("textbox", { name: "结构化值" }).fill("relaxed");
   await page.getByRole("button", { name: "确认记住" }).focus();
   await expect(page.getByRole("button", { name: "确认记住" })).toBeFocused();
   await page.getByRole("button", { name: "确认记住" }).click();

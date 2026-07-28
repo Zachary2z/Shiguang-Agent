@@ -23,6 +23,7 @@ from app.application.map_plan_facts import (
     MAX_PLAN_ROUTE_CALLS,
     MapPlanFactResolver,
 )
+from app.application.memories import MemoryService
 from app.application.plan_experience import (
     ExistingPlanServicesExecutor,
     PlanGenerationOutcome,
@@ -74,7 +75,7 @@ from app.domain.places import (
     WeatherResult,
     normalize_brand_name,
 )
-from app.domain.plans import ActivityArea, PlanConstraints
+from app.domain.plans import ActivityArea, PlanConstraints, PlanPace
 from app.domain.plans.drafts import (
     DraftCandidateFacts,
     DraftRouteFacts,
@@ -455,6 +456,106 @@ async def test_only_effective_confirmed_memory_scores_matching_candidates() -> N
         for decision in result.included
     }
     assert scores[(indoor.id,)] == (1, (active.id,))
+    assert scores[(park.id,)] == (0, ())
+
+
+@pytest.mark.asyncio
+async def test_thousand_matching_memories_use_one_bounded_stable_ranking_basis() -> None:
+    user_id = generate_user_id()
+    indoor_poi = _poi("poi_many_memories", name="室内艺术馆")
+    park_poi = _poi("poi_many_memories_park", name="城市公园", poi_type=PoiType.PARK)
+    indoor = _place(user_id, poi=indoor_poi)
+    park = _place(user_id, poi=park_poi)
+    service = StructuredCollectionRetrievalService(
+        repository=ReadOnlyRepository([indoor, park])
+    )
+    memories = tuple(
+        Memory(
+            id=generate_memory_id(),
+            type=MemoryType.POSITIVE_PREFERENCE,
+            content=f"第 {index} 条室内偏好",
+            value="室内",
+            source=MemorySource(
+                type=MemorySourceType.EXPLICIT_USER,
+                summary="由你明确设置并授权保存",
+            ),
+            confidence=100,
+            created_at=NOW,
+            updated_at=NOW,
+            version=1,
+        )
+        for index in range(1000)
+    )
+
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(),
+        facts=PlanningFactSnapshot(
+            pois=(_known_poi_facts(indoor_poi), _known_poi_facts(park_poi))
+        ),
+        now=NOW + timedelta(hours=1),
+        memories=memories,
+    )
+
+    scores = {
+        decision.collection_item_ids: (
+            decision.preference_score,
+            decision.applied_memory_ids,
+        )
+        for decision in result.included
+    }
+    assert scores[(indoor.id,)] == (1, ())
+    assert all(-1 <= score <= 1 for score, _memory_ids in scores.values())
+    assert all(len(memory_ids) <= 1 for _score, memory_ids in scores.values())
+
+
+@pytest.mark.asyncio
+async def test_negative_memory_stably_wins_conflicting_positive_memory() -> None:
+    user_id = generate_user_id()
+    indoor_poi = _poi("poi_memory_conflict", name="安静室内艺术馆")
+    park_poi = _poi("poi_memory_conflict_park", name="城市公园", poi_type=PoiType.PARK)
+    indoor = _place(user_id, poi=indoor_poi)
+    park = _place(user_id, poi=park_poi)
+    base = Memory(
+        id="mem_00000000000000000000000000000001",
+        type=MemoryType.POSITIVE_PREFERENCE,
+        content="喜欢安静空间",
+        value="安静",
+        source=MemorySource(
+            type=MemorySourceType.EXPLICIT_USER,
+            summary="由你明确设置并授权保存",
+        ),
+        confidence=100,
+        created_at=NOW,
+        updated_at=NOW,
+        version=1,
+    )
+    negative = base.model_copy(
+        update={
+            "id": "mem_00000000000000000000000000000002",
+            "type": MemoryType.NEGATIVE_PREFERENCE,
+            "content": "避开安静空间",
+        }
+    )
+    result = await StructuredCollectionRetrievalService(
+        repository=ReadOnlyRepository([indoor, park])
+    ).retrieve(
+        user_id=user_id,
+        constraints=_constraints(),
+        facts=PlanningFactSnapshot(
+            pois=(_known_poi_facts(indoor_poi), _known_poi_facts(park_poi))
+        ),
+        now=NOW + timedelta(hours=1),
+        memories=(base, negative),
+    )
+    scores = {
+        decision.collection_item_ids: (
+            decision.preference_score,
+            decision.applied_memory_ids,
+        )
+        for decision in result.included
+    }
+    assert scores[(indoor.id,)] == (-1, (negative.id,))
     assert scores[(park.id,)] == (0, ())
 
 
@@ -1934,6 +2035,7 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
             "end_at": current + timedelta(hours=7),
             "created_at": current,
             "expires_at": current + timedelta(days=1),
+            "pace": PlanPace.PACKED,
         }
     )
     calls: list[object] = []
@@ -1951,8 +2053,33 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
         )
         await repository.add_collection_item(user_id=user_id, item=item)
         await repository.add_collection_item(user_id=user_id, item=exact)
+        await MemoryService(session).create_explicit(
+            user_id=user_id,
+            memory_type=MemoryType.PACE_PREFERENCE,
+            content="以后偏好轻松节奏",
+            value="relaxed",
+            expires_at=None,
+            explicit_authorization=True,
+            location_granularity=None,
+            client_idempotency_key="executor-pace-memory",
+        )
         await session.commit()
     async with database.session() as session:
+        resolved_constraints: list[PlanConstraints] = []
+        delegate = MapPlanFactResolver(
+            session=session,
+            map_provider=provider,
+            matching_policy=Settings(
+                _env_file=None,
+                app_env="test",
+            ).place_matching_policy(),
+        )
+
+        class CapturingFacts:
+            async def resolve(self, *, user_id: str, constraints: PlanConstraints):
+                resolved_constraints.append(constraints)
+                return await delegate.resolve(user_id=user_id, constraints=constraints)
+
         result = await ExistingPlanServicesExecutor(
             session=session,
             map_provider=provider,
@@ -1960,18 +2087,14 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
                 _env_file=None,
                 app_env="test",
             ).place_matching_policy(),
-            facts=MapPlanFactResolver(
-                session=session,
-                map_provider=provider,
-                matching_policy=Settings(
-                    _env_file=None,
-                    app_env="test",
-                ).place_matching_policy(),
-            ),
+            facts=CapturingFacts(),  # type: ignore[arg-type]
         ).execute(user_id=user_id, constraints=constraints, approval=None)
     await database.close()
 
     assert result.outcome is PlanGenerationOutcome.DRAFT
+    assert resolved_constraints == [constraints]
+    assert resolved_constraints[0].pace is PlanPace.PACKED
+    assert result.memory_usages == {}
     assert result.draft is not None
     planned = tuple(
         draft_item

@@ -289,9 +289,7 @@ async def test_partial_feedback_correction_is_audited_and_recomputes_collection(
         assert submitted.status_code == replay.status_code == 200
         assert replay.json()["replayed"] is True
         assert submitted.json()["feedback"]["revision"] == 1
-        assert submitted.json()["feedback"]["preference_suggestion"][
-            "confirmation_status"
-        ] == "pending"
+        assert submitted.json()["feedback"]["preference_suggestion"] is None
 
         database = api.state.demo_database
         async with database.session_factory() as session:

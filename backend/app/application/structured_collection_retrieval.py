@@ -232,19 +232,31 @@ def assess_collection_candidate(
         ):
             reasons.add(CandidateReasonCode.ROUTE_EXCEEDS_TIME_WINDOW)
     ordered = _ordered_reasons(reasons)
-    applied: list[str] = []
-    preference_score = 0
+    positive_matches: list[str] = []
+    negative_matches: list[str] = []
     for memory in memories:
         if memory.type is MemoryType.PACE_PREFERENCE:
             continue
         if not _matches_term(memory.value, searchable):
             continue
-        applied.append(memory.id)
-        preference_score += (
-            -1
+        target = (
+            negative_matches
             if memory.type is MemoryType.NEGATIVE_PREFERENCE
-            else 1
+            else positive_matches
         )
+        target.append(memory.id)
+    # One deterministic tier is enough to influence the sole downstream sorter.
+    # Negative evidence wins a conflict; duplicate memories are redundant bases.
+    applied: tuple[str, ...]
+    if negative_matches:
+        preference_score = -1
+        applied = (min(negative_matches),)
+    elif positive_matches:
+        preference_score = 1
+        applied = (min(positive_matches),)
+    else:
+        preference_score = 0
+        applied = ()
     return CollectionCandidateDecision(
         outcome=outcome_for_reasons(ordered),
         reason_codes=ordered,
@@ -263,7 +275,7 @@ def assess_collection_candidate(
         route_distance_meters=facts.route_distance_meters,
         any_branch_collection_item_ids=(item.id,) if resolved_from_any_branch else (),
         preference_score=preference_score,
-        applied_memory_ids=tuple(sorted(applied)),
+        applied_memory_ids=applied,
     )
 
 
@@ -318,19 +330,24 @@ def _merge_duplicate_pois(
                 item.collection_item_ids,
             ),
         )
+        scores = {previous.preference_score, decision.preference_score}
+        preference_score = -1 if -1 in scores else 1 if 1 in scores else 0
+        contributing_ids = tuple(
+            sorted(
+                {
+                    memory_id
+                    for candidate in (previous, decision)
+                    if candidate.preference_score == preference_score
+                    for memory_id in candidate.applied_memory_ids
+                }
+            )
+        )
         merged[previous_index] = preferred.model_copy(
             update={
                 "collection_item_ids": source_ids,
                 "any_branch_collection_item_ids": branch_source_ids,
-                "preference_score": max(
-                    previous.preference_score, decision.preference_score
-                ),
-                "applied_memory_ids": tuple(
-                    sorted(
-                        set(previous.applied_memory_ids)
-                        | set(decision.applied_memory_ids)
-                    )
-                ),
+                "preference_score": preference_score,
+                "applied_memory_ids": contributing_ids[:1],
             },
             deep=True,
         )
@@ -478,9 +495,23 @@ class StructuredCollectionRetrievalService:
                 )
 
         deduplicated = _merge_duplicate_pois(decisions)
+        included_scores = {
+            item.preference_score
+            for item in deduplicated
+            if item.outcome is CandidateOutcome.INCLUDED
+        }
+        ranking_aware = (
+            tuple(
+                item.model_copy(update={"applied_memory_ids": ()})
+                if item.outcome is CandidateOutcome.INCLUDED
+                and len(included_scores) < 2
+                else item
+                for item in deduplicated
+            )
+        )
         ordered = tuple(
             sorted(
-                deduplicated,
+                ranking_aware,
                 key=lambda item: (
                     list(CandidateOutcome).index(item.outcome),
                     _text_identity(item.title),

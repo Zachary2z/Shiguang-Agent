@@ -13,6 +13,7 @@ from alembic.script import ScriptDirectory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 HEAD_REVISION = "20260728_0016"
+MEMORY_PREVIOUS_REVISION = "20260728_0015"
 PREVIOUS_REVISION = "20260726_0009"
 EVENT_REVISION = "20260724_0007"
 EVENT_PREVIOUS_REVISION = "20260722_0006"
@@ -1910,3 +1911,81 @@ def test_feedback_pointers_require_same_plan_and_owner_on_sqlite(
             "SELECT corrects_feedback_id FROM plan_feedback_audits WHERE id = ?",
             (audit_a2,),
         ).fetchone() == (audit_a1,)
+
+
+def test_memory_upgrade_preserves_real_0015_legacy_suggestion_json(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "legacy-memory-suggestion.db"
+    config = _alembic_config(monkeypatch, database_path)
+    command.upgrade(config, MEMORY_PREVIOUS_REVISION)
+    now = "2026-07-28T00:00:00+00:00"
+    user_id = "usr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    plan_id = "pln_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    feedback_id = "fdb_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    legacy = {
+        "content": "升级前只有内容和确认状态的真实建议",
+        "confirmation_status": "pending",
+    }
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        _insert_user(connection, user_id)
+        connection.execute(
+            """
+            INSERT INTO plans (
+                id, root_plan_id, parent_plan_id, user_id, version, operation,
+                status, constraints_json, adjustment_text, draft_json, trace_id,
+                idempotency_key, request_fingerprint, error_code, confirmed_at,
+                created_at, updated_at
+            ) VALUES (?, ?, NULL, ?, 1, 'generate', 'confirmed', '{}', NULL,
+                '{}', ?, 'legacy-plan', ?, NULL, ?, ?, ?)
+            """,
+            (
+                plan_id,
+                plan_id,
+                user_id,
+                "trc_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "a" * 64,
+                now,
+                now,
+                now,
+            ),
+        )
+        encoded = json.dumps(legacy, ensure_ascii=False, separators=(",", ":"))
+        connection.execute(
+            """
+            INSERT INTO plan_feedback_audits (
+                id, plan_id, user_id, revision, completion_status, reason,
+                visited_plan_item_ids_json, preference_suggestion_json,
+                idempotency_key, request_fingerprint, corrects_feedback_id,
+                created_at
+            ) VALUES (?, ?, ?, 1, 'not_completed', NULL, '[]', ?,
+                'legacy-feedback', ?, NULL, ?)
+            """,
+            (feedback_id, plan_id, user_id, encoded, "b" * 64, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO plan_feedback_states (
+                plan_id, user_id, current_feedback_id, revision, completion_status,
+                reason, preference_suggestion_json, created_at, updated_at
+            ) VALUES (?, ?, ?, 1, 'not_completed', NULL, ?, ?, ?)
+            """,
+            (plan_id, user_id, feedback_id, encoded, now, now),
+        )
+        connection.commit()
+
+    command.upgrade(config, HEAD_REVISION)
+
+    with sqlite3.connect(database_path) as connection:
+        audit_json = connection.execute(
+            "SELECT preference_suggestion_json FROM plan_feedback_audits WHERE id = ?",
+            (feedback_id,),
+        ).fetchone()
+        state_json = connection.execute(
+            "SELECT preference_suggestion_json FROM plan_feedback_states WHERE plan_id = ?",
+            (plan_id,),
+        ).fetchone()
+    assert audit_json is not None and json.loads(audit_json[0]) == legacy
+    assert state_json is not None and json.loads(state_json[0]) == legacy

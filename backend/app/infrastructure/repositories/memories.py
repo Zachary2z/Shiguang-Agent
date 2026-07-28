@@ -55,13 +55,19 @@ class SqlAlchemyMemoryRepository:
         return None if row is None else self.to_domain(row)
 
     async def row(
-        self, *, user_id: str, memory_id: str, lock: bool = False
+        self,
+        *,
+        user_id: str,
+        memory_id: str,
+        lock: bool = False,
+        include_deleted: bool = False,
     ) -> MemoryModel | None:
         statement = select(MemoryModel).where(
             MemoryModel.id == memory_id,
             MemoryModel.user_id == user_id,
-            MemoryModel.deleted_at.is_(None),
         )
+        if not include_deleted:
+            statement = statement.where(MemoryModel.deleted_at.is_(None))
         if lock:
             statement = statement.with_for_update()
         row: MemoryModel | None = await self._session.scalar(statement)
@@ -153,10 +159,10 @@ class SqlAlchemyMemoryRepository:
                 MemorySuggestion(
                     id=row.id,
                     plan_id=row.plan_id,
-                    memory_type=payload.memory_type,
+                    memory_type=None,
                     content=payload.content,
-                    value=payload.value,
-                    evidence_summary=payload.evidence_summary,
+                    value=None,
+                    evidence_summary="来自一次历史反馈建议，尚未形成长期偏好",
                     created_at=_time(row.created_at),
                 )
             )

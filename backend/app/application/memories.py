@@ -38,6 +38,20 @@ from app.infrastructure.repositories import (
     plan_request_fingerprint,
 )
 
+_SHENZHEN_ADMIN_DISTRICTS = frozenset(
+    {
+        "福田区",
+        "罗湖区",
+        "盐田区",
+        "南山区",
+        "宝安区",
+        "龙岗区",
+        "龙华区",
+        "坪山区",
+        "光明区",
+    }
+)
+
 
 @dataclass(frozen=True)
 class MemoryWriteResult:
@@ -93,6 +107,8 @@ class MemoryService:
     ) -> MemoryWriteResult:
         self._require_safe_explicit_write(
             memory_type=memory_type,
+            content=content,
+            value=value,
             explicit_authorization=explicit_authorization,
             location_granularity=location_granularity,
         )
@@ -175,12 +191,21 @@ class MemoryService:
         if replay is not None:
             return MemoryWriteResult(replay, True)
         row = await self._repository.row(
-            user_id=user_id, memory_id=memory_id, lock=True
+            user_id=user_id, memory_id=memory_id, lock=True, include_deleted=True
         )
-        if row is None:
+        replay = await self._repository.operation_replay(
+            user_id=user_id, idempotency_key=key, fingerprint=fingerprint
+        )
+        if replay is not None:
+            return MemoryWriteResult(replay, True)
+        if row is None or row.deleted_at is not None:
             raise MemoryNotFoundError
         if row.version != expected_version:
             raise MemoryVersionConflictError
+        if row.type == MemoryType.USUAL_AREA.value and (
+            content is not None or value is not None
+        ):
+            raise SensitiveMemoryRejectedError
         now = utc_now()
         candidate = SqlAlchemyMemoryRepository.to_domain(row).model_copy(
             update={
@@ -239,9 +264,14 @@ class MemoryService:
         if replay is not None:
             return MemoryWriteResult(replay, True)
         row = await self._repository.row(
-            user_id=user_id, memory_id=memory_id, lock=True
+            user_id=user_id, memory_id=memory_id, lock=True, include_deleted=True
         )
-        if row is None:
+        replay = await self._repository.operation_replay(
+            user_id=user_id, idempotency_key=key, fingerprint=fingerprint
+        )
+        if replay is not None:
+            return MemoryWriteResult(replay, True)
+        if row is None or row.deleted_at is not None:
             raise MemoryNotFoundError
         if row.version != expected_version:
             raise MemoryVersionConflictError
@@ -268,14 +298,30 @@ class MemoryService:
         user_id: str,
         suggestion_id: str,
         decision: MemorySuggestionDecision,
+        memory_type: MemoryType | None,
+        content: str | None,
+        value: str | None,
         client_idempotency_key: str,
     ) -> SuggestionDecisionResult:
+        if decision is MemorySuggestionDecision.CONFIRMED:
+            if memory_type is None or content is None or value is None:
+                raise ValueError("confirmed suggestion requires explicit memory fields")
+            self._require_safe_inferred_write(
+                memory_type=memory_type,
+                content=content,
+                value=value,
+            )
+        elif memory_type is not None or content is not None or value is not None:
+            raise ValueError("rejected suggestion cannot include memory fields")
         key = _scoped_key(user_id, client_idempotency_key)
         fingerprint = plan_request_fingerprint(
             {
                 "operation": "suggestion_decision",
                 "suggestion_id": suggestion_id,
                 "decision": decision.value,
+                "memory_type": None if memory_type is None else memory_type.value,
+                "content": content,
+                "value": value,
             }
         )
         existing_key = await self._session.scalar(
@@ -295,7 +341,10 @@ class MemoryService:
             )
         )
         if existing is not None:
-            if existing.decision != decision.value:
+            if (
+                existing.decision != decision.value
+                or existing.request_fingerprint != fingerprint
+            ):
                 raise IdempotencyConflictError
             result = await self._decision_result(user_id=user_id, row=existing)
             return SuggestionDecisionResult(result.decision, result.memory, True)
@@ -304,18 +353,19 @@ class MemoryService:
         )
         if suggestion is None:
             raise MemorySuggestionUnavailableError
-        audit, payload = suggestion
+        audit, _legacy_payload = suggestion
         now = utc_now()
         memory: Memory | None = None
         if decision is MemorySuggestionDecision.CONFIRMED:
+            assert memory_type is not None and content is not None and value is not None
             memory = Memory(
                 id=generate_memory_id(),
-                type=payload.memory_type,
-                content=payload.content,
-                value=payload.value,
+                type=memory_type,
+                content=content,
+                value=value,
                 source=MemorySource(
                     type=MemorySourceType.FEEDBACK_INFERENCE,
-                    summary=payload.evidence_summary,
+                    summary="由你根据一次历史反馈建议明确确认",
                     feedback_id=audit.id,
                     plan_id=audit.plan_id,
                 ),
@@ -347,7 +397,11 @@ class MemoryService:
                     MemorySuggestionDecisionModel.user_id == user_id,
                 )
             )
-            if existing is None or existing.decision != decision.value:
+            if (
+                existing is None
+                or existing.decision != decision.value
+                or existing.request_fingerprint != fingerprint
+            ):
                 raise IdempotencyConflictError from None
             result = await self._decision_result(user_id=user_id, row=existing)
             return SuggestionDecisionResult(result.decision, result.memory, True)
@@ -376,15 +430,28 @@ class MemoryService:
     def _require_safe_explicit_write(
         *,
         memory_type: MemoryType,
+        content: str,
+        value: str,
         explicit_authorization: bool,
         location_granularity: str | None,
     ) -> None:
         if not explicit_authorization:
             raise SensitiveMemoryRejectedError
         if memory_type is MemoryType.USUAL_AREA:
-            if location_granularity != "coarse":
+            if (
+                location_granularity != "coarse"
+                or value not in _SHENZHEN_ADMIN_DISTRICTS
+                or content not in {value, f"常用区域：{value}"}
+            ):
                 raise SensitiveMemoryRejectedError
         elif location_granularity is not None:
+            raise SensitiveMemoryRejectedError
+
+    @staticmethod
+    def _require_safe_inferred_write(
+        *, memory_type: MemoryType, content: str, value: str
+    ) -> None:
+        if memory_type is MemoryType.USUAL_AREA:
             raise SensitiveMemoryRejectedError
 
     @staticmethod

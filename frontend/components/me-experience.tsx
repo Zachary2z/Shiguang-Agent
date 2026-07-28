@@ -48,9 +48,9 @@ type MemoryUsage = {
 type MemorySuggestion = {
   id: string;
   plan_id: string;
-  memory_type: MemoryType;
+  memory_type: MemoryType | null;
   content: string;
-  value: string;
+  value: string | null;
   evidence_summary: string;
   created_at: string;
 };
@@ -87,8 +87,110 @@ function safeError(error: unknown): string {
   return "记忆中心暂时没有完成这次操作。";
 }
 
-function operationKey(scope: string): string {
-  return `${scope}-${crypto.randomUUID()}`;
+type SuggestionMemoryDraft = {
+  memory_type: Exclude<MemoryType, "usual_area"> | "";
+  content: string;
+  value: string;
+};
+
+type WriteAttempt = {
+  identity: string;
+  payload: string;
+  key: string;
+};
+
+function SuggestionCard({
+  suggestion,
+  saving,
+  onDecision,
+}: {
+  suggestion: MemorySuggestion;
+  saving: boolean;
+  onDecision: (
+    suggestion: MemorySuggestion,
+    decision: "confirmed" | "rejected",
+    draft?: SuggestionMemoryDraft,
+  ) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState<SuggestionMemoryDraft>({
+    memory_type: "",
+    content: suggestion.content,
+    value: "",
+  });
+  const canConfirm = Boolean(
+    draft.memory_type && draft.content.trim() && draft.value.trim(),
+  );
+
+  return (
+    <article className="suggestion-card">
+      <span className="memory-type">中性证据候选</span>
+      <h3>{suggestion.content}</h3>
+      <p>{suggestion.evidence_summary}</p>
+      <small>未经确认，不会进入计划。请明确要保存的长期含义。</small>
+      <form
+        className="memory-edit-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (canConfirm) void onDecision(suggestion, "confirmed", draft);
+        }}
+      >
+        <label>
+          记忆类型
+          <select
+            name={`suggestion_type_${suggestion.id}`}
+            value={draft.memory_type}
+            onChange={(event) =>
+              setDraft((current) => ({
+                ...current,
+                memory_type: event.target.value as SuggestionMemoryDraft["memory_type"],
+              }))
+            }
+          >
+            <option value="">请选择</option>
+            <option value="positive_preference">喜欢</option>
+            <option value="negative_preference">避开</option>
+            <option value="pace_preference">节奏</option>
+          </select>
+        </label>
+        <label>
+          要记住的内容
+          <textarea
+            value={draft.content}
+            maxLength={500}
+            onChange={(event) =>
+              setDraft((current) => ({ ...current, content: event.target.value }))
+            }
+          />
+        </label>
+        <label>
+          结构化值
+          <input
+            value={draft.value}
+            maxLength={100}
+            onChange={(event) =>
+              setDraft((current) => ({ ...current, value: event.target.value }))
+            }
+          />
+        </label>
+        <div className="memory-actions">
+          <button
+            className="primary-button"
+            type="submit"
+            disabled={saving || !canConfirm}
+          >
+            确认记住
+          </button>
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => void onDecision(suggestion, "rejected")}
+          >
+            这次不记
+          </button>
+        </div>
+      </form>
+    </article>
+  );
 }
 
 export function MeExperience() {
@@ -107,6 +209,51 @@ export function MeExperience() {
   const detailGeneration = useRef(0);
   const actionGeneration = useRef(0);
   const csrfRef = useRef<string | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  const writeAttempt = useRef<WriteAttempt | null>(null);
+
+  const idempotencyKey = useCallback((identity: string, payload: object) => {
+    const serialized = JSON.stringify(payload);
+    if (
+      writeAttempt.current?.identity === identity &&
+      writeAttempt.current.payload === serialized
+    ) {
+      return writeAttempt.current.key;
+    }
+    const key = `${identity}-${crypto.randomUUID()}`;
+    writeAttempt.current = { identity, payload: serialized, key };
+    return key;
+  }, []);
+
+  const completeAttempt = useCallback((key: string) => {
+    if (writeAttempt.current?.key === key) writeAttempt.current = null;
+  }, []);
+
+  const loadDetail = useCallback(async (memoryId: string) => {
+    const generation = detailGeneration.current + 1;
+    detailGeneration.current = generation;
+    try {
+      const result = await apiClient.request<MemoryDetail>(
+        `/api/v1/memories/${memoryId}`,
+      );
+      if (
+        detailGeneration.current !== generation ||
+        selectedIdRef.current !== memoryId ||
+        result.memory.id !== memoryId
+      )
+        return;
+      setDetail(result);
+      setContent(result.memory.content);
+      setValue(result.memory.value);
+    } catch (error) {
+      if (
+        detailGeneration.current !== generation ||
+        selectedIdRef.current !== memoryId
+      )
+        return;
+      setFeedback(safeError(error));
+    }
+  }, []);
 
   const load = useCallback(async () => {
     const generation = loadGeneration.current + 1;
@@ -155,6 +302,7 @@ export function MeExperience() {
   }, [load]);
 
   useEffect(() => {
+    selectedIdRef.current = selectedId;
     if (!selectedId) {
       detailGeneration.current += 1;
       queueMicrotask(() => {
@@ -163,36 +311,32 @@ export function MeExperience() {
       });
       return;
     }
-    const generation = detailGeneration.current + 1;
-    detailGeneration.current = generation;
-    queueMicrotask(() => setConfirmDelete(false));
-    void apiClient
-      .request<MemoryDetail>(`/api/v1/memories/${selectedId}`)
-      .then((result) => {
-        if (
-          detailGeneration.current !== generation ||
-          result.memory.id !== selectedId
-        )
-          return;
-        setDetail(result);
-        setContent(result.memory.content);
-        setValue(result.memory.value);
-      })
-      .catch((error) => {
-        if (detailGeneration.current !== generation) return;
-        setFeedback(safeError(error));
-      });
-  }, [selectedId]);
+    queueMicrotask(() => {
+      setConfirmDelete(false);
+      void loadDetail(selectedId);
+    });
+  }, [loadDetail, selectedId]);
 
   async function decide(
     suggestion: MemorySuggestion,
     decision: "confirmed" | "rejected",
+    draft?: SuggestionMemoryDraft,
   ) {
     if (!csrf) return;
     const generation = actionGeneration.current + 1;
     actionGeneration.current = generation;
     setSaving(true);
     setFeedback("");
+    const decisionFields =
+      decision === "confirmed"
+        ? {
+            memory_type: draft?.memory_type || null,
+            content: draft?.content.trim() || null,
+            value: draft?.value.trim() || null,
+          }
+        : {};
+    const payload = { decision, ...decisionFields };
+    const key = idempotencyKey(`suggestion-${suggestion.id}`, payload);
     try {
       await apiClient.request(
         `/api/v1/memory-suggestions/${suggestion.id}/decision`,
@@ -201,11 +345,12 @@ export function MeExperience() {
           csrfToken: csrf,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            idempotency_key: operationKey(`suggestion-${suggestion.id}`),
-            decision,
+            idempotency_key: key,
+            ...payload,
           }),
         },
       );
+      completeAttempt(key);
       if (
         actionGeneration.current !== generation ||
         !suggestions.some((item) => item.id === suggestion.id)
@@ -240,9 +385,15 @@ export function MeExperience() {
     if (!csrf) return;
     const generation = actionGeneration.current + 1;
     actionGeneration.current = generation;
-    const identity = `${memory.id}:${memory.version}`;
     setSaving(true);
     setFeedback("");
+    const payload = {
+      expected_version: memory.version,
+      ...patch,
+      expires_at: null,
+      change_expiry: false,
+    };
+    const key = idempotencyKey(`memory-${memory.id}`, payload);
     try {
       const result = await apiClient.request<MemoryDetail>(
         `/api/v1/memories/${memory.id}`,
@@ -251,14 +402,12 @@ export function MeExperience() {
           csrfToken: csrf,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            idempotency_key: operationKey(`memory-${identity}`),
-            expected_version: memory.version,
-            ...patch,
-            expires_at: null,
-            change_expiry: false,
+            idempotency_key: key,
+            ...payload,
           }),
         },
       );
+      completeAttempt(key);
       if (
         actionGeneration.current !== generation ||
         selectedId !== memory.id ||
@@ -273,7 +422,9 @@ export function MeExperience() {
     } catch (error) {
       if (actionGeneration.current !== generation) return;
       setFeedback(safeError(error));
-      if (error instanceof ApiError && error.code === "conflict") await load();
+      if (error instanceof ApiError && error.code === "conflict") {
+        await Promise.all([load(), loadDetail(memory.id)]);
+      }
     } finally {
       if (actionGeneration.current === generation) setSaving(false);
     }
@@ -284,16 +435,19 @@ export function MeExperience() {
     const generation = actionGeneration.current + 1;
     actionGeneration.current = generation;
     setSaving(true);
+    const payload = { expected_version: memory.version };
+    const key = idempotencyKey(`delete-${memory.id}`, payload);
     try {
       await apiClient.request(`/api/v1/memories/${memory.id}`, {
         method: "DELETE",
         csrfToken: csrf,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          idempotency_key: operationKey(`delete-${memory.id}-${memory.version}`),
-          expected_version: memory.version,
+          idempotency_key: key,
+          ...payload,
         }),
       });
+      completeAttempt(key);
       if (
         actionGeneration.current !== generation ||
         selectedId !== memory.id ||
@@ -306,7 +460,9 @@ export function MeExperience() {
     } catch (error) {
       if (actionGeneration.current !== generation) return;
       setFeedback(safeError(error));
-      if (error instanceof ApiError && error.code === "conflict") await load();
+      if (error instanceof ApiError && error.code === "conflict") {
+        await Promise.all([load(), loadDetail(memory.id)]);
+      }
     } finally {
       if (actionGeneration.current === generation) setSaving(false);
     }
@@ -370,31 +526,12 @@ export function MeExperience() {
             {suggestions.length ? (
               <div className="suggestion-list">
                 {suggestions.map((suggestion) => (
-                  <article className="suggestion-card" key={suggestion.id}>
-                    <span className="memory-type">
-                      {memoryTypeLabels[suggestion.memory_type]}
-                    </span>
-                    <h3>{suggestion.content}</h3>
-                    <p>{suggestion.evidence_summary}</p>
-                    <small>未经确认，不会进入计划</small>
-                    <div className="memory-actions">
-                      <button
-                        className="primary-button"
-                        type="button"
-                        disabled={saving}
-                        onClick={() => void decide(suggestion, "confirmed")}
-                      >
-                        确认记住
-                      </button>
-                      <button
-                        type="button"
-                        disabled={saving}
-                        onClick={() => void decide(suggestion, "rejected")}
-                      >
-                        这次不记
-                      </button>
-                    </div>
-                  </article>
+                  <SuggestionCard
+                    key={suggestion.id}
+                    suggestion={suggestion}
+                    saving={saving}
+                    onDecision={decide}
+                  />
                 ))}
               </div>
             ) : (
@@ -421,6 +558,7 @@ export function MeExperience() {
                       onClick={() => {
                         actionGeneration.current += 1;
                         setSaving(false);
+                        selectedIdRef.current = memory.id;
                         setSelectedId(memory.id);
                       }}
                     >
@@ -454,12 +592,19 @@ export function MeExperience() {
                     <span>{detail.memory.disabled_at ? "已停用" : "生效中"}</span>
                   </div>
                   <form className="memory-edit-form" onSubmit={submitEdit}>
+                    {detail.memory.type === "usual_area" ? (
+                      <p role="note">
+                        常用区域只保存结构化行政区。当前版本不允许修改其内容或值；
+                        你仍可停用、启用或删除。
+                      </p>
+                    ) : null}
                     <label>
                       记忆内容
                       <textarea
                         name="memory_content"
                         value={content}
                         maxLength={500}
+                        disabled={detail.memory.type === "usual_area"}
                         onChange={(event) => setContent(event.target.value)}
                       />
                     </label>
@@ -469,13 +614,19 @@ export function MeExperience() {
                         name="memory_value"
                         value={value}
                         maxLength={100}
+                        disabled={detail.memory.type === "usual_area"}
                         onChange={(event) => setValue(event.target.value)}
                       />
                     </label>
                     <button
                       className="primary-button"
                       type="submit"
-                      disabled={saving || !content.trim() || !value.trim()}
+                      disabled={
+                        saving ||
+                        detail.memory.type === "usual_area" ||
+                        !content.trim() ||
+                        !value.trim()
+                      }
                     >
                       保存修改
                     </button>

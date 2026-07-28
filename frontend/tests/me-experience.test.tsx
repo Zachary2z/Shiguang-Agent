@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MeExperience } from "@/components/me-experience";
-import { apiClient } from "@/lib/api-client";
+import { ApiError, apiClient } from "@/lib/api-client";
 
 const firstMemory = {
   id: "mem_11111111111111111111111111111111",
@@ -105,7 +105,7 @@ describe("MeExperience", () => {
     expect(
       await screen.findByRole("heading", { name: "记忆建议" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("未经确认，不会进入计划")).toBeInTheDocument();
+    expect(screen.getByText(/未经确认，不会进入计划/)).toBeInTheDocument();
     expect(screen.getByText("尚未实现 · 已关闭")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "提醒保持关闭" }),
@@ -148,8 +148,16 @@ describe("MeExperience", () => {
     });
     render(<MeExperience />);
     const confirm = await screen.findByRole("button", { name: "确认记住" });
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "记忆类型" }),
+      "pace_preference",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "结构化值" }),
+      "relaxed",
+    );
     await user.click(confirm);
-    expect(screen.getByText("未经确认，不会进入计划")).toBeInTheDocument();
+    expect(screen.getByText(/未经确认，不会进入计划/)).toBeInTheDocument();
     expect(confirm).toBeDisabled();
     decision.resolve({
       decision: "confirmed",
@@ -157,7 +165,7 @@ describe("MeExperience", () => {
       replayed: false,
     });
     await waitFor(() =>
-      expect(screen.queryByText("未经确认，不会进入计划")).not.toBeInTheDocument(),
+      expect(screen.queryByText(/未经确认，不会进入计划/)).not.toBeInTheDocument(),
     );
   });
 
@@ -247,5 +255,177 @@ describe("MeExperience", () => {
         within(detailCard!).getByRole("textbox", { name: "记忆内容" }),
       ).toHaveValue(secondMemory.content),
     );
+  });
+
+  it("does not let a late write response or finally restore old detail or busy", async () => {
+    const user = userEvent.setup();
+    const lateWrite = deferred<{
+      memory: Omit<typeof firstMemory, "version"> & { version: number };
+      usages: never[];
+      replayed: boolean;
+    }>();
+    vi.mocked(apiClient.request).mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions")
+        return { csrf_token: "csrf-runtime-only" } as never;
+      if (path === "/api/v1/memories")
+        return { items: [firstMemory, secondMemory] } as never;
+      if (path === "/api/v1/memory-suggestions") return { items: [] } as never;
+      if (path === `/api/v1/memories/${firstMemory.id}`) {
+        if (options?.method === "PATCH") return lateWrite.promise as never;
+        return { memory: firstMemory, usages: [], replayed: false } as never;
+      }
+      if (path === `/api/v1/memories/${secondMemory.id}`)
+        return { memory: secondMemory, usages: [], replayed: false } as never;
+      throw new Error("unexpected");
+    });
+    render(<MeExperience />);
+    await user.click(
+      await screen.findByRole("button", { name: new RegExp(firstMemory.content) }),
+    );
+    await screen.findByRole("textbox", { name: "记忆内容" });
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    await user.click(
+      screen.getByRole("button", { name: new RegExp(secondMemory.content) }),
+    );
+    expect(
+      await screen.findByRole("textbox", { name: "记忆内容" }),
+    ).toHaveValue(secondMemory.content);
+    expect(screen.getByRole("button", { name: "保存修改" })).toBeEnabled();
+    lateWrite.resolve({
+      memory: { ...firstMemory, version: 2 },
+      usages: [],
+      replayed: false,
+    });
+    await waitFor(() => {
+      expect(screen.getByRole("textbox", { name: "记忆内容" })).toHaveValue(
+        secondMemory.content,
+      );
+      expect(screen.getByRole("button", { name: "保存修改" })).toBeEnabled();
+    });
+  });
+
+  it("reuses one idempotency key after an uncertain memory update", async () => {
+    const user = userEvent.setup();
+    const keys: string[] = [];
+    let patchCalls = 0;
+    vi.mocked(apiClient.request).mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions")
+        return { csrf_token: "csrf-runtime-only" } as never;
+      if (path === "/api/v1/memories")
+        return { items: [secondMemory] } as never;
+      if (path === "/api/v1/memory-suggestions") return { items: [] } as never;
+      if (path === `/api/v1/memories/${secondMemory.id}`) {
+        if (options?.method === "PATCH") {
+          patchCalls += 1;
+          const body = JSON.parse(String(options.body));
+          keys.push(body.idempotency_key);
+          if (patchCalls === 1)
+            throw new ApiError("network_error", null, null);
+          return {
+            memory: {
+              ...secondMemory,
+              content: body.content,
+              value: body.value,
+              version: 2,
+            },
+            usages: [],
+            replayed: patchCalls === 2,
+          } as never;
+        }
+        return { memory: secondMemory, usages: [], replayed: false } as never;
+      }
+      throw new Error("unexpected");
+    });
+    render(<MeExperience />);
+    await user.click(
+      await screen.findByRole("button", { name: new RegExp(secondMemory.content) }),
+    );
+    const editor = await screen.findByRole("textbox", { name: "记忆内容" });
+    await user.clear(editor);
+    await user.type(editor, "喜欢安静展览");
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    expect(await screen.findByText("记忆中心暂时没有完成这次操作。")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    expect(await screen.findByText("记忆已更新。")).toBeVisible();
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+  });
+
+  it("refreshes both list and selected detail after a 409", async () => {
+    const user = userEvent.setup();
+    const serverMemory = {
+      ...secondMemory,
+      content: "服务端更新后的记忆",
+      version: 2,
+    };
+    let listCalls = 0;
+    let detailCalls = 0;
+    vi.mocked(apiClient.request).mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions")
+        return { csrf_token: "csrf-runtime-only" } as never;
+      if (path === "/api/v1/memories") {
+        listCalls += 1;
+        return {
+          items: [listCalls === 1 ? secondMemory : serverMemory],
+        } as never;
+      }
+      if (path === "/api/v1/memory-suggestions") return { items: [] } as never;
+      if (path === `/api/v1/memories/${secondMemory.id}`) {
+        if (options?.method === "PATCH")
+          throw new ApiError("conflict", 409, "request-409");
+        detailCalls += 1;
+        return {
+          memory: detailCalls === 1 ? secondMemory : serverMemory,
+          usages: [],
+          replayed: false,
+        } as never;
+      }
+      throw new Error("unexpected");
+    });
+    render(<MeExperience />);
+    await user.click(
+      await screen.findByRole("button", { name: new RegExp(secondMemory.content) }),
+    );
+    await screen.findByRole("textbox", { name: "记忆内容" });
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    await waitFor(() => {
+      expect(listCalls).toBeGreaterThanOrEqual(2);
+      expect(detailCalls).toBeGreaterThanOrEqual(2);
+      expect(screen.getByRole("textbox", { name: "记忆内容" })).toHaveValue(
+        serverMemory.content,
+      );
+    });
+  });
+
+  it("keeps usual-area content read-only while retaining lifecycle controls", async () => {
+    const user = userEvent.setup();
+    const areaMemory = {
+      ...secondMemory,
+      type: "usual_area",
+      content: "常用区域：福田区",
+      value: "福田区",
+    } as const;
+    vi.mocked(apiClient.request).mockImplementation(async (path) => {
+      if (path === "/api/v1/demo/sessions")
+        return { csrf_token: "csrf-runtime-only" } as never;
+      if (path === "/api/v1/memories")
+        return { items: [areaMemory] } as never;
+      if (path === "/api/v1/memory-suggestions") return { items: [] } as never;
+      if (path === `/api/v1/memories/${areaMemory.id}`)
+        return { memory: areaMemory, usages: [], replayed: false } as never;
+      throw new Error("unexpected");
+    });
+    render(<MeExperience />);
+    await user.click(
+      await screen.findByRole("button", { name: /常用区域：福田区/ }),
+    );
+    expect(
+      await screen.findByText(/当前版本不允许修改其内容或值/),
+    ).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "记忆内容" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "结构化值" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存修改" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "停用记忆" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "删除记忆" })).toBeEnabled();
   });
 });

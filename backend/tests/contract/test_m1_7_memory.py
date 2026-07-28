@@ -23,6 +23,8 @@ from app.infrastructure.db.models import (
     MemoryOperationModel,
     MemoryPlanUsageModel,
     MemorySuggestionDecisionModel,
+    PlanFeedbackAuditModel,
+    PlanFeedbackStateModel,
     UserModel,
 )
 from tests.contract.test_m0_2d_api import _client, _demo
@@ -178,11 +180,31 @@ async def test_feedback_suggestion_confirm_reject_and_evidence_is_not_reasked(
                 "expected_revision": None,
             },
         )
-        suggestion = feedback.json()["feedback"]["preference_suggestion"]
-        assert suggestion["confirmation_status"] == "pending"
+        assert feedback.json()["feedback"]["preference_suggestion"] is None
+        suggestion_id = feedback.json()["feedback"]["id"]
+        async with api.state.demo_database.session_factory() as session:
+            audit = await session.get(PlanFeedbackAuditModel, suggestion_id)
+            state = await session.get(PlanFeedbackStateModel, plan_id)
+            assert audit is not None and state is not None
+            legacy_json = {
+                "content": "一次历史反馈留下的待确认建议",
+                "confirmation_status": "pending",
+            }
+            audit.preference_suggestion_json = legacy_json
+            state.preference_suggestion_json = legacy_json
+            await session.commit()
         pending = await client.get("/api/v1/memory-suggestions")
         assert len(pending.json()["items"]) == 1
-        suggestion_id = pending.json()["items"][0]["id"]
+        pending_item = pending.json()["items"][0]
+        assert pending_item == {
+            "id": suggestion_id,
+            "plan_id": plan_id,
+            "memory_type": None,
+            "content": "一次历史反馈留下的待确认建议",
+            "value": None,
+            "evidence_summary": "来自一次历史反馈建议，尚未形成长期偏好",
+            "created_at": pending_item["created_at"],
+        }
         async with api.state.demo_database.session_factory() as session:
             foreign_user_id = generate_user_id()
             session.add(
@@ -200,6 +222,9 @@ async def test_feedback_suggestion_confirm_reject_and_evidence_is_not_reasked(
                     user_id=foreign_user_id,
                     suggestion_id=suggestion_id,
                     decision=MemorySuggestionDecision.CONFIRMED,
+                    memory_type=MemoryType.PACE_PREFERENCE,
+                    content="以后优先安排轻松节奏",
+                    value="relaxed",
                     client_idempotency_key="foreign-suggestion",
                 )
             foreign_user = await session.get(UserModel, foreign_user_id)
@@ -207,23 +232,51 @@ async def test_feedback_suggestion_confirm_reject_and_evidence_is_not_reasked(
             await session.delete(foreign_user)
             await session.commit()
 
+        missing_fields = await client.post(
+            f"/api/v1/memory-suggestions/{suggestion_id}/decision",
+            json={"idempotency_key": "missing-fields", "decision": "confirmed"},
+        )
+        assert missing_fields.status_code == 422
         confirmed = await client.post(
             f"/api/v1/memory-suggestions/{suggestion_id}/decision",
-            json={"idempotency_key": "confirm-suggestion", "decision": "confirmed"},
+            json={
+                "idempotency_key": "confirm-suggestion",
+                "decision": "confirmed",
+                "memory_type": "pace_preference",
+                "content": "以后优先安排轻松节奏",
+                "value": "relaxed",
+            },
         )
         replay = await client.post(
             f"/api/v1/memory-suggestions/{suggestion_id}/decision",
-            json={"idempotency_key": "confirm-suggestion", "decision": "confirmed"},
+            json={
+                "idempotency_key": "confirm-suggestion",
+                "decision": "confirmed",
+                "memory_type": "pace_preference",
+                "content": "以后优先安排轻松节奏",
+                "value": "relaxed",
+            },
         )
         assert confirmed.status_code == replay.status_code == 200
         assert confirmed.json()["memory"]["type"] == "pace_preference"
         assert confirmed.json()["memory"]["source"] == {
             "type": "feedback_inference",
-            "summary": "来自你对本次计划的反馈：这次节奏太赶，只完成了一半",
+            "summary": "由你根据一次历史反馈建议明确确认",
             "feedback_id": suggestion_id,
             "plan_id": plan_id,
         }
         assert replay.json()["replayed"] is True
+        changed_payload = await client.post(
+            f"/api/v1/memory-suggestions/{suggestion_id}/decision",
+            json={
+                "idempotency_key": "confirm-suggestion",
+                "decision": "confirmed",
+                "memory_type": "positive_preference",
+                "content": "改成另一项长期含义",
+                "value": "展览",
+            },
+        )
+        assert changed_payload.status_code == 409
         assert (await client.get("/api/v1/memory-suggestions")).json()["items"] == []
 
         second_plan_id, _collection_id, second_items = await _seed_plan(
@@ -240,12 +293,25 @@ async def test_feedback_suggestion_confirm_reject_and_evidence_is_not_reasked(
             },
         )
         assert second_feedback.status_code == 200
+        assert second_feedback.json()["feedback"]["preference_suggestion"] is None
+        second_id = second_feedback.json()["feedback"]["id"]
+        async with api.state.demo_database.session_factory() as session:
+            audit = await session.get(PlanFeedbackAuditModel, second_id)
+            state = await session.get(PlanFeedbackStateModel, second_plan_id)
+            assert audit is not None and state is not None
+            legacy_json = {
+                "content": "另一次历史反馈候选",
+                "confirmation_status": "pending",
+            }
+            audit.preference_suggestion_json = legacy_json
+            state.preference_suggestion_json = legacy_json
+            await session.commit()
         pending_ids = [
             item["id"]
             for item in (await client.get("/api/v1/memory-suggestions")).json()["items"]
         ]
         assert len(pending_ids) == 1
-        second_id = pending_ids[0]
+        assert pending_ids[0] == second_id
         rejected = await client.post(
             f"/api/v1/memory-suggestions/{second_id}/decision",
             json={"idempotency_key": "reject-suggestion", "decision": "rejected"},
@@ -255,7 +321,13 @@ async def test_feedback_suggestion_confirm_reject_and_evidence_is_not_reasked(
         assert (await client.get("/api/v1/memory-suggestions")).json()["items"] == []
         reverse = await client.post(
             f"/api/v1/memory-suggestions/{second_id}/decision",
-            json={"idempotency_key": "reverse-rejection", "decision": "confirmed"},
+            json={
+                "idempotency_key": "reverse-rejection",
+                "decision": "confirmed",
+                "memory_type": "positive_preference",
+                "content": "以后喜欢安静地点",
+                "value": "安静",
+            },
         )
         assert reverse.status_code == 409
 
@@ -369,7 +441,56 @@ async def test_sensitive_location_and_failed_commit_leave_no_partial_memory(
             explicit_authorization=False,
             location_granularity="coarse",
         )
-        assert rejected.status_code == unauthorized.status_code == 422
+        disguised_exact = await _create_memory(
+            client,
+            key="disguised-exact-area",
+            type="usual_area",
+            content="常用区域：福田区",
+            value="深圳市福田区某小区 2 栋 201",
+            location_granularity="coarse",
+        )
+        assert (
+            rejected.status_code
+            == unauthorized.status_code
+            == disguised_exact.status_code
+            == 422
+        )
+
+        coarse = await _create_memory(
+            client,
+            key="coarse-area",
+            type="usual_area",
+            content="常用区域：福田区",
+            value="福田区",
+            location_granularity="coarse",
+        )
+        assert coarse.status_code == 200
+        forbidden_edit = await client.patch(
+            f"/api/v1/memories/{coarse.json()['memory']['id']}",
+            json={
+                "idempotency_key": "edit-coarse-area",
+                "expected_version": coarse.json()["memory"]["version"],
+                "content": "常用区域：南山区",
+                "value": "南山区",
+                "enabled": None,
+                "expires_at": None,
+                "change_expiry": False,
+            },
+        )
+        assert forbidden_edit.status_code == 422
+        disabled = await client.patch(
+            f"/api/v1/memories/{coarse.json()['memory']['id']}",
+            json={
+                "idempotency_key": "disable-coarse-area",
+                "expected_version": coarse.json()["memory"]["version"],
+                "content": None,
+                "value": None,
+                "enabled": False,
+                "expires_at": None,
+                "change_expiry": False,
+            },
+        )
+        assert disabled.status_code == 200
 
         user_id = await _current_user_id(api)
         async with api.state.demo_database.session_factory() as session:
@@ -391,10 +512,10 @@ async def test_sensitive_location_and_failed_commit_leave_no_partial_memory(
                     client_idempotency_key="rollback",
                 )
         async with api.state.demo_database.session_factory() as session:
-            assert await session.scalar(select(func.count()).select_from(MemoryModel)) == 0
+            assert await session.scalar(select(func.count()).select_from(MemoryModel)) == 1
             assert await session.scalar(
                 select(func.count()).select_from(MemoryOperationModel)
-            ) == 0
+            ) == 2
 
 
 @pytest.mark.asyncio
