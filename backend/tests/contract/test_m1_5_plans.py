@@ -166,7 +166,8 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
             session_factory=database.session_factory,
             pricing=ConfiguredPricingPolicy.from_settings(test_settings),
             adjustment_parser=PlanAdjustmentParser(
-                FakeProvider([fake_response(content='{"pace":"relaxed"}')])
+                FakeProvider([fake_response(content='{"pace":"relaxed"}')]),
+                structured_output_mode=test_settings.extraction_structured_output_mode(),
             ),
             executor_factory=lambda session: DraftExecutor(),
         )

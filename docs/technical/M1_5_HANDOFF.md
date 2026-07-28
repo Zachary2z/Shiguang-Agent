@@ -4,7 +4,7 @@
 
 ## 本次主控缺陷修复
 
-本修复线性继承失败候选 `2e554e7c1114e3ccb6c2c5e3ac0607d126ea509e`，不改写
+本轮修复线性继承候选 `7d6d66f8972d1eedeaa0f8178fd32b9e0be2e07e`，不改写
 历史、不合并或推送，也不开始 M1-6。
 
 - `SqlAlchemyPlanRepository` 的 DML 行数统一通过仓库既有
@@ -27,6 +27,22 @@
 - `/plans` 对已有 draft/confirmed 计划提供“新建计划”，创建新的 root；最新调整
   failed/cancelled 时仍展示版本索引，可读取上一份草案。显式确认、未确认不执行、
   确认外部地点不自动收藏的边界不变。
+- any_branch 在单次计划中只由 `MapPlanFactResolver` 调用一次既有
+  `PlaceMatchingService`；解析出的 POI 按 `collection_item_id` 冻结在
+  `CollectionPlanningFacts.resolved_poi`。`StructuredCollectionRetrievalService`
+  不再持有 matcher，也不会二次搜索，草案来源使用同一 POI 和同一查询时间。
+- `PlanAdjustmentParser` 使用 `Settings.extraction_structured_output_mode()` 和公共
+  `structured_response_format`。百炼默认明确请求已验证的 `json_object`，schema
+  写入 Prompt，返回后仍由严格 Pydantic 契约校验；没有探测、fallback 或重试。
+  patch 不再接受 `Coordinate` 或 `ActivityArea`，发送给模型的当前约束也排除
+  origin；地点意图不能直接写入路线硬事实。
+- Event 仍是单一 Event 收藏。文本/截图保存后，经同一 `PlaceMatchingService`、
+  `PlaceCandidateSnapshot` 和 `PlaceTargetSelectionService` 产生地点候选；只有
+  用户明确选择一个 exact POI 后才可进入计划，未选择、日期不完整或仅日期 Event
+  继续被保守排除，Event 仍禁止 any_branch。
+- 事实候选不再按随机 UUID 排序，沿用收藏仓储的 `created_at, id` 稳定顺序和既有
+  资格/规划排序；候选上限仍为 6、路线调用硬上限仍为 48。历史版本标签已修正为
+  “历史版本”，不会再显示“当前版本”。
 
 ## 唯一实现与数据模型
 
@@ -50,9 +66,10 @@ cancelled`。每个版本有独立 trace 和幂等键，旧任务只能条件更
 `require_confirmed_for_execution`，本阶段没有实现任何执行动作。
 
 数据库现有 `20260728_0012` 保存 plans、plan_items、approvals。本修复新增单一向前
-迁移 `20260728_0013`，直接继承 `0012`，允许 Event 保存 exact 正式 PlaceTarget，
-并将 exact POI 收藏去重索引限定为 Place，避免 Event 与地点收藏互相吞并。Event
-仍不能保存 any_branch 或候选快照。Alembic 唯一 head 为 `20260728_0013`。
+迁移 `20260728_0013` 允许 Event 保存 exact 正式 PlaceTarget，并将 exact POI 收藏
+去重索引限定为 Place。本轮新增单一向前迁移 `20260728_0014`，直接继承 `0013`，
+允许 Event 保存用户选择所需的候选快照；Event 仍不能保存 any_branch。Alembic
+唯一 head 为 `20260728_0014`。
 
 ## 产品示例
 
@@ -83,19 +100,19 @@ Next.js、FastAPI、JobQueue、Worker、临时 SQLite 与 StubMapProvider，覆�
 ## 验证结果
 
 - `pip check`、Ruff：通过。
-- strict mypy：`125 source files`，0 错误。
-- 后端完整离线：`1592 passed, 13 skipped`。
+- strict mypy：`126 source files`，0 错误。
+- 后端完整离线：`1596 passed, 13 skipped`。
 - 迁移专测：`23 passed`；upgrade/current/check、downgrade/upgrade 和唯一 head
   均通过。
 - 仓库外 DNS/socket 封锁插件：计划聚焦
   `36 passed, 21 deselected`；非真实全集
   `1592 passed, 11 skipped, 2 deselected`。
-- 前端 lint、typecheck、build：通过；Vitest `58 passed`。
+- 前端 lint、typecheck、build：通过；Vitest `59 passed`。
 - Playwright：`26 passed`，其中 1 条为上述真实计划栈闭环。
 
 仓库默认开发数据库仍停在旧 revision，直接对其运行 `alembic check` 会正确提示未
 升级；没有修改该用户数据库。仓库外临时数据库已完成 `upgrade head → current →
-check`，结果为 `20260728_0013 (head)` 且无待生成操作。
+check`，结果为 `20260728_0014 (head)` 且无待生成操作。
 
 ## 复杂度、安全与范围
 

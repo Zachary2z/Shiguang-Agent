@@ -2534,3 +2534,28 @@ Client，不建立第二套规划器或前端状态框架；不得提前实现 M
   QA 显式 `_env_file=None`；未读取本机 `.env` 内容，真实模型、地图、网页及其他
   外部/付费 API 调用均为 0；当前无已知未关闭 P0/P1
 - 阶段状态：继续为“待主控验收”，不自行标记完成
+
+#### 2026-07-28｜M1-5 剩余主控验收缺陷修复｜待主控验收
+
+- 线性基线：继承 `7d6d66f8972d1eedeaa0f8178fd32b9e0be2e07e`，仅追加一个
+  M1-5 修复提交；未合并、未推送、未开始 M1-6
+- any_branch：一次计划对每个 any_branch 只调用一次既有
+  `PlaceMatchingService`；具体 POI 按收藏 ID 冻结进现有规划事实契约，结构化检索
+  不再搜索，事实层与最终草案使用同一 POI 和查询时间
+- 结构化调整：Worker、Demo Worker 与真实离线 E2E 均把
+  `Settings.extraction_structured_output_mode()` 传入唯一 `PlanAdjustmentParser`；
+  默认请求 `json_object`，schema 位于 Prompt，Pydantic 严格校验保留，无自动
+  fallback、探测或重试。模型不能输入 origin 精确坐标，也不能输出 Coordinate 或
+  ActivityArea 写入计划硬事实
+- Event：仍保存为一个 Event；文本/截图保存后复用唯一 Matcher、候选快照和地点
+  选择服务，用户明确选择一个 exact POI 后才可进入计划；未选择、日期不完整和仅
+  日期 Event 保守排除，any_branch 继续禁止。新增迁移 `20260728_0014`
+- 排序与恢复：删除事实层 UUID 排序，复用仓储稳定顺序、资格与规划排序；显式
+  include 不被随机截断。候选/路线调用上限仍为 `6 / 48`。历史版本显示“历史版本”
+- 离线验证：pip check、Ruff、strict mypy `126 source files` 通过；后端非真实全集
+  `1596 passed, 13 skipped`；迁移专测 `23 passed`，唯一 head
+  `20260728_0014`；前端 lint、typecheck、build 通过，Vitest `59 passed`，
+  Playwright `26 passed`
+- 复杂度与安全：删除检索层第二次 any_branch 搜索，没有第二套 Provider、Matcher、
+  Parser、Planner、地点选择服务、排序或状态机；未读取 `.env`，真实模型、地图、
+  网页及付费 API 调用为 0。阶段继续为“待主控验收”

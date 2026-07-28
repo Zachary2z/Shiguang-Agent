@@ -14,7 +14,6 @@ from alembic import command
 from alembic.config import Config
 
 from app.application import (
-    PlaceMatchingService,
     PlanDraftService,
     StructuredCollectionRetrievalError,
     StructuredCollectionRetrievalService,
@@ -23,6 +22,10 @@ from app.application.map_plan_facts import (
     MAX_PLAN_FACT_CANDIDATES,
     MAX_PLAN_ROUTE_CALLS,
     MapPlanFactResolver,
+)
+from app.application.plan_experience import (
+    ExistingPlanServicesExecutor,
+    PlanGenerationOutcome,
 )
 from app.config import Settings
 from app.domain.collections import (
@@ -47,7 +50,6 @@ from app.domain.places import (
     MatchEvidence,
     MatchStatus,
     PlaceConfirmationSource,
-    PlaceMatchingPolicy,
     PlaceScope,
     PlaceTarget,
     Poi,
@@ -296,6 +298,24 @@ def _known_event_facts(
     )
 
 
+def _known_branch_facts(
+    item: CollectionItem,
+    poi: Poi,
+    *,
+    dynamic: PoiPlanningFacts | None = None,
+) -> CollectionPlanningFacts:
+    provider_facts = dynamic or _known_poi_facts(poi)
+    values = provider_facts.model_dump(exclude={"provider", "poi_id"})
+    return CollectionPlanningFacts(
+        collection_item_id=item.id,
+        formal_city=_constraints().city_scope,
+        location_confirmed=True,
+        coordinate=poi.coordinate,
+        resolved_poi=poi,
+        **values,
+    )
+
+
 def _draft_facts(
     *,
     collection_item_ids: tuple[str, ...],
@@ -326,14 +346,9 @@ def _service(
     provider: StubMapProvider | None = None,
 ) -> tuple[StructuredCollectionRetrievalService, ReadOnlyRepository]:
     repository = ReadOnlyRepository(items)
-    matching = PlaceMatchingService(
-        map_provider=provider or StubMapProvider(),
-        policy=Settings(_env_file=None, app_env="test").place_matching_policy(),
-    )
     return (
         StructuredCollectionRetrievalService(
             repository=repository,  # type: ignore[arg-type]
-            place_matching=matching,
         ),
         repository,
     )
@@ -408,14 +423,6 @@ async def test_sql_repository_retrieval_is_user_scoped_and_read_only(
         repository = SqlAlchemyCollectionRepository(session)
         service = StructuredCollectionRetrievalService(
             repository=repository,
-            place_matching=PlaceMatchingService(
-                map_provider=StubMapProvider(),
-                policy=PlaceMatchingPolicy(
-                    unique_match_score=30,
-                    minimum_score_gap=5,
-                    candidate_score=20,
-                ),
-            ),
         )
         result = await service.retrieve(
             user_id=user_id,
@@ -466,14 +473,6 @@ async def test_repository_failure_and_owner_violation_are_fixed_and_do_not_leak(
             repository.list_collection_items = cross_owner  # type: ignore[method-assign]
         service = StructuredCollectionRetrievalService(
             repository=repository,  # type: ignore[arg-type]
-            place_matching=PlaceMatchingService(
-                map_provider=StubMapProvider(),
-                policy=PlaceMatchingPolicy(
-                    unique_match_score=30,
-                    minimum_score_gap=5,
-                    candidate_score=20,
-                ),
-            ),
         )
         with pytest.raises(StructuredCollectionRetrievalError) as captured:
             await service.retrieve(
@@ -520,7 +519,10 @@ async def test_constraints_expiry_boundary_stops_before_repository_and_map() -> 
     valid = await valid_service.retrieve(
         user_id=user_id,
         constraints=constraints,
-        facts=PlanningFactSnapshot(pois=(_known_poi_facts(branch),)),
+        facts=PlanningFactSnapshot(
+            collections=(_known_branch_facts(brand, branch),),
+            pois=(_known_poi_facts(branch),),
+        ),
         now=expiry - timedelta(microseconds=1),
     )
     assert valid.included
@@ -596,14 +598,6 @@ async def test_retrieval_preserves_repository_and_map_cancellation() -> None:
 
     repository_service = StructuredCollectionRetrievalService(
         repository=CancelledRepository([]),  # type: ignore[arg-type]
-        place_matching=PlaceMatchingService(
-            map_provider=StubMapProvider(),
-            policy=PlaceMatchingPolicy(
-                unique_match_score=30,
-                minimum_score_gap=5,
-                candidate_score=20,
-            ),
-        ),
     )
     with pytest.raises(asyncio.CancelledError) as repository_error:
         await repository_service.retrieve(
@@ -614,24 +608,17 @@ async def test_retrieval_preserves_repository_and_map_cancellation() -> None:
         )
     assert repository_error.value is repository_cancelled
 
-    map_cancelled = asyncio.CancelledError()
-
-    async def cancel_map(_request: Any) -> None:
-        raise map_cancelled
-
     brand = _place(user_id, title="测试咖啡", target=_brand_target())
-    map_service, repository = _service(
-        [brand],
-        provider=_branch_provider((), call_hook=cancel_map),
+    map_service, repository = _service([brand])
+    result = await map_service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(area=None, origin=ORIGIN),
+        facts=PlanningFactSnapshot(),
+        now=NOW,
     )
-    with pytest.raises(asyncio.CancelledError) as map_error:
-        await map_service.retrieve(
-            user_id=user_id,
-            constraints=_constraints(area=None, origin=ORIGIN),
-            facts=PlanningFactSnapshot(),
-            now=NOW,
-        )
-    assert map_error.value is map_cancelled
+    assert CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT in (
+        result.decisions[0].reason_codes
+    )
     assert repository.calls == [(user_id, True)]
 
 
@@ -1166,7 +1153,10 @@ async def test_production_policy_needs_context_candidate_is_evaluated_and_includ
     )
     service, repository = _service([brand], provider=_branch_provider((branch,)))
     constraints = _constraints(area=None, origin=ORIGIN)
-    facts = PlanningFactSnapshot(pois=(_known_poi_facts(branch),))
+    facts = PlanningFactSnapshot(
+        collections=(_known_branch_facts(brand, branch),),
+        pois=(_known_poi_facts(branch),),
+    )
     before = copy.deepcopy(repository.items)
 
     first = await service.retrieve(
@@ -1187,7 +1177,7 @@ async def test_production_policy_needs_context_candidate_is_evaluated_and_includ
     assert first.included[0].poi.poi_id == branch.poi_id
     assert repository.items == before
     assert constraints == _constraints(area=None, origin=ORIGIN)
-    assert facts == PlanningFactSnapshot(pois=(_known_poi_facts(branch),))
+    assert facts.collections[0].resolved_poi == branch
 
 
 @pytest.mark.asyncio
@@ -1221,15 +1211,21 @@ async def test_any_branch_uses_city_area_route_and_origin_without_mutating_colle
         user_id=user_id,
         constraints=_constraints(origin=ORIGIN),
         facts=PlanningFactSnapshot(
-            pois=(_known_poi_facts(far, duration=1200), _known_poi_facts(near, duration=300))
+            collections=(
+                _known_branch_facts(
+                    brand,
+                    near,
+                    dynamic=_known_poi_facts(near, duration=300),
+                ),
+            ),
+            pois=(_known_poi_facts(far, duration=1200), _known_poi_facts(near, duration=300)),
         ),
         now=NOW,
     )
 
     assert result.included[0].poi is not None
     assert result.included[0].poi.poi_id == near.poi_id
-    assert calls[0].location == ORIGIN
-    assert calls[0].district == "福田区"
+    assert calls == []
     assert repository.items == before
     assert repository.items[0].place_target.scope is PlaceScope.ANY_BRANCH
 
@@ -1283,20 +1279,16 @@ async def test_any_branch_ignores_stale_branch_location_clues_for_new_plan_scope
             area=ActivityArea(districts=("福田区",)),
             origin=ORIGIN,
         ),
-        facts=PlanningFactSnapshot(pois=(_known_poi_facts(branch),)),
+        facts=PlanningFactSnapshot(
+            collections=(_known_branch_facts(brand, branch),),
+            pois=(_known_poi_facts(branch),),
+        ),
         now=NOW,
     )
 
     assert result.included[0].poi is not None
     assert result.included[0].poi.poi_id == branch.poi_id
-    assert provider_calls == [
-        SearchPoiRequest(
-            query="测试咖啡",
-            city=_constraints().city_scope,
-            district="福田区",
-            location=ORIGIN,
-        )
-    ]
+    assert provider_calls == []
     assert repository.items == before
     assert repository.items[0].district == "南山区"
     assert repository.items[0].place_target == brand.place_target
@@ -1383,33 +1375,34 @@ async def test_resolved_any_branch_still_applies_candidate_hard_rules(
     result = await service.retrieve(
         user_id=user_id,
         constraints=constraints,
-        facts=PlanningFactSnapshot(pois=(dynamic,)),
+        facts=PlanningFactSnapshot(
+            collections=(_known_branch_facts(brand, branch, dynamic=dynamic),),
+            pois=(dynamic,),
+        ),
         now=NOW,
     )
 
     assert result.decisions[0].outcome is CandidateOutcome.EXCLUDED
-    assert CandidateReasonCode.BRANCH_NO_HARD_CONSTRAINT_MATCH in (
-        result.decisions[0].reason_codes
-    )
+    expected_reason = {
+        "weather": CandidateReasonCode.WEATHER_CONFLICT,
+        "availability": CandidateReasonCode.PLACE_UNAVAILABLE,
+        "budget": CandidateReasonCode.BUDGET_EXCEEDED,
+    }[failed_rule]
+    assert expected_reason in result.decisions[0].reason_codes
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("pois", "timed_out", "expected"),
+    ("pois", "timed_out"),
     [
-        ((), False, CandidateReasonCode.BRANCH_NOT_FOUND),
-        (
-            (_poi("poi_weak", name="不相关地点"),),
-            False,
-            CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT,
-        ),
-        ((), True, CandidateReasonCode.BRANCH_PROVIDER_FAILED),
+        ((), False),
+        ((_poi("poi_weak", name="不相关地点"),), False),
+        ((), True),
     ],
 )
 async def test_any_branch_failure_modes_have_stable_safe_reasons(
     pois: tuple[Poi, ...],
     timed_out: bool,
-    expected: CandidateReasonCode,
 ) -> None:
     user_id = generate_user_id()
     brand = _place(user_id, title="测试咖啡", target=_brand_target(), price=Decimal("35"))
@@ -1422,7 +1415,10 @@ async def test_any_branch_failure_modes_have_stable_safe_reasons(
         now=NOW,
     )
 
-    assert expected in result.decisions[0].reason_codes
+    assert (
+        CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT
+        in result.decisions[0].reason_codes
+    )
     public = result.model_dump(mode="json")
     assert "provider response" not in str(public).lower()
     assert "secret" not in str(public).lower()
@@ -1450,6 +1446,19 @@ async def test_any_branch_with_only_unreachable_candidates_is_excluded() -> None
         user_id=user_id,
         constraints=_constraints(area=None, origin=ORIGIN),
         facts=PlanningFactSnapshot(
+            collections=(
+                _known_branch_facts(
+                    brand,
+                    branch,
+                    dynamic=PoiPlanningFacts(
+                        provider=branch.provider,
+                        poi_id=branch.poi_id,
+                        route=RouteAssessment.UNREACHABLE,
+                        weather=WeatherAssessment.COMPATIBLE,
+                        availability=AvailabilityAssessment.AVAILABLE,
+                    ),
+                ),
+            ),
             pois=(
                 PoiPlanningFacts(
                     provider=branch.provider,
@@ -1464,9 +1473,7 @@ async def test_any_branch_with_only_unreachable_candidates_is_excluded() -> None
     )
 
     assert result.decisions[0].outcome is CandidateOutcome.EXCLUDED
-    assert CandidateReasonCode.BRANCH_NO_HARD_CONSTRAINT_MATCH in (
-        result.decisions[0].reason_codes
-    )
+    assert CandidateReasonCode.ROUTE_UNREACHABLE in result.decisions[0].reason_codes
 
 
 @pytest.mark.asyncio
@@ -1497,7 +1504,10 @@ async def test_exact_and_any_branch_same_poi_are_deduplicated_with_both_sources(
     result = await service.retrieve(
         user_id=user_id,
         constraints=_constraints(area=None, origin=ORIGIN),
-        facts=PlanningFactSnapshot(pois=(_known_poi_facts(poi),)),
+        facts=PlanningFactSnapshot(
+            collections=(_known_branch_facts(brand, poi),),
+            pois=(_known_poi_facts(poi),),
+        ),
         now=NOW,
     )
 
@@ -1748,9 +1758,88 @@ async def test_map_fact_chain_resolves_any_branch_to_one_fixed_poi(
     )
 
     assert result.draft.candidates[0].collection_item_ids == (item.id,)
-    assert [fact.poi_id for fact in result.retrieval.pois] == [branch.poi_id]
+    assert result.retrieval.collections[0].resolved_poi == branch
     assert sum(isinstance(call, SearchPoiRequest) for call in calls) == 1
     assert sum(isinstance(call, RouteRequest) for call in calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    branch = _poi(
+        "poi_executor_branch",
+        name="测试咖啡",
+        branch_name="市民中心店",
+        poi_type=PoiType.CAFE,
+    ).model_copy(update={"opening_hours_summary": "10:00-22:00"})
+    item = _place(
+        user_id,
+        title="A测试咖啡",
+        target=_brand_target(),
+        tags=("咖啡",),
+    )
+    exact_poi = _poi(
+        "poi_executor_exact",
+        name="城市展览馆",
+    ).model_copy(update={"opening_hours_summary": "10:00-18:00"})
+    exact = _place(user_id, title="城市展览馆", poi=exact_poi)
+    current = datetime.now(UTC)
+    constraints = _constraints(area=None, origin=ORIGIN).model_copy(
+        update={
+            "start_at": current + timedelta(hours=1),
+            "end_at": current + timedelta(hours=7),
+            "created_at": current,
+            "expires_at": current + timedelta(days=1),
+        }
+    )
+    calls: list[object] = []
+    provider = _map_fact_provider(
+        constraints=constraints,
+        search_pois=(branch,),
+        calls=calls,
+    )
+    database = Database(retrieval_database)
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        await repository.add_user(
+            user_id=user_id,
+            user=User(id=user_id, mode=UserMode.REAL, created_at=NOW),
+        )
+        await repository.add_collection_item(user_id=user_id, item=item)
+        await repository.add_collection_item(user_id=user_id, item=exact)
+        await session.commit()
+    async with database.session() as session:
+        result = await ExistingPlanServicesExecutor(
+            session=session,
+            map_provider=provider,
+            matching_policy=Settings(
+                _env_file=None,
+                app_env="test",
+            ).place_matching_policy(),
+            facts=MapPlanFactResolver(
+                session=session,
+                map_provider=provider,
+                matching_policy=Settings(
+                    _env_file=None,
+                    app_env="test",
+                ).place_matching_policy(),
+            ),
+        ).execute(user_id=user_id, constraints=constraints, approval=None)
+    await database.close()
+
+    assert result.outcome is PlanGenerationOutcome.DRAFT
+    assert result.draft is not None
+    planned = tuple(
+        draft_item
+        for option in result.draft.options
+        for draft_item in option.items
+        if item.id in draft_item.source.collection_item_ids
+    )
+    assert planned, result.draft.model_dump(mode="json")
+    assert all(draft_item.source.concrete_poi == branch for draft_item in planned)
+    assert sum(isinstance(call, SearchPoiRequest) for call in calls) == 1
 
 
 @pytest.mark.asyncio

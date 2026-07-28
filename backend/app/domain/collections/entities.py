@@ -552,13 +552,19 @@ class CollectionItem(DomainModel):
         if self.kind is CollectionKind.EVENT:
             from app.domain.places.targets import PlaceScope
 
-            if self.place_candidate_snapshot is not None:
-                raise ValueError("Event items cannot carry Place candidate snapshots")
             if (
                 self.place_target is not None
                 and self.place_target.scope is not PlaceScope.EXACT
             ):
                 raise ValueError("Event locations require one exact confirmed POI")
+            if (
+                self.status is CollectionStatus.PENDING_SELECTION
+                and (
+                    self.place_target is not None
+                    or self.place_candidate_snapshot is None
+                )
+            ):
+                raise ValueError("pending Event location requires candidate evidence")
         if self.kind is CollectionKind.PLACE:
             if self.status is CollectionStatus.PENDING_SELECTION:
                 if self.place_target is not None:

@@ -78,15 +78,19 @@ class PlaceTargetSelectionService:
             queried_at=require_aware_utc(queried_at),
         )
         auto_candidate = self._unique_auto_match_candidate(snapshot)
-        target_status = (
-            CollectionStatus.PENDING_SELECTION
-            if snapshot.result.status is MatchStatus.AMBIGUOUS
-            else CollectionStatus.PENDING_DETAILS
-        )
         async with self._session.begin():
-            item = await self._require_pending_place(owner, identifier)
+            item = await self._require_pending_location(owner, identifier)
             await self._require_linked_source(owner, identifier, source)
-            if auto_candidate is not None:
+            target_status = (
+                CollectionStatus.PENDING_SELECTION
+                if snapshot.candidates
+                and (
+                    item.kind is CollectionKind.EVENT
+                    or snapshot.result.status is MatchStatus.AMBIGUOUS
+                )
+                else CollectionStatus.PENDING_DETAILS
+            )
+            if auto_candidate is not None and item.kind is CollectionKind.PLACE:
                 existing = await self._repository.find_exact_place_item(
                     user_id=owner,
                     provider=auto_candidate.provider,
@@ -237,7 +241,7 @@ class PlaceTargetSelectionService:
                 user_id=owner,
                 collection_item_id=collection_item_id,
             )
-            if item is None or item.kind is not CollectionKind.PLACE:
+            if item is None:
                 raise ResourceNotFoundError
             await self._require_linked_source(owner, collection_item_id, source_id)
             snapshot = self._persisted_selection_snapshot(
@@ -248,6 +252,12 @@ class PlaceTargetSelectionService:
             choices = tuple(
                 validate_place_selection(snapshot.result, choice) for choice in choices
             )
+            if item.kind is CollectionKind.EVENT and (
+                len(choices) != 1
+                or choices[0].kind is not PlaceSelectionKind.CANDIDATE
+                or brand_identity is not None
+            ):
+                raise ValueError("Event locations require one exact candidate")
             now = snapshot.queried_at
 
             if item.status is CollectionStatus.ACTIVE:
@@ -388,6 +398,36 @@ class PlaceTargetSelectionService:
         expected_version: int,
     ) -> tuple[CollectionItem, ...]:
         candidates = tuple(self._candidate(snapshot, choice) for choice in choices)
+        if item.kind is CollectionKind.EVENT:
+            if item.status is not CollectionStatus.PENDING_SELECTION:
+                raise VersionConflictError
+            candidate = candidates[0]
+            target = exact_target_from_candidate(
+                candidate,
+                confirmed_by=PlaceConfirmationSource.USER_SELECTION,
+                confirmed_at=snapshot.queried_at,
+            )
+            desired = self._updated_item(
+                item,
+                status=(
+                    CollectionStatus.ACTIVE
+                    if item.event_start_at is not None and item.event_end_at is not None
+                    else CollectionStatus.PENDING_DETAILS
+                ),
+                target=target,
+                snapshot=snapshot,
+                now=snapshot.queried_at,
+                district=candidate.district,
+                address=candidate.address,
+                business_district=candidate.business_area,
+            )
+            return (
+                await self._repository.apply_place_resolution(
+                    user_id=owner,
+                    item=desired,
+                    expected_version=expected_version,
+                ),
+            )
         results: list[CollectionItem] = []
         original_used = False
         write_operation = await self._repository.get_write_operation_for_item(
@@ -498,12 +538,16 @@ class PlaceTargetSelectionService:
             items.append(item)
         return PlaceSelectionResult(items=tuple(items), replayed=True)
 
-    async def _require_pending_place(self, owner: str, identifier: str) -> CollectionItem:
+    async def _require_pending_location(
+        self,
+        owner: str,
+        identifier: str,
+    ) -> CollectionItem:
         item = await self._repository.get_collection_item(
             user_id=owner,
             collection_item_id=identifier,
         )
-        if item is None or item.kind is not CollectionKind.PLACE:
+        if item is None:
             raise ResourceNotFoundError
         if item.place_target is not None or item.status not in {
             CollectionStatus.PENDING_DETAILS,
@@ -700,6 +744,7 @@ class PlaceTargetSelectionService:
             place_target=target,
             place_candidate_snapshot=snapshot,
             updated_at=now,
+            uncertainties=item.uncertainties,
         )
         for field, value in (
             ("title", title),
@@ -738,6 +783,7 @@ class PlaceTargetSelectionService:
             place_candidate_snapshot=snapshot,
             created_at=snapshot.queried_at,
             updated_at=snapshot.queried_at,
+            uncertainties=original.uncertainties,
         )
         cls._clear_resolved_candidate_metadata(
             values,

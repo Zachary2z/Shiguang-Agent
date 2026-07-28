@@ -386,7 +386,7 @@ async def test_multiple_cross_city_items_event_and_city_title_without_hint(
     assert [item["city_hint"] for item in items] == ["广州", "上海", None]
     assert items[2]["city_pending"] is True
     assert items[0]["status"] == "pending_details"
-    assert items[1]["status"] == "active"
+    assert items[1]["status"] == "pending_details"
 
 
 @pytest.mark.asyncio

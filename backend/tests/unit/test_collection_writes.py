@@ -67,7 +67,7 @@ def test_status_mapping_never_fakes_poi_selection_and_requires_exact_event_time(
     )
 
     assert status_for_extraction_candidate(place) is CollectionStatus.PENDING_DETAILS
-    assert status_for_extraction_candidate(exact_event) is CollectionStatus.ACTIVE
+    assert status_for_extraction_candidate(exact_event) is CollectionStatus.PENDING_DETAILS
     assert status_for_extraction_candidate(clue_event) is CollectionStatus.PENDING_DETAILS
     assert status_for_extraction_candidate(date_only_event) is CollectionStatus.PENDING_DETAILS
     assert CollectionStatus.PENDING_SELECTION not in {

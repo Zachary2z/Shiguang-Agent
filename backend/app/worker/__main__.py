@@ -85,6 +85,8 @@ async def _run() -> None:
             storage=storage,
             storage_config=settings.storage_provider_settings(),
             structured_output_mode=settings.extraction_structured_output_mode(),
+            map_provider=map_provider,
+            matching_policy=settings.place_matching_policy(),
         ),
     }
     if map_provider is not None:
@@ -92,7 +94,12 @@ async def _run() -> None:
             session_factory=database.session_factory,
             pricing=pricing,
             adjustment_parser=(
-                None if provider is None else PlanAdjustmentParser(provider)
+                None
+                if provider is None
+                else PlanAdjustmentParser(
+                    provider,
+                    structured_output_mode=settings.extraction_structured_output_mode(),
+                )
             ),
             executor_factory=lambda session: ExistingPlanServicesExecutor(
                 session=session,
@@ -131,6 +138,8 @@ async def _run() -> None:
                 structured_output_mode=(
                     settings.extraction_structured_output_mode()
                 ),
+                map_provider=map_provider,
+                matching_policy=settings.place_matching_policy(),
             ),
         }
         if map_provider is not None:
@@ -138,7 +147,12 @@ async def _run() -> None:
                 session_factory=demo_database.session_factory,
                 pricing=pricing,
                 adjustment_parser=(
-                    None if provider is None else PlanAdjustmentParser(provider)
+                    None
+                    if provider is None
+                    else PlanAdjustmentParser(
+                        provider,
+                        structured_output_mode=settings.extraction_structured_output_mode(),
+                    )
                 ),
                 executor_factory=lambda session: ExistingPlanServicesExecutor(
                     session=session,

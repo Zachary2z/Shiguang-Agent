@@ -624,7 +624,7 @@ class SqlAlchemyCollectionRepository:
         item: CollectionItem,
         expected_version: int,
     ) -> CollectionItem:
-        """CAS one existing Place into its selected target or recovery state."""
+        """CAS one existing collection into its selected exact/brand location."""
 
         owner = validate_user_id(user_id)
         identifier = validate_collection_item_id(item.id)
@@ -635,14 +635,13 @@ class SqlAlchemyCollectionRepository:
         if current.version != expected_version:
             raise VersionConflictError
         if (
-            current.kind is not CollectionKind.PLACE
-            or item.user_id != owner
+            item.user_id != owner
             or item.kind is not current.kind
             or item.id != current.id
             or item.version != current.version
             or item.created_at != current.created_at
         ):
-            raise ValueError("Place resolution cannot change aggregate identity")
+            raise ValueError("location resolution cannot change aggregate identity")
         ensure_collection_transition(current.status, item.status)
         rowcount = await execute_dml_rowcount(
             self._session,

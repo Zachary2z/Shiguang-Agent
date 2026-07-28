@@ -232,11 +232,16 @@ def build_app() -> FastAPI:
                 storage=storage,
                 storage_config=settings.demo_storage_provider_settings(),
                 structured_output_mode=settings.extraction_structured_output_mode(),
+                map_provider=map_provider,
+                matching_policy=settings.place_matching_policy(),
             )
             plan_handler = PlanGenerationJobHandler(
                 session_factory=application.state.demo_database.session_factory,
                 pricing=ConfiguredPricingPolicy.from_settings(settings),
-                adjustment_parser=PlanAdjustmentParser(adjustment_provider),
+                adjustment_parser=PlanAdjustmentParser(
+                    adjustment_provider,
+                    structured_output_mode=settings.extraction_structured_output_mode(),
+                ),
                 executor_factory=lambda session: ExistingPlanServicesExecutor(
                     session=session,
                     map_provider=map_provider,

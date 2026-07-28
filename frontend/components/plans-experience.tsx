@@ -479,7 +479,7 @@ export function PlansExperience() {
         </div>
         {plan && (
           <div className="plan-heading-actions">
-            <span className={`plan-status ${plan.status}`}>V{plan.version} · {plan.status === "confirmed" ? "已确认" : "当前版本"}</span>
+            <span className={`plan-status ${plan.status}`}>V{plan.version} · {plan.status === "confirmed" ? "已确认" : plan.is_current_version ? "当前版本" : "历史版本"}</span>
             {plan.draft && (
               <button type="button" onClick={startNewPlan}>新建计划</button>
             )}

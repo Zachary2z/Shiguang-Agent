@@ -12,7 +12,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-HEAD_REVISION = "20260728_0013"
+HEAD_REVISION = "20260728_0014"
 PREVIOUS_REVISION = "20260726_0009"
 EVENT_REVISION = "20260724_0007"
 EVENT_PREVIOUS_REVISION = "20260722_0006"

@@ -47,6 +47,7 @@ from app.domain.plans import (
     RouteAssessment,
     WeatherAssessment,
 )
+from app.domain.time import utc_now
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.providers.map import MapProvider, MapProviderError
 
@@ -90,12 +91,10 @@ class MapPlanFactResolver:
     ) -> PlanGenerationFacts:
         self._route_calls = 0
         self._weather_assessment = None
-        items = sorted(
-            await self._repository.list_collection_items(
-                user_id=user_id,
-                include_inactive=True,
-            ),
-            key=lambda item: item.id,
+        queried_at = utc_now()
+        items = await self._repository.list_collection_items(
+            user_id=user_id,
+            include_inactive=True,
         )
         mode = (
             constraints.transport_modes[0]
@@ -103,7 +102,7 @@ class MapPlanFactResolver:
             else TransportMode.TRANSIT
         )
         selected: list[_ExecutableCandidate] = []
-        event_facts: list[CollectionPlanningFacts] = []
+        collection_facts: list[CollectionPlanningFacts] = []
         poi_facts: list[PoiPlanningFacts] = []
         candidate_facts: list[DraftCandidateFacts] = []
         origin_routes: list[DraftRouteFacts] = []
@@ -132,12 +131,13 @@ class MapPlanFactResolver:
                     continue
                 selected.append(candidate)
                 route = candidate.route
-                event_facts.append(
+                collection_facts.append(
                     CollectionPlanningFacts(
                         collection_item_id=item.id,
                         formal_city=constraints.city_scope,
                         location_confirmed=True,
                         coordinate=candidate.poi.coordinate,
+                        resolved_poi=candidate.poi,
                         route=(
                             RouteAssessment.REACHABLE
                             if route is not None
@@ -169,16 +169,38 @@ class MapPlanFactResolver:
                     )
                 )
             elif resolved.brand_identity is not None:
-                candidate, tested_facts = await self._resolve_branch(
+                candidate = await self._resolve_branch(
                     item=item,
                     brand_name=resolved.brand_identity.display_name,
                     constraints=constraints,
                     mode=mode,
                 )
-                poi_facts.extend(tested_facts)
                 if candidate is None:
                     continue
                 selected.append(candidate)
+                route = candidate.route
+                collection_facts.append(
+                    CollectionPlanningFacts(
+                        collection_item_id=item.id,
+                        formal_city=constraints.city_scope,
+                        location_confirmed=True,
+                        coordinate=candidate.poi.coordinate,
+                        resolved_poi=candidate.poi,
+                        route=(
+                            RouteAssessment.REACHABLE
+                            if route is not None
+                            else RouteAssessment.PROVIDER_FAILED
+                        ),
+                        route_duration_seconds=None if route is None else route[0],
+                        route_distance_meters=None if route is None else route[1],
+                        weather=self._weather_assessment or WeatherAssessment.UNKNOWN,
+                        availability=(
+                            AvailabilityAssessment.AVAILABLE
+                            if candidate.poi.opening_hours_summary
+                            else AvailabilityAssessment.UNKNOWN
+                        ),
+                    )
+                )
 
         for candidate in selected:
             item = candidate.item
@@ -186,6 +208,9 @@ class MapPlanFactResolver:
                 DraftCandidateFacts(
                     collection_item_ids=(item.id,),
                     visit_duration_seconds=_VISIT_SECONDS,
+                    poi_queried_at=(
+                        queried_at if candidate.resolved_from_any_branch else None
+                    ),
                     event_start_at=(
                         item.event_start_at
                         if item.kind is CollectionKind.EVENT
@@ -221,7 +246,7 @@ class MapPlanFactResolver:
             )
         return PlanGenerationFacts(
             retrieval=PlanningFactSnapshot(
-                collections=tuple(event_facts),
+                collections=tuple(collection_facts),
                 pois=tuple(_unique_poi_facts(poi_facts)),
             ),
             draft=PlanDraftFactSnapshot(
@@ -273,7 +298,7 @@ class MapPlanFactResolver:
         brand_name: str,
         constraints: PlanConstraints,
         mode: TransportMode,
-    ) -> tuple[_ExecutableCandidate | None, tuple[PoiPlanningFacts, ...]]:
+    ) -> _ExecutableCandidate | None:
         probe = assess_collection_candidate(
             item=item,
             constraints=constraints,
@@ -285,7 +310,7 @@ class MapPlanFactResolver:
             resolved_from_any_branch=True,
         )
         if probe.outcome is CandidateOutcome.EXCLUDED:
-            return None, ()
+            return None
         try:
             result = await self._matching.match(
                 PlaceMatchRequest(
@@ -303,12 +328,11 @@ class MapPlanFactResolver:
         except asyncio.CancelledError:
             raise
         except MapProviderError:
-            return None, ()
+            return None
         if result.status is MatchStatus.NOT_FOUND:
-            return None, ()
+            return None
 
         candidates: list[_ExecutableCandidate] = []
-        facts: list[PoiPlanningFacts] = []
         for match in result.candidates:
             poi = poi_from_match_candidate(match)
             candidate = await self._qualify_concrete(
@@ -321,14 +345,8 @@ class MapPlanFactResolver:
             if candidate is None:
                 continue
             candidates.append(candidate)
-            facts.append(
-                self._poi_facts(
-                    candidate,
-                    self._weather_assessment or WeatherAssessment.UNKNOWN,
-                )
-            )
         if not candidates:
-            return None, tuple(facts)
+            return None
         chosen = min(
             candidates,
             key=lambda candidate: (
@@ -339,7 +357,7 @@ class MapPlanFactResolver:
                 candidate.poi.poi_id,
             ),
         )
-        return chosen, tuple(facts)
+        return chosen
 
     @staticmethod
     def _poi_facts(

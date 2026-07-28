@@ -25,6 +25,11 @@ from app.application.content_import_jobs import (
     ContentImportJobHandler,
 )
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
+from app.application.map_plan_facts import MapPlanFactResolver
+from app.application.plan_experience import (
+    ExistingPlanServicesExecutor,
+    PlanGenerationOutcome,
+)
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.text_collection_workflow import (
     MAX_RICH_INPUT_WORKFLOW_SECONDS,
@@ -36,12 +41,26 @@ from app.domain.collections import (
     EventCandidate,
     ExtractionResult,
     PlaceCandidate,
+    PlanCity,
     Session,
     SessionChannel,
     User,
     UserMode,
 )
 from app.domain.identifiers import generate_session_id, generate_user_id
+from app.domain.places import (
+    CityScope,
+    Coordinate,
+    CoordinateSystem,
+    Poi,
+    PoiProvider,
+    PoiSearchResult,
+    PoiType,
+    SearchPoiRequest,
+    WeatherRequest,
+    WeatherResult,
+)
+from app.domain.plans import ActivityArea, PlanConstraints
 from app.domain.web import (
     WebFetchDiagnostics,
     WebFetchFailure,
@@ -53,7 +72,8 @@ from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.main import create_app
-from app.providers import OpenAICompatibleProvider
+from app.providers import OpenAICompatibleProvider, StubMapProvider
+from app.providers.map import MapProvider
 from app.providers.storage import StorageProviderError, StorageProviderErrorCode
 from app.providers.web import WebContentProvider
 from app.worker.service import JobWorker
@@ -254,6 +274,7 @@ async def _client(
     provider: ModelProvider,
     *,
     web: WebContentProvider | None = None,
+    map_provider: MapProvider | None = None,
 ) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient, LocalPrivateStorageProvider]]:
     database_path = Path(settings.database_url.removeprefix("sqlite+aiosqlite:///"))
     active_settings = settings.model_copy(
@@ -270,6 +291,7 @@ async def _client(
         web_provider=web,
         storage_provider=storage,
         demo_storage_provider=storage,
+        map_provider=map_provider,
     )
     async with api.router.lifespan_context(api):
         handler = ContentImportJobHandler(
@@ -282,6 +304,8 @@ async def _client(
             storage=storage,
             storage_config=active_settings.demo_storage_provider_settings(),
             structured_output_mode=active_settings.extraction_structured_output_mode(),
+            map_provider=map_provider,
+            matching_policy=active_settings.place_matching_policy(),
         )
         transport = httpx.ASGITransport(app=api)
         async with CompletingImportClient(
@@ -515,7 +539,7 @@ async def test_public_text_replay_preserves_event_dates_and_existing_candidate_b
     assert exact_item["event_end_date"] is None
     assert exact_item["event_start_at"] == "2026-07-31T06:00:00Z"
     assert exact_item["event_end_at"] == "2026-07-31T09:00:00Z"
-    assert exact_item["status"] == "active"
+    assert exact_item["status"] == "pending_details"
 
     place_item = replay_results[2].json()["collections"][0]
     assert place_item["kind"] == "place"
@@ -648,6 +672,138 @@ async def test_same_key_is_isolated_between_sessions_and_image_replay_stores_onc
     assert replay.json()["replayed"] is True
     assert replay.json()["source_id"] == image.json()["source_id"]
     assert len(provider.calls) == 3
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_kind", ["text", "image"])
+async def test_event_import_requires_explicit_poi_choice_before_plan_use(
+    test_settings: Settings,
+    input_kind: str,
+) -> None:
+    event = _exact_time_event()
+    provider = FakeProvider(
+        [
+            fake_response(
+                content=ExtractionResult.with_candidates((event,)).model_dump_json()
+            )
+        ]
+    )
+    poi = Poi(
+        provider=PoiProvider.AMAP,
+        poi_id="event_venue",
+        name="海上世界文化艺术中心",
+        city_code=PlanCity.SHENZHEN.value,
+        district="南山区",
+        business_area="海上世界",
+        address="海上世界文化艺术中心",
+        coordinate=Coordinate(
+            latitude=22.482,
+            longitude=113.915,
+            coordinate_system=CoordinateSystem.GCJ_02,
+        ),
+        poi_type=PoiType.MUSEUM,
+    )
+    search = SearchPoiRequest(
+        query=event.address or event.title,
+        city=CityScope(city_code=PlanCity.SHENZHEN.value),
+        district=event.district,
+    )
+    plan_constraints = PlanConstraints(
+        city_code=PlanCity.SHENZHEN,
+        start_at=datetime(2026, 7, 31, 5, 0, tzinfo=UTC),
+        end_at=datetime(2026, 7, 31, 11, 0, tzinfo=UTC),
+        area=ActivityArea(districts=("南山区",)),
+        created_at=datetime.now(UTC),
+        expires_at=datetime.now(UTC).replace(hour=23, minute=59),
+    )
+    weather_request = WeatherRequest(
+        city=plan_constraints.city_scope,
+        on_date=plan_constraints.start_at.date(),
+    )
+    map_provider = StubMapProvider(
+        search_results={
+            search: PoiSearchResult(
+                city_code=PlanCity.SHENZHEN.value,
+                pois=(poi,),
+            )
+        },
+        weather_results={
+            weather_request: WeatherResult(
+                city_code=PlanCity.SHENZHEN.value,
+                on_date=plan_constraints.start_at.date(),
+                condition="晴",
+                temperature_celsius=28,
+            )
+        },
+    )
+
+    async with _client(
+        test_settings,
+        provider,
+        map_provider=map_provider,
+    ) as (api, client, _storage):
+        session_id = await _demo(client)
+        user_id = await _demo_owner_id(api, session_id)
+        if input_kind == "text":
+            imported = await client.post(
+                f"/api/v1/sessions/{session_id}/messages",
+                json={
+                    "type": "text",
+                    "idempotency_key": "event-location-flow-text",
+                    "text": "准确场次，海上世界文化艺术中心",
+                },
+            )
+        else:
+            imported = await client.post(
+                f"/api/v1/sessions/{session_id}/messages",
+                content=PNG_SCREENSHOT,
+                headers={
+                    "Content-Type": "image/png",
+                    "Idempotency-Key": "event-location-flow-image",
+                },
+            )
+        assert imported.status_code == 200, imported.text
+        item_id = imported.json()["collections"][0]["id"]
+        choices = await client.get(f"/api/v1/collections/{item_id}/poi-candidates")
+        assert choices.status_code == 200
+        choice = choices.json()["candidates"][0]
+        selected = await client.post(
+            f"/api/v1/collections/{item_id}/poi-selection",
+            json={
+                "expected_version": choices.json()["expected_version"],
+                "snapshot_fingerprint": choices.json()["snapshot_fingerprint"],
+                "idempotency_key": f"event-location-choice-{input_kind}",
+                "choice": "candidate",
+                "provider": choice["provider"],
+                "poi_id": choice["poi_id"],
+            },
+        )
+        assert selected.status_code == 200
+        selected_item = selected.json()["items"][0]
+        assert selected_item["kind"] == "event"
+        assert selected_item["planning_eligible"] is True
+
+        async with api.state.demo_database.session() as session:
+            result = await ExistingPlanServicesExecutor(
+                session=session,
+                map_provider=map_provider,
+                matching_policy=test_settings.place_matching_policy(),
+                facts=MapPlanFactResolver(
+                    session=session,
+                    map_provider=map_provider,
+                    matching_policy=test_settings.place_matching_policy(),
+                ),
+            ).execute(
+                user_id=user_id,
+                constraints=plan_constraints,
+                approval=None,
+            )
+
+    assert result.outcome is PlanGenerationOutcome.DRAFT
+    assert result.draft is not None
+    planned = result.draft.options[0].items[0]
+    assert planned.kind.value == "event"
+    assert planned.source.collection_item_ids == (item_id,)
 
 
 @pytest.mark.asyncio

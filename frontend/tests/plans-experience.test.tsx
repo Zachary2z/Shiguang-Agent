@@ -145,6 +145,28 @@ describe("PlansExperience", () => {
     expect(screen.getByText("¥88.00")).toBeInTheDocument();
   });
 
+  it("never labels a historical version as the current version", async () => {
+    bootstrap([
+      {
+        ...plan,
+        is_current_version: false,
+        versions: [
+          ...plan.versions,
+          {
+            id: "pln_1123456789abcdef0123456789abcdef",
+            version: 2,
+            status: "failed",
+            adjustment_text: "换一个地点",
+          },
+        ],
+      },
+    ]);
+    render(<PlansExperience />);
+
+    expect(await screen.findByText("V1 · 历史版本")).toBeInTheDocument();
+    expect(screen.queryByText("V1 · 当前版本")).not.toBeInTheDocument();
+  });
+
   it("shows external supplement approval without treating it as confirmation", async () => {
     bootstrap([
       {

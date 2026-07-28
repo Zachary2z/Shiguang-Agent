@@ -14,8 +14,9 @@ from app.application.plan_adjustments import (
     apply_plan_adjustment,
 )
 from app.domain.collections import PlanCity
-from app.domain.places import TransportMode
+from app.domain.places import Coordinate, CoordinateSystem, TransportMode
 from app.domain.plans import ActivityArea, PlanConstraints, PlanPace
+from nanobot_core.providers import StructuredOutputMode
 from tests.core.fakes import FakeProvider, fake_response
 
 
@@ -51,7 +52,10 @@ async def test_product_adjustment_replaces_category_and_preserves_every_other_fi
         ]
     )
 
-    patch = await PlanAdjustmentParser(provider).parse(
+    patch = await PlanAdjustmentParser(
+        provider,
+        structured_output_mode=StructuredOutputMode.JSON_OBJECT,
+    ).parse(
         constraints=original,
         instruction="不要咖啡店，换成适合散步的地方，其他不变。",
     )
@@ -64,6 +68,7 @@ async def test_product_adjustment_replaces_category_and_preserves_every_other_fi
     ) == original
     assert len(provider.calls) == 1
     assert provider.calls[0].response_format is not None
+    assert provider.calls[0].response_format.mode is StructuredOutputMode.JSON_OBJECT
 
 
 def test_complete_patch_is_validated_once_by_plan_constraints() -> None:
@@ -88,9 +93,49 @@ async def test_invalid_or_empty_model_patch_is_rejected_without_phrase_fallback(
     provider = FakeProvider([fake_response(content="{}")])
 
     with pytest.raises(PlanAdjustmentNotUnderstoodError):
-        await PlanAdjustmentParser(provider).parse(
+        await PlanAdjustmentParser(
+            provider,
+            structured_output_mode=StructuredOutputMode.JSON_OBJECT,
+        ).parse(
             constraints=_constraints(),
             instruction="给我一个惊喜",
         )
 
     assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_model_cannot_write_route_coordinates_and_origin_is_not_disclosed() -> None:
+    provider = FakeProvider(
+        [
+            fake_response(
+                content=(
+                    '{"origin":{"latitude":22.5431,"longitude":114.0579,'
+                    '"coordinate_system":"gcj_02"}}'
+                )
+            )
+        ]
+    )
+    constraints = _constraints().model_copy(
+        update={
+            "origin": Coordinate(
+                latitude=22.5431,
+                longitude=114.0579,
+                coordinate_system=CoordinateSystem.GCJ_02,
+            )
+        }
+    )
+
+    with pytest.raises(PlanAdjustmentNotUnderstoodError):
+        await PlanAdjustmentParser(
+            provider,
+            structured_output_mode=StructuredOutputMode.JSON_OBJECT,
+        ).parse(
+            constraints=constraints,
+            instruction="换到另一个地点",
+        )
+
+    request_text = str(provider.calls[0].messages)
+    assert "22.5431" not in request_text
+    assert "114.0579" not in request_text
+    assert '"origin"' not in request_text

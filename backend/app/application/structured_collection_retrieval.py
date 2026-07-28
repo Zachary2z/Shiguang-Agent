@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from typing import ClassVar
 from unicodedata import normalize
 
-from app.application.place_matching import PlaceMatchingService
 from app.domain.collections import (
     CandidateField,
     CollectionItem,
@@ -18,13 +17,10 @@ from app.domain.collections import (
     PlaceCandidate,
 )
 from app.domain.places import (
-    MatchStatus,
-    PlaceMatchRequest,
     PlaceScope,
     Poi,
     PoiProvider,
     ResolvedPlaceTargetKind,
-    poi_from_match_candidate,
     resolve_place_target,
 )
 from app.domain.plans import PlanConstraints
@@ -43,7 +39,6 @@ from app.domain.plans.retrieval import (
     WeatherAssessment,
     outcome_for_reasons,
 )
-from app.providers.map import MapProviderError
 
 
 class StructuredCollectionRetrievalError(RuntimeError):
@@ -323,10 +318,8 @@ class StructuredCollectionRetrievalService:
         self,
         *,
         repository: CollectionRepository,
-        place_matching: PlaceMatchingService,
     ) -> None:
         self._repository = repository
-        self._place_matching = place_matching
 
     async def retrieve(
         self,
@@ -413,11 +406,28 @@ class StructuredCollectionRetrievalService:
                     )
                 )
             elif resolved.kind is ResolvedPlaceTargetKind.ANY_BRANCH:
+                branch_facts = collection_facts.get(
+                    item.id,
+                    CollectionPlanningFacts(collection_item_id=item.id),
+                )
+                branch_poi = branch_facts.resolved_poi
                 decisions.append(
-                    await self._resolve_any_branch(
+                    assess_collection_candidate(
                         item=item,
                         constraints=constraints,
-                        poi_facts=poi_facts,
+                        formal_city_code=(
+                            None if branch_poi is None else branch_poi.city_code
+                        ),
+                        location_confirmed=branch_poi is not None,
+                        poi=branch_poi,
+                        facts=branch_facts,
+                        additional_reasons=(
+                            ()
+                            if branch_poi is not None
+                            else (CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT,)
+                        ),
+                        apply_dynamic_facts=branch_poi is not None,
+                        resolved_from_any_branch=True,
                     )
                 )
             else:
@@ -444,133 +454,3 @@ class StructuredCollectionRetrievalService:
             )
         )
         return StructuredCollectionResult(decisions=ordered)
-
-    async def _resolve_any_branch(
-        self,
-        *,
-        item: CollectionItem,
-        constraints: PlanConstraints,
-        poi_facts: dict[tuple[PoiProvider, str], PoiPlanningFacts],
-    ) -> CollectionCandidateDecision:
-        resolved = resolve_place_target(item.place_target, collection_status=item.status.value)
-        assert resolved.brand_identity is not None
-        try:
-            result = await self._place_matching.match(
-                PlaceMatchRequest(
-                    candidate=branch_match_candidate(resolved.brand_identity.display_name),
-                    city=constraints.city_scope,
-                    search_district=(
-                        constraints.area.districts[0]
-                        if constraints.area is not None
-                        and len(constraints.area.districts) == 1
-                        else None
-                    ),
-                    search_location=constraints.origin,
-                )
-            )
-        except asyncio.CancelledError:
-            raise
-        except MapProviderError:
-            return assess_collection_candidate(
-                item=item,
-                constraints=constraints,
-                formal_city_code=None,
-                location_confirmed=False,
-                poi=None,
-                facts=CandidateFactValues(),
-                additional_reasons=(CandidateReasonCode.BRANCH_PROVIDER_FAILED,),
-                apply_dynamic_facts=False,
-                resolved_from_any_branch=True,
-            )
-
-        if result.status is MatchStatus.NOT_FOUND:
-            return assess_collection_candidate(
-                item=item,
-                constraints=constraints,
-                formal_city_code=None,
-                location_confirmed=False,
-                poi=None,
-                facts=CandidateFactValues(),
-                additional_reasons=(CandidateReasonCode.BRANCH_NOT_FOUND,),
-                apply_dynamic_facts=False,
-                resolved_from_any_branch=True,
-            )
-        if not result.candidates:
-            return assess_collection_candidate(
-                item=item,
-                constraints=constraints,
-                formal_city_code=None,
-                location_confirmed=False,
-                poi=None,
-                facts=CandidateFactValues(),
-                additional_reasons=(CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT,),
-                apply_dynamic_facts=False,
-                resolved_from_any_branch=True,
-            )
-
-        branch_decisions: list[CollectionCandidateDecision] = []
-        for candidate in result.candidates:
-            poi = poi_from_match_candidate(candidate)
-            dynamic = poi_facts.get(
-                (poi.provider, poi.poi_id),
-                PoiPlanningFacts(provider=poi.provider, poi_id=poi.poi_id),
-            )
-            branch_decisions.append(
-                assess_collection_candidate(
-                    item=item,
-                    constraints=constraints,
-                    formal_city_code=poi.city_code,
-                    location_confirmed=True,
-                    poi=poi,
-                    facts=dynamic,
-                    resolved_from_any_branch=True,
-                )
-            )
-        included = [
-            decision
-            for decision in branch_decisions
-            if decision.outcome is CandidateOutcome.INCLUDED
-        ]
-        if included:
-            return min(
-                included,
-                key=lambda decision: (
-                    decision.route_duration_seconds
-                    if decision.route_duration_seconds is not None
-                    else 2**63,
-                    decision.route_distance_meters
-                    if decision.route_distance_meters is not None
-                    else 2**63,
-                    decision.poi_identity,
-                ),
-            )
-        pending_reasons = {
-            reason
-            for decision in branch_decisions
-            if decision.outcome is CandidateOutcome.VERIFICATION_REQUIRED
-            for reason in decision.reason_codes
-        }
-        if pending_reasons:
-            pending_reasons.add(CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT)
-            return assess_collection_candidate(
-                item=item,
-                constraints=constraints,
-                formal_city_code=None,
-                location_confirmed=False,
-                poi=None,
-                facts=CandidateFactValues(),
-                additional_reasons=pending_reasons,
-                apply_dynamic_facts=False,
-                resolved_from_any_branch=True,
-            )
-        return assess_collection_candidate(
-            item=item,
-            constraints=constraints,
-            formal_city_code=None,
-            location_confirmed=False,
-            poi=None,
-            facts=CandidateFactValues(),
-            additional_reasons=(CandidateReasonCode.BRANCH_NO_HARD_CONSTRAINT_MATCH,),
-            apply_dynamic_facts=False,
-            resolved_from_any_branch=True,
-        )

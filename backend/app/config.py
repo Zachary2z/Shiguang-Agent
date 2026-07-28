@@ -294,7 +294,7 @@ class Settings(BaseSettings):
         "none",
         "json_schema",
         "json_object",
-    ] = "none"
+    ] = "json_object"
     model_input_price_per_million_tokens: Decimal | None = None
     model_output_price_per_million_tokens: Decimal | None = None
     model_cost_currency: str = "CNY"

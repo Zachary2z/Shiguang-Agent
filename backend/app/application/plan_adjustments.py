@@ -10,14 +10,14 @@ from decimal import Decimal
 
 from pydantic import Field, ValidationError, model_validator
 
-from app.domain.places import Coordinate, TransportMode
-from app.domain.plans import ActivityArea, PlanConstraints, PlanPace
+from app.application.extraction_output import structured_response_format
+from app.domain.places import TransportMode
+from app.domain.plans import PlanConstraints, PlanPace
 from app.domain.plans.contracts import PlanContract
 from nanobot_core.providers import (
     Message,
     ModelProvider,
     ModelResponse,
-    StructuredOutput,
     StructuredOutputMode,
 )
 
@@ -31,8 +31,7 @@ class PlanAdjustmentPatch(PlanContract):
 
     start_at: datetime | None = None
     end_at: datetime | None = None
-    area: ActivityArea | None = None
-    origin: Coordinate | None = None
+    location_intent: str | None = Field(default=None, min_length=1, max_length=200)
     budget: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
     pace: PlanPace | None = None
     transport_modes: tuple[TransportMode, ...] | None = Field(
@@ -48,19 +47,10 @@ class PlanAdjustmentPatch(PlanContract):
     def require_explicit_patch(self) -> PlanAdjustmentPatch:
         if not self.model_fields_set:
             raise ValueError("an adjustment must change at least one field")
-        if "area" in self.model_fields_set and "origin" in self.model_fields_set:
-            if self.area is None and self.origin is None:
-                raise ValueError("an adjustment cannot remove both activity ranges")
         return self
 
 
 _PATCH_SCHEMA = PlanAdjustmentPatch.model_json_schema()
-_RESPONSE_FORMAT = StructuredOutput(
-    mode=StructuredOutputMode.JSON_SCHEMA,
-    schema_name="plan_adjustment_patch",
-    json_schema=_PATCH_SCHEMA,
-    strict=True,
-)
 _SYSTEM_PROMPT = (
     "Convert one Shiguang plan-adjustment instruction into the smallest JSON patch "
     "matching the supplied schema. Include only fields the user explicitly changes. "
@@ -68,15 +58,28 @@ _SYSTEM_PROMPT = (
     "lists when present. When the user replaces an activity category, remove the old "
     "category from include, add the requested category to include, and add an explicit "
     "rejection to exclude when requested. Use ISO-8601 aware datetimes and never invent "
-    "times, budget, area, pace, transport, or collection_only. Return JSON only."
+    "times, budget, place intent, pace, transport, or collection_only. A place change "
+    "may only use location_intent; never emit coordinates. Return JSON matching this "
+    "schema only:\n"
+    + json.dumps(_PATCH_SCHEMA, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 )
 
 
 class PlanAdjustmentParser:
     """Parse one instruction through the existing ModelProvider, without phrase rules."""
 
-    def __init__(self, provider: ModelProvider) -> None:
+    def __init__(
+        self,
+        provider: ModelProvider,
+        *,
+        structured_output_mode: StructuredOutputMode | None,
+    ) -> None:
         self._provider = provider
+        self._response_format = structured_response_format(
+            structured_output_mode,
+            schema_name="plan_adjustment_patch",
+            json_schema=_PATCH_SCHEMA,
+        )
 
     async def parse(
         self,
@@ -94,7 +97,10 @@ class PlanAdjustmentParser:
                 "role": "user",
                 "content": json.dumps(
                     {
-                        "current_constraints": constraints.model_dump(mode="json"),
+                        "current_constraints": constraints.model_dump(
+                            mode="json",
+                            exclude={"origin"},
+                        ),
                         "instruction": normalized,
                     },
                     ensure_ascii=False,
@@ -105,7 +111,7 @@ class PlanAdjustmentParser:
         response = await self._provider.chat(
             messages=deepcopy(messages),
             tools=None,
-            response_format=_RESPONSE_FORMAT,
+            response_format=self._response_format,
         )
         if response_observer is not None:
             response_observer(response)
@@ -125,6 +131,8 @@ def apply_plan_adjustment(
 
     values = constraints.model_dump()
     for field_name in patch.model_fields_set:
+        if field_name == "location_intent":
+            raise PlanAdjustmentNotUnderstoodError
         values[field_name] = getattr(patch, field_name)
     return PlanConstraints.model_validate(values)
 

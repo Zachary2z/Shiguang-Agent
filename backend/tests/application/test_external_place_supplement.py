@@ -972,7 +972,6 @@ async def test_structured_retrieval_output_flows_into_approval_boundary() -> Non
     )
     retrieved = await StructuredCollectionRetrievalService(
         repository=EmptyReadOnlyRepository(),  # type: ignore[arg-type]
-        place_matching=matching,
     ).retrieve(
         user_id="usr_00000000000000000000000000000001",
         constraints=_constraints(),

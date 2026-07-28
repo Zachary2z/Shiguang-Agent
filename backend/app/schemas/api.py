@@ -30,6 +30,7 @@ from app.domain.places import (
     Coordinate,
     EvidenceOutcome,
     PlaceMatchCandidate,
+    PlaceScope,
     PlaceSelectionKind,
     PoiProvider,
     PoiType,
@@ -413,12 +414,19 @@ class CollectionItemResponse(ApiModel):
     def from_domain(cls, item: CollectionItem) -> CollectionItemResponse:
         formal_city_code = collection_formal_city_code(item)
         planning_eligible = bool(
-            item.kind is CollectionKind.PLACE
-            and item.status is CollectionStatus.ACTIVE
+            item.status is CollectionStatus.ACTIVE
             and item.place_target is not None
             and (
                 formal_city_code == "shenzhen"
                 or item.place_target.brand_identity is not None
+            )
+            and (
+                item.kind is CollectionKind.PLACE
+                or (
+                    item.place_target.scope is PlaceScope.EXACT
+                    and item.event_start_at is not None
+                    and item.event_end_at is not None
+                )
             )
         )
         exclusion_reason: str | None = None

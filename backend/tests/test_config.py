@@ -52,7 +52,7 @@ def test_explicit_settings_override_defaults() -> None:
     assert settings.log_level == "WARNING"
 
 
-def test_structured_output_capability_is_explicit_and_disabled_by_default() -> None:
+def test_structured_output_capability_defaults_to_verified_json_object() -> None:
     default_settings = Settings(
         _env_file=None,
         app_env="test",
@@ -65,7 +65,10 @@ def test_structured_output_capability_is_explicit_and_disabled_by_default() -> N
         update={"model_structured_output_mode": "json_object"}
     )
 
-    assert default_settings.extraction_structured_output_mode() is None
+    assert (
+        default_settings.extraction_structured_output_mode()
+        is StructuredOutputMode.JSON_OBJECT
+    )
     assert (
         schema_settings.extraction_structured_output_mode()
         is StructuredOutputMode.JSON_SCHEMA

@@ -145,7 +145,6 @@ class ExistingPlanServicesExecutor:
         facts = await self._facts.resolve(user_id=user_id, constraints=constraints)
         collections = await StructuredCollectionRetrievalService(
             repository=SqlAlchemyCollectionRepository(self._session),
-            place_matching=self._matching,
         ).retrieve(
             user_id=user_id,
             constraints=constraints,

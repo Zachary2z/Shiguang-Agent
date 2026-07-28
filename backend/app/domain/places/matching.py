@@ -219,6 +219,7 @@ class PlaceMatchCandidate(PlaceMatchingContract):
     business_area: str | None = Field(default=None, max_length=100)
     address: str = Field(min_length=1, max_length=500)
     poi_type: PoiType
+    opening_hours_summary: str | None = Field(default=None, max_length=240)
     provider_rank: int = Field(ge=1)
     rank: int = Field(ge=1, le=MAX_PLACE_MATCH_CANDIDATES)
     score: float = Field(ge=0, le=100)
@@ -289,6 +290,7 @@ def poi_from_match_candidate(candidate: PlaceMatchCandidate) -> Poi:
         address=candidate.address,
         coordinate=candidate.coordinate.model_copy(deep=True),
         poi_type=candidate.poi_type,
+        opening_hours_summary=candidate.opening_hours_summary,
     )
 
 
@@ -785,6 +787,7 @@ def score_place_candidate(
         business_area=poi.business_area,
         address=poi.address,
         poi_type=poi.poi_type,
+        opening_hours_summary=poi.opening_hours_summary,
         provider_rank=provider_rank,
         rank=1,
         score=score,

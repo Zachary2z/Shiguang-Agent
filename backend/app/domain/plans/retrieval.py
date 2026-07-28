@@ -71,12 +71,13 @@ class CandidateFactValues(RetrievalContract):
 
 
 class CollectionPlanningFacts(CandidateFactValues):
-    """Verified location and dynamic facts for one Event collection."""
+    """Verified request-local facts for one collection candidate."""
 
     collection_item_id: str
     formal_city: CityScope | None = None
     location_confirmed: bool = False
     coordinate: Coordinate | None = Field(default=None, repr=False)
+    resolved_poi: Poi | None = None
 
     @field_validator("collection_item_id")
     @classmethod
@@ -88,9 +89,21 @@ class CollectionPlanningFacts(CandidateFactValues):
         if self.location_confirmed and self.formal_city is None:
             raise ValueError("confirmed locations require a formal city")
         if not self.location_confirmed and (
-            self.formal_city is not None or self.coordinate is not None
+            self.formal_city is not None
+            or self.coordinate is not None
+            or self.resolved_poi is not None
         ):
             raise ValueError("unconfirmed locations cannot carry formal location facts")
+        if self.resolved_poi is not None and (
+            not self.location_confirmed
+            or self.formal_city is None
+            or self.resolved_poi.city_code != self.formal_city.city_code
+            or (
+                self.coordinate is not None
+                and self.coordinate != self.resolved_poi.coordinate
+            )
+        ):
+            raise ValueError("resolved POI must match confirmed collection location")
         return self
 
 

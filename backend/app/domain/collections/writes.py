@@ -212,6 +212,4 @@ def status_for_extraction_candidate(
 
     if isinstance(candidate, PlaceCandidate):
         return CollectionStatus.PENDING_DETAILS
-    if candidate.event_start_at is not None and candidate.event_end_at is not None:
-        return CollectionStatus.ACTIVE
     return CollectionStatus.PENDING_DETAILS

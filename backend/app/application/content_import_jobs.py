@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.application.image_recognition import ORIGINAL_SCREENSHOT_RETENTION_DAYS
 from app.application.input_contracts import CollectionInput, ImageInput, TextInput, UrlInput
+from app.application.place_matching import PlaceMatchingService
 from app.application.pricing import PricingPolicy
 from app.application.text_collection_workflow import (
     IdempotencyLockRegistry,
@@ -33,11 +34,13 @@ from app.domain.collections import (
     SourceType,
 )
 from app.domain.jobs import JobCreate, JobResultSummary, ScheduledJob
+from app.domain.places import PlaceMatchingPolicy
 from app.domain.runs import AgentRunStatus
 from app.domain.time import utc_now
 from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.repositories import AgentRunRepository, SqlAlchemyCollectionRepository
 from app.providers.jobs import JobQueue
+from app.providers.map import MapProvider
 from app.providers.storage import (
     RetentionPolicy,
     StorageProvider,
@@ -295,6 +298,8 @@ class ContentImportJobHandler:
         storage: StorageProvider | None = None,
         storage_config: StorageProviderSettings | None = None,
         structured_output_mode: StructuredOutputMode | None = None,
+        map_provider: MapProvider | None = None,
+        matching_policy: PlaceMatchingPolicy | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._provider = provider
@@ -305,6 +310,14 @@ class ContentImportJobHandler:
         self._storage = storage
         self._storage_config = storage_config
         self._structured_output_mode = structured_output_mode
+        self._event_place_matching = (
+            None
+            if map_provider is None or matching_policy is None
+            else PlaceMatchingService(
+                map_provider=map_provider,
+                policy=matching_policy,
+            )
+        )
 
     async def __call__(self, job: ScheduledJob) -> JobResultSummary:
         payload = ContentImportJobPayload.model_validate(job.payload, strict=True)
@@ -333,6 +346,7 @@ class ContentImportJobHandler:
                     storage=self._storage,
                     storage_config=self._storage_config,
                     structured_output_mode=self._structured_output_mode,
+                    event_place_matching=self._event_place_matching,
                 ).submit_input(
                     user_id=job.user_id,
                     session_id=payload.session_id,

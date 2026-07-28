@@ -253,7 +253,7 @@ async def test_auto_save_event_and_multiple_cross_city_candidates_share_one_sour
         assert original == tuple(candidate.model_dump(mode="python") for candidate in candidates)
 
     assert [item.status for item in result.items] == [
-        CollectionStatus.ACTIVE,
+        CollectionStatus.PENDING_DETAILS,
         CollectionStatus.PENDING_DETAILS,
         CollectionStatus.PENDING_DETAILS,
     ]
@@ -733,7 +733,7 @@ async def test_undo_partial_failure_rolls_back_all_items_and_can_retry(
         with sqlite3.connect(database_path) as connection:
             assert set(
                 connection.execute("SELECT status FROM collection_items").fetchall()
-            ) == {("active",), ("pending_details",)}
+            ) == {("pending_details",)}
             assert connection.execute(
                 "SELECT undone_at FROM collection_write_operations"
             ).fetchone() == (None,)
@@ -819,7 +819,7 @@ async def test_concurrent_undo_failure_rolls_back_claim_and_items_before_retry(
             ).fetchone() == (None,)
             assert set(
                 connection.execute("SELECT status, version FROM collection_items").fetchall()
-            ) == {("active", 1), ("pending_details", 1)}
+            ) == {("pending_details", 1)}
 
         release_second.set()
         retried = await retry_task

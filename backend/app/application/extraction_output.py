@@ -167,14 +167,29 @@ def extraction_response_format(
 ) -> StructuredOutput | None:
     """Build the explicit extraction request for a verified provider capability."""
 
+    return structured_response_format(
+        mode,
+        schema_name=_EXTRACTION_SCHEMA_NAME,
+        json_schema=extraction_result_schema(),
+    )
+
+
+def structured_response_format(
+    mode: StructuredOutputMode | None,
+    *,
+    schema_name: str,
+    json_schema: dict[str, object],
+) -> StructuredOutput | None:
+    """Build one configured structured-output request without capability probing."""
+
     if mode is None:
         return None
     if mode is StructuredOutputMode.JSON_OBJECT:
         return StructuredOutput(mode=mode)
     return StructuredOutput(
         mode=mode,
-        schema_name=_EXTRACTION_SCHEMA_NAME,
-        json_schema=extraction_result_schema(),
+        schema_name=schema_name,
+        json_schema=deepcopy(json_schema),
         strict=True,
     )
 
@@ -453,6 +468,7 @@ __all__ = [
     "build_repair_messages",
     "canonicalize_extraction_result",
     "extraction_response_format",
+    "structured_response_format",
     "extraction_result_schema",
     "extraction_result_schema_json",
     "parse_extraction_response",
