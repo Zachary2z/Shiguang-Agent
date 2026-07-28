@@ -4,130 +4,147 @@
 
 ## 基线与提交
 
-- 指定基线：`c4d23b716af1426054705912ed0d7067e95e11e4`。
+- 指定开发基线：`c4d23b716af1426054705912ed0d7067e95e11e4`。
 - 开发分支：`codex/m1-7-memory-data-control`。
-- 实现提交：`78543b611d564a83dab0e4d601619706e366369e`。
-- 隔离补测提交：`1cf4a1b06b9a746a7baff6b77a460bacb430ee4d`。
-- 文档提交将在本文件和 `docs/DEV_STATUS.md` 完成后创建，完整分支 HEAD 由最终交付
-  返回。
-- 开始时 `main`、`origin/main` 和工作区 HEAD 均精确等于指定基线，工作区干净，
-  Alembic 唯一 head 为 `20260728_0015`，M1-7 是唯一允许阶段。
+- 初始实现：`78543b611d564a83dab0e4d601619706e366369e`。
+- 隔离补测：`1cf4a1b06b9a746a7baff6b77a460bacb430ee4d`。
+- 初始交接：`2342cfef31cb0962cb4f212f6bfea68a01d4883e`。
+- 主控验收缺陷修复：`aa21144f83d536426578ba333ab449121a881289`。
+- 本次文档提交完整 SHA 由最终交付返回。
 
-## 产品行为与领域边界
+开始和修复门禁均满足：main 与 origin/main 保持
+`c4d23b716af1426054705912ed0d7067e95e11e4`，修复从指定 HEAD 追加；没有 amend、
+rebase、合并或推送。
 
-- 新增唯一结构化 `Memory` 聚合，记录内容、类型、结构化值、来源、确认状态、
-  置信度、有效期、创建/更新时间、停用/删除时间、最后使用时间和乐观版本。
-- 正式 Memory 表只允许 `confirmed`。M1-6 的推断建议继续保留在原反馈审计中，
-  确认后才创建 Memory；拒绝只保存决定，不创建 Memory，同一反馈证据不再出现。
-- 显式“记住/以后”写入要求明确授权。常用区域还必须声明为粗粒度；精确或未授权
-  位置请求在公开写边界拒绝。Memory 类型不包含天气、票价、闭馆或排队等动态事实。
-- 临时条件仍只存在于既有 `PlanConstraints`，不复制进 Memory。检索时只读取已确认、
-  未过期、未停用、未删除的 Memory；删除或停用提交后，下次读取立即排除。
-- 正向/负向偏好进入既有 `StructuredCollectionRetrievalService` 的软排序分值，
-  不伪装成硬约束；节奏偏好在既有计划执行组合边界生成请求级有效条件，不持久化为
-  本次临时约束。既有 `PlanDraftService` 继续承担唯一稳定排序。
-- 只有主方案实际选择的候选和实际采用的节奏才写 `memory_plan_usages`。详情可查看
-  使用依据、计划 ID 和时间；未实际影响方案的 Memory 不制造使用记录。
+## 最终产品行为
 
-## 数据库与迁移
+- 唯一结构化 `Memory` 聚合记录内容、类型、结构化值、来源、确认状态、置信度、
+  有效期、创建/更新时间、停用/删除时间、最后使用时间和乐观版本。
+- 正式 Memory 只允许 `confirmed`。计划的完成、部分完成、未完成和自由文本原因只
+  是反馈事实，不再自动生成 relaxed 或其他长期偏好。
+- 0015 历史 JSON 中只有 `content/confirmation_status` 的建议继续可读，但统一作为
+  中性证据候选。用户确认时必须明确提交 Memory 类型、内容和值；拒绝只保存决定，
+  不创建 Memory，同一证据不再出现。
+- 显式长期写入要求明确授权。动态天气、价格、闭馆和排队事实不能成为 Memory；
+  临时条件仍只存在于唯一 `PlanConstraints`，到期或任务结束后退出规划。
+- 常用区域创建只接受深圳正式行政区的结构化值和对应规范内容，不接受地址、坐标、
+  POI 或门牌号。反馈建议不能确认成位置 Memory。由于现有契约不能证明任意修改仍为
+  粗粒度，暂时禁止 usual_area 内容和值修改，只允许停用、启用和删除。
+- 有效读取只返回已确认、未过期、未停用、未删除的 Memory；停用或删除提交后，
+  下一次计划立即排除。
 
-线性迁移 `20260728_0016_memory_data_control.py` 直接继承 `20260728_0015`，唯一
- Alembic head 为 `20260728_0016`。新增：
+## 当前请求和计划检索
+
+- 当前 `PlanConstraints.pace` 无法区分默认值与用户明确选择，因此 M1-7 不自动应用
+  pace Memory。持久化约束、事实解析、草案生成和界面展示始终使用同一份当前请求，
+  长期 pace Memory 不覆盖本次选择。
+- 正向、负向和常用区域 Memory 只进入既有
+  `StructuredCollectionRetrievalService`。任意数量的匹配被归一为负向、无影响、
+  正向三档（`-1/0/1`）；正负冲突时负向稳定优先，同档重复 Memory 只保留一个
+  确定性依据。
+- 既有 `PlanDraftService` 仍是唯一排序器。所有候选同档时不记录虚假依据；只有
+  真正参与差异化排序且进入主方案的 Memory 才写 `memory_plan_usages`、计划 ID、
+  使用说明和最后使用时间。
+- 1000 条匹配 Memory 的回归保持固定有界分值，无 ValidationError、超时、第二检索
+  或第二排序器。
+
+## 写入、幂等与事务
+
+- 应用层只有一个 `MemoryService` 负责控制写入，一个 `MemoryPlanningService` 负责
+  有效读取和使用记录；仓储只有 `SqlAlchemyMemoryRepository`。
+- 显式创建、修改、停用、删除继续使用用户作用域幂等键、请求指纹、
+  `memory_operations` 唯一约束、Memory 行锁、expected version 和单事务提交。
+- update/delete 在取得包含逻辑删除行的 Memory 行锁后、比较 version 或返回
+  NotFound 前再次检查同键重放。删除后的并发请求仍可从 operation 返回原结果。
+- 事务失败显式回滚，不留下部分 Memory 或 operation；没有进程锁、重试循环、
+  sleep 或第二套幂等服务。
+
+一次性 PostgreSQL 16 测试先持有 Memory 行锁，再启动两个请求，并证明二者都完成
+初次重放检查后等待。update/delete 均覆盖：
+
+- 同键同载荷两个成功，`replayed` 一真一假；
+- 同键不同载荷冲突；
+- 不同键同版本只有一个成功；
+- 删除提交后的同键仍可重放；
+- operation 和业务版本各写一次。
+
+## 迁移与 API
+
+线性迁移 `20260728_0016_memory_data_control.py` 直接继承已集成的 0015，唯一 head 为
+`20260728_0016`。本次没有新增 0017，也没有修改 0015 及更早迁移。0016 表主体保持：
 
 - `memories`：唯一长期记忆；
-- `memory_suggestion_decisions`：建议确认/拒绝和推断 Memory 的授权依据；
-- `memory_operations`：显式创建、修改、停用、删除的用户作用域幂等结果；
+- `memory_suggestion_decisions`：建议决定和授权依据；
+- `memory_operations`：唯一写入幂等审计；
 - `memory_plan_usages`：Memory 对计划的实际影响。
 
-所有关系通过 `user_id` 复合外键绑定反馈、计划和 Memory 所有权。写入使用用户作用域
-幂等键、请求指纹、数据库唯一约束、行锁、expected version 和单事务提交；失败会显式
-回滚。迁移有数据时拒绝破坏性降级。PostgreSQL QA 删除了复合主键上重复的唯一约束，
-模型、迁移和数据库反射保持一致。
+全部反馈、计划和 Memory 关系使用 `user_id` 复合所有权。新增迁移回归在 0015 写入
+真实旧式建议 JSON，升级 0016 后确认原值无损；公开契约再证明该旧建议可作为中性
+候选读取，不伪造缺失类型、值或依据。
 
-## 正式 Application/API 入口
+正式 API 保持：
 
-应用层只有一个 `MemoryService` 负责用户控制写入，一个
-`MemoryPlanningService` 负责有效读取和实际使用记录；仓储只有
-`SqlAlchemyMemoryRepository`。没有第二套 Memory Store、偏好服务或计划检索。
-
-新增 API：
-
-- `GET /api/v1/memories`
-- `POST /api/v1/memories`
-- `GET /api/v1/memories/{memory_id}`
-- `PATCH /api/v1/memories/{memory_id}`
-- `DELETE /api/v1/memories/{memory_id}`
+- `GET/POST /api/v1/memories`
+- `GET/PATCH/DELETE /api/v1/memories/{memory_id}`
 - `GET /api/v1/memory-suggestions`
 - `POST /api/v1/memory-suggestions/{suggestion_id}/decision`
 - `GET /api/v1/data-export.json`
 
-全部使用当前浏览器 Session 的 `user_id`，客户端不能提交所有者。导出是 allowlist JSON，
-只包含当前用户收藏、最新计划和已确认 Memory；不输出 Cookie、Token、幂等键、密钥、
-原始内部审计或服务端配置，并返回 `private, no-store`、`no-cache`、`nosniff` 和附件
-响应头。
+全部使用当前 Session 的 `user_id`。导出是当前用户 allowlist JSON，只包含收藏、
+计划和已确认 Memory；不输出 Cookie、Token、幂等键、密钥、内部审计或服务端配置，
+并返回 `private, no-store`、`no-cache`、`nosniff` 和附件响应头。
 
 ## Web/H5 M07
 
-`/me` 复用 App Shell、`apiClient`、现有设计 token 和组件内局部状态，实现：
+`/me` 继续复用 App Shell、API Client、既有设计 token 和组件局部状态：
 
-- 待确认建议及其证据，确认或拒绝；
-- 记忆列表、详情、来源、有效期、最后使用和影响计划；
-- 修改、停用/启用、两步删除；
+- 历史建议显示为中性候选，明确选择类型、内容和值后才能确认；
+- Memory 列表、详情、来源、有效期、最后使用和影响计划；
+- 普通 Memory 修改、全部 Memory 停用/启用和两步删除；
+- usual_area 明确说明内容和值当前不可修改；
 - 当前用户私有 JSON 下载；
-- “主动提醒：尚未实现 · 已关闭”的禁用状态，不制造已开启假象。
+- “主动提醒：尚未实现 · 已关闭”，不制造已开启状态。
 
-列表、详情和写操作分别拥有 generation 所有权。切换记忆、刷新或卸载后，迟到详情、
-写响应及其 `finally` 不能覆盖更新的选择、Memory 版本或 busy 状态。原生按钮、表单
-和链接支持键盘；390px M07 E2E 和既有 320–1440px 基础测试均无横向溢出，交互目标
-保持至少 44px。
+同一写入载荷由 ref 保留原幂等键；不确定网络结果继续复用，成功或载荷改变后才换键。
+409 同时刷新列表与当前详情。列表、详情和写操作继续使用既有 generation；选择变化、
+刷新或卸载后的迟到详情、迟到写响应和 `finally` 都不能恢复旧版本、旧详情或 busy。
+原生表单、按钮和链接支持键盘；390px M07 及 320–1440px 基础 E2E 无横向溢出。
 
-## 测试结果
+本次界面调整遵循现有 token、排版和移动交互，没有引入新视觉系统或状态框架。
+
+## 最终验证
 
 后端：
 
 - `pip check`、Ruff、strict mypy（135 个源文件）：通过。
-- M1-7 契约：`6 passed`；覆盖显式 Memory、建议确认/拒绝、串行/并发幂等、同键
-  不同载荷、版本冲突、事务回滚、跨用户/建议/计划组合、过期/停用/删除、来源与
-  使用记录、敏感区域和私有导出。
-- 计划检索/排序聚焦与 M1-7 合计回归通过；有效确认 Memory 进入唯一检索分值，
-  停用 Memory 不参与，Memory 分值在稳定排序边界生效。
-- 非真实全集：`1625 passed, 15 skipped, 2 deselected`。
-- SQLite 迁移：`24 passed`；`alembic heads` 为 `20260728_0016 (head)`。
-- 一次性本地 PostgreSQL 16：Memory 并发/所有权及迁移往返 `2 passed`；容器已
-  移除。
-- 仓库外 pytest 插件封锁 DNS、解析、`create_connection`、`connect`、
-  `connect_ex`、`sendto` 后，聚焦 `103 passed`，非真实全集再次
-  `1625 passed, 15 skipped, 2 deselected`。
+- 指定 M1-7/检索/草案/迁移聚焦：`130 passed`。
+- 普通非真实全集：`1628 passed, 15 skipped, 2 deselected`。
+- 首次完整运行曾有一个既有图片外层超时取消测试偶发失败；该测试单独立即通过，
+  随后普通全集和封网全集均完整通过。
+- SQLite 迁移：`25 passed`；Alembic 唯一 head：`20260728_0016 (head)`。
+- 一次性 PostgreSQL 16 强制行锁并发及迁移往返：`2 passed`，容器已移除。
+- 仓库外插件封锁 DNS、`create_connection`、`connect`、`connect_ex`、`sendto` 后，
+  聚焦 `130 passed`，非真实全集再次
+  `1628 passed, 15 skipped, 2 deselected`。
 
 前端：
 
 - lint、typecheck、build：通过。
-- Vitest：`69 passed`，其中 M07 `4 passed`，覆盖加载、建议决定、修改/停用/
-  删除、提醒关闭和迟到详情隔离。
-- Playwright：`27 passed`，包含 M07 移动端、刷新恢复、键盘焦点、导出和无横向
-  溢出；既有真实离线计划闭环继续穿过 Next.js、FastAPI、临时数据库和 Worker。
+- Vitest：`73 passed`，其中 M07 `8 passed`。
+- Playwright：`27 passed`，包含 M07 移动端、刷新、键盘、导出和无横向溢出。
 
-## 安全、唯一性与风险
+## 安全、复杂度与风险
 
-- 未读取 `.env`，未调用真实模型、地图、网页或付费 API，未读取或提交真实用户
-  数据、数据库、导出文件或缓存。
+- 未读取 `.env`，未调用真实模型、地图、网页或付费 API；未读取或提交真实用户数据、
+  数据库、导出文件或缓存。
 - 没有 Markdown/文件式 Memory、关键词意图猜测、自动确认、动态事实记忆、临时
-  条件复制、第二套 Repository/Provider/Planner/API Client/前端状态框架。
-- 未实现 M1-8 分享、微信、主动提醒、云部署、账号注销或后续阶段。
-- 当前无已知未关闭 P0/P1。保留既有 M1-5 高基数候选截断 P2：事实读取仍先按稳定
-  仓储顺序截取有限候选，较晚但软偏好更高的收藏可能无法进入排序；后续只能在唯一
-  检索边界内收敛。
-- M07 Playwright 使用状态化 API route 验证 UI 竞态与移动交互；API/数据库行为由
-  FastAPI ASGI 契约、完整离线回归和 PostgreSQL 专测独立证明。没有为测试增加生产
-  白名单、样本特例或重复业务校验。
-
-## 主控验收建议
-
-1. 复核 `20260728_0016` 在 SQLite/PostgreSQL 的线性迁移、复合所有权和降级保护。
-2. 并发重放同 key 同载荷应一真一假，同 key 不同载荷应冲突，事务失败后不留部分
-   Memory 或 operation。
-3. 确认拒绝建议不建 Memory；停用、删除、过期后下一次有效读取立即排除。
-4. 从 M07 查看来源和影响计划，验证刷新和切换后的迟到响应不覆盖新状态。
-5. 检查导出 allowlist、当前用户作用域和 `no-store` 响应头。
+  条件复制、第二套 Memory Store、Repository、偏好服务、排序器、Provider、API
+  Client、进程锁、重试循环或前端状态框架。
+- 删除了无产品依据的反馈推断服务；规则分别收敛在既有 Memory 写边界、唯一结构化
+  检索和 M07 局部状态，没有生产白名单、样本特例或重复校验。
+- 没有实现 M1-8 分享、微信、提醒任务、云部署、账号注销或后续阶段。
+- 六类主控缺陷均已关闭，当前无已知未关闭 P0/P1。保留既有 M1-5 高基数候选截断
+  P2：事实读取仍先按稳定仓储顺序截取有限候选，较晚收藏可能不进入排序；后续只能
+  在唯一检索边界内收敛。
 
 阶段保持“待主控验收”；不合并 main、不推送、不开始 M1-8。
