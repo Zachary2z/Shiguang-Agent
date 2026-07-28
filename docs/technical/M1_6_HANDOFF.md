@@ -1,6 +1,6 @@
 # M1-6 执行入口与手动反馈交接
 
-状态：**已实现，待主控验收**
+状态：**已完成（主控验收通过）**
 
 ## 基线与提交
 
@@ -11,7 +11,8 @@
   后续提交为主控 QA 联合修复提交，完整 SHA 由交接方从分支 HEAD 返回。
 - 开始门禁确认 `main` 与 `origin/main` 精确等于指定基线，工作区干净，
   Alembic 唯一 head 为 `20260728_0014`，M1-5 已完成且 M1-6 是唯一允许阶段。
-- 未合并 `main`，未推送 GitHub，未开始 M1-7。
+- 主控已将最终阶段提交 `a20c083a4bfd2c7ac9626db2584b7ae260a75ef9`
+  以 `--ff-only` 集成到 `main`；M1-7 尚未开始。
 
 ## 产品行为
 
@@ -155,4 +156,16 @@ Next.js、FastAPI、临时 SQLite、既有 JobQueue/Worker、计划服务和 Stu
    必须另行取得用户授权）；
 5. M06 刷新恢复和更正交互。
 
-验收通过前保持 M1-6“待主控验收”，不合并、不推送、不开始 M1-7。
+## 主控最终验收
+
+- 后端 `pip check`、Ruff、strict mypy 通过；M1-6 契约与 SQLite 迁移聚焦
+  `31 passed`，完整非真实及仓库外 DNS/socket 硬封网复跑均为
+  `1617 passed, 14 skipped, 2 deselected`。
+- 一次性 PostgreSQL 16 中并发、回滚、复合外键与迁移往返 `4 passed`；Alembic
+  唯一 head 为 `20260728_0015`。
+- 前端 lint、typecheck、build 通过，Vitest `65 passed`，真实离线 Playwright
+  `26 passed`。
+- 主控确认原三个 P1 与两个 P2 已关闭，没有未关闭 P0/P1；没有第二套锁、Provider、
+  Repository、状态机、解析器或前端状态框架。
+- 验收全程未读取 `.env`，真实模型、地图、网页及其他外部/付费 API 调用为 0。
+  M1-6 已完成，当前允许开始 M1-7；设备日历导入与高德 URI 拉起仍需另行授权验证。
