@@ -1,142 +1,137 @@
-"""Deterministic plan-constraint patching for explicit user adjustment text."""
+"""One structured model boundary for minimal PlanConstraints adjustments."""
 
 from __future__ import annotations
 
-import re
-from datetime import datetime, timedelta
+import json
+from collections.abc import Callable
+from copy import deepcopy
+from datetime import datetime
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
-from app.domain.places import TransportMode
-from app.domain.plans import PlanConstraints, PlanPace
+from pydantic import Field, ValidationError, model_validator
 
-_SHIFT_PATTERN = re.compile(
-    r"(?P<direction>晚|推迟|延后|早|提前)\s*(?P<amount>\d{1,3})\s*"
-    r"(?P<unit>小时|分钟)"
+from app.domain.places import Coordinate, TransportMode
+from app.domain.plans import ActivityArea, PlanConstraints, PlanPace
+from app.domain.plans.contracts import PlanContract
+from nanobot_core.providers import (
+    Message,
+    ModelProvider,
+    ModelResponse,
+    StructuredOutput,
+    StructuredOutputMode,
 )
-_TIME_WINDOW_PATTERN = re.compile(
-    r"(?P<start_hour>[01]?\d|2[0-3])[:：](?P<start_minute>[0-5]\d)"
-    r"\s*(?:到|至|[-—–])\s*"
-    r"(?P<end_hour>[01]?\d|2[0-3])[:：](?P<end_minute>[0-5]\d)"
-)
-_BUDGET_PATTERN = re.compile(r"预算(?:改成|调整为|设为|是|为)?\s*(?P<amount>\d+(?:\.\d{1,2})?)")
-_EXCLUDE_PATTERN = re.compile(r"不要\s*(?P<value>[^，。；,;]{1,40})")
-_SHENZHEN_TIME = ZoneInfo("Asia/Shanghai")
 
 
 class PlanAdjustmentNotUnderstoodError(ValueError):
     code = "PLAN_ADJUSTMENT_NOT_UNDERSTOOD"
 
 
+class PlanAdjustmentPatch(PlanContract):
+    """Only fields explicitly present in model output replace current constraints."""
+
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    area: ActivityArea | None = None
+    origin: Coordinate | None = None
+    budget: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    pace: PlanPace | None = None
+    transport_modes: tuple[TransportMode, ...] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=4,
+    )
+    include: tuple[str, ...] | None = Field(default=None, max_length=20)
+    exclude: tuple[str, ...] | None = Field(default=None, max_length=20)
+    collection_only: bool | None = None
+
+    @model_validator(mode="after")
+    def require_explicit_patch(self) -> PlanAdjustmentPatch:
+        if not self.model_fields_set:
+            raise ValueError("an adjustment must change at least one field")
+        if "area" in self.model_fields_set and "origin" in self.model_fields_set:
+            if self.area is None and self.origin is None:
+                raise ValueError("an adjustment cannot remove both activity ranges")
+        return self
+
+
+_PATCH_SCHEMA = PlanAdjustmentPatch.model_json_schema()
+_RESPONSE_FORMAT = StructuredOutput(
+    mode=StructuredOutputMode.JSON_SCHEMA,
+    schema_name="plan_adjustment_patch",
+    json_schema=_PATCH_SCHEMA,
+    strict=True,
+)
+_SYSTEM_PROMPT = (
+    "Convert one Shiguang plan-adjustment instruction into the smallest JSON patch "
+    "matching the supplied schema. Include only fields the user explicitly changes. "
+    "Omitted fields must remain unchanged. include and exclude are complete replacement "
+    "lists when present. When the user replaces an activity category, remove the old "
+    "category from include, add the requested category to include, and add an explicit "
+    "rejection to exclude when requested. Use ISO-8601 aware datetimes and never invent "
+    "times, budget, area, pace, transport, or collection_only. Return JSON only."
+)
+
+
+class PlanAdjustmentParser:
+    """Parse one instruction through the existing ModelProvider, without phrase rules."""
+
+    def __init__(self, provider: ModelProvider) -> None:
+        self._provider = provider
+
+    async def parse(
+        self,
+        *,
+        constraints: PlanConstraints,
+        instruction: str,
+        response_observer: Callable[[ModelResponse], None] | None = None,
+    ) -> PlanAdjustmentPatch:
+        normalized = " ".join(instruction.split())
+        if not normalized or len(normalized) > 1000:
+            raise PlanAdjustmentNotUnderstoodError
+        messages: list[Message] = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "current_constraints": constraints.model_dump(mode="json"),
+                        "instruction": normalized,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            },
+        ]
+        response = await self._provider.chat(
+            messages=deepcopy(messages),
+            tools=None,
+            response_format=_RESPONSE_FORMAT,
+        )
+        if response_observer is not None:
+            response_observer(response)
+        if response.tool_calls or response.content is None:
+            raise PlanAdjustmentNotUnderstoodError
+        try:
+            return PlanAdjustmentPatch.model_validate_json(response.content)
+        except (ValidationError, TypeError, ValueError):
+            raise PlanAdjustmentNotUnderstoodError from None
+
+
 def apply_plan_adjustment(
     constraints: PlanConstraints,
-    instruction: str,
+    patch: PlanAdjustmentPatch,
 ) -> PlanConstraints:
-    """Apply only explicitly recognized changes and preserve every other field."""
+    """Apply one strict patch and validate the complete PlanConstraints exactly once."""
 
-    normalized = " ".join(instruction.split())
-    if not normalized or len(normalized) > 1000:
-        raise PlanAdjustmentNotUnderstoodError
-    changes: dict[str, object] = {}
-
-    shift = _SHIFT_PATTERN.search(normalized)
-    if shift is not None:
-        amount = int(shift.group("amount"))
-        delta = timedelta(
-            hours=amount if shift.group("unit") == "小时" else 0,
-            minutes=amount if shift.group("unit") == "分钟" else 0,
-        )
-        if shift.group("direction") in {"早", "提前"}:
-            delta = -delta
-        changes["start_at"] = constraints.start_at + delta
-        changes["end_at"] = constraints.end_at + delta
-
-    exact_window = _TIME_WINDOW_PATTERN.search(normalized)
-    if exact_window is not None:
-        start = _replace_local_clock(
-            constraints.start_at,
-            hour=int(exact_window.group("start_hour")),
-            minute=int(exact_window.group("start_minute")),
-        )
-        end = _replace_local_clock(
-            constraints.end_at,
-            hour=int(exact_window.group("end_hour")),
-            minute=int(exact_window.group("end_minute")),
-        )
-        changes["start_at"] = start
-        changes["end_at"] = end
-
-    if any(value in normalized for value in ("轻松一点", "节奏轻松", "慢一点")):
-        changes["pace"] = PlanPace.RELAXED
-    elif any(value in normalized for value in ("排满一点", "紧凑一点", "多安排")):
-        changes["pace"] = PlanPace.PACKED
-    elif "节奏适中" in normalized:
-        changes["pace"] = PlanPace.BALANCED
-
-    if "少走" in normalized or "公共交通" in normalized or "地铁" in normalized:
-        changes["transport_modes"] = (TransportMode.TRANSIT,)
-    elif "只步行" in normalized:
-        changes["transport_modes"] = (TransportMode.WALKING,)
-    elif "骑行" in normalized:
-        changes["transport_modes"] = (TransportMode.CYCLING,)
-    elif "驾车" in normalized or "开车" in normalized:
-        changes["transport_modes"] = (TransportMode.DRIVING,)
-
-    if "只用收藏" in normalized or "不要外部" in normalized:
-        changes["collection_only"] = True
-    elif "允许外部" in normalized or "可以补充外部" in normalized:
-        changes["collection_only"] = False
-
-    if any(
-        value in normalized
-        for value in ("不设预算", "预算未设置", "取消预算", "没有预算限制")
-    ):
-        changes["budget"] = None
-    else:
-        budget = _BUDGET_PATTERN.search(normalized)
-        if budget is not None:
-            changes["budget"] = Decimal(budget.group("amount"))
-
-    exclusions = list(constraints.exclude)
-    for match in _EXCLUDE_PATTERN.finditer(normalized):
-        value = match.group("value").strip()
-        if value and value not in exclusions:
-            exclusions.append(value)
-    if exclusions != list(constraints.exclude):
-        changes["exclude"] = tuple(exclusions)
-
-    if not changes:
-        raise PlanAdjustmentNotUnderstoodError
-    values: dict[str, object] = {
-        "city_code": constraints.city_code,
-        "start_at": constraints.start_at,
-        "end_at": constraints.end_at,
-        "area": constraints.area,
-        "origin": constraints.origin,
-        "budget": constraints.budget,
-        "pace": constraints.pace,
-        "transport_modes": constraints.transport_modes,
-        "include": constraints.include,
-        "exclude": constraints.exclude,
-        "collection_only": constraints.collection_only,
-        "created_at": constraints.created_at,
-        "expires_at": constraints.expires_at,
-    }
-    values.update(changes)
+    values = constraints.model_dump()
+    for field_name in patch.model_fields_set:
+        values[field_name] = getattr(patch, field_name)
     return PlanConstraints.model_validate(values)
-
-
-def _replace_local_clock(value: datetime, *, hour: int, minute: int) -> datetime:
-    local = value.astimezone(_SHENZHEN_TIME).replace(
-        hour=hour,
-        minute=minute,
-        second=0,
-        microsecond=0,
-    )
-    return local.astimezone(value.tzinfo)
 
 
 __all__ = [
     "PlanAdjustmentNotUnderstoodError",
+    "PlanAdjustmentParser",
+    "PlanAdjustmentPatch",
     "apply_plan_adjustment",
 ]

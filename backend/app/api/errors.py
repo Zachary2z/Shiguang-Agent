@@ -11,6 +11,7 @@ from app.api.dependencies import (
     AuthenticationRequiredError,
     CsrfRejectedError,
     DemoNotAvailableError,
+    PlanProviderNotConfiguredError,
     ProviderNotConfiguredError,
 )
 from app.application.plan_adjustments import PlanAdjustmentNotUnderstoodError
@@ -61,6 +62,10 @@ def install_error_handlers(api: FastAPI) -> None:
     api.add_exception_handler(TextCollectionRunError, _workflow_error)
     api.add_exception_handler(TextCollectionTimeoutError, _workflow_timeout)
     api.add_exception_handler(ProviderNotConfiguredError, _provider_not_configured)
+    api.add_exception_handler(
+        PlanProviderNotConfiguredError,
+        _plan_provider_not_configured,
+    )
     api.add_exception_handler(AuthenticationRequiredError, _authentication_required)
     api.add_exception_handler(CsrfRejectedError, _csrf_rejected)
     api.add_exception_handler(DemoNotAvailableError, _demo_not_available)
@@ -191,6 +196,18 @@ async def _provider_error(request: Request, exc: Exception) -> JSONResponse:
 async def _provider_not_configured(request: Request, exc: Exception) -> JSONResponse:
     del request, exc
     return _error(503, "PROVIDER_NOT_CONFIGURED", "Collection input is unavailable.")
+
+
+async def _plan_provider_not_configured(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    del request, exc
+    return _error(
+        503,
+        "PLAN_PROVIDER_NOT_CONFIGURED",
+        "Plan generation is unavailable until its providers are configured.",
+    )
 
 
 async def _workflow_timeout(request: Request, exc: Exception) -> JSONResponse:

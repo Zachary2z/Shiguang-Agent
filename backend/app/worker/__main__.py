@@ -11,6 +11,7 @@ from app.application.content_import_jobs import (
     ContentImportJobHandler,
 )
 from app.application.map_plan_facts import MapPlanFactResolver
+from app.application.plan_adjustments import PlanAdjustmentParser
 from app.application.plan_experience import (
     PLAN_GENERATION_JOB_TYPE,
     ExistingPlanServicesExecutor,
@@ -90,6 +91,9 @@ async def _run() -> None:
         handlers[PLAN_GENERATION_JOB_TYPE] = PlanGenerationJobHandler(
             session_factory=database.session_factory,
             pricing=pricing,
+            adjustment_parser=(
+                None if provider is None else PlanAdjustmentParser(provider)
+            ),
             executor_factory=lambda session: ExistingPlanServicesExecutor(
                 session=session,
                 map_provider=map_provider,
@@ -97,6 +101,7 @@ async def _run() -> None:
                 facts=MapPlanFactResolver(
                     session=session,
                     map_provider=map_provider,
+                    matching_policy=settings.place_matching_policy(),
                 ),
             ),
         )
@@ -132,6 +137,9 @@ async def _run() -> None:
             demo_handlers[PLAN_GENERATION_JOB_TYPE] = PlanGenerationJobHandler(
                 session_factory=demo_database.session_factory,
                 pricing=pricing,
+                adjustment_parser=(
+                    None if provider is None else PlanAdjustmentParser(provider)
+                ),
                 executor_factory=lambda session: ExistingPlanServicesExecutor(
                     session=session,
                     map_provider=map_provider,
@@ -139,6 +147,7 @@ async def _run() -> None:
                     facts=MapPlanFactResolver(
                         session=session,
                         map_provider=map_provider,
+                        matching_policy=settings.place_matching_policy(),
                     ),
                 ),
             )

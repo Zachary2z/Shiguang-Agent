@@ -13,6 +13,7 @@ from app.application.text_collection_workflow import IdempotencyLockRegistry
 from app.config import Settings, load_settings
 from app.infrastructure.db import Database
 from app.observability import RequestContextMiddleware, configure_logging
+from app.providers.map import MapProvider
 from app.providers.storage import StorageProvider
 from app.providers.web import WebContentProvider
 from nanobot_core.providers import ModelProvider
@@ -25,6 +26,7 @@ def create_app(
     web_provider: WebContentProvider | None = None,
     storage_provider: StorageProvider | None = None,
     demo_storage_provider: StorageProvider | None = None,
+    map_provider: MapProvider | None = None,
 ) -> FastAPI:
     """Create a configured FastAPI application without running migrations."""
 
@@ -60,6 +62,7 @@ def create_app(
     api.state.web_provider = web_provider
     api.state.storage_provider = storage_provider
     api.state.demo_storage_provider = demo_storage_provider
+    api.state.map_provider = map_provider
     api.state.idempotency_locks = IdempotencyLockRegistry()
     api.add_middleware(RequestContextMiddleware)
     install_error_handlers(api)

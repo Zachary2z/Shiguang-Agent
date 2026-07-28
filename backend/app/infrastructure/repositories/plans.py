@@ -15,6 +15,7 @@ from app.domain.plans import (
     ApprovalAction,
     ApprovalStatus,
     PlanApproval,
+    PlanConstraints,
     PlanDraftResult,
     PlanExecutionNotAllowedError,
     PlanNotReadyError,
@@ -25,6 +26,7 @@ from app.domain.plans import (
     parse_plan_constraints_json,
 )
 from app.domain.time import as_utc, require_aware_utc
+from app.infrastructure.db.dml import execute_dml_rowcount
 from app.infrastructure.db.models import ApprovalModel, PlanItemModel, PlanModel
 
 
@@ -91,6 +93,24 @@ class SqlAlchemyPlanRepository:
         self._session.add(row)
         await self._session.flush()
         return self._plan(row)
+
+    async def delete_unqueued_generation(
+        self,
+        *,
+        user_id: str,
+        plan_id: str,
+        trace_id: str,
+    ) -> bool:
+        rowcount = await execute_dml_rowcount(
+            self._session,
+            delete(PlanModel).where(
+                PlanModel.id == plan_id,
+                PlanModel.user_id == user_id,
+                PlanModel.trace_id == trace_id,
+                PlanModel.status == PlanStatus.GENERATING.value,
+            ),
+        )
+        return rowcount == 1
 
     async def get(self, *, user_id: str, plan_id: str) -> PlanVersion | None:
         row = await self._session.scalar(
@@ -174,7 +194,8 @@ class SqlAlchemyPlanRepository:
         now: datetime,
     ) -> PlanVersion:
         timestamp = require_aware_utc(now)
-        result = await self._session.execute(
+        rowcount = await execute_dml_rowcount(
+            self._session,
             update(PlanModel)
             .where(
                 PlanModel.id == plan_id,
@@ -188,7 +209,7 @@ class SqlAlchemyPlanRepository:
                 updated_at=timestamp,
             )
         )
-        if result.rowcount != 1:
+        if rowcount != 1:
             current = await self.require(user_id=user_id, plan_id=plan_id)
             if current.status is PlanStatus.DRAFT and current.draft == draft:
                 return current
@@ -205,7 +226,8 @@ class SqlAlchemyPlanRepository:
         self, *, user_id: str, plan_id: str, now: datetime
     ) -> PlanVersion:
         timestamp = require_aware_utc(now)
-        result = await self._session.execute(
+        rowcount = await execute_dml_rowcount(
+            self._session,
             update(PlanModel)
             .where(
                 PlanModel.id == plan_id,
@@ -214,7 +236,7 @@ class SqlAlchemyPlanRepository:
             )
             .values(status=PlanStatus.WAITING_APPROVAL.value, updated_at=timestamp)
         )
-        if result.rowcount != 1:
+        if rowcount != 1:
             current = await self.require(user_id=user_id, plan_id=plan_id)
             if current.status is PlanStatus.WAITING_APPROVAL:
                 return current
@@ -225,7 +247,8 @@ class SqlAlchemyPlanRepository:
         self, *, user_id: str, plan_id: str, now: datetime
     ) -> PlanVersion:
         timestamp = require_aware_utc(now)
-        result = await self._session.execute(
+        rowcount = await execute_dml_rowcount(
+            self._session,
             update(PlanModel)
             .where(
                 PlanModel.id == plan_id,
@@ -234,7 +257,34 @@ class SqlAlchemyPlanRepository:
             )
             .values(status=PlanStatus.GENERATING.value, updated_at=timestamp)
         )
-        if result.rowcount != 1:
+        if rowcount != 1:
+            raise PlanVersionConflictError
+        return await self.require(user_id=user_id, plan_id=plan_id)
+
+    async def set_generating_constraints(
+        self,
+        *,
+        user_id: str,
+        plan_id: str,
+        constraints: PlanConstraints,
+        now: datetime,
+    ) -> PlanVersion:
+        timestamp = require_aware_utc(now)
+        rowcount = await execute_dml_rowcount(
+            self._session,
+            update(PlanModel)
+            .where(
+                PlanModel.id == plan_id,
+                PlanModel.user_id == user_id,
+                PlanModel.status == PlanStatus.GENERATING.value,
+                PlanModel.operation == PlanOperation.ADJUST.value,
+            )
+            .values(
+                constraints_json=constraints.model_dump(mode="json"),
+                updated_at=timestamp,
+            ),
+        )
+        if rowcount != 1:
             raise PlanVersionConflictError
         return await self.require(user_id=user_id, plan_id=plan_id)
 

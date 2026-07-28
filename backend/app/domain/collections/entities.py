@@ -549,10 +549,16 @@ class CollectionItem(DomainModel):
             or self.event_end_clue is not None
         ):
             raise ValueError("Place items cannot carry Event schedule fields or clues")
-        if self.kind is CollectionKind.EVENT and (
-            self.place_target is not None or self.place_candidate_snapshot is not None
-        ):
-            raise ValueError("Event items cannot carry Place target data")
+        if self.kind is CollectionKind.EVENT:
+            from app.domain.places.targets import PlaceScope
+
+            if self.place_candidate_snapshot is not None:
+                raise ValueError("Event items cannot carry Place candidate snapshots")
+            if (
+                self.place_target is not None
+                and self.place_target.scope is not PlaceScope.EXACT
+            ):
+                raise ValueError("Event locations require one exact confirmed POI")
         if self.kind is CollectionKind.PLACE:
             if self.status is CollectionStatus.PENDING_SELECTION:
                 if self.place_target is not None:

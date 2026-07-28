@@ -308,7 +308,8 @@ class CollectionItemModel(Base):
             name="ck_collection_items_candidate_snapshot_json_consistency",
         ),
         CheckConstraint(
-            "kind = 'place' OR (place_scope IS NULL AND place_target_json IS NULL AND "
+            "kind = 'place' OR ((place_scope IS NULL OR place_scope = 'exact') AND "
+            "(place_scope IS NOT NULL OR place_target_json IS NULL) AND "
             "place_candidate_snapshot_json IS NULL AND candidate_count = 0)",
             name="ck_collection_items_event_without_place_target",
         ),
@@ -324,8 +325,12 @@ class CollectionItemModel(Base):
             "poi_provider",
             "poi_id",
             unique=True,
-            sqlite_where=text("place_scope = 'exact' AND status <> 'deleted'"),
-            postgresql_where=text("place_scope = 'exact' AND status <> 'deleted'"),
+            sqlite_where=text(
+                "kind = 'place' AND place_scope = 'exact' AND status <> 'deleted'"
+            ),
+            postgresql_where=text(
+                "kind = 'place' AND place_scope = 'exact' AND status <> 'deleted'"
+            ),
         ),
         Index(
             "uq_collection_items_user_any_brand",

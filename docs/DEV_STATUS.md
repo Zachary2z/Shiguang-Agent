@@ -2474,7 +2474,9 @@ Client，不建立第二套规划器或前端状态框架；不得提前实现 M
 - 数据库：新增单一向前迁移 `20260728_0012`，直接继承 `20260727_0011`；
   upgrade、current、check、downgrade/upgrade 往返通过，Alembic 唯一 head 为
   `20260728_0012`
-- 验证：pip check、Ruff、mypy 通过；完整离线后端
+- 验证更正：失败候选的 strict mypy 实际未通过，
+  `repositories/plans.py` 直接读取 `Result.rowcount` 产生 3 个类型错误；原“mypy
+  通过”记录无效，由下方主控缺陷修复记录的实测结果取代。该候选其余记录为：完整离线后端
   `1585 passed, 11 skipped, 2 deselected`，迁移 `23 passed`；仓库外临时插件
   封锁 DNS 和 socket 后规划聚焦 `177 passed`
 - 前端验证：`npm ci`、lint、typecheck、build 通过，Vitest `58 passed`，
@@ -2485,3 +2487,50 @@ Client，不建立第二套规划器或前端状态框架；不得提前实现 M
   Job/Worker、SSE Client、API Client 或前端全局状态；当前无已知未关闭 P0/P1
 - 交接：详见 `docs/technical/M1_5_HANDOFF.md`；阶段状态保持“待主控验收”，
   不自行标记完成，不开始 M1-6
+
+#### 2026-07-28｜M1-5 主控验收缺陷修复｜待主控验收
+
+- 修复范围：线性继承失败候选
+  `2e554e7c1114e3ccb6c2c5e3ac0607d126ea509e`，仅处理 M1-5；未 amend、未合并
+  `main`、未推送、未开始 M1-6
+- 类型边界：计划 Repository 的 3 处 UPDATE 统一复用已有
+  `execute_dml_rowcount`；没有 `type: ignore`、`Any` 扩散或第二个 rowcount helper。
+  strict mypy 实测 `125 source files` 无错误
+- 提交一致性：生成/调整先复用现有 AgentRun，再通过唯一 JobQueue 入队；Job 创建
+  抛错或 `CancelledError` 且按 trace 查不到 Job 时，以独立事务删除仍为
+  `generating` 的绑定 Plan 和 queued AgentRun。补偿覆盖一次自身瞬时失败后重试，
+  同键可重新提交并幂等重放，不同键创建独立 root；最终不存在无 Job 的 generating
+  Plan、无 Job 的 AgentRun 或被占用的不可恢复幂等键
+- 调整解析：删除生产正则、中文短语表和同步解析路径，新增唯一严格
+  `PlanAdjustmentParser`，只通过既有 `ModelProvider` 的 JSON Schema 输出最小
+  `PlanConstraints` patch，并在既有异步计划 Job 内执行；完整约束只由
+  `PlanConstraints` 验证一次。产品示例正确替换咖啡包含目标、加入散步、明确排除
+  咖啡，未提及的时间、预算、范围、节奏、交通与 `collection_only` 保持不变
+- 地图事实：继续复用 `StructuredCollectionRetrievalService`、
+  `PlaceMatchingService`、`ExternalPlaceSupplementService`、`PlanDraftService`
+  和唯一 MapProvider。确定性资格筛选先于任何天气/路线调用；支持 active exact
+  Place、带准确日期时间与 exact 正式位置的 Event，以及在当次范围解析并固定具体
+  POI 的 any_branch。最多选择 6 个事实候选，单次计划最多 48 次路线调用；其他城市、
+  archived、pending、时间/范围/包含/排除不符的收藏为 0 次路线调用
+- 数据库：新增单一向前迁移 `20260728_0013`，直接继承 `20260728_0012`，允许
+  Event 持有 exact 正式 PlaceTarget，同时避免 Event 与收藏 Place 的 POI 去重冲突；
+  迁移专测 `23 passed`，upgrade/current/check 和 downgrade/upgrade 往返通过，
+  Alembic 唯一 head 为 `20260728_0013`
+- 配置与恢复：缺少 MapProvider 时在持久化前返回安全 503，不创建 Plan、Run 或
+  Job；调整还要求既有 ModelProvider。已有 draft/confirmed 计划可“新建计划”并
+  创建独立 root；最新失败版本仍显示完整版本索引，可回到上一份草案
+- 真实离线浏览器：新增 1 条不 mock `/api/v1/plans`、Job、SSE 或结果接口的
+  Playwright 流程，真实穿过 Next.js、FastAPI、JobQueue、Worker、临时 SQLite 和
+  StubMapProvider，覆盖创建、Worker 完成、SSE/权威恢复、自然语言调整、版本切换、
+  明确确认、新建第二个 root，以及失败版本返回上一版
+- 验证：pip check、Ruff 通过；strict mypy `125 source files`；完整后端
+  `1592 passed, 13 skipped`；迁移 `23 passed`。仓库外 pytest 插件封锁 DNS、
+  `connect`、`create_connection` 后，计划聚焦 `36 passed, 21 deselected`，非真实
+  全集 `1592 passed, 11 skipped, 2 deselected`
+- 前端：lint、typecheck、build 通过，Vitest `58 passed`，Playwright
+  `26 passed`；移动端真实计划闭环包含新 root 和失败版本恢复
+- 复杂度与安全：删除原自然语言短语规则路径，没有第二套规划器、筛选/排序/Event/
+  分店规则、Approval、Job/Worker/SSE 状态机、Provider、Client 或全局状态。离线
+  QA 显式 `_env_file=None`；未读取本机 `.env` 内容，真实模型、地图、网页及其他
+  外部/付费 API 调用均为 0；当前无已知未关闭 P0/P1
+- 阶段状态：继续为“待主控验收”，不自行标记完成

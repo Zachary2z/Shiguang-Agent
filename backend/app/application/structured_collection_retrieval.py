@@ -163,7 +163,7 @@ def _route_misses_arrival_deadline(
     return arrival_at >= arrival_deadline
 
 
-def _candidate_decision(
+def assess_collection_candidate(
     *,
     item: CollectionItem,
     constraints: PlanConstraints,
@@ -242,7 +242,11 @@ def _candidate_decision(
         collection_item_ids=(item.id,),
         kind=item.kind,
         title=item.title,
-        poi=None if poi is None else poi.model_copy(deep=True),
+        poi=(
+            poi.model_copy(deep=True)
+            if poi is not None and item.kind is CollectionKind.PLACE
+            else None
+        ),
         price_amount=item.price_amount,
         price_currency=item.price_currency,
         route_duration_seconds=facts.route_duration_seconds,
@@ -251,7 +255,7 @@ def _candidate_decision(
     )
 
 
-def _branch_candidate(brand_name: str) -> PlaceCandidate:
+def branch_match_candidate(brand_name: str) -> PlaceCandidate:
     """Build brand-only matching input without stale source-branch clues."""
 
     return PlaceCandidate(
@@ -378,7 +382,7 @@ class StructuredCollectionRetrievalService:
                     CollectionPlanningFacts(collection_item_id=item.id),
                 )
                 decisions.append(
-                    _candidate_decision(
+                    assess_collection_candidate(
                         item=item,
                         constraints=constraints,
                         formal_city_code=(
@@ -399,7 +403,7 @@ class StructuredCollectionRetrievalService:
                     PoiPlanningFacts(provider=poi.provider, poi_id=poi.poi_id),
                 )
                 decisions.append(
-                    _candidate_decision(
+                    assess_collection_candidate(
                         item=item,
                         constraints=constraints,
                         formal_city_code=poi.city_code,
@@ -418,7 +422,7 @@ class StructuredCollectionRetrievalService:
                 )
             else:
                 decisions.append(
-                    _candidate_decision(
+                    assess_collection_candidate(
                         item=item,
                         constraints=constraints,
                         formal_city_code=None,
@@ -453,7 +457,7 @@ class StructuredCollectionRetrievalService:
         try:
             result = await self._place_matching.match(
                 PlaceMatchRequest(
-                    candidate=_branch_candidate(resolved.brand_identity.display_name),
+                    candidate=branch_match_candidate(resolved.brand_identity.display_name),
                     city=constraints.city_scope,
                     search_district=(
                         constraints.area.districts[0]
@@ -467,7 +471,7 @@ class StructuredCollectionRetrievalService:
         except asyncio.CancelledError:
             raise
         except MapProviderError:
-            return _candidate_decision(
+            return assess_collection_candidate(
                 item=item,
                 constraints=constraints,
                 formal_city_code=None,
@@ -480,7 +484,7 @@ class StructuredCollectionRetrievalService:
             )
 
         if result.status is MatchStatus.NOT_FOUND:
-            return _candidate_decision(
+            return assess_collection_candidate(
                 item=item,
                 constraints=constraints,
                 formal_city_code=None,
@@ -492,7 +496,7 @@ class StructuredCollectionRetrievalService:
                 resolved_from_any_branch=True,
             )
         if not result.candidates:
-            return _candidate_decision(
+            return assess_collection_candidate(
                 item=item,
                 constraints=constraints,
                 formal_city_code=None,
@@ -512,7 +516,7 @@ class StructuredCollectionRetrievalService:
                 PoiPlanningFacts(provider=poi.provider, poi_id=poi.poi_id),
             )
             branch_decisions.append(
-                _candidate_decision(
+                assess_collection_candidate(
                     item=item,
                     constraints=constraints,
                     formal_city_code=poi.city_code,
@@ -548,7 +552,7 @@ class StructuredCollectionRetrievalService:
         }
         if pending_reasons:
             pending_reasons.add(CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT)
-            return _candidate_decision(
+            return assess_collection_candidate(
                 item=item,
                 constraints=constraints,
                 formal_city_code=None,
@@ -559,7 +563,7 @@ class StructuredCollectionRetrievalService:
                 apply_dynamic_facts=False,
                 resolved_from_any_branch=True,
             )
-        return _candidate_decision(
+        return assess_collection_candidate(
             item=item,
             constraints=constraints,
             formal_city_code=None,

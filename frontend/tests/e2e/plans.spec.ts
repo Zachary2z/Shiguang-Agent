@@ -113,3 +113,55 @@ test("refreshed plan shows authoritative rail and explicit confirmation", async 
   await confirm.focus();
   await expect(confirm).toBeFocused();
 });
+
+test("real offline stack creates, adjusts, confirms, restarts, and recovers a plan", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/plans");
+
+  await page.getByRole("button", { name: "检查生成条件" }).click();
+  await page.getByRole("button", { name: "确认并生成" }).click();
+  await expect(page.getByRole("heading", { level: 3, name: "海上世界散步公园" })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(page.getByText("来自收藏")).toBeVisible();
+
+  await page
+    .getByLabel("想怎么调整？")
+    .fill("不要咖啡店，换成适合散步的地方，其他不变。");
+  await page.getByRole("button", { name: "生成新版本" }).click();
+  await expect(page.getByRole("button", { name: "V2", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page",
+    { timeout: 20_000 },
+  );
+  await page.getByRole("button", { name: "V1", exact: true }).click();
+  await expect(page.getByRole("button", { name: "V1", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await page.getByRole("button", { name: "V2", exact: true }).click();
+  await page.getByRole("button", { name: "明确确认 V2" }).click();
+  await expect(page.getByText("这一版已确认")).toBeVisible();
+
+  await page.getByRole("button", { name: "新建计划" }).click();
+  await page.getByRole("button", { name: "检查生成条件" }).click();
+  await page.getByRole("button", { name: "确认并生成" }).click();
+  await expect(page.getByRole("button", { name: "V1", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page",
+    { timeout: 20_000 },
+  );
+
+  await page.getByLabel("想怎么调整？").fill("生成一份失败版本");
+  await page.getByRole("button", { name: "生成新版本" }).click();
+  await expect(page.getByRole("heading", { name: "这一版没有生成结果" })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(page.getByRole("button", { name: "V2 · 失败" })).toBeVisible();
+  await page.getByRole("button", { name: "V1", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { level: 3, name: "海上世界散步公园" }),
+  ).toBeVisible();
+});

@@ -1,4 +1,4 @@
-"""M1-5 deterministic natural-language constraint patch contracts."""
+"""M1-5 structured PlanConstraints patch boundary."""
 
 from __future__ import annotations
 
@@ -9,11 +9,14 @@ import pytest
 
 from app.application.plan_adjustments import (
     PlanAdjustmentNotUnderstoodError,
+    PlanAdjustmentParser,
+    PlanAdjustmentPatch,
     apply_plan_adjustment,
 )
 from app.domain.collections import PlanCity
 from app.domain.places import TransportMode
 from app.domain.plans import ActivityArea, PlanConstraints, PlanPace
+from tests.core.fakes import FakeProvider, fake_response
 
 
 def _constraints(*, budget: Decimal | None = Decimal("300")) -> PlanConstraints:
@@ -26,7 +29,7 @@ def _constraints(*, budget: Decimal | None = Decimal("300")) -> PlanConstraints:
         budget=budget,
         pace=PlanPace.BALANCED,
         transport_modes=(TransportMode.WALKING, TransportMode.TRANSIT),
-        include=("咖啡",),
+        include=("咖啡店",),
         exclude=("商场",),
         collection_only=False,
         created_at=created_at,
@@ -34,35 +37,60 @@ def _constraints(*, budget: Decimal | None = Decimal("300")) -> PlanConstraints:
     )
 
 
-def test_adjusting_one_condition_preserves_every_other_condition() -> None:
+@pytest.mark.asyncio
+async def test_product_adjustment_replaces_category_and_preserves_every_other_field() -> None:
     original = _constraints()
-    adjusted = apply_plan_adjustment(original, "节奏轻松一点")
+    provider = FakeProvider(
+        [
+            fake_response(
+                content=(
+                    '{"include":["适合散步的地方"],'
+                    '"exclude":["商场","咖啡店"]}'
+                )
+            )
+        ]
+    )
+
+    patch = await PlanAdjustmentParser(provider).parse(
+        constraints=original,
+        instruction="不要咖啡店，换成适合散步的地方，其他不变。",
+    )
+    adjusted = apply_plan_adjustment(original, patch)
+
+    assert adjusted.include == ("适合散步的地方",)
+    assert adjusted.exclude == ("商场", "咖啡店")
+    assert adjusted.model_copy(
+        update={"include": original.include, "exclude": original.exclude}
+    ) == original
+    assert len(provider.calls) == 1
+    assert provider.calls[0].response_format is not None
+
+
+def test_complete_patch_is_validated_once_by_plan_constraints() -> None:
+    original = _constraints(budget=None)
+    patch = PlanAdjustmentPatch(
+        pace=PlanPace.RELAXED,
+        transport_modes=(TransportMode.TRANSIT,),
+        collection_only=True,
+    )
+
+    adjusted = apply_plan_adjustment(original, patch)
 
     assert adjusted.pace is PlanPace.RELAXED
-    assert adjusted.model_copy(update={"pace": original.pace}) == original
-
-
-def test_exact_clock_uses_shenzhen_local_time_and_preserves_other_values() -> None:
-    original = _constraints(budget=None)
-    adjusted = apply_plan_adjustment(original, "调整为 14:30 到 20:00")
-
-    assert adjusted.start_at == datetime(2026, 7, 29, 6, 30, tzinfo=UTC)
-    assert adjusted.end_at == datetime(2026, 7, 29, 12, tzinfo=UTC)
+    assert adjusted.transport_modes == (TransportMode.TRANSIT,)
+    assert adjusted.collection_only is True
     assert adjusted.budget is None
     assert adjusted.area == original.area
 
 
-def test_budget_transport_and_collection_only_are_explicit_patches() -> None:
-    adjusted = apply_plan_adjustment(
-        _constraints(),
-        "预算调整为 188.50，少走一点，只用收藏",
-    )
+@pytest.mark.asyncio
+async def test_invalid_or_empty_model_patch_is_rejected_without_phrase_fallback() -> None:
+    provider = FakeProvider([fake_response(content="{}")])
 
-    assert adjusted.budget == Decimal("188.50")
-    assert adjusted.transport_modes == (TransportMode.TRANSIT,)
-    assert adjusted.collection_only is True
-
-
-def test_unknown_adjustment_is_rejected_instead_of_becoming_a_model_guess() -> None:
     with pytest.raises(PlanAdjustmentNotUnderstoodError):
-        apply_plan_adjustment(_constraints(), "给我一个惊喜")
+        await PlanAdjustmentParser(provider).parse(
+            constraints=_constraints(),
+            instruction="给我一个惊喜",
+        )
+
+    assert len(provider.calls) == 1

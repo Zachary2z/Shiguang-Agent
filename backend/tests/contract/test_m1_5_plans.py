@@ -2,25 +2,32 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
+from app.application.plan_adjustments import PlanAdjustmentParser
 from app.application.plan_experience import (
     PLAN_GENERATION_JOB_TYPE,
+    PlanExperienceService,
     PlanGenerationJobHandler,
     PlanGenerationOutcome,
     PlanGenerationResult,
 )
 from app.application.pricing import ConfiguredPricingPolicy
-from app.domain.collections import CollectionKind
+from app.domain.collections import CollectionKind, PlanCity
 from app.domain.places import TransportMode
 from app.domain.plans import (
+    ActivityArea,
     ApprovalStatus,
     ExternalPlaceApprovalRequirement,
+    PlanConstraints,
     PlanExecutionNotAllowedError,
+    PlanPace,
 )
 from app.domain.plans.drafts import (
     RISK_SUMMARIES,
@@ -36,11 +43,18 @@ from app.domain.plans.drafts import (
     PlanRouteLeg,
     PlanSelectionReasonCode,
 )
-from app.infrastructure.db.models import PlanModel
+from app.infrastructure.db.models import (
+    AgentRunModel,
+    PlanModel,
+    ScheduledJobModel,
+    UserModel,
+)
 from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.repositories import SqlAlchemyPlanRepository
+from app.providers.jobs import JobQueue
 from app.worker.service import JobWorker
 from tests.contract.test_m0_2d_api import _client, _demo
+from tests.core.fakes import FakeProvider, fake_response
 
 COLLECTION_ID = "col_0123456789abcdef0123456789abcdef"
 
@@ -97,11 +111,48 @@ def _draft(*, title: str = "海边咖啡") -> PlanDraftResult:
     )
 
 
+def _constraints() -> PlanConstraints:
+    created_at = datetime(2026, 7, 28, 1, tzinfo=UTC)
+    return PlanConstraints(
+        city_code=PlanCity.SHENZHEN,
+        start_at=datetime(2026, 7, 29, 2, tzinfo=UTC),
+        end_at=datetime(2026, 7, 29, 10, tzinfo=UTC),
+        area=ActivityArea(districts=("南山区",), labels=("海上世界",)),
+        pace=PlanPace.BALANCED,
+        transport_modes=(TransportMode.TRANSIT,),
+        created_at=created_at,
+        expires_at=created_at + timedelta(days=2),
+    )
+
+
+class _FailingQueue:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    async def create(self, request):
+        del request
+        raise self.error
+
+    async def get_by_trace(self, *, user_id, trace_id):
+        del user_id, trace_id
+        return None
+
+
 @pytest.mark.asyncio
 async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
     test_settings,
 ) -> None:
+    class DraftExecutor:
+        async def execute(self, *, user_id, constraints, approval):
+            del user_id, constraints, approval
+            return PlanGenerationResult(
+                outcome=PlanGenerationOutcome.DRAFT,
+                draft=_draft(),
+            )
+
     async with _client(test_settings) as (api, client):
+        api.state.map_provider = object()
+        api.state.text_provider = object()
         await _demo(client)
         created = await client.post("/api/v1/plans", json=_request("m15-create"))
         replay = await client.post("/api/v1/plans", json=_request("m15-create"))
@@ -111,24 +162,32 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
         plan_id = created.json()["plan_id"]
 
         database = api.state.demo_database
+        handler = PlanGenerationJobHandler(
+            session_factory=database.session_factory,
+            pricing=ConfiguredPricingPolicy.from_settings(test_settings),
+            adjustment_parser=PlanAdjustmentParser(
+                FakeProvider([fake_response(content='{"pace":"relaxed"}')])
+            ),
+            executor_factory=lambda session: DraftExecutor(),
+        )
+        worker = JobWorker(
+            queue=PostgresJobQueue(database.session_factory),
+            worker_id="worker_m15_versions",
+            handlers={PLAN_GENERATION_JOB_TYPE: handler},
+            poll_seconds=0.01,
+        )
+        assert await worker.run_once() is not None
         async with database.session_factory() as session:
             repository = SqlAlchemyPlanRepository(session)
             user_id = await session.scalar(
                 select(PlanModel.user_id).where(PlanModel.id == plan_id)
             )
             assert user_id is not None
-            await repository.complete_generation(
-                user_id=user_id,
-                plan_id=plan_id,
-                draft=_draft(),
-                now=datetime.now(UTC),
-            )
             with pytest.raises(PlanExecutionNotAllowedError):
                 await repository.require_confirmed_for_execution(
                     user_id=user_id,
                     plan_id=plan_id,
                 )
-            await session.commit()
 
         adjusted = await client.post(
             f"/api/v1/plans/{plan_id}/adjustments",
@@ -139,6 +198,7 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
         )
         assert adjusted.status_code == 202
         adjusted_id = adjusted.json()["plan_id"]
+        assert await worker.run_once() is not None
         current = await client.get(f"/api/v1/plans/{adjusted_id}")
         assert current.status_code == 200
         body = current.json()
@@ -160,6 +220,7 @@ async def test_confirmation_is_explicit_idempotent_current_version_only_and_owne
     test_settings,
 ) -> None:
     async with _client(test_settings) as (api, client):
+        api.state.map_provider = object()
         await _demo(client)
         created = await client.post("/api/v1/plans", json=_request("m15-confirm"))
         plan_id = created.json()["plan_id"]
@@ -235,6 +296,7 @@ async def test_worker_approval_resume_and_repeat_decision_use_existing_state(
             )
 
     async with _client(test_settings) as (api, client):
+        api.state.map_provider = object()
         await _demo(client)
         accepted = await client.post("/api/v1/plans", json=_request("m15-approval"))
         plan_id = accepted.json()["plan_id"]
@@ -274,3 +336,142 @@ async def test_worker_approval_resume_and_repeat_decision_use_existing_state(
         )
         assert repeated.status_code == 202
         assert repeated.json()["replayed"] is True
+
+
+@pytest.mark.asyncio
+async def test_queue_failure_compensates_plan_and_run_then_key_is_reusable(
+    test_settings,
+    monkeypatch,
+) -> None:
+    async with _client(test_settings) as (api, client):
+        await _demo(client)
+        database = api.state.demo_database
+        async with database.session_factory() as session:
+            user_id = await session.scalar(select(UserModel.id))
+        assert user_id is not None
+
+        original = SqlAlchemyPlanRepository.delete_unqueued_generation
+        attempts = 0
+
+        async def fail_first_cleanup(self, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("transient cleanup failure")
+            return await original(self, **kwargs)
+
+        monkeypatch.setattr(
+            SqlAlchemyPlanRepository,
+            "delete_unqueued_generation",
+            fail_first_cleanup,
+        )
+        async with database.session_factory() as session:
+            service = PlanExperienceService(
+                session=session,
+                session_factory=database.session_factory,
+                pricing=ConfiguredPricingPolicy.from_settings(test_settings),
+                queue=cast(JobQueue, _FailingQueue(RuntimeError("queue failed"))),
+            )
+            with pytest.raises(RuntimeError, match="queue failed"):
+                await service.create(
+                    user_id=user_id,
+                    constraints=_constraints(),
+                    client_idempotency_key="queue-reusable",
+                )
+
+        async with database.session_factory() as session:
+            assert await session.scalar(select(func.count()).select_from(PlanModel)) == 0
+            assert (
+                await session.scalar(select(func.count()).select_from(AgentRunModel))
+                == 0
+            )
+            assert (
+                await session.scalar(select(func.count()).select_from(ScheduledJobModel))
+                == 0
+            )
+
+        async with database.session_factory() as session:
+            service = PlanExperienceService(
+                session=session,
+                session_factory=database.session_factory,
+                pricing=ConfiguredPricingPolicy.from_settings(test_settings),
+            )
+            first = await service.create(
+                user_id=user_id,
+                constraints=_constraints(),
+                client_idempotency_key="queue-reusable",
+            )
+            replay = await service.create(
+                user_id=user_id,
+                constraints=_constraints(),
+                client_idempotency_key="queue-reusable",
+            )
+            second_root = await service.create(
+                user_id=user_id,
+                constraints=_constraints(),
+                client_idempotency_key="queue-other",
+            )
+        assert replay.replayed is True
+        assert replay.plan.id == first.plan.id
+        assert second_root.plan.root_plan_id != first.plan.root_plan_id
+        async with database.session_factory() as session:
+            assert await session.scalar(select(func.count()).select_from(PlanModel)) == 2
+            assert (
+                await session.scalar(select(func.count()).select_from(AgentRunModel))
+                == 2
+            )
+            assert (
+                await session.scalar(select(func.count()).select_from(ScheduledJobModel))
+                == 2
+            )
+
+
+@pytest.mark.asyncio
+async def test_queue_cancellation_leaves_no_generating_plan_or_run(test_settings) -> None:
+    async with _client(test_settings) as (api, client):
+        await _demo(client)
+        database = api.state.demo_database
+        async with database.session_factory() as session:
+            user_id = await session.scalar(select(UserModel.id))
+        assert user_id is not None
+        async with database.session_factory() as session:
+            service = PlanExperienceService(
+                session=session,
+                session_factory=database.session_factory,
+                pricing=ConfiguredPricingPolicy.from_settings(test_settings),
+                queue=cast(JobQueue, _FailingQueue(asyncio.CancelledError())),
+            )
+            with pytest.raises(asyncio.CancelledError):
+                await service.create(
+                    user_id=user_id,
+                    constraints=_constraints(),
+                    client_idempotency_key="queue-cancelled",
+                )
+        async with database.session_factory() as session:
+            assert await session.scalar(select(func.count()).select_from(PlanModel)) == 0
+            assert (
+                await session.scalar(select(func.count()).select_from(AgentRunModel))
+                == 0
+            )
+
+
+@pytest.mark.asyncio
+async def test_missing_map_configuration_rejects_before_persistence(test_settings) -> None:
+    async with _client(test_settings) as (api, client):
+        await _demo(client)
+        response = await client.post(
+            "/api/v1/plans",
+            json=_request("missing-map"),
+        )
+        assert response.status_code == 503
+        assert response.json()["error_code"] == "PLAN_PROVIDER_NOT_CONFIGURED"
+        async with api.state.demo_database.session_factory() as session:
+            assert await session.scalar(select(func.count()).select_from(PlanModel)) == 0
+            assert (
+                await session.scalar(select(func.count()).select_from(AgentRunModel))
+                == 0
+            )
+            assert (
+                await session.scalar(select(func.count()).select_from(ScheduledJobModel))
+                == 0
+            )

@@ -36,6 +36,10 @@ class ProviderNotConfiguredError(RuntimeError):
     """No text provider was injected for this process."""
 
 
+class PlanProviderNotConfiguredError(RuntimeError):
+    """The worker cannot execute a plan with the configured provider set."""
+
+
 class AuthenticationRequiredError(PermissionError):
     def __init__(self) -> None:
         super().__init__("authentication required")

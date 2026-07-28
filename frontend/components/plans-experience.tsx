@@ -455,6 +455,17 @@ export function PlansExperience() {
     setFeedback("已停止等待；后台权威状态会在下次进入时恢复。");
   }
 
+  function startNewPlan() {
+    generation.current += 1;
+    requestController.current?.abort();
+    cancelSse.current?.();
+    setPlan(null);
+    setAdjustment("");
+    setFeedback("");
+    setDirty(false);
+    setPhase("editing");
+  }
+
   const option = plan?.draft?.options[optionIndex];
   const busy = ["recovering", "submitting", "following"].includes(phase);
 
@@ -466,7 +477,14 @@ export function PlansExperience() {
           <h1>把一天，排成一条光轨</h1>
           <p>先确认边界，再让收藏成为今天的主角。</p>
         </div>
-        {plan && <span className={`plan-status ${plan.status}`}>V{plan.version} · {plan.status === "confirmed" ? "已确认" : "当前版本"}</span>}
+        {plan && (
+          <div className="plan-heading-actions">
+            <span className={`plan-status ${plan.status}`}>V{plan.version} · {plan.status === "confirmed" ? "已确认" : "当前版本"}</span>
+            {plan.draft && (
+              <button type="button" onClick={startNewPlan}>新建计划</button>
+            )}
+          </div>
+        )}
       </header>
 
       {(phase === "editing" || phase === "reviewing") && (
@@ -533,15 +551,18 @@ export function PlansExperience() {
         </section>
       )}
 
+      {plan && plan.versions.length > 0 && ["ready", "failed"].includes(phase) && (
+        <nav className="version-strip" aria-label="计划版本">
+          {plan.versions.map((version) => (
+            <button key={version.id} type="button" aria-current={version.id === plan.id ? "page" : undefined} onClick={() => void switchVersion(version.id)}>
+              V{version.version}{version.status === "confirmed" ? " · 已确认" : version.status === "failed" || version.status === "cancelled" ? " · 失败" : ""}
+            </button>
+          ))}
+        </nav>
+      )}
+
       {plan?.draft && ["ready", "failed"].includes(phase) && (
         <>
-          <nav className="version-strip" aria-label="计划版本">
-            {plan.versions.map((version) => (
-              <button key={version.id} type="button" aria-current={version.id === plan.id ? "page" : undefined} onClick={() => void switchVersion(version.id)}>
-                V{version.version}{version.status === "confirmed" ? " · 已确认" : ""}
-              </button>
-            ))}
-          </nav>
           <div className="option-tabs" role="tablist" aria-label="计划方案">
             {plan.draft.options.map((candidate, index) => (
               <button key={`${candidate.role}-${index}`} type="button" role="tab" aria-selected={index === optionIndex} onClick={() => setOptionIndex(index)}>
@@ -589,7 +610,7 @@ export function PlansExperience() {
 
       {feedback && <p className="plan-feedback" role="status">{feedback}</p>}
       {phase === "failed" && !plan?.draft && (
-        <div className="plan-empty"><h2>还没有可展示的计划</h2><p>修改条件后可以重新生成；不会自动重试或隐式确认。</p><button className="primary-button" type="button" onClick={() => { setPlan(null); setPhase("editing"); setFeedback(""); }}>重新填写</button></div>
+        <div className="plan-empty"><h2>这一版没有生成结果</h2><p>{plan && plan.versions.length > 1 ? "可以从上方版本索引返回上一份计划，或新建独立计划。" : "修改条件后可以重新生成；不会自动重试或隐式确认。"}</p><button className="primary-button" type="button" onClick={startNewPlan}>新建计划</button></div>
       )}
     </section>
   );

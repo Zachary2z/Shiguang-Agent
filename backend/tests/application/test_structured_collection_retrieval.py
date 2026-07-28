@@ -19,6 +19,11 @@ from app.application import (
     StructuredCollectionRetrievalError,
     StructuredCollectionRetrievalService,
 )
+from app.application.map_plan_facts import (
+    MAX_PLAN_FACT_CANDIDATES,
+    MAX_PLAN_ROUTE_CALLS,
+    MapPlanFactResolver,
+)
 from app.config import Settings
 from app.domain.collections import (
     CollectionItem,
@@ -49,8 +54,12 @@ from app.domain.places import (
     PoiProvider,
     PoiSearchResult,
     PoiType,
+    RouteRequest,
+    RouteResult,
     SearchPoiRequest,
     TransportMode,
+    WeatherRequest,
+    WeatherResult,
     normalize_brand_name,
 )
 from app.domain.plans import ActivityArea, PlanConstraints
@@ -212,6 +221,7 @@ def _event(
     status: CollectionStatus = CollectionStatus.ACTIVE,
     city_hint: str | None = "深圳",
     price: Decimal | None = Decimal("20"),
+    target: PlaceTarget | None = None,
 ) -> CollectionItem:
     return CollectionItem(
         id=generate_collection_item_id(),
@@ -227,6 +237,7 @@ def _event(
         price_amount=price,
         price_currency=None if price is None else "CNY",
         tags=("室内", "展览"),
+        place_target=target,
         status=status,
         created_at=NOW,
         updated_at=NOW,
@@ -1555,3 +1566,259 @@ def test_fact_contracts_reject_contradictory_route_and_duplicate_identities() ->
 
 def test_provider_error_code_remains_safe_and_stable() -> None:
     assert MapProviderErrorCode.TIMEOUT.value == "MAP_PROVIDER_TIMEOUT"
+
+
+def _map_fact_provider(
+    *,
+    constraints: PlanConstraints,
+    search_pois: tuple[Poi, ...] = (),
+    calls: list[object] | None = None,
+) -> StubMapProvider:
+    route_request = RouteRequest(
+        city=constraints.city_scope,
+        origin=constraints.origin or SHENZHEN_COORDINATE,
+        destination=SHENZHEN_COORDINATE,
+        mode=(
+            constraints.transport_modes[0]
+            if constraints.transport_modes
+            else TransportMode.TRANSIT
+        ),
+    )
+    weather_request = WeatherRequest(
+        city=constraints.city_scope,
+        on_date=constraints.start_at.date(),
+    )
+    search_results = {}
+    if search_pois:
+        search_request = SearchPoiRequest(
+            query="测试咖啡",
+            city=constraints.city_scope,
+            district=constraints.area.districts[0] if constraints.area else None,
+            location=constraints.origin,
+        )
+        search_results[search_request] = PoiSearchResult(
+            city_code=constraints.city_code.value,
+            pois=search_pois,
+        )
+
+    async def record(request: object) -> None:
+        if calls is not None:
+            calls.append(request)
+
+    return StubMapProvider(
+        search_results=search_results,
+        route_results={
+            route_request: RouteResult(
+                city_code=constraints.city_code.value,
+                origin=route_request.origin,
+                destination=route_request.destination,
+                mode=route_request.mode,
+                distance_meters=800,
+                duration_seconds=600,
+            )
+        },
+        weather_results={
+            weather_request: WeatherResult(
+                city_code=constraints.city_code.value,
+                on_date=constraints.start_at.date(),
+                condition="晴",
+                temperature_celsius=28,
+            )
+        },
+        call_hook=record,
+    )
+
+
+async def _resolve_map_facts(
+    *,
+    database_url: str,
+    user_id: str,
+    items: tuple[CollectionItem, ...],
+    constraints: PlanConstraints,
+    provider: StubMapProvider,
+):
+    database = Database(database_url)
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        await repository.add_user(
+            user_id=user_id,
+            user=User(id=user_id, mode=UserMode.REAL, created_at=NOW),
+        )
+        for item in items:
+            await repository.add_collection_item(user_id=user_id, item=item)
+        await session.commit()
+    async with database.session() as session:
+        result = await MapPlanFactResolver(
+            session=session,
+            map_provider=provider,
+            matching_policy=Settings(
+                _env_file=None,
+                app_env="test",
+            ).place_matching_policy(),
+        ).resolve(user_id=user_id, constraints=constraints)
+    await database.close()
+    return result
+
+
+@pytest.mark.asyncio
+async def test_map_fact_chain_includes_exact_event_with_precise_time_window(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    event = _event(
+        user_id,
+        target=_exact_target(_poi("poi_timed_event")),
+    )
+    constraints = _constraints(origin=ORIGIN)
+    calls: list[object] = []
+
+    result = await _resolve_map_facts(
+        database_url=retrieval_database,
+        user_id=user_id,
+        items=(event,),
+        constraints=constraints,
+        provider=_map_fact_provider(constraints=constraints, calls=calls),
+    )
+
+    assert result.retrieval.collections[0].collection_item_id == event.id
+    assert result.draft.candidates[0].event_start_at == event.event_start_at
+    assert result.draft.candidates[0].event_end_at == event.event_end_at
+    assert sum(isinstance(call, RouteRequest) for call in calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_map_fact_chain_conservatively_excludes_date_only_event_without_route(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    event = _event(
+        user_id,
+        start_at=None,
+        end_at=None,
+        start_date=START.date(),
+        end_date=START.date(),
+        target=_exact_target(_poi("poi_date_only_event")),
+    )
+    constraints = _constraints(origin=ORIGIN)
+    calls: list[object] = []
+
+    result = await _resolve_map_facts(
+        database_url=retrieval_database,
+        user_id=user_id,
+        items=(event,),
+        constraints=constraints,
+        provider=_map_fact_provider(constraints=constraints, calls=calls),
+    )
+
+    assert result.draft.candidates == ()
+    assert not any(isinstance(call, RouteRequest) for call in calls)
+    assert not any(isinstance(call, WeatherRequest) for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_map_fact_chain_resolves_any_branch_to_one_fixed_poi(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    branch = _poi(
+        "poi_resolved_branch",
+        name="测试咖啡",
+        branch_name="市民中心店",
+        poi_type=PoiType.CAFE,
+    )
+    item = _place(
+        user_id,
+        title="测试咖啡",
+        target=_brand_target(),
+        tags=("咖啡",),
+    )
+    constraints = _constraints(origin=ORIGIN)
+    calls: list[object] = []
+
+    result = await _resolve_map_facts(
+        database_url=retrieval_database,
+        user_id=user_id,
+        items=(item,),
+        constraints=constraints,
+        provider=_map_fact_provider(
+            constraints=constraints,
+            search_pois=(branch,),
+            calls=calls,
+        ),
+    )
+
+    assert result.draft.candidates[0].collection_item_ids == (item.id,)
+    assert [fact.poi_id for fact in result.retrieval.pois] == [branch.poi_id]
+    assert sum(isinstance(call, SearchPoiRequest) for call in calls) == 1
+    assert sum(isinstance(call, RouteRequest) for call in calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_ineligible_collections_never_trigger_route_queries(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    items = (
+        _place(user_id, poi=_poi("other_city", city_code="guangzhou")),
+        _place(
+            user_id,
+            poi=_poi("inactive"),
+            status=CollectionStatus.ARCHIVED,
+        ),
+        _place(
+            user_id,
+            poi=None,
+            status=CollectionStatus.PENDING_DETAILS,
+        ),
+        _place(
+            user_id,
+            title="明确排除",
+            poi=_poi("excluded"),
+            tags=("商场",),
+        ),
+        _event(
+            user_id,
+            start_at=END + timedelta(hours=1),
+            end_at=END + timedelta(hours=2),
+            target=_exact_target(_poi("late_event")),
+        ),
+    )
+    constraints = _constraints(origin=ORIGIN, exclude=("商场",))
+    calls: list[object] = []
+
+    result = await _resolve_map_facts(
+        database_url=retrieval_database,
+        user_id=user_id,
+        items=items,
+        constraints=constraints,
+        provider=_map_fact_provider(constraints=constraints, calls=calls),
+    )
+
+    assert result.draft.candidates == ()
+    assert not any(isinstance(call, RouteRequest) for call in calls)
+    assert not any(isinstance(call, WeatherRequest) for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_high_cardinality_map_fact_routes_are_bounded(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    items = tuple(
+        _place(user_id, title=f"地点 {index}", poi=_poi(f"poi_{index:03d}"))
+        for index in range(100)
+    )
+    constraints = _constraints(origin=ORIGIN)
+    calls: list[object] = []
+
+    result = await _resolve_map_facts(
+        database_url=retrieval_database,
+        user_id=user_id,
+        items=items,
+        constraints=constraints,
+        provider=_map_fact_provider(constraints=constraints, calls=calls),
+    )
+
+    route_calls = sum(isinstance(call, RouteRequest) for call in calls)
+    assert len(result.draft.candidates) == MAX_PLAN_FACT_CANDIDATES
+    assert route_calls <= MAX_PLAN_ROUTE_CALLS

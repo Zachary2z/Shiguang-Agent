@@ -13,6 +13,7 @@ from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import (
+    PlanProviderNotConfiguredError,
     get_agent_timeout_seconds,
     get_current_database,
     get_current_principal,
@@ -614,11 +615,13 @@ def _parse_last_event_id(value: str | None) -> int:
 )
 async def create_plan(
     payload: PlanCreateRequest,
+    request: Request,
     session: DbSession,
     user_id: CurrentUserId,
     database: CurrentDatabase,
     pricing: Pricing,
 ) -> PlanAcceptedResponse:
+    _require_plan_providers(request, adjustment=False)
     now = utc_now()
     constraints = PlanConstraints(
         city_code=PlanCity.SHENZHEN,
@@ -721,11 +724,13 @@ async def get_plan(
 async def adjust_plan(
     plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
     payload: PlanAdjustmentRequest,
+    request: Request,
     session: DbSession,
     user_id: CurrentUserId,
     database: CurrentDatabase,
     pricing: Pricing,
 ) -> PlanAcceptedResponse:
+    _require_plan_providers(request, adjustment=True)
     submission = await PlanExperienceService(
         session=session,
         session_factory=database.session_factory,
@@ -815,6 +820,23 @@ async def decide_plan_approval(
         result_url=f"/api/v1/plans/{target}",
         replayed=submission.replayed,
     )
+
+
+def _require_plan_providers(request: Request, *, adjustment: bool) -> None:
+    settings: Settings = request.app.state.settings
+    map_ready = (
+        request.app.state.map_provider is not None
+        or settings.amap_api_key is not None
+    )
+    model_ready = (
+        request.app.state.text_provider is not None
+        or all(
+            getattr(settings, field, None) is not None
+            for field in ("model_api_base", "model_api_key", "model_name")
+        )
+    )
+    if not map_ready or (adjustment and not model_ready):
+        raise PlanProviderNotConfiguredError
 
 
 @api_router.get("/collections", response_model=CollectionListResponse)
