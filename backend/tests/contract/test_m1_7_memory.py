@@ -13,6 +13,8 @@ from app.application.memories import MemoryPlanningService, MemoryService
 from app.domain.identifiers import generate_user_id
 from app.domain.memories import (
     MemoryNotFoundError,
+    MemorySuggestionDecision,
+    MemorySuggestionUnavailableError,
     MemoryType,
 )
 from app.domain.time import utc_now
@@ -181,6 +183,29 @@ async def test_feedback_suggestion_confirm_reject_and_evidence_is_not_reasked(
         pending = await client.get("/api/v1/memory-suggestions")
         assert len(pending.json()["items"]) == 1
         suggestion_id = pending.json()["items"][0]["id"]
+        async with api.state.demo_database.session_factory() as session:
+            foreign_user_id = generate_user_id()
+            session.add(
+                UserModel(
+                    id=foreign_user_id,
+                    mode="demo",
+                    default_plan_city="shenzhen",
+                    timezone="Asia/Shanghai",
+                    created_at=utc_now(),
+                )
+            )
+            await session.commit()
+            with pytest.raises(MemorySuggestionUnavailableError):
+                await MemoryService(session).decide_suggestion(
+                    user_id=foreign_user_id,
+                    suggestion_id=suggestion_id,
+                    decision=MemorySuggestionDecision.CONFIRMED,
+                    client_idempotency_key="foreign-suggestion",
+                )
+            foreign_user = await session.get(UserModel, foreign_user_id)
+            assert foreign_user is not None
+            await session.delete(foreign_user)
+            await session.commit()
 
         confirmed = await client.post(
             f"/api/v1/memory-suggestions/{suggestion_id}/decision",
