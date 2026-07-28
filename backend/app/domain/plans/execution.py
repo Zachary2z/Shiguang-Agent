@@ -14,6 +14,7 @@ from app.domain.identifiers import (
     validate_plan_id,
     validate_plan_item_id,
 )
+from app.domain.memories import MemoryType
 from app.domain.plans.contracts import PlanContract
 from app.domain.time import require_aware_utc
 
@@ -32,6 +33,9 @@ class PlanItemExecutionStatus(StrEnum):
 
 class PreferenceSuggestion(PlanContract):
     content: str = Field(min_length=1, max_length=500)
+    memory_type: MemoryType
+    value: str = Field(min_length=1, max_length=100)
+    evidence_summary: str = Field(min_length=1, max_length=500)
     confirmation_status: str = Field(default="pending", pattern=r"^pending$")
 
 

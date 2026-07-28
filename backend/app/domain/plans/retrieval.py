@@ -10,7 +10,7 @@ from unicodedata import normalize
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.collections import CollectionKind, validate_cny_price_pair
-from app.domain.identifiers import validate_collection_item_id
+from app.domain.identifiers import validate_collection_item_id, validate_memory_id
 from app.domain.places import CityScope, Coordinate, Poi, PoiProvider
 from app.domain.plans.contracts import PlanConstraints
 
@@ -329,6 +329,8 @@ class CollectionCandidateDecision(RetrievalContract):
     route_duration_seconds: int | None = Field(default=None, ge=0)
     route_distance_meters: int | None = Field(default=None, ge=0)
     any_branch_collection_item_ids: tuple[str, ...] = Field(default_factory=tuple)
+    preference_score: int = Field(default=0, ge=-100, le=100)
+    applied_memory_ids: tuple[str, ...] = Field(default_factory=tuple)
 
     @field_validator("collection_item_ids")
     @classmethod
@@ -336,6 +338,14 @@ class CollectionCandidateDecision(RetrievalContract):
         validated = tuple(validate_collection_item_id(item) for item in value)
         if tuple(sorted(set(validated))) != validated:
             raise ValueError("collection item ids must be unique and sorted")
+        return validated
+
+    @field_validator("applied_memory_ids")
+    @classmethod
+    def validate_memory_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        validated = tuple(validate_memory_id(item) for item in value)
+        if tuple(sorted(set(validated))) != validated:
+            raise ValueError("memory ids must be unique and sorted")
         return validated
 
     @model_validator(mode="after")

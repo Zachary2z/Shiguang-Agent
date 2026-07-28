@@ -16,6 +16,7 @@ from app.domain.collections import (
     CollectionStatus,
     PlaceCandidate,
 )
+from app.domain.memories import Memory, MemoryType
 from app.domain.places import (
     PlaceScope,
     Poi,
@@ -169,6 +170,7 @@ def assess_collection_candidate(
     additional_reasons: Iterable[CandidateReasonCode] = (),
     apply_dynamic_facts: bool = True,
     resolved_from_any_branch: bool = False,
+    memories: tuple[Memory, ...] = (),
 ) -> CollectionCandidateDecision:
     reasons = set(additional_reasons)
     if item.status is not CollectionStatus.ACTIVE:
@@ -230,6 +232,19 @@ def assess_collection_candidate(
         ):
             reasons.add(CandidateReasonCode.ROUTE_EXCEEDS_TIME_WINDOW)
     ordered = _ordered_reasons(reasons)
+    applied: list[str] = []
+    preference_score = 0
+    for memory in memories:
+        if memory.type is MemoryType.PACE_PREFERENCE:
+            continue
+        if not _matches_term(memory.value, searchable):
+            continue
+        applied.append(memory.id)
+        preference_score += (
+            -1
+            if memory.type is MemoryType.NEGATIVE_PREFERENCE
+            else 1
+        )
     return CollectionCandidateDecision(
         outcome=outcome_for_reasons(ordered),
         reason_codes=ordered,
@@ -247,6 +262,8 @@ def assess_collection_candidate(
         route_duration_seconds=facts.route_duration_seconds,
         route_distance_meters=facts.route_distance_meters,
         any_branch_collection_item_ids=(item.id,) if resolved_from_any_branch else (),
+        preference_score=preference_score,
+        applied_memory_ids=tuple(sorted(applied)),
     )
 
 
@@ -305,6 +322,15 @@ def _merge_duplicate_pois(
             update={
                 "collection_item_ids": source_ids,
                 "any_branch_collection_item_ids": branch_source_ids,
+                "preference_score": max(
+                    previous.preference_score, decision.preference_score
+                ),
+                "applied_memory_ids": tuple(
+                    sorted(
+                        set(previous.applied_memory_ids)
+                        | set(decision.applied_memory_ids)
+                    )
+                ),
             },
             deep=True,
         )
@@ -328,6 +354,7 @@ class StructuredCollectionRetrievalService:
         constraints: PlanConstraints,
         facts: PlanningFactSnapshot,
         now: datetime,
+        memories: tuple[Memory, ...] = (),
     ) -> StructuredCollectionResult:
         invalid_time = False
         try:
@@ -360,6 +387,7 @@ class StructuredCollectionRetrievalService:
             raise StructuredCollectionRetrievalError() from None
         if any(item.user_id != user_id for item in items):
             raise StructuredCollectionRetrievalError() from None
+        effective_memories = tuple(memory for memory in memories if memory.is_effective(now))
 
         collection_facts = {item.collection_item_id: item for item in facts.collections}
         poi_facts = {item.identity: item for item in facts.pois}
@@ -386,6 +414,7 @@ class StructuredCollectionRetrievalService:
                         location_confirmed=event_facts.location_confirmed,
                         poi=None,
                         facts=event_facts,
+                        memories=effective_memories,
                     )
                 )
             elif resolved.kind is ResolvedPlaceTargetKind.EXACT:
@@ -403,6 +432,7 @@ class StructuredCollectionRetrievalService:
                         location_confirmed=True,
                         poi=poi,
                         facts=dynamic,
+                        memories=effective_memories,
                     )
                 )
             elif resolved.kind is ResolvedPlaceTargetKind.ANY_BRANCH:
@@ -431,6 +461,7 @@ class StructuredCollectionRetrievalService:
                         ),
                         apply_dynamic_facts=branch_poi is not None,
                         resolved_from_any_branch=True,
+                        memories=effective_memories,
                     )
                 )
             else:
@@ -442,6 +473,7 @@ class StructuredCollectionRetrievalService:
                         location_confirmed=False,
                         poi=None,
                         facts=CandidateFactValues(),
+                        memories=effective_memories,
                     )
                 )
 

@@ -36,7 +36,17 @@ from app.domain.collections import (
     User,
     UserMode,
 )
-from app.domain.identifiers import generate_collection_item_id, generate_user_id
+from app.domain.identifiers import (
+    generate_collection_item_id,
+    generate_memory_id,
+    generate_user_id,
+)
+from app.domain.memories import (
+    Memory,
+    MemorySource,
+    MemorySourceType,
+    MemoryType,
+)
 from app.domain.places import (
     BrandIdentityConfirmationSource,
     CityScope,
@@ -394,6 +404,58 @@ async def test_current_user_place_and_live_event_are_included_without_writes() -
     assert "其他用户秘密" not in repr(result)
     assert repository.calls == [(user_id, True)]
     assert repository.items == before
+
+
+@pytest.mark.asyncio
+async def test_only_effective_confirmed_memory_scores_matching_candidates() -> None:
+    user_id = generate_user_id()
+    indoor_poi = _poi("poi_memory_indoor", name="室内艺术馆")
+    park_poi = _poi("poi_memory_park", name="城市公园", poi_type=PoiType.PARK)
+    indoor = _place(user_id, poi=indoor_poi, tags=("室内", "艺术"))
+    park = _place(user_id, poi=park_poi, tags=("户外", "散步"))
+    service, _repository = _service([park, indoor])
+    active = Memory(
+        id=generate_memory_id(),
+        type=MemoryType.POSITIVE_PREFERENCE,
+        content="喜欢室内空间",
+        value="室内",
+        source=MemorySource(
+            type=MemorySourceType.EXPLICIT_USER,
+            summary="由你明确设置并授权保存",
+        ),
+        confidence=100,
+        created_at=NOW,
+        updated_at=NOW,
+        version=1,
+    )
+    disabled = active.model_copy(
+        update={
+            "id": generate_memory_id(),
+            "type": MemoryType.NEGATIVE_PREFERENCE,
+            "disabled_at": NOW + timedelta(minutes=1),
+        }
+    )
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(),
+        facts=PlanningFactSnapshot(
+            pois=(
+                _known_poi_facts(indoor_poi),
+                _known_poi_facts(park_poi),
+            )
+        ),
+        now=NOW + timedelta(hours=1),
+        memories=(active, disabled),
+    )
+    scores = {
+        decision.collection_item_ids: (
+            decision.preference_score,
+            decision.applied_memory_ids,
+        )
+        for decision in result.included
+    }
+    assert scores[(indoor.id,)] == (1, (active.id,))
+    assert scores[(park.id,)] == (0, ())
 
 
 @pytest.mark.asyncio

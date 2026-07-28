@@ -76,6 +76,8 @@ def _decision(
     collection_ids: tuple[str, ...] | None = None,
     branch_ids: tuple[str, ...] = (),
     poi: Poi | None = None,
+    preference_score: int = 0,
+    applied_memory_ids: tuple[str, ...] = (),
 ) -> CollectionCandidateDecision:
     ids = collection_ids or (_id(index),)
     return CollectionCandidateDecision(
@@ -89,6 +91,8 @@ def _decision(
         route_duration_seconds=route_minutes * 60,
         route_distance_meters=route_minutes * 80,
         any_branch_collection_item_ids=branch_ids,
+        preference_score=preference_score,
+        applied_memory_ids=applied_memory_ids,
     )
 
 
@@ -404,6 +408,21 @@ def test_equal_rank_uses_title_poi_and_collection_id_stable_tiebreakers() -> Non
     )
     draft, _, _, _ = _generate(decisions, facts=_facts(decisions))
     assert draft.options[0].items[0].title == "Alpha"
+
+
+def test_confirmed_memory_score_precedes_route_and_stable_tiebreakers() -> None:
+    decisions = (
+        _decision(1, title="较近的普通地点", route_minutes=5),
+        _decision(
+            2,
+            title="已确认偏好地点",
+            route_minutes=20,
+            preference_score=1,
+            applied_memory_ids=("mem_0123456789abcdef0123456789abcdef",),
+        ),
+    )
+    draft, _, _, _ = _generate(decisions, facts=_facts(decisions))
+    assert draft.options[0].items[0].title == "已确认偏好地点"
 
 
 def test_input_objects_are_unchanged_and_repeated_calls_are_identical() -> None:

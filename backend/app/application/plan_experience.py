@@ -9,11 +9,12 @@ from datetime import timedelta
 from enum import StrEnum
 from typing import Literal, Protocol
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.application.external_place_supplement import ExternalPlaceSupplementService
+from app.application.memories import MemoryPlanningService
 from app.application.place_matching import PlaceMatchingService
 from app.application.plan_adjustments import (
     PlanAdjustmentNotUnderstoodError,
@@ -47,6 +48,7 @@ from app.domain.plans import (
     PlanDraftResult,
     PlanningFactSnapshot,
     PlanOperation,
+    PlanPace,
     PlanStatus,
     PlanVersion,
     RequiredPlanGap,
@@ -94,6 +96,7 @@ class PlanGenerationResult(PlanContract):
     draft: PlanDraftResult | None = None
     approval_requirement: ExternalPlaceApprovalRequirement | None = None
     error_code: str | None = None
+    memory_usages: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_shape(self) -> PlanGenerationResult:
@@ -144,14 +147,35 @@ class ExistingPlanServicesExecutor:
         constraints: PlanConstraints,
         approval: PlanApproval | None,
     ) -> PlanGenerationResult:
-        facts = await self._facts.resolve(user_id=user_id, constraints=constraints)
+        now = utc_now()
+        memory_service = MemoryPlanningService(self._session)
+        memories = await memory_service.effective(user_id=user_id, at=now)
+        effective_constraints = constraints
+        memory_usages: dict[str, str] = {}
+        pace_memories = [
+            memory for memory in memories if memory.type.value == "pace_preference"
+        ]
+        if pace_memories:
+            selected_pace = pace_memories[-1]
+            preferred_pace = PlanPace(selected_pace.value)
+            if preferred_pace is not constraints.pace:
+                effective_constraints = constraints.model_copy(
+                    update={"pace": preferred_pace}
+                )
+                memory_usages[selected_pace.id] = (
+                    f"计划节奏采用已确认偏好：{selected_pace.content}"
+                )
+        facts = await self._facts.resolve(
+            user_id=user_id, constraints=effective_constraints
+        )
         collections = await StructuredCollectionRetrievalService(
             repository=SqlAlchemyCollectionRepository(self._session),
         ).retrieve(
             user_id=user_id,
-            constraints=constraints,
+            constraints=effective_constraints,
             facts=facts.retrieval,
-            now=utc_now(),
+            now=now,
+            memories=memories,
         )
         decision: ExternalPlaceApprovalDecision | None = None
         if approval is not None and facts.required_gap is not None:
@@ -170,7 +194,7 @@ class ExistingPlanServicesExecutor:
             place_matching=self._matching,
             plan_drafts=PlanDraftService(),
         ).generate(
-            constraints=constraints,
+            constraints=effective_constraints,
             collections=collections,
             facts=facts.draft,
             required_gap=facts.required_gap,
@@ -183,9 +207,22 @@ class ExistingPlanServicesExecutor:
                 approval_requirement=result.approval,
             )
         if result.draft is not None:
+            selected_ids = {
+                collection_id
+                for item in result.draft.options[0].items
+                for collection_id in item.source.collection_item_ids
+            }
+            for decision_item in collections.included:
+                if not selected_ids.intersection(decision_item.collection_item_ids):
+                    continue
+                for memory_id in decision_item.applied_memory_ids:
+                    memory_usages[memory_id] = (
+                        f"该偏好影响了计划地点排序：{decision_item.title}"
+                    )
             return PlanGenerationResult(
                 outcome=PlanGenerationOutcome.DRAFT,
                 draft=result.draft,
+                memory_usages=memory_usages,
             )
         return PlanGenerationResult(
             outcome=PlanGenerationOutcome.FAILED,
@@ -724,6 +761,12 @@ class PlanGenerationJobHandler:
                     await observer.require_approval(approval_record.id)
                 elif result.outcome is PlanGenerationOutcome.DRAFT:
                     assert result.draft is not None
+                    await MemoryPlanningService(session).record_usage(
+                        user_id=job.user_id,
+                        plan_id=plan.id,
+                        usages=result.memory_usages,
+                        used_at=utc_now(),
+                    )
                     await plans.complete_generation(
                         user_id=job.user_id,
                         plan_id=plan.id,

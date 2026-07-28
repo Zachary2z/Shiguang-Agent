@@ -13,6 +13,12 @@ from app.infrastructure.db.models.collections import (
 )
 from app.infrastructure.db.models.identity import BrowserSessionModel
 from app.infrastructure.db.models.jobs import ScheduledJobModel
+from app.infrastructure.db.models.memories import (
+    MemoryModel,
+    MemoryOperationModel,
+    MemoryPlanUsageModel,
+    MemorySuggestionDecisionModel,
+)
 from app.infrastructure.db.models.plans import (
     ApprovalModel,
     CollectionVisitSourceModel,
@@ -35,6 +41,10 @@ __all__ = [
     "CollectionVisitSourceModel",
     "CollectionVisitStateModel",
     "MessageModel",
+    "MemoryModel",
+    "MemoryOperationModel",
+    "MemoryPlanUsageModel",
+    "MemorySuggestionDecisionModel",
     "PlanItemModel",
     "PlanModel",
     "PlanFeedbackAuditModel",

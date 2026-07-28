@@ -20,6 +20,8 @@ _OPAQUE_ID_PATTERNS = {
     "pit": re.compile(r"^pit_[a-f0-9]{32}$"),
     "apr": re.compile(r"^apr_[a-f0-9]{32}$"),
     "fdb": re.compile(r"^fdb_[a-f0-9]{32}$"),
+    "mem": re.compile(r"^mem_[a-f0-9]{32}$"),
+    "mop": re.compile(r"^mop_[a-f0-9]{32}$"),
 }
 
 
@@ -83,6 +85,14 @@ def generate_feedback_id() -> str:
     return _generate_opaque_id("fdb")
 
 
+def generate_memory_id() -> str:
+    return _generate_opaque_id("mem")
+
+
+def generate_memory_operation_id() -> str:
+    return _generate_opaque_id("mop")
+
+
 def validate_agent_run_id(value: str) -> str:
     return _validate_opaque_id(value, "arn", "agent_run_id")
 
@@ -129,6 +139,14 @@ def validate_approval_id(value: str) -> str:
 
 def validate_feedback_id(value: str) -> str:
     return _validate_opaque_id(value, "fdb", "feedback_id")
+
+
+def validate_memory_id(value: str) -> str:
+    return _validate_opaque_id(value, "mem", "memory_id")
+
+
+def validate_memory_operation_id(value: str) -> str:
+    return _validate_opaque_id(value, "mop", "memory_operation_id")
 
 
 def _generate_opaque_id(prefix: str) -> str:

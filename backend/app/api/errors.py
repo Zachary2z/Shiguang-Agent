@@ -26,6 +26,12 @@ from app.domain.collections import (
     VersionConflictError,
 )
 from app.domain.jobs import JobConflictError
+from app.domain.memories import (
+    MemoryNotFoundError,
+    MemorySuggestionUnavailableError,
+    MemoryVersionConflictError,
+    SensitiveMemoryRejectedError,
+)
 from app.domain.plans import (
     PlanExecutionNotAllowedError,
     PlanFeedbackSelectionError,
@@ -53,6 +59,12 @@ def install_error_handlers(api: FastAPI) -> None:
         _plan_execution_not_allowed,
     )
     api.add_exception_handler(PlanFeedbackSelectionError, _feedback_selection_error)
+    api.add_exception_handler(MemoryNotFoundError, _memory_not_found)
+    api.add_exception_handler(
+        MemorySuggestionUnavailableError, _memory_suggestion_unavailable
+    )
+    api.add_exception_handler(MemoryVersionConflictError, _memory_version_conflict)
+    api.add_exception_handler(SensitiveMemoryRejectedError, _sensitive_memory_rejected)
     api.add_exception_handler(
         IdempotentRequestInProgressError,
         _idempotent_request_in_progress,
@@ -169,6 +181,40 @@ async def _feedback_selection_error(
         422,
         "PLAN_FEEDBACK_SELECTION_INVALID",
         "The selected plan items do not match the completion status.",
+    )
+
+
+async def _memory_not_found(request: Request, exc: Exception) -> JSONResponse:
+    del request, exc
+    return _error(404, "MEMORY_NOT_FOUND", "Memory was not found.")
+
+
+async def _memory_suggestion_unavailable(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    del request, exc
+    return _error(
+        404,
+        "MEMORY_SUGGESTION_NOT_AVAILABLE",
+        "Memory suggestion is not available.",
+    )
+
+
+async def _memory_version_conflict(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    del request, exc
+    return _error(409, "MEMORY_VERSION_CONFLICT", "Memory version conflict.")
+
+
+async def _sensitive_memory_rejected(
+    request: Request, exc: Exception
+) -> JSONResponse:
+    del request, exc
+    return _error(
+        422,
+        "SENSITIVE_MEMORY_REJECTED",
+        "Only explicitly authorized coarse areas can be saved as long-term memory.",
     )
 
 

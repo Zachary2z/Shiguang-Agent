@@ -12,7 +12,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-HEAD_REVISION = "20260728_0015"
+HEAD_REVISION = "20260728_0016"
 PREVIOUS_REVISION = "20260726_0009"
 EVENT_REVISION = "20260724_0007"
 EVENT_PREVIOUS_REVISION = "20260722_0006"
@@ -47,6 +47,10 @@ HEAD_TABLES = PREVIOUS_TABLES | {
     "plan_items",
     "plans",
     "web_sessions",
+    "memories",
+    "memory_operations",
+    "memory_plan_usages",
+    "memory_suggestion_decisions",
 }
 
 

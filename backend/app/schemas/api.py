@@ -26,6 +26,12 @@ from app.domain.collections import (
     UndoOutcome,
     UnsupportedReason,
 )
+from app.domain.memories import (
+    Memory,
+    MemorySuggestion,
+    MemorySuggestionDecision,
+    MemoryUsage,
+)
 from app.domain.places import (
     Coordinate,
     EvidenceOutcome,
@@ -53,6 +59,88 @@ from nanobot_core.providers import FinishReason, TokenUsage
 
 class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class MemoryCreateRequest(ApiModel):
+    idempotency_key: IdempotencyKey = Field(repr=False)
+    type: Literal[
+        "positive_preference",
+        "negative_preference",
+        "pace_preference",
+        "usual_area",
+    ]
+    content: str = Field(min_length=1, max_length=500)
+    value: str = Field(min_length=1, max_length=100)
+    expires_at: datetime | None = None
+    explicit_authorization: bool
+    location_granularity: Literal["coarse"] | None = None
+
+    @field_validator("expires_at", mode="before")
+    @classmethod
+    def parse_expiry(cls, value: object) -> object:
+        if isinstance(value, str):
+            return datetime.fromisoformat(value)
+        return value
+
+
+class MemoryPatchRequest(ApiModel):
+    idempotency_key: IdempotencyKey = Field(repr=False)
+    expected_version: int = Field(ge=1)
+    content: str | None = Field(default=None, min_length=1, max_length=500)
+    value: str | None = Field(default=None, min_length=1, max_length=100)
+    enabled: bool | None = None
+    expires_at: datetime | None = None
+    change_expiry: bool = False
+
+    @field_validator("expires_at", mode="before")
+    @classmethod
+    def parse_expiry(cls, value: object) -> object:
+        if isinstance(value, str):
+            return datetime.fromisoformat(value)
+        return value
+
+    @model_validator(mode="after")
+    def require_change(self) -> MemoryPatchRequest:
+        if (
+            self.content is None
+            and self.value is None
+            and self.enabled is None
+            and not self.change_expiry
+        ):
+            raise ValueError("memory patch requires a change")
+        if self.expires_at is not None and not self.change_expiry:
+            raise ValueError("expiry value requires change_expiry")
+        return self
+
+
+class MemoryDeleteRequest(ApiModel):
+    idempotency_key: IdempotencyKey = Field(repr=False)
+    expected_version: int = Field(ge=1)
+
+
+class MemorySuggestionDecisionRequest(ApiModel):
+    idempotency_key: IdempotencyKey = Field(repr=False)
+    decision: Literal["confirmed", "rejected"]
+
+
+class MemoryResponse(ApiModel):
+    memory: Memory
+    usages: tuple[MemoryUsage, ...] = ()
+    replayed: bool = False
+
+
+class MemoryListResponse(ApiModel):
+    items: tuple[Memory, ...]
+
+
+class MemorySuggestionListResponse(ApiModel):
+    items: tuple[MemorySuggestion, ...]
+
+
+class MemorySuggestionDecisionResponse(ApiModel):
+    decision: MemorySuggestionDecision
+    memory: Memory | None
+    replayed: bool
 
 
 def _json_arrays_as_domain_tuples(value: object) -> object:

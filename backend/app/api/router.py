@@ -36,8 +36,10 @@ from app.application.content_import_jobs import (
     ContentImportJobPayload,
     ContentImportSubmissionService,
 )
+from app.application.data_exports import UserDataExportService
 from app.application.demo_sessions import DemoSessionService
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
+from app.application.memories import MemoryService
 from app.application.place_targets import PlaceTargetSelectionService
 from app.application.plan_execution import (
     PlanCalendarService,
@@ -65,6 +67,7 @@ from app.domain.collections import (
     UndoOutcome,
 )
 from app.domain.identity import SESSION_COOKIE_NAME, CurrentPrincipal
+from app.domain.memories import MemorySuggestionDecision, MemoryType
 from app.domain.places import PlaceSelection
 from app.domain.plans import ActivityArea, PlanConstraints
 from app.domain.time import utc_now
@@ -92,6 +95,14 @@ from app.schemas.api import (
     DemoSessionResponse,
     ExtractionSummaryResponse,
     JsonMessageCreateRequest,
+    MemoryCreateRequest,
+    MemoryDeleteRequest,
+    MemoryListResponse,
+    MemoryPatchRequest,
+    MemoryResponse,
+    MemorySuggestionDecisionRequest,
+    MemorySuggestionDecisionResponse,
+    MemorySuggestionListResponse,
     MessageCreateRequest,
     PlaceCandidateResponse,
     PlaceCandidatesResponse,
@@ -122,6 +133,8 @@ _COLLECTION_PATH = r"^col_[a-f0-9]{32}$"
 _TRACE_PATH = r"^trc_[A-Za-z0-9_-]{32}$"
 _PLAN_PATH = r"^pln_[a-f0-9]{32}$"
 _APPROVAL_PATH = r"^apr_[a-f0-9]{32}$"
+_MEMORY_PATH = r"^mem_[a-f0-9]{32}$"
+_SUGGESTION_PATH = r"^fdb_[a-f0-9]{32}$"
 
 api_router = APIRouter(prefix="/api/v1")
 
@@ -865,6 +878,138 @@ async def submit_plan_feedback(
     return PlanFeedbackResponse(
         feedback=submission.feedback,
         replayed=submission.replayed,
+    )
+
+
+@api_router.get("/memories", response_model=MemoryListResponse)
+async def list_memories(
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> MemoryListResponse:
+    return MemoryListResponse(
+        items=await MemoryService(session).list(user_id=user_id)
+    )
+
+
+@api_router.post("/memories", response_model=MemoryResponse)
+async def create_memory(
+    payload: MemoryCreateRequest,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> MemoryResponse:
+    result = await MemoryService(session).create_explicit(
+        user_id=user_id,
+        memory_type=MemoryType(payload.type),
+        content=payload.content,
+        value=payload.value,
+        expires_at=payload.expires_at,
+        explicit_authorization=payload.explicit_authorization,
+        location_granularity=payload.location_granularity,
+        client_idempotency_key=payload.idempotency_key,
+    )
+    return MemoryResponse(memory=result.memory, replayed=result.replayed)
+
+
+@api_router.get("/memories/{memory_id}", response_model=MemoryResponse)
+async def get_memory(
+    memory_id: Annotated[str, Path(pattern=_MEMORY_PATH)],
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> MemoryResponse:
+    memory, usages = await MemoryService(session).detail(
+        user_id=user_id, memory_id=memory_id
+    )
+    return MemoryResponse(memory=memory, usages=usages)
+
+
+@api_router.patch("/memories/{memory_id}", response_model=MemoryResponse)
+async def update_memory(
+    memory_id: Annotated[str, Path(pattern=_MEMORY_PATH)],
+    payload: MemoryPatchRequest,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> MemoryResponse:
+    result = await MemoryService(session).update(
+        user_id=user_id,
+        memory_id=memory_id,
+        expected_version=payload.expected_version,
+        content=payload.content,
+        value=payload.value,
+        enabled=payload.enabled,
+        expires_at=payload.expires_at,
+        change_expiry=payload.change_expiry,
+        client_idempotency_key=payload.idempotency_key,
+    )
+    return MemoryResponse(memory=result.memory, replayed=result.replayed)
+
+
+@api_router.delete("/memories/{memory_id}", response_model=MemoryResponse)
+async def delete_memory(
+    memory_id: Annotated[str, Path(pattern=_MEMORY_PATH)],
+    payload: MemoryDeleteRequest,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> MemoryResponse:
+    result = await MemoryService(session).delete(
+        user_id=user_id,
+        memory_id=memory_id,
+        expected_version=payload.expected_version,
+        client_idempotency_key=payload.idempotency_key,
+    )
+    return MemoryResponse(memory=result.memory, replayed=result.replayed)
+
+
+@api_router.get(
+    "/memory-suggestions",
+    response_model=MemorySuggestionListResponse,
+)
+async def list_memory_suggestions(
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> MemorySuggestionListResponse:
+    return MemorySuggestionListResponse(
+        items=await MemoryService(session).suggestions(user_id=user_id)
+    )
+
+
+@api_router.post(
+    "/memory-suggestions/{suggestion_id}/decision",
+    response_model=MemorySuggestionDecisionResponse,
+)
+async def decide_memory_suggestion(
+    suggestion_id: Annotated[str, Path(pattern=_SUGGESTION_PATH)],
+    payload: MemorySuggestionDecisionRequest,
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> MemorySuggestionDecisionResponse:
+    result = await MemoryService(session).decide_suggestion(
+        user_id=user_id,
+        suggestion_id=suggestion_id,
+        decision=MemorySuggestionDecision(payload.decision),
+        client_idempotency_key=payload.idempotency_key,
+    )
+    return MemorySuggestionDecisionResponse(
+        decision=result.decision,
+        memory=result.memory,
+        replayed=result.replayed,
+    )
+
+
+@api_router.get("/data-export.json")
+async def download_user_data(
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> Response:
+    content = await UserDataExportService().build(session=session, user_id=user_id)
+    return Response(
+        content=content,
+        media_type="application/json; charset=utf-8",
+        headers={
+            "Content-Disposition": 'attachment; filename="shiguang-data.json"',
+            "Cache-Control": "private, no-store",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

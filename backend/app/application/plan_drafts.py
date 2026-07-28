@@ -527,7 +527,13 @@ class PlanDraftService:
             if decision.poi_identity is None
             else (decision.poi_identity[0].value, decision.poi_identity[1])
         )
-        return (route_duration, _identity(decision.title), poi_key, decision.collection_item_ids)
+        return (
+            -decision.preference_score,
+            route_duration,
+            _identity(decision.title),
+            poi_key,
+            decision.collection_item_ids,
+        )
 
     def _schedule_item(
         self,

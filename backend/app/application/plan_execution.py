@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.collections import CollectionStatus, IdempotencyConflictError
 from app.domain.identifiers import generate_feedback_id
+from app.domain.memories import MemoryType
 from app.domain.places import CityScope, NavigationRequest
 from app.domain.plans import (
     PlanCompletionStatus,
@@ -215,10 +216,14 @@ class PreferenceSuggestionService:
         if completion_status is PlanCompletionStatus.COMPLETED and reason is None:
             return None
         return PreferenceSuggestion(
-            content=(
-                "是否要把本次完成情况作为以后计划的长期偏好依据？"
-                "确认前不会写入长期记忆。"
-            )
+            content="以后优先安排更轻松、留白更多的计划",
+            memory_type=MemoryType.PACE_PREFERENCE,
+            value="relaxed",
+            evidence_summary=(
+                f"来自你对本次计划的反馈：{reason}"
+                if reason is not None
+                else "来自本次计划的部分完成或未完成反馈"
+            ),
         )
 
 
@@ -575,7 +580,9 @@ def _audit_domain(row: PlanFeedbackAuditModel) -> PlanFeedback:
         preference_suggestion=(
             None
             if row.preference_suggestion_json is None
-            else PreferenceSuggestion.model_validate(row.preference_suggestion_json)
+            else PreferenceSuggestion.model_validate_json(
+                json.dumps(row.preference_suggestion_json)
+            )
         ),
         created_at=_stored_time(row.created_at),
     )
