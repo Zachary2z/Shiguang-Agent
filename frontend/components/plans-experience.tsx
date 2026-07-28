@@ -376,7 +376,11 @@ export function PlansExperience() {
     } catch (error) {
       if (generation.current !== owner) return;
       setPhase("ready");
-      setFeedback(messageFor(error));
+      setFeedback(
+        error instanceof ApiError && error.status === 422
+          ? "暂不支持直接调整精确地点，请新建计划修改活动范围。"
+          : messageFor(error),
+      );
     }
   }
 
@@ -492,19 +496,19 @@ export function PlansExperience() {
           <form className="plan-form" onSubmit={beginReview}>
             <div className="plan-section-title"><span>01</span><h2>时间与范围</h2></div>
             <div className="plan-form-grid">
-              <label>开始时间<input type="datetime-local" value={startAt} onChange={(event) => { setStartAt(event.target.value); setDirty(true); }} autoComplete="off" required /></label>
-              <label>结束时间<input type="datetime-local" value={endAt} onChange={(event) => { setEndAt(event.target.value); setDirty(true); }} autoComplete="off" required /></label>
-              <label>行政区<input value={district} onChange={(event) => { setDistrict(event.target.value); setDirty(true); }} autoComplete="address-level2" placeholder="例如：南山区" /></label>
-              <label>活动范围<input value={areaLabel} onChange={(event) => { setAreaLabel(event.target.value); setDirty(true); }} autoComplete="off" placeholder="例如：海上世界" /></label>
+              <label>开始时间<input name="start_at" type="datetime-local" value={startAt} onChange={(event) => { setStartAt(event.target.value); setDirty(true); }} autoComplete="off" required /></label>
+              <label>结束时间<input name="end_at" type="datetime-local" value={endAt} onChange={(event) => { setEndAt(event.target.value); setDirty(true); }} autoComplete="off" required /></label>
+              <label>行政区<input name="district" value={district} onChange={(event) => { setDistrict(event.target.value); setDirty(true); }} autoComplete="address-level2" placeholder="例如：南山区" /></label>
+              <label>活动范围<input name="area_label" value={areaLabel} onChange={(event) => { setAreaLabel(event.target.value); setDirty(true); }} autoComplete="off" placeholder="例如：海上世界" /></label>
             </div>
             <div className="plan-section-title"><span>02</span><h2>可选偏好</h2></div>
             <div className="plan-form-grid">
-              <label>预算（元，可留空）<input type="number" min="0" step="0.01" value={budget} onChange={(event) => { setBudget(event.target.value); setDirty(true); }} inputMode="decimal" autoComplete="off" placeholder="费用未知也可以生成" /></label>
-              <label>节奏<select value={pace} onChange={(event) => { setPace(event.target.value as keyof typeof paceLabels); setDirty(true); }}><option value="relaxed">松弛</option><option value="balanced">适中</option><option value="packed">紧凑</option></select></label>
-              <label>主要交通<select value={transport} onChange={(event) => { setTransport(event.target.value); setDirty(true); }}><option value="walking">步行</option><option value="cycling">骑行</option><option value="transit">公共交通</option><option value="driving">驾车</option></select></label>
-              <label>希望包含<input value={include} onChange={(event) => { setInclude(event.target.value); setDirty(true); }} autoComplete="off" placeholder="例如：海边咖啡" /></label>
-              <label>希望避开<input value={exclude} onChange={(event) => { setExclude(event.target.value); setDirty(true); }} autoComplete="off" placeholder="例如：大型商场" /></label>
-              <label className="plan-check"><input type="checkbox" checked={collectionOnly} onChange={(event) => { setCollectionOnly(event.target.checked); setDirty(true); }} /><span>只使用我的收藏</span></label>
+              <label>预算（元，可留空）<input name="budget" type="number" min="0" step="0.01" value={budget} onChange={(event) => { setBudget(event.target.value); setDirty(true); }} inputMode="decimal" autoComplete="off" placeholder="费用未知也可以生成" /></label>
+              <label>节奏<select name="pace" value={pace} onChange={(event) => { setPace(event.target.value as keyof typeof paceLabels); setDirty(true); }}><option value="relaxed">松弛</option><option value="balanced">适中</option><option value="packed">紧凑</option></select></label>
+              <label>主要交通<select name="transport_mode" value={transport} onChange={(event) => { setTransport(event.target.value); setDirty(true); }}><option value="walking">步行</option><option value="cycling">骑行</option><option value="transit">公共交通</option><option value="driving">驾车</option></select></label>
+              <label>希望包含<input name="include" value={include} onChange={(event) => { setInclude(event.target.value); setDirty(true); }} autoComplete="off" placeholder="例如：海边咖啡" /></label>
+              <label>希望避开<input name="exclude" value={exclude} onChange={(event) => { setExclude(event.target.value); setDirty(true); }} autoComplete="off" placeholder="例如：大型商场" /></label>
+              <label className="plan-check"><input name="collection_only" type="checkbox" checked={collectionOnly} onChange={(event) => { setCollectionOnly(event.target.checked); setDirty(true); }} /><span>只使用我的收藏</span></label>
             </div>
             <button className="primary-button plan-primary" type="submit">检查生成条件</button>
           </form>
@@ -597,7 +601,7 @@ export function PlansExperience() {
           {plan.is_current_version && plan.status !== "confirmed" && (
             <form className="adjust-card" onSubmit={adjustPlan}>
               <label htmlFor="plan-adjustment">想怎么调整？</label>
-              <div><input id="plan-adjustment" value={adjustment} onChange={(event) => setAdjustment(event.target.value)} autoComplete="off" placeholder="例如：节奏轻松一点，预算改成 300" /><button type="submit" disabled={!adjustment.trim()}>生成新版本</button></div>
+              <div><input id="plan-adjustment" name="instruction" value={adjustment} onChange={(event) => setAdjustment(event.target.value)} autoComplete="off" placeholder="例如：节奏轻松一点，预算改成 300" /><button type="submit" disabled={!adjustment.trim()}>生成新版本</button></div>
               <p>每次有效调整都会保留上一版，并创建不可变的新版本。</p>
             </form>
           )}

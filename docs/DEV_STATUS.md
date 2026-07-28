@@ -2559,3 +2559,38 @@ Client，不建立第二套规划器或前端状态框架；不得提前实现 M
 - 复杂度与安全：删除检索层第二次 any_branch 搜索，没有第二套 Provider、Matcher、
   Parser、Planner、地点选择服务、排序或状态机；未读取 `.env`，真实模型、地图、
   网页及付费 API 调用为 0。阶段继续为“待主控验收”
+
+#### 2026-07-28｜M1-5 最后一轮验收缺陷修复｜待主控验收
+
+- 线性基线：继承 `2646f1d70248bff3b59cd9585b78c5f7ce165fa6`，只追加一个
+  M1-5 修复提交；未 amend、未合并 `main`、未推送、未开始 M1-6
+- any_branch：请求级 `PlanningFactSnapshot` 同时冻结唯一搜索得到的具体 POI 或
+  精确失败原因；Provider 超时/不可用、正常无结果、结果证据不足分别为
+  `BRANCH_PROVIDER_FAILED`、`BRANCH_NOT_FOUND`、
+  `BRANCH_EVIDENCE_INSUFFICIENT`。组合测试穿过 `MapPlanFactResolver` 与
+  `StructuredCollectionRetrievalService`，每个 any_branch 搜索严格 1 次，检索层
+  不再持有或调用 Matcher
+- Event：继续是单一 Event，复用既有城市提示解析、`PlaceMatchingService`、候选
+  快照和 `PlaceTargetSelectionService`。只有城市边界确认深圳才查询深圳；广州和
+  城市待确认 Event 的地图调用为 0。“以上都不是”清除候选快照并回到
+  `pending_details`，原 Event、准确时间与来源保留，幂等重放及并发版本冲突通过
+- 调整：从唯一 `PlanAdjustmentPatch` 删除 `location_intent`，继续禁止模型读写
+  origin、Coordinate 和 ActivityArea。唯一 Parser 使用 Settings 的 `json_object`
+  配置并在持久化前生成严格最小 patch；精确地点/活动范围调整返回
+  `PLAN_ADJUSTMENT_UNSUPPORTED` 和“新建计划”恢复路径，不创建 Plan、AgentRun、
+  幂等键或 Job。预算、节奏、时间、交通、包含/排除和 `collection_only` 保持原
+  调整能力
+- 前端：计划表单 input/select/checkbox 增加稳定 `name`；真实离线 Playwright
+  证明地点调整被拒绝时停留在 V1 且不产生 V2。历史版本不显示“当前版本”的边界
+  保持
+- 验证：`pip check`、Ruff、strict mypy `126 source files` 通过；完整后端离线
+  `1603 passed, 13 skipped`；仓库外插件硬封 DNS/socket 后非真实全集
+  `1603 passed, 11 skipped, 2 deselected`；迁移专测 `23 passed`，唯一 head
+  `20260728_0014`，upgrade/current/check/downgrade/upgrade 往返通过；前端 lint、
+  typecheck、build 通过，Vitest `60 passed`，Playwright `26 passed`
+- 复杂度与剩余风险：没有新增第二套 Provider、Matcher、Parser、Planner、排序器、
+  地点选择服务或状态机；删除 Worker 内重复调整解析。候选/路线硬上限保持
+  `6 / 48`。不再宣称仓储顺序的前 6 个合格候选等于规划排序；剩余 P2 为高基数
+  收藏中更晚但软偏好更高的候选可能未进入最终排序，本轮按要求不新增第二套预排序
+- 安全与状态：未读取本机 `.env`，真实模型、地图、网页、DNS、socket 和其他外部/
+  付费 API 调用均为 0；无未关闭 P0/P1。阶段继续为“待主控验收”

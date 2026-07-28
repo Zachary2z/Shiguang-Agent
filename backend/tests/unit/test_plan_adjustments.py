@@ -11,6 +11,7 @@ from app.application.plan_adjustments import (
     PlanAdjustmentNotUnderstoodError,
     PlanAdjustmentParser,
     PlanAdjustmentPatch,
+    PlanAdjustmentUnsupportedError,
     apply_plan_adjustment,
 )
 from app.domain.collections import PlanCity
@@ -92,7 +93,7 @@ def test_complete_patch_is_validated_once_by_plan_constraints() -> None:
 async def test_invalid_or_empty_model_patch_is_rejected_without_phrase_fallback() -> None:
     provider = FakeProvider([fake_response(content="{}")])
 
-    with pytest.raises(PlanAdjustmentNotUnderstoodError):
+    with pytest.raises(PlanAdjustmentUnsupportedError):
         await PlanAdjustmentParser(
             provider,
             structured_output_mode=StructuredOutputMode.JSON_OBJECT,

@@ -154,13 +154,16 @@ test("real offline stack creates, adjusts, confirms, restarts, and recovers a pl
     { timeout: 20_000 },
   );
 
-  await page.getByLabel("想怎么调整？").fill("生成一份失败版本");
+  await page.getByLabel("想怎么调整？").fill("把地点换成广州塔");
   await page.getByRole("button", { name: "生成新版本" }).click();
-  await expect(page.getByRole("heading", { name: "这一版没有生成结果" })).toBeVisible({
-    timeout: 20_000,
-  });
-  await expect(page.getByRole("button", { name: "V2 · 失败" })).toBeVisible();
-  await page.getByRole("button", { name: "V1", exact: true }).click();
+  await expect(
+    page.getByText("暂不支持直接调整精确地点，请新建计划修改活动范围。"),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "V2", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "V1", exact: true })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
   await expect(
     page.getByRole("heading", { level: 3, name: "海上世界散步公园" }),
   ).toBeVisible();

@@ -10,7 +10,6 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 
-from app.application.plan_adjustments import PlanAdjustmentParser
 from app.application.plan_experience import (
     PLAN_GENERATION_JOB_TYPE,
     PlanExperienceService,
@@ -152,7 +151,9 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
 
     async with _client(test_settings) as (api, client):
         api.state.map_provider = object()
-        api.state.text_provider = object()
+        api.state.text_provider = FakeProvider(
+            [fake_response(content='{"pace":"relaxed"}')]
+        )
         await _demo(client)
         created = await client.post("/api/v1/plans", json=_request("m15-create"))
         replay = await client.post("/api/v1/plans", json=_request("m15-create"))
@@ -165,10 +166,6 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
         handler = PlanGenerationJobHandler(
             session_factory=database.session_factory,
             pricing=ConfiguredPricingPolicy.from_settings(test_settings),
-            adjustment_parser=PlanAdjustmentParser(
-                FakeProvider([fake_response(content='{"pace":"relaxed"}')]),
-                structured_output_mode=test_settings.extraction_structured_output_mode(),
-            ),
             executor_factory=lambda session: DraftExecutor(),
         )
         worker = JobWorker(
@@ -214,6 +211,40 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
 
         listed = await client.get("/api/v1/plans")
         assert [item["id"] for item in listed.json()["items"]] == [adjusted_id]
+
+
+@pytest.mark.asyncio
+async def test_location_adjustment_is_recoverable_without_creating_a_version(
+    test_settings,
+) -> None:
+    provider = FakeProvider([fake_response(content="{}")])
+    async with _client(test_settings) as (api, client):
+        api.state.map_provider = object()
+        api.state.text_provider = provider
+        await _demo(client)
+        created = await client.post("/api/v1/plans", json=_request("location-base"))
+        plan_id = created.json()["plan_id"]
+
+        unsupported = await client.post(
+            f"/api/v1/plans/{plan_id}/adjustments",
+            json={
+                "idempotency_key": "location-unsupported",
+                "instruction": "把地点换成广州塔",
+            },
+        )
+        async with api.state.demo_database.session_factory() as session:
+            plan_count = int(await session.scalar(select(func.count(PlanModel.id))) or 0)
+            job_count = int(
+                await session.scalar(select(func.count(ScheduledJobModel.id))) or 0
+            )
+
+    assert unsupported.status_code == 422
+    assert unsupported.json()["error_code"] == "PLAN_ADJUSTMENT_UNSUPPORTED"
+    assert "Create a new plan" in unsupported.json()["message"]
+    assert plan_count == 1
+    assert job_count == 1
+    assert len(provider.calls) == 1
+    assert "location_intent" not in str(provider.calls[0].response_format)
 
 
 @pytest.mark.asyncio

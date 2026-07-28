@@ -1393,32 +1393,43 @@ async def test_resolved_any_branch_still_applies_candidate_hard_rules(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("pois", "timed_out"),
+    "reason",
     [
-        ((), False),
-        ((_poi("poi_weak", name="不相关地点"),), False),
-        ((), True),
+        CandidateReasonCode.BRANCH_NOT_FOUND,
+        CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT,
+        CandidateReasonCode.BRANCH_PROVIDER_FAILED,
     ],
 )
 async def test_any_branch_failure_modes_have_stable_safe_reasons(
-    pois: tuple[Poi, ...],
-    timed_out: bool,
+    reason: CandidateReasonCode,
 ) -> None:
     user_id = generate_user_id()
     brand = _place(user_id, title="测试咖啡", target=_brand_target(), price=Decimal("35"))
-    service, _ = _service([brand], provider=_branch_provider(pois, timeout=timed_out))
+    service, _ = _service([brand])
 
     result = await service.retrieve(
         user_id=user_id,
         constraints=_constraints(area=None, origin=ORIGIN),
-        facts=PlanningFactSnapshot(),
+        facts=PlanningFactSnapshot(
+            collections=(
+                CollectionPlanningFacts(
+                    collection_item_id=brand.id,
+                    branch_failure_reason=reason,
+                ),
+            )
+        ),
         now=NOW,
     )
 
-    assert (
-        CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT
-        in result.decisions[0].reason_codes
-    )
+    assert reason in result.decisions[0].reason_codes
+    assert not (
+        {
+            CandidateReasonCode.BRANCH_NOT_FOUND,
+            CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT,
+            CandidateReasonCode.BRANCH_PROVIDER_FAILED,
+        }
+        - {reason}
+    ).intersection(result.decisions[0].reason_codes)
     public = result.model_dump(mode="json")
     assert "provider response" not in str(public).lower()
     assert "secret" not in str(public).lower()
@@ -1582,6 +1593,7 @@ def _map_fact_provider(
     *,
     constraints: PlanConstraints,
     search_pois: tuple[Poi, ...] = (),
+    search_timeout: bool = False,
     calls: list[object] | None = None,
 ) -> StubMapProvider:
     route_request = RouteRequest(
@@ -1598,14 +1610,14 @@ def _map_fact_provider(
         city=constraints.city_scope,
         on_date=constraints.start_at.date(),
     )
+    search_request = SearchPoiRequest(
+        query="测试咖啡",
+        city=constraints.city_scope,
+        district=constraints.area.districts[0] if constraints.area else None,
+        location=constraints.origin,
+    )
     search_results = {}
     if search_pois:
-        search_request = SearchPoiRequest(
-            query="测试咖啡",
-            city=constraints.city_scope,
-            district=constraints.area.districts[0] if constraints.area else None,
-            location=constraints.origin,
-        )
         search_results[search_request] = PoiSearchResult(
             city_code=constraints.city_code.value,
             pois=search_pois,
@@ -1635,6 +1647,7 @@ def _map_fact_provider(
                 temperature_celsius=28,
             )
         },
+        timeout_requests=(search_request,) if search_timeout else (),
         call_hook=record,
     )
 
@@ -1761,6 +1774,73 @@ async def test_map_fact_chain_resolves_any_branch_to_one_fixed_poi(
     assert result.retrieval.collections[0].resolved_poi == branch
     assert sum(isinstance(call, SearchPoiRequest) for call in calls) == 1
     assert sum(isinstance(call, RouteRequest) for call in calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("search_pois", "search_timeout", "expected_reason"),
+    [
+        ((), False, CandidateReasonCode.BRANCH_NOT_FOUND),
+        (
+            (_poi("poi_branch_weak", name="不相关地点"),),
+            False,
+            CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT,
+        ),
+        ((), True, CandidateReasonCode.BRANCH_PROVIDER_FAILED),
+    ],
+)
+async def test_map_fact_and_retrieval_chain_freezes_one_branch_failure(
+    retrieval_database: str,
+    search_pois: tuple[Poi, ...],
+    search_timeout: bool,
+    expected_reason: CandidateReasonCode,
+) -> None:
+    user_id = generate_user_id()
+    item = _place(
+        user_id,
+        title="测试咖啡",
+        target=_brand_target(),
+        tags=("咖啡",),
+    )
+    constraints = _constraints(area=None, origin=ORIGIN)
+    calls: list[object] = []
+    provider = _map_fact_provider(
+        constraints=constraints,
+        search_pois=search_pois,
+        search_timeout=search_timeout,
+        calls=calls,
+    )
+    database = Database(retrieval_database)
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        await repository.add_user(
+            user_id=user_id,
+            user=User(id=user_id, mode=UserMode.REAL, created_at=NOW),
+        )
+        await repository.add_collection_item(user_id=user_id, item=item)
+        await session.commit()
+    async with database.session() as session:
+        facts = await MapPlanFactResolver(
+            session=session,
+            map_provider=provider,
+            matching_policy=Settings(
+                _env_file=None,
+                app_env="test",
+            ).place_matching_policy(),
+        ).resolve(user_id=user_id, constraints=constraints)
+        result = await StructuredCollectionRetrievalService(
+            repository=SqlAlchemyCollectionRepository(session)
+        ).retrieve(
+            user_id=user_id,
+            constraints=constraints,
+            facts=facts.retrieval,
+            now=NOW,
+        )
+    await database.close()
+
+    assert facts.retrieval.collections[0].branch_failure_reason is expected_reason
+    assert expected_reason in result.decisions[0].reason_codes
+    assert sum(isinstance(call, SearchPoiRequest) for call in calls) == 1
 
 
 @pytest.mark.asyncio

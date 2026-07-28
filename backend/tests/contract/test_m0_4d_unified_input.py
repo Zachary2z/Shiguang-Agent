@@ -807,6 +807,169 @@ async def test_event_import_requires_explicit_poi_choice_before_plan_use(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("city_hint", ["广州", None])
+async def test_event_import_outside_confirmed_shenzhen_scope_skips_map_search(
+    test_settings: Settings,
+    city_hint: str | None,
+) -> None:
+    event = _exact_time_event().model_copy(
+        update={
+            "city_hint": city_hint,
+            "missing_fields": (
+                *_exact_time_event().missing_fields,
+                *((CandidateField.CITY_HINT,) if city_hint is None else ()),
+            ),
+        }
+    )
+    provider = FakeProvider(
+        [
+            fake_response(
+                content=ExtractionResult.with_candidates((event,)).model_dump_json()
+            )
+        ]
+    )
+    map_calls: list[object] = []
+
+    async def record_map_call(request: object) -> None:
+        map_calls.append(request)
+
+    async with _client(
+        test_settings,
+        provider,
+        map_provider=StubMapProvider(call_hook=record_map_call),
+    ) as (_api, client, _storage):
+        session_id = await _demo(client)
+        imported = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+                json={
+                    "type": "text",
+                    "idempotency_key": (
+                        "event-city-scope-other"
+                        if city_hint is not None
+                        else "event-city-scope-pending"
+                    ),
+                "text": "外地或城市待确认的准确场次",
+            },
+        )
+
+    assert imported.status_code == 200, imported.text
+    item = imported.json()["collections"][0]
+    assert item["kind"] == "event"
+    assert item["status"] == "pending_details"
+    assert item["planning_eligible"] is False
+    assert map_calls == []
+
+
+@pytest.mark.asyncio
+async def test_event_none_of_above_clears_snapshot_replays_and_conflicts_safely(
+    test_settings: Settings,
+) -> None:
+    event = _exact_time_event()
+    provider = FakeProvider(
+        [
+            fake_response(
+                content=ExtractionResult.with_candidates((event,)).model_dump_json()
+            )
+        ]
+    )
+    poi = Poi(
+        provider=PoiProvider.AMAP,
+        poi_id="event_none_venue",
+        name="海上世界文化艺术中心",
+        city_code=PlanCity.SHENZHEN.value,
+        district="南山区",
+        address="海上世界文化艺术中心",
+        coordinate=Coordinate(
+            latitude=22.482,
+            longitude=113.915,
+            coordinate_system=CoordinateSystem.GCJ_02,
+        ),
+        poi_type=PoiType.MUSEUM,
+    )
+    map_provider = StubMapProvider(
+        search_results={
+            SearchPoiRequest(
+                query=event.address or event.title,
+                city=CityScope(city_code=PlanCity.SHENZHEN.value),
+                district=event.district,
+            ): PoiSearchResult(
+                city_code=PlanCity.SHENZHEN.value,
+                pois=(poi,),
+            )
+        }
+    )
+
+    async with _client(
+        test_settings,
+        provider,
+        map_provider=map_provider,
+    ) as (api, client, _storage):
+        session_id = await _demo(client)
+        user_id = await _demo_owner_id(api, session_id)
+        imported = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={
+                "type": "text",
+                "idempotency_key": "event-none-import",
+                "text": "准确场次但候选地点都不对",
+            },
+        )
+        original = imported.json()["collections"][0]
+        item_id = original["id"]
+        choices = await client.get(f"/api/v1/collections/{item_id}/poi-candidates")
+        request_body = {
+            "expected_version": choices.json()["expected_version"],
+            "snapshot_fingerprint": choices.json()["snapshot_fingerprint"],
+            "choice": "none_of_above",
+        }
+        async def choose(key: str) -> tuple[str, httpx.Response]:
+            return (
+                key,
+                await client.post(
+                    f"/api/v1/collections/{item_id}/poi-selection",
+                    json={**request_body, "idempotency_key": key},
+                ),
+            )
+
+        attempts = await asyncio.gather(
+            choose("event-none-first"),
+            choose("event-none-second"),
+        )
+        winner_key, winner = next(
+            attempt for attempt in attempts if attempt[1].status_code == 200
+        )
+        loser = next(
+            response for _key, response in attempts if response.status_code != 200
+        )
+        replay = await client.post(
+            f"/api/v1/collections/{item_id}/poi-selection",
+            json={**request_body, "idempotency_key": winner_key},
+        )
+        async with api.state.demo_database.session() as session:
+            repository = SqlAlchemyCollectionRepository(session)
+            stored = await repository.get_collection_item(
+                user_id=user_id,
+                collection_item_id=item_id,
+            )
+            sources = await repository.list_collection_sources(
+                user_id=user_id,
+                collection_item_id=item_id,
+            )
+
+    assert winner.status_code == 200
+    assert loser.status_code == 409
+    assert replay.status_code == 200
+    assert replay.json()["replayed"] is True
+    assert stored is not None
+    assert stored.kind.value == "event"
+    assert stored.status.value == "pending_details"
+    assert stored.place_candidate_snapshot is None
+    assert stored.event_start_at == event.event_start_at
+    assert stored.event_end_at == event.event_end_at
+    assert len(sources) == 1
+
+
+@pytest.mark.asyncio
 async def test_same_key_and_frozen_input_remain_isolated_across_users(
     test_settings: Settings,
 ) -> None:

@@ -11,7 +11,6 @@ from app.application.content_import_jobs import (
     ContentImportJobHandler,
 )
 from app.application.map_plan_facts import MapPlanFactResolver
-from app.application.plan_adjustments import PlanAdjustmentParser
 from app.application.plan_experience import (
     PLAN_GENERATION_JOB_TYPE,
     ExistingPlanServicesExecutor,
@@ -19,35 +18,18 @@ from app.application.plan_experience import (
 )
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.text_collection_workflow import IdempotencyLockRegistry
-from app.config import Settings, load_settings
+from app.config import load_settings
 from app.infrastructure.db import Database
 from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.providers import (
     AmapMapProvider,
     HttpxWebContentProvider,
-    OpenAICompatibleProvider,
     SystemHostResolver,
+    configured_model_provider,
     create_web_http_client,
 )
 from app.worker.service import JobHandler, JobWorker, deterministic_noop
-from nanobot_core.providers import ModelProvider
-
-
-def _configured_model_provider(settings: Settings) -> ModelProvider | None:
-    """Defer the real adapter unless the operator explicitly configured it."""
-
-    if not all(
-        getattr(settings, name, None)
-        for name in ("model_api_base", "model_api_key", "model_name")
-    ):
-        if any(
-            getattr(settings, name, None)
-            for name in ("model_api_base", "model_api_key", "model_name")
-        ):
-            return OpenAICompatibleProvider.from_settings(settings)
-        return None
-    return OpenAICompatibleProvider.from_settings(settings)
 
 
 async def _run() -> None:
@@ -59,7 +41,7 @@ async def _run() -> None:
     loop = asyncio.get_running_loop()
     for signal_number in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(signal_number, stop.set)
-    provider = _configured_model_provider(settings)
+    provider = configured_model_provider(settings)
     map_provider = (
         None
         if settings.amap_api_key is None
@@ -93,14 +75,6 @@ async def _run() -> None:
         handlers[PLAN_GENERATION_JOB_TYPE] = PlanGenerationJobHandler(
             session_factory=database.session_factory,
             pricing=pricing,
-            adjustment_parser=(
-                None
-                if provider is None
-                else PlanAdjustmentParser(
-                    provider,
-                    structured_output_mode=settings.extraction_structured_output_mode(),
-                )
-            ),
             executor_factory=lambda session: ExistingPlanServicesExecutor(
                 session=session,
                 map_provider=map_provider,
@@ -146,14 +120,6 @@ async def _run() -> None:
             demo_handlers[PLAN_GENERATION_JOB_TYPE] = PlanGenerationJobHandler(
                 session_factory=demo_database.session_factory,
                 pricing=pricing,
-                adjustment_parser=(
-                    None
-                    if provider is None
-                    else PlanAdjustmentParser(
-                        provider,
-                        structured_output_mode=settings.extraction_structured_output_mode(),
-                    )
-                ),
                 executor_factory=lambda session: ExistingPlanServicesExecutor(
                     session=session,
                     map_provider=map_provider,

@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PlansExperience } from "@/components/plans-experience";
-import { apiClient } from "@/lib/api-client";
+import { ApiError, apiClient } from "@/lib/api-client";
 import { sseClient } from "@/lib/sse-client";
 
 const session = { csrf_token: "csrf-token" };
@@ -121,6 +121,17 @@ describe("PlansExperience", () => {
       "placeholder",
       "费用未知也可以生成",
     );
+    expect(screen.getByLabelText("开始时间")).toHaveAttribute("name", "start_at");
+    expect(screen.getByLabelText("结束时间")).toHaveAttribute("name", "end_at");
+    expect(screen.getByLabelText("节奏")).toHaveAttribute("name", "pace");
+    expect(screen.getByLabelText("主要交通")).toHaveAttribute(
+      "name",
+      "transport_mode",
+    );
+    expect(screen.getByLabelText("只使用我的收藏")).toHaveAttribute(
+      "name",
+      "collection_only",
+    );
     await userEvent.click(screen.getByRole("button", { name: "检查生成条件" }));
 
     const card = screen.getByLabelText("生成前条件确认");
@@ -233,5 +244,29 @@ describe("PlansExperience", () => {
       data: { summary: { status: "succeeded" } },
     } as never);
     await waitFor(() => expect(screen.getByText("V2 · 当前版本")).toBeInTheDocument());
+  });
+
+  it("keeps the current version when an exact-place adjustment is unsupported", async () => {
+    vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path === "/api/v1/plans" && !options?.method) return { items: [plan] } as never;
+      if (path.endsWith("/adjustments")) {
+        throw new ApiError("request_failed", 422, "request-id");
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<PlansExperience />);
+    await screen.findAllByText("海边咖啡");
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "想怎么调整？" }),
+      "把地点换成广州塔",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "生成新版本" }));
+
+    expect(
+      await screen.findByText("暂不支持直接调整精确地点，请新建计划修改活动范围。"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("V2 · 当前版本")).not.toBeInTheDocument();
+    expect(screen.getByText("V1 · 当前版本")).toBeInTheDocument();
   });
 });

@@ -424,7 +424,10 @@ class StructuredCollectionRetrievalService:
                         additional_reasons=(
                             ()
                             if branch_poi is not None
-                            else (CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT,)
+                            else (
+                                branch_facts.branch_failure_reason
+                                or CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT,
+                            )
                         ),
                         apply_dynamic_facts=branch_poi is not None,
                         resolved_from_any_branch=True,

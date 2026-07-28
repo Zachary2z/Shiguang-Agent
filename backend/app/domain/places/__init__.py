@@ -36,6 +36,7 @@ from app.domain.places.matching import (
     PlaceSelectionKind,
     classify_place_matches,
     poi_from_match_candidate,
+    resolve_city_hint,
     score_place_candidate,
     validate_place_selection,
 )
@@ -88,6 +89,7 @@ __all__ = [
     "PlaceSelectionKind",
     "classify_place_matches",
     "poi_from_match_candidate",
+    "resolve_city_hint",
     "score_place_candidate",
     "validate_place_selection",
     "BrandIdentityConfirmationSource",

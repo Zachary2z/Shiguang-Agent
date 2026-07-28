@@ -35,6 +35,7 @@ from app.domain.plans import (
     AvailabilityAssessment,
     CandidateFactValues,
     CandidateOutcome,
+    CandidateReasonCode,
     CollectionPlanningFacts,
     DraftCandidateFacts,
     DraftRouteFacts,
@@ -169,13 +170,20 @@ class MapPlanFactResolver:
                     )
                 )
             elif resolved.brand_identity is not None:
-                candidate = await self._resolve_branch(
+                candidate, failure_reason = await self._resolve_branch(
                     item=item,
                     brand_name=resolved.brand_identity.display_name,
                     constraints=constraints,
                     mode=mode,
                 )
                 if candidate is None:
+                    if failure_reason is not None:
+                        collection_facts.append(
+                            CollectionPlanningFacts(
+                                collection_item_id=item.id,
+                                branch_failure_reason=failure_reason,
+                            )
+                        )
                     continue
                 selected.append(candidate)
                 route = candidate.route
@@ -298,7 +306,7 @@ class MapPlanFactResolver:
         brand_name: str,
         constraints: PlanConstraints,
         mode: TransportMode,
-    ) -> _ExecutableCandidate | None:
+    ) -> tuple[_ExecutableCandidate | None, CandidateReasonCode | None]:
         probe = assess_collection_candidate(
             item=item,
             constraints=constraints,
@@ -310,7 +318,7 @@ class MapPlanFactResolver:
             resolved_from_any_branch=True,
         )
         if probe.outcome is CandidateOutcome.EXCLUDED:
-            return None
+            return (None, None)
         try:
             result = await self._matching.match(
                 PlaceMatchRequest(
@@ -328,9 +336,9 @@ class MapPlanFactResolver:
         except asyncio.CancelledError:
             raise
         except MapProviderError:
-            return None
+            return (None, CandidateReasonCode.BRANCH_PROVIDER_FAILED)
         if result.status is MatchStatus.NOT_FOUND:
-            return None
+            return (None, CandidateReasonCode.BRANCH_NOT_FOUND)
 
         candidates: list[_ExecutableCandidate] = []
         for match in result.candidates:
@@ -346,7 +354,7 @@ class MapPlanFactResolver:
                 continue
             candidates.append(candidate)
         if not candidates:
-            return None
+            return (None, CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT)
         chosen = min(
             candidates,
             key=lambda candidate: (
@@ -357,7 +365,7 @@ class MapPlanFactResolver:
                 candidate.poi.poi_id,
             ),
         )
-        return chosen
+        return (chosen, None)
 
     @staticmethod
     def _poi_facts(

@@ -14,7 +14,10 @@ from app.api.dependencies import (
     PlanProviderNotConfiguredError,
     ProviderNotConfiguredError,
 )
-from app.application.plan_adjustments import PlanAdjustmentNotUnderstoodError
+from app.application.plan_adjustments import (
+    PlanAdjustmentNotUnderstoodError,
+    PlanAdjustmentUnsupportedError,
+)
 from app.application.text_collection_workflow import (
     IdempotentRequestInProgressError,
     TextCollectionProviderError,
@@ -53,6 +56,10 @@ def install_error_handlers(api: FastAPI) -> None:
     api.add_exception_handler(
         PlanAdjustmentNotUnderstoodError,
         _plan_adjustment_not_understood,
+    )
+    api.add_exception_handler(
+        PlanAdjustmentUnsupportedError,
+        _plan_adjustment_unsupported,
     )
     api.add_exception_handler(
         IdempotentRequestInProgressError,
@@ -170,6 +177,18 @@ async def _plan_adjustment_not_understood(
         422,
         "PLAN_ADJUSTMENT_NOT_UNDERSTOOD",
         "The requested plan adjustment was not understood.",
+    )
+
+
+async def _plan_adjustment_unsupported(
+    request: Request,
+    exc: Exception,
+) -> JSONResponse:
+    del request, exc
+    return _error(
+        422,
+        "PLAN_ADJUSTMENT_UNSUPPORTED",
+        "Create a new plan to change the activity area or exact place.",
     )
 
 

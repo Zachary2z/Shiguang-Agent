@@ -14,6 +14,7 @@ from app.config import Settings, load_settings
 from app.infrastructure.db import Database
 from app.observability import RequestContextMiddleware, configure_logging
 from app.providers.map import MapProvider
+from app.providers.openai_compatible import configured_model_provider
 from app.providers.storage import StorageProvider
 from app.providers.web import WebContentProvider
 from nanobot_core.providers import ModelProvider
@@ -58,7 +59,11 @@ def create_app(
     api.state.settings = resolved_settings
     api.state.database = None
     api.state.demo_database = None
-    api.state.text_provider = text_provider
+    api.state.text_provider = (
+        text_provider
+        if text_provider is not None
+        else configured_model_provider(resolved_settings)
+    )
     api.state.web_provider = web_provider
     api.state.storage_provider = storage_provider
     api.state.demo_storage_provider = demo_storage_provider

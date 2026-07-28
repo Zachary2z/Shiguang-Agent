@@ -48,6 +48,43 @@ class AvailabilityAssessment(StrEnum):
     PROVIDER_FAILED = "provider_failed"
 
 
+class CandidateOutcome(StrEnum):
+    INCLUDED = "included"
+    EXCLUDED = "excluded"
+    VERIFICATION_REQUIRED = "verification_required"
+
+
+class CandidateReasonCode(StrEnum):
+    STATUS_NOT_ACTIVE = "STATUS_NOT_ACTIVE"
+    CITY_UNCONFIRMED = "CITY_UNCONFIRMED"
+    CITY_MISMATCH = "CITY_MISMATCH"
+    LOCATION_UNCONFIRMED = "LOCATION_UNCONFIRMED"
+    EVENT_ENDED = "EVENT_ENDED"
+    EVENT_TIME_UNKNOWN = "EVENT_TIME_UNKNOWN"
+    TIME_WINDOW_CONFLICT = "TIME_WINDOW_CONFLICT"
+    DISTRICT_UNKNOWN = "DISTRICT_UNKNOWN"
+    DISTRICT_MISMATCH = "DISTRICT_MISMATCH"
+    AREA_MISMATCH = "AREA_MISMATCH"
+    INCLUDE_NOT_MATCHED = "INCLUDE_NOT_MATCHED"
+    EXCLUDED_BY_USER = "EXCLUDED_BY_USER"
+    BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
+    PRICE_UNKNOWN = "PRICE_UNKNOWN"
+    ROUTE_UNREACHABLE = "ROUTE_UNREACHABLE"
+    ROUTE_EXCEEDS_TIME_WINDOW = "ROUTE_EXCEEDS_TIME_WINDOW"
+    ROUTE_UNKNOWN = "ROUTE_UNKNOWN"
+    ROUTE_PROVIDER_FAILED = "ROUTE_PROVIDER_FAILED"
+    WEATHER_CONFLICT = "WEATHER_CONFLICT"
+    WEATHER_UNKNOWN = "WEATHER_UNKNOWN"
+    WEATHER_PROVIDER_FAILED = "WEATHER_PROVIDER_FAILED"
+    PLACE_UNAVAILABLE = "PLACE_UNAVAILABLE"
+    AVAILABILITY_UNKNOWN = "AVAILABILITY_UNKNOWN"
+    AVAILABILITY_PROVIDER_FAILED = "AVAILABILITY_PROVIDER_FAILED"
+    BRANCH_NOT_FOUND = "BRANCH_NOT_FOUND"
+    BRANCH_EVIDENCE_INSUFFICIENT = "BRANCH_EVIDENCE_INSUFFICIENT"
+    BRANCH_PROVIDER_FAILED = "BRANCH_PROVIDER_FAILED"
+    BRANCH_NO_HARD_CONSTRAINT_MATCH = "BRANCH_NO_HARD_CONSTRAINT_MATCH"
+
+
 class CandidateFactValues(RetrievalContract):
     """Explicit, provider-neutral facts; missing evidence remains unknown."""
 
@@ -78,6 +115,7 @@ class CollectionPlanningFacts(CandidateFactValues):
     location_confirmed: bool = False
     coordinate: Coordinate | None = Field(default=None, repr=False)
     resolved_poi: Poi | None = None
+    branch_failure_reason: CandidateReasonCode | None = None
 
     @field_validator("collection_item_id")
     @classmethod
@@ -94,6 +132,23 @@ class CollectionPlanningFacts(CandidateFactValues):
             or self.resolved_poi is not None
         ):
             raise ValueError("unconfirmed locations cannot carry formal location facts")
+        branch_failure_reasons = {
+            CandidateReasonCode.BRANCH_NOT_FOUND,
+            CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT,
+            CandidateReasonCode.BRANCH_PROVIDER_FAILED,
+        }
+        if (
+            self.branch_failure_reason is not None
+            and self.branch_failure_reason not in branch_failure_reasons
+        ):
+            raise ValueError("branch failure facts require a branch failure reason")
+        if self.branch_failure_reason is not None and (
+            self.location_confirmed
+            or self.formal_city is not None
+            or self.coordinate is not None
+            or self.resolved_poi is not None
+        ):
+            raise ValueError("failed branch facts cannot carry confirmed location facts")
         if self.resolved_poi is not None and (
             not self.location_confirmed
             or self.formal_city is None
@@ -141,43 +196,6 @@ class PlanningFactSnapshot(RetrievalContract):
         if len(set(poi_ids)) != len(poi_ids):
             raise ValueError("POI planning facts must be unique")
         return self
-
-
-class CandidateOutcome(StrEnum):
-    INCLUDED = "included"
-    EXCLUDED = "excluded"
-    VERIFICATION_REQUIRED = "verification_required"
-
-
-class CandidateReasonCode(StrEnum):
-    STATUS_NOT_ACTIVE = "STATUS_NOT_ACTIVE"
-    CITY_UNCONFIRMED = "CITY_UNCONFIRMED"
-    CITY_MISMATCH = "CITY_MISMATCH"
-    LOCATION_UNCONFIRMED = "LOCATION_UNCONFIRMED"
-    EVENT_ENDED = "EVENT_ENDED"
-    EVENT_TIME_UNKNOWN = "EVENT_TIME_UNKNOWN"
-    TIME_WINDOW_CONFLICT = "TIME_WINDOW_CONFLICT"
-    DISTRICT_UNKNOWN = "DISTRICT_UNKNOWN"
-    DISTRICT_MISMATCH = "DISTRICT_MISMATCH"
-    AREA_MISMATCH = "AREA_MISMATCH"
-    INCLUDE_NOT_MATCHED = "INCLUDE_NOT_MATCHED"
-    EXCLUDED_BY_USER = "EXCLUDED_BY_USER"
-    BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
-    PRICE_UNKNOWN = "PRICE_UNKNOWN"
-    ROUTE_UNREACHABLE = "ROUTE_UNREACHABLE"
-    ROUTE_EXCEEDS_TIME_WINDOW = "ROUTE_EXCEEDS_TIME_WINDOW"
-    ROUTE_UNKNOWN = "ROUTE_UNKNOWN"
-    ROUTE_PROVIDER_FAILED = "ROUTE_PROVIDER_FAILED"
-    WEATHER_CONFLICT = "WEATHER_CONFLICT"
-    WEATHER_UNKNOWN = "WEATHER_UNKNOWN"
-    WEATHER_PROVIDER_FAILED = "WEATHER_PROVIDER_FAILED"
-    PLACE_UNAVAILABLE = "PLACE_UNAVAILABLE"
-    AVAILABILITY_UNKNOWN = "AVAILABILITY_UNKNOWN"
-    AVAILABILITY_PROVIDER_FAILED = "AVAILABILITY_PROVIDER_FAILED"
-    BRANCH_NOT_FOUND = "BRANCH_NOT_FOUND"
-    BRANCH_EVIDENCE_INSUFFICIENT = "BRANCH_EVIDENCE_INSUFFICIENT"
-    BRANCH_PROVIDER_FAILED = "BRANCH_PROVIDER_FAILED"
-    BRANCH_NO_HARD_CONSTRAINT_MATCH = "BRANCH_NO_HARD_CONSTRAINT_MATCH"
 
 
 REASON_SUMMARIES: dict[CandidateReasonCode, str] = {

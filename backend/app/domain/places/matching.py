@@ -378,7 +378,7 @@ def _compact(value: str | None) -> str:
     return _PUNCTUATION_OR_SPACE.sub("", normalized)
 
 
-def _resolve_city_hint(value: str | None) -> tuple[bool, str | None]:
+def resolve_city_hint(value: str | None) -> tuple[bool, str | None]:
     """Resolve supported hints through the single future CityCatalog integration point."""
 
     if value is None:
@@ -681,7 +681,7 @@ def score_place_candidate(
         )
         if value
     )
-    has_city_hint, hinted_city = _resolve_city_hint(candidate.city_hint)
+    has_city_hint, hinted_city = resolve_city_hint(candidate.city_hint)
     unresolved_city_hint = has_city_hint and hinted_city is None
     within_search_scope = poi.city_code == request.city.city_code
     city_hint_conflicts = (

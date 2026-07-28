@@ -51,7 +51,7 @@ from app.domain.collections import (
     SourceType,
 )
 from app.domain.collections.writes import validate_idempotency_key
-from app.domain.places import CityScope, PlaceMatchRequest
+from app.domain.places import CityScope, PlaceMatchRequest, resolve_city_hint
 from app.domain.runs import AgentRunCreate, AgentRunStatus
 from app.domain.time import utc_now
 from app.domain.web import WebFetchFailure, WebPageContent
@@ -1003,6 +1003,9 @@ class TextCollectionWorkflow:
         await self._session.rollback()
         for item in saved.items:
             if item.kind is not CollectionKind.EVENT or item.place_target is not None:
+                continue
+            has_city_hint, city_code = resolve_city_hint(item.city_hint)
+            if not has_city_hint or city_code != PlanCity.SHENZHEN.value:
                 continue
             candidate = self._event_location_candidate(item)
             try:

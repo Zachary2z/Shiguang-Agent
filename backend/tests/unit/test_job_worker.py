@@ -14,7 +14,7 @@ from app.domain.jobs import (
     JobStatus,
     ScheduledJob,
 )
-from app.worker.__main__ import _configured_model_provider
+from app.providers import configured_model_provider
 from app.worker.service import JobWorker
 
 USER_ID = "usr_0123456789abcdef0123456789abcdef"
@@ -31,7 +31,7 @@ def test_worker_allows_model_provider_to_be_unconfigured(
             "model_name": None,
         }
     )
-    assert _configured_model_provider(settings) is None
+    assert configured_model_provider(settings) is None
 
 
 def _job() -> ScheduledJob:

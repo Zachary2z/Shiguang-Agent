@@ -150,7 +150,7 @@ class PlaceTargetSelectionService:
         collection_item_id: str,
         source_id: str | None = None,
         selections: tuple[PlaceSelection, ...],
-        queried_at: datetime,
+        queried_at: datetime | None,
         snapshot_fingerprint: str,
         idempotency_key: str,
         expected_version: int,
@@ -163,7 +163,19 @@ class PlaceTargetSelectionService:
             collection_item_id=identifier,
             source_id=source_id,
         )
-        expected_queried_at = require_aware_utc(queried_at)
+        if queried_at is None:
+            async with self._session.begin():
+                replay_operation = (
+                    await self._repository.get_place_selection_operation(
+                        user_id=owner,
+                        idempotency_key=idempotency_key,
+                    )
+                )
+            if replay_operation is None:
+                raise ResourceNotFoundError
+            expected_queried_at = replay_operation.created_at
+        else:
+            expected_queried_at = require_aware_utc(queried_at)
         expected_snapshot_fingerprint = self._validate_snapshot_fingerprint(
             snapshot_fingerprint
         )
@@ -254,10 +266,16 @@ class PlaceTargetSelectionService:
             )
             if item.kind is CollectionKind.EVENT and (
                 len(choices) != 1
-                or choices[0].kind is not PlaceSelectionKind.CANDIDATE
+                or choices[0].kind
+                not in {
+                    PlaceSelectionKind.CANDIDATE,
+                    PlaceSelectionKind.NONE_OF_ABOVE,
+                }
                 or brand_identity is not None
             ):
-                raise ValueError("Event locations require one exact candidate")
+                raise ValueError(
+                    "Event locations require one exact candidate or none-of-above"
+                )
             now = snapshot.queried_at
 
             if item.status is CollectionStatus.ACTIVE:
@@ -320,7 +338,11 @@ class PlaceTargetSelectionService:
             item,
             status=CollectionStatus.PENDING_DETAILS,
             target=None,
-            snapshot=snapshot,
+            snapshot=(
+                None
+                if item.kind is CollectionKind.EVENT
+                else snapshot
+            ),
             now=snapshot.queried_at,
         )
         stored = await self._repository.apply_place_resolution(
@@ -731,7 +753,7 @@ class PlaceTargetSelectionService:
         *,
         status: CollectionStatus,
         target: PlaceTarget | None,
-        snapshot: PlaceCandidateSnapshot,
+        snapshot: PlaceCandidateSnapshot | None,
         now: datetime,
         title: str | None = None,
         district: str | None = None,

@@ -223,12 +223,14 @@ class PlanExperienceService:
         session_factory: async_sessionmaker[AsyncSession],
         pricing: PricingPolicy,
         queue: JobQueue | None = None,
+        adjustment_parser: PlanAdjustmentParser | None = None,
     ) -> None:
         self._session = session
         self._session_factory = session_factory
         self._pricing = pricing
         self._queue = queue or PostgresJobQueue(session_factory)
         self._plans = SqlAlchemyPlanRepository(session)
+        self._adjustment_parser = adjustment_parser
 
     async def create(
         self,
@@ -314,6 +316,24 @@ class PlanExperienceService:
         versions = await self._plans.list_versions(
             user_id=user_id,
             root_plan_id=base.root_plan_id,
+        )
+        if not versions or versions[-1].id != base_plan_id:
+            from app.domain.plans import PlanVersionConflictError
+
+            raise PlanVersionConflictError
+        parser = self._adjustment_parser
+        if parser is None:
+            raise RuntimeError("plan adjustment parser is not configured")
+        await self._session.rollback()
+        patch = await parser.parse(
+            constraints=base.constraints,
+            instruction=instruction,
+        )
+        adjusted_constraints = apply_plan_adjustment(base.constraints, patch)
+        base = await self._plans.require(user_id=user_id, plan_id=base_plan_id)
+        versions = await self._plans.list_versions(
+            user_id=user_id,
+            root_plan_id=base.root_plan_id,
             lock=True,
         )
         if not versions or versions[-1].id != base_plan_id:
@@ -329,7 +349,7 @@ class PlanExperienceService:
             version=base.version + 1,
             operation=PlanOperation.ADJUST,
             status=PlanStatus.GENERATING,
-            constraints=base.constraints,
+            constraints=adjusted_constraints,
             adjustment_text=instruction,
             trace_id=generate_trace_id(),
             idempotency_key=key,
@@ -511,12 +531,10 @@ class PlanGenerationJobHandler:
         session_factory: async_sessionmaker[AsyncSession],
         pricing: PricingPolicy,
         executor_factory: Callable[[AsyncSession], PlanDraftExecutor],
-        adjustment_parser: PlanAdjustmentParser | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._pricing = pricing
         self._executor_factory = executor_factory
-        self._adjustment_parser = adjustment_parser
 
     async def __call__(self, job: ScheduledJob) -> JobResultSummary:
         payload = PlanJobPayload.model_validate(job.payload, strict=True)
@@ -538,45 +556,16 @@ class PlanGenerationJobHandler:
             executor: PlanDraftExecutor = self._executor_factory(session)
 
             async def generate(observer: ApplicationRunObserver) -> PlanGenerationResult:
-                effective_plan = plan
-                if plan.operation is PlanOperation.ADJUST:
-                    parser = self._adjustment_parser
-                    if parser is None or plan.adjustment_text is None:
-                        raise RuntimeError("plan adjustment parser is not configured")
-                    patch = await observer.run_tool(
-                        tool_name="plan_adjustment",
-                        arguments_fingerprint=plan_request_fingerprint(
-                            {"instruction": plan.adjustment_text}
-                        ),
-                        input_summary=f"plan_version:{plan.version}",
-                        operation=lambda: parser.parse(
-                            constraints=plan.constraints,
-                            instruction=plan.adjustment_text or "",
-                            response_observer=observer.record_model_response,
-                        ),
-                        summarize=lambda _value: ApplicationToolOutcome(
-                            succeeded=True,
-                            output_summary="constraints_patch",
-                        ),
-                    )
-                    adjusted = apply_plan_adjustment(plan.constraints, patch)
-                    effective_plan = await plans.set_generating_constraints(
-                        user_id=job.user_id,
-                        plan_id=plan.id,
-                        constraints=adjusted,
-                        now=utc_now(),
-                    )
-                    await session.commit()
                 await observer.set_stage("collections.filtered")
                 result = await observer.run_tool(
                     tool_name="plan_draft",
                     arguments_fingerprint=plan_request_fingerprint(
-                        effective_plan.constraints.model_dump(mode="json")
+                        plan.constraints.model_dump(mode="json")
                     ),
                     input_summary=f"plan_version:{plan.version}",
                     operation=lambda: executor.execute(
                         user_id=job.user_id,
-                        constraints=effective_plan.constraints,
+                        constraints=plan.constraints,
                         approval=approval,
                     ),
                     summarize=lambda value: ApplicationToolOutcome(

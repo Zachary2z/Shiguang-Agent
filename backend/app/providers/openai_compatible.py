@@ -52,6 +52,15 @@ _FINISH_REASONS = {
 _OPENAI_SDK_LOGGER = logging.getLogger("openai._base_client")
 
 
+def configured_model_provider(settings: Settings) -> ModelProvider | None:
+    """Build the sole configured model adapter, rejecting partial configuration."""
+
+    fields = ("model_api_base", "model_api_key", "model_name")
+    if not any(getattr(settings, field, None) for field in fields):
+        return None
+    return OpenAICompatibleProvider.from_settings(settings)
+
+
 class OpenAICompatibleProvider(ModelProvider):
     """Map one non-streaming SDK request into the provider-neutral contract."""
 

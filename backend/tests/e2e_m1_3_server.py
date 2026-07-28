@@ -22,7 +22,6 @@ from app.application.content_import_jobs import (
     ContentImportJobHandler,
 )
 from app.application.map_plan_facts import MapPlanFactResolver
-from app.application.plan_adjustments import PlanAdjustmentParser
 from app.application.plan_experience import (
     PLAN_GENERATION_JOB_TYPE,
     ExistingPlanServicesExecutor,
@@ -238,10 +237,6 @@ def build_app() -> FastAPI:
             plan_handler = PlanGenerationJobHandler(
                 session_factory=application.state.demo_database.session_factory,
                 pricing=ConfiguredPricingPolicy.from_settings(settings),
-                adjustment_parser=PlanAdjustmentParser(
-                    adjustment_provider,
-                    structured_output_mode=settings.extraction_structured_output_mode(),
-                ),
                 executor_factory=lambda session: ExistingPlanServicesExecutor(
                     session=session,
                     map_provider=map_provider,

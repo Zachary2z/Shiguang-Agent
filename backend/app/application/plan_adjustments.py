@@ -26,12 +26,15 @@ class PlanAdjustmentNotUnderstoodError(ValueError):
     code = "PLAN_ADJUSTMENT_NOT_UNDERSTOOD"
 
 
+class PlanAdjustmentUnsupportedError(ValueError):
+    code = "PLAN_ADJUSTMENT_UNSUPPORTED"
+
+
 class PlanAdjustmentPatch(PlanContract):
     """Only fields explicitly present in model output replace current constraints."""
 
     start_at: datetime | None = None
     end_at: datetime | None = None
-    location_intent: str | None = Field(default=None, min_length=1, max_length=200)
     budget: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
     pace: PlanPace | None = None
     transport_modes: tuple[TransportMode, ...] | None = Field(
@@ -58,9 +61,10 @@ _SYSTEM_PROMPT = (
     "lists when present. When the user replaces an activity category, remove the old "
     "category from include, add the requested category to include, and add an explicit "
     "rejection to exclude when requested. Use ISO-8601 aware datetimes and never invent "
-    "times, budget, place intent, pace, transport, or collection_only. A place change "
-    "may only use location_intent; never emit coordinates. Return JSON matching this "
-    "schema only:\n"
+    "times, budget, pace, transport, or collection_only. Exact place and activity-area "
+    "changes are not supported in this stage: for such a request return an empty object "
+    "so the product can ask the user to create a new plan. Never emit coordinates. "
+    "Return JSON matching this schema only:\n"
     + json.dumps(_PATCH_SCHEMA, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 )
 
@@ -118,8 +122,12 @@ class PlanAdjustmentParser:
         if response.tool_calls or response.content is None:
             raise PlanAdjustmentNotUnderstoodError
         try:
+            if json.loads(response.content) == {}:
+                raise PlanAdjustmentUnsupportedError
             return PlanAdjustmentPatch.model_validate_json(response.content)
-        except (ValidationError, TypeError, ValueError):
+        except PlanAdjustmentUnsupportedError:
+            raise
+        except (json.JSONDecodeError, ValidationError, TypeError, ValueError):
             raise PlanAdjustmentNotUnderstoodError from None
 
 
@@ -131,8 +139,6 @@ def apply_plan_adjustment(
 
     values = constraints.model_dump()
     for field_name in patch.model_fields_set:
-        if field_name == "location_intent":
-            raise PlanAdjustmentNotUnderstoodError
         values[field_name] = getattr(patch, field_name)
     return PlanConstraints.model_validate(values)
 
@@ -141,5 +147,6 @@ __all__ = [
     "PlanAdjustmentNotUnderstoodError",
     "PlanAdjustmentParser",
     "PlanAdjustmentPatch",
+    "PlanAdjustmentUnsupportedError",
     "apply_plan_adjustment",
 ]
