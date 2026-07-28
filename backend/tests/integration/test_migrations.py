@@ -1791,3 +1791,118 @@ def test_collection_migration_enforces_checks_foreign_keys_same_owner_and_unique
         assert connection.execute(
             "SELECT collection_item_id, source_id, user_id FROM collection_sources"
         ).fetchall() == [(item_a, source_a, user_a)]
+
+
+def test_feedback_pointers_require_same_plan_and_owner_on_sqlite(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "feedback-pointer-constraints.db"
+    command.upgrade(_alembic_config(monkeypatch, database_path), "head")
+    now = "2026-07-28T00:00:00+00:00"
+    user_a = "usr_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    user_b = "usr_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    plan_a = "pln_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    plan_b = "pln_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    plan_c = "pln_cccccccccccccccccccccccccccccccc"
+    audit_a1 = "fdb_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    audit_a2 = "fdb_11111111111111111111111111111111"
+    audit_b = "fdb_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    audit_c = "fdb_cccccccccccccccccccccccccccccccc"
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        _insert_user(connection, user_a)
+        _insert_user(connection, user_b)
+        for plan_id, user_id, trace_suffix in (
+            (plan_a, user_a, "a"),
+            (plan_b, user_a, "b"),
+            (plan_c, user_b, "c"),
+        ):
+            connection.execute(
+                """
+                INSERT INTO plans (
+                    id, root_plan_id, parent_plan_id, user_id, version, operation,
+                    status, constraints_json, adjustment_text, draft_json, trace_id,
+                    idempotency_key, request_fingerprint, error_code, confirmed_at,
+                    created_at, updated_at
+                ) VALUES (?, ?, NULL, ?, 1, 'generate', 'confirmed', '{}', NULL,
+                    '{}', ?, ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    plan_id,
+                    plan_id,
+                    user_id,
+                    f"trc_{trace_suffix * 32}",
+                    f"seed-{trace_suffix}",
+                    trace_suffix * 64,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+        for audit_id, plan_id, user_id, revision, corrects in (
+            (audit_a1, plan_a, user_a, 1, None),
+            (audit_a2, plan_a, user_a, 2, audit_a1),
+            (audit_b, plan_b, user_a, 1, None),
+            (audit_c, plan_c, user_b, 1, None),
+        ):
+            connection.execute(
+                """
+                INSERT INTO plan_feedback_audits (
+                    id, plan_id, user_id, revision, completion_status, reason,
+                    visited_plan_item_ids_json, preference_suggestion_json,
+                    idempotency_key, request_fingerprint, corrects_feedback_id,
+                    created_at
+                ) VALUES (?, ?, ?, ?, 'not_completed', NULL, '[]', NULL, ?, ?, ?, ?)
+                """,
+                (
+                    audit_id,
+                    plan_id,
+                    user_id,
+                    revision,
+                    f"feedback-{audit_id}",
+                    audit_id.removeprefix("fdb_") * 2,
+                    corrects,
+                    now,
+                ),
+            )
+        connection.execute(
+            """
+            INSERT INTO plan_feedback_states (
+                plan_id, user_id, current_feedback_id, revision, completion_status,
+                reason, preference_suggestion_json, created_at, updated_at
+            ) VALUES (?, ?, ?, 2, 'not_completed', NULL, NULL, ?, ?)
+            """,
+            (plan_a, user_a, audit_a2, now, now),
+        )
+        connection.commit()
+
+        for pointer in (
+            "fdb_ffffffffffffffffffffffffffffffff",
+            audit_b,
+            audit_c,
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    "UPDATE plan_feedback_states SET current_feedback_id = ? "
+                    "WHERE plan_id = ?",
+                    (pointer, plan_a),
+                )
+            connection.rollback()
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    "UPDATE plan_feedback_audits SET corrects_feedback_id = ? "
+                    "WHERE id = ?",
+                    (pointer, audit_a2),
+                )
+            connection.rollback()
+
+        assert connection.execute(
+            "SELECT current_feedback_id FROM plan_feedback_states WHERE plan_id = ?",
+            (plan_a,),
+        ).fetchone() == (audit_a2,)
+        assert connection.execute(
+            "SELECT corrects_feedback_id FROM plan_feedback_audits WHERE id = ?",
+            (audit_a2,),
+        ).fetchone() == (audit_a1,)

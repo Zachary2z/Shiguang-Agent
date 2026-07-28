@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
+from icalendar import Calendar
 from sqlalchemy import func, select
 
 from app.application.plan_execution import PlanFeedbackService
@@ -71,35 +73,6 @@ def _constraints() -> PlanConstraints:
         created_at=created,
         expires_at=created + timedelta(days=2),
     )
-
-
-def _parse_icalendar(payload: bytes) -> dict[str, list[str]]:
-    """Tiny independent RFC 5545 structure parser used only for contract proof."""
-
-    text = payload.decode("utf-8", errors="strict")
-    assert text.endswith("\r\n")
-    physical = text.removesuffix("\r\n").split("\r\n")
-    logical: list[str] = []
-    for line in physical:
-        if line.startswith((" ", "\t")):
-            assert logical
-            logical[-1] += line[1:]
-        else:
-            logical.append(line)
-    stack: list[str] = []
-    event: dict[str, list[str]] = {}
-    for line in logical:
-        name, separator, value = line.partition(":")
-        assert separator
-        if name == "BEGIN":
-            stack.append(value)
-        elif name == "END":
-            assert stack.pop() == value
-        elif stack and stack[-1] == "VEVENT":
-            event.setdefault(name.split(";", 1)[0], []).append(value)
-    assert not stack
-    assert {"UID", "DTSTART", "DTEND", "SUMMARY", "DESCRIPTION", "LOCATION"} <= event.keys()
-    return event
 
 
 def _draft(collection_id: str) -> PlanDraftResult:
@@ -270,7 +243,10 @@ async def test_calendar_and_navigation_are_stable_safe_and_parseable(test_settin
         assert first.headers["content-type"].startswith("text/calendar")
         assert "attachment;" in first.headers["content-disposition"]
         text = first.content.decode()
-        parsed = _parse_icalendar(first.content)
+        parsed = Calendar.from_ical(first.content)
+        events = tuple(parsed.walk("VEVENT"))
+        assert len(events) == 1
+        event = events[0]
         assert "BEGIN:VCALENDAR\r\n" in text
         assert "BEGIN:VEVENT\r\n" in text
         assert f"UID:{plan_id}@shiguang.local" in text
@@ -280,7 +256,10 @@ async def test_calendar_and_navigation_are_stable_safe_and_parseable(test_settin
         assert "未名咖啡\\；" not in text
         assert all(len(line.encode()) <= 75 for line in text.split("\r\n") if line)
         assert "Cookie" not in text and "/Users/" not in text
-        assert parsed["UID"] == [f"{plan_id}@shiguang.local"]
+        assert str(event["UID"]) == f"{plan_id}@shiguang.local"
+        assert event.decoded("DTSTART").tzinfo == ZoneInfo("Asia/Shanghai")
+        assert event.decoded("DTEND").tzinfo == ZoneInfo("Asia/Shanghai")
+        assert "URL" not in event
 
         execution = await client.get(f"/api/v1/plans/{plan_id}/execution")
         assert execution.status_code == 200

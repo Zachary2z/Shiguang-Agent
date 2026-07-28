@@ -26,6 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "icalendar>=6.3,<7",
     "mypy>=1.14,<2",
     "pytest>=8.3,<10",
     "pytest-asyncio>=0.25,<2",

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -131,6 +131,37 @@ const execution = {
     },
   ],
   feedback: null,
+};
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
+
+const secondPlan = {
+  ...confirmedPlan,
+  id: "pln_1123456789abcdef0123456789abcdef",
+  parent_plan_id: plan.id,
+  version: 2,
+  versions: [
+    { ...plan.versions[0], status: "superseded" },
+    {
+      id: "pln_1123456789abcdef0123456789abcdef",
+      version: 2,
+      status: "confirmed",
+      adjustment_text: "节奏轻松一点",
+    },
+  ],
+};
+
+const versionedPlan = {
+  ...confirmedPlan,
+  versions: secondPlan.versions,
 };
 
 beforeEach(() => {
@@ -423,5 +454,167 @@ describe("PlansExperience", () => {
       visited_plan_item_ids: [execution.items[0].id],
       expected_revision: null,
     });
+  });
+
+  it("ignores a V1 execution response that arrives after switching to V2", async () => {
+    const lateExecution = deferred<typeof execution>();
+    vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path === "/api/v1/plans" && !options?.method) {
+        return { items: [versionedPlan] } as never;
+      }
+      if (path === `/api/v1/plans/${plan.id}/execution`) {
+        return lateExecution.promise as never;
+      }
+      if (path === `/api/v1/plans/${secondPlan.id}`) return secondPlan as never;
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<PlansExperience />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "查看路线、日历与完成反馈" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: /^V2/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^V2/ })).toHaveAttribute(
+        "aria-current",
+        "page",
+      ),
+    );
+
+    await act(async () => lateExecution.resolve(execution));
+    expect(screen.queryByRole("link", { name: /打开地点/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("这次计划完成得怎么样？")).not.toBeInTheDocument();
+  });
+
+  it("does not let a late V1 feedback response modify V2", async () => {
+    const lateFeedback = deferred<{
+      feedback: {
+        id: string;
+        plan_id: string;
+        revision: number;
+        completion_status: string;
+        visited_plan_item_ids: string[];
+        reason: null;
+        preference_suggestion: null;
+        created_at: string;
+      };
+    }>();
+    vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path === "/api/v1/plans" && !options?.method) {
+        return { items: [versionedPlan] } as never;
+      }
+      if (path === `/api/v1/plans/${plan.id}/execution`) return execution as never;
+      if (path === `/api/v1/plans/${plan.id}/feedback`) {
+        return lateFeedback.promise as never;
+      }
+      if (path === `/api/v1/plans/${secondPlan.id}`) return secondPlan as never;
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<PlansExperience />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "查看路线、日历与完成反馈" }),
+    );
+    await screen.findByText("这次计划完成得怎么样？");
+    await userEvent.click(screen.getByRole("radio", { name: /部分完成/ }));
+    await userEvent.click(screen.getByRole("checkbox", { name: /海边咖啡/ }));
+    await userEvent.click(screen.getByRole("button", { name: "保存完成反馈" }));
+    await userEvent.click(screen.getByRole("button", { name: /^V2/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^V2/ })).toHaveAttribute(
+        "aria-current",
+        "page",
+      ),
+    );
+
+    await act(async () =>
+      lateFeedback.resolve({
+        feedback: {
+          id: "fdb_2123456789abcdef0123456789abcdef",
+          plan_id: plan.id,
+          revision: 1,
+          completion_status: "partially_completed",
+          visited_plan_item_ids: [execution.items[0].id],
+          reason: null,
+          preference_suggestion: null,
+          created_at: "2026-07-29T12:00:00Z",
+        },
+      }),
+    );
+    expect(screen.getByRole("button", { name: /^V2/ })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.queryByText("完成反馈已保存。")).not.toBeInTheDocument();
+    expect(screen.queryByText("第 1 次记录")).not.toBeInTheDocument();
+  });
+
+  it("does not restore a late execution after starting a new plan", async () => {
+    const lateExecution = deferred<typeof execution>();
+    vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path === "/api/v1/plans" && !options?.method) {
+        return { items: [confirmedPlan] } as never;
+      }
+      if (path === `/api/v1/plans/${plan.id}/execution`) {
+        return lateExecution.promise as never;
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<PlansExperience />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "查看路线、日历与完成反馈" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "新建计划" }));
+    expect(await screen.findByRole("heading", { name: "时间与范围" })).toBeInTheDocument();
+
+    await act(async () => lateExecution.resolve(execution));
+    expect(screen.queryByRole("link", { name: /打开地点/ })).not.toBeInTheDocument();
+    expect(screen.queryByText("这次计划完成得怎么样？")).not.toBeInTheDocument();
+  });
+
+  it("reuses the same feedback key after an uncertain network result", async () => {
+    const submittedBodies: Array<{ idempotency_key: string }> = [];
+    let submission = 0;
+    vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path === "/api/v1/plans" && !options?.method) {
+        return { items: [confirmedPlan] } as never;
+      }
+      if (path === `/api/v1/plans/${plan.id}/execution`) return execution as never;
+      if (path === `/api/v1/plans/${plan.id}/feedback`) {
+        submittedBodies.push(JSON.parse(String(options?.body)));
+        submission += 1;
+        if (submission === 1) throw new Error("uncertain network result");
+        return {
+          feedback: {
+            id: "fdb_3123456789abcdef0123456789abcdef",
+            plan_id: plan.id,
+            revision: 1,
+            completion_status: "partially_completed",
+            visited_plan_item_ids: [execution.items[0].id],
+            reason: null,
+            preference_suggestion: null,
+            created_at: "2026-07-29T12:00:00Z",
+          },
+        } as never;
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<PlansExperience />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "查看路线、日历与完成反馈" }),
+    );
+    await screen.findByText("这次计划完成得怎么样？");
+    await userEvent.click(screen.getByRole("radio", { name: /部分完成/ }));
+    await userEvent.click(screen.getByRole("checkbox", { name: /海边咖啡/ }));
+    await userEvent.click(screen.getByRole("button", { name: "保存完成反馈" }));
+    await waitFor(() => expect(submittedBodies).toHaveLength(1));
+    await userEvent.click(screen.getByRole("button", { name: "保存完成反馈" }));
+    await waitFor(() => expect(submittedBodies).toHaveLength(2));
+
+    expect(submittedBodies[0].idempotency_key).toBe(
+      submittedBodies[1].idempotency_key,
+    );
   });
 });

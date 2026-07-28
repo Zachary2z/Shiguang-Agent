@@ -130,6 +130,11 @@ type Execution = {
   items: ExecutionItem[];
   feedback: FeedbackRecord | null;
 };
+
+type FeedbackAttempt = {
+  fingerprint: string;
+  key: string;
+};
 type Phase =
   | "recovering"
   | "editing"
@@ -211,13 +216,16 @@ export function PlansExperience() {
   const [stage, setStage] = useState("正在读取计划");
   const [dirty, setDirty] = useState(false);
   const generation = useRef(0);
+  const currentPlanId = useRef<string | null>(null);
   const requestController = useRef<AbortController | null>(null);
   const cancelSse = useRef<(() => void) | null>(null);
+  const feedbackAttempt = useRef<FeedbackAttempt | null>(null);
 
   const readPlan = useCallback(async (path: `/${string}`, owner: number) => {
     try {
       const authoritative = await apiClient.request<Plan>(path);
       if (generation.current !== owner) return;
+      currentPlanId.current = authoritative.id;
       setPlan(authoritative);
       setExecution(null);
       setFeedbackMode(null);
@@ -307,6 +315,7 @@ export function PlansExperience() {
           setPhase("editing");
           return;
         }
+        currentPlanId.current = latest.id;
         setPlan(latest);
         if (latest.status === "generating") {
           follow(
@@ -340,6 +349,7 @@ export function PlansExperience() {
     })();
     return () => {
       generation.current += 1;
+      currentPlanId.current = null;
       requestController.current?.abort();
       cancelSse.current?.();
     };
@@ -525,6 +535,7 @@ export function PlansExperience() {
         },
       );
       if (generation.current !== owner) return;
+      currentPlanId.current = result.plan.id;
       setPlan(result.plan);
       setPhase("ready");
       setFeedback("已确认这一版本。只有已确认计划才可进入后续执行。");
@@ -537,7 +548,10 @@ export function PlansExperience() {
 
   async function switchVersion(id: string) {
     const owner = ++generation.current;
+    currentPlanId.current = id;
+    requestController.current?.abort();
     cancelSse.current?.();
+    setExecutionBusy(false);
     setPhase("recovering");
     await readPlan(`/api/v1/plans/${id}`, owner);
   }
@@ -552,8 +566,10 @@ export function PlansExperience() {
 
   function startNewPlan() {
     generation.current += 1;
+    currentPlanId.current = null;
     requestController.current?.abort();
     cancelSse.current?.();
+    setExecutionBusy(false);
     setPlan(null);
     setExecution(null);
     setFeedbackMode(null);
@@ -574,20 +590,42 @@ export function PlansExperience() {
 
   async function loadExecution() {
     if (!plan) return;
+    const planId = plan.id;
+    const owner = ++generation.current;
+    requestController.current?.abort();
+    const controller = new AbortController();
+    requestController.current = controller;
     setExecutionBusy(true);
     try {
       const loaded = await apiClient.request<Execution>(
-        `/api/v1/plans/${plan.id}/execution`,
+        `/api/v1/plans/${planId}/execution`,
+        { signal: controller.signal },
       );
+      if (
+        generation.current !== owner ||
+        currentPlanId.current !== planId
+      ) return;
       setExecution(loaded);
       setVisitedItems(new Set(loaded.feedback?.visited_plan_item_ids ?? []));
       setIncompleteReason(loaded.feedback?.reason ?? "");
       setFeedbackMode(loaded.feedback?.completion_status ?? null);
       setFeedback("");
     } catch (error) {
+      if (
+        generation.current !== owner ||
+        currentPlanId.current !== planId
+      ) return;
       setFeedback(messageFor(error));
     } finally {
-      setExecutionBusy(false);
+      if (
+        generation.current === owner &&
+        currentPlanId.current === planId
+      ) {
+        if (requestController.current === controller) {
+          requestController.current = null;
+        }
+        setExecutionBusy(false);
+      }
     }
   }
 
@@ -600,31 +638,60 @@ export function PlansExperience() {
       setFeedback("部分完成需要选择至少一项、但不能选择全部地点。");
       return;
     }
+    const planId = plan.id;
+    const owner = ++generation.current;
+    requestController.current?.abort();
+    const controller = new AbortController();
+    requestController.current = controller;
+    const payload = {
+      completion_status: feedbackMode,
+      visited_plan_item_ids:
+        feedbackMode === "completed" ? [] : [...visitedItems].sort(),
+      reason: incompleteReason.trim() || null,
+      expected_revision: execution.feedback?.revision ?? null,
+    };
+    const fingerprint = JSON.stringify({ plan_id: planId, ...payload });
+    if (feedbackAttempt.current?.fingerprint !== fingerprint) {
+      feedbackAttempt.current = {
+        fingerprint,
+        key: crypto.randomUUID(),
+      };
+    }
+    const idempotencyKey = feedbackAttempt.current.key;
     setExecutionBusy(true);
     try {
       const result = await apiClient.request<{ feedback: FeedbackRecord }>(
-        `/api/v1/plans/${plan.id}/feedback`,
+        `/api/v1/plans/${planId}/feedback`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            idempotency_key: crypto.randomUUID(),
-            completion_status: feedbackMode,
-            visited_plan_item_ids:
-              feedbackMode === "completed" ? [] : [...visitedItems],
-            reason: incompleteReason.trim() || null,
-            expected_revision: execution.feedback?.revision ?? null,
+            idempotency_key: idempotencyKey,
+            ...payload,
           }),
           csrfToken: session.csrf_token,
+          signal: controller.signal,
         },
       );
+      if (feedbackAttempt.current?.key === idempotencyKey) {
+        feedbackAttempt.current = null;
+      }
+      if (
+        generation.current !== owner ||
+        currentPlanId.current !== planId
+      ) return;
       const loaded = await apiClient.request<Execution>(
-        `/api/v1/plans/${plan.id}/execution`,
+        `/api/v1/plans/${planId}/execution`,
+        { signal: controller.signal },
       );
+      if (
+        generation.current !== owner ||
+        currentPlanId.current !== planId
+      ) return;
       setExecution(loaded);
       setVisitedItems(new Set(loaded.feedback?.visited_plan_item_ids ?? []));
       setPlan((current) =>
-        current
+        current?.id === planId
           ? { ...current, status: result.feedback.completion_status }
           : current,
       );
@@ -634,9 +701,21 @@ export function PlansExperience() {
           : "完成反馈已保存。",
       );
     } catch (error) {
+      if (
+        generation.current !== owner ||
+        currentPlanId.current !== planId
+      ) return;
       setFeedback(messageFor(error));
     } finally {
-      setExecutionBusy(false);
+      if (
+        generation.current === owner &&
+        currentPlanId.current === planId
+      ) {
+        if (requestController.current === controller) {
+          requestController.current = null;
+        }
+        setExecutionBusy(false);
+      }
     }
   }
 

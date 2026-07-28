@@ -154,7 +154,6 @@ class PlanCalendarService:
             f"SUMMARY:{_ics_escape('拾光计划｜' + ' → '.join(item.title for item in items))}",
             f"DESCRIPTION:{_ics_escape(description)}",
             f"LOCATION:{_ics_escape('；'.join(known_addresses))}",
-            f"URL:https://shiguang.local/plans/{plan_id}",
             "END:VEVENT",
             "END:VCALENDAR",
         )
@@ -251,18 +250,27 @@ class PlanFeedbackService:
                 "expected_revision": expected_revision,
             }
         )
-        replay = await session.scalar(
-            select(PlanFeedbackAuditModel).where(
-                PlanFeedbackAuditModel.user_id == user_id,
-                PlanFeedbackAuditModel.idempotency_key == key,
-            )
+        replay = await _feedback_replay(
+            session=session,
+            user_id=user_id,
+            key=key,
+            fingerprint=fingerprint,
         )
         if replay is not None:
-            if replay.request_fingerprint != fingerprint:
-                raise IdempotencyConflictError
-            return FeedbackSubmission(feedback=_audit_domain(replay), replayed=True)
+            return replay
 
         plan = await _require_execution_plan(session, user_id=user_id, plan_id=plan_id)
+        # The Plan row lock is the cross-process serialization boundary. A competing
+        # request may have committed while this transaction waited, so replay must be
+        # checked again before optimistic revision comparison.
+        replay = await _feedback_replay(
+            session=session,
+            user_id=user_id,
+            key=key,
+            fingerprint=fingerprint,
+        )
+        if replay is not None:
+            return replay
         item_rows = await _main_rows(session, user_id=user_id, plan_id=plan_id)
         if not item_rows:
             raise PlanExecutionNotAllowedError
@@ -352,16 +360,14 @@ class PlanFeedbackService:
             await session.flush()
         except IntegrityError:
             await session.rollback()
-            replay = await session.scalar(
-                select(PlanFeedbackAuditModel).where(
-                    PlanFeedbackAuditModel.user_id == user_id,
-                    PlanFeedbackAuditModel.idempotency_key == key,
-                )
+            replay = await _feedback_replay(
+                session=session,
+                user_id=user_id,
+                key=key,
+                fingerprint=fingerprint,
             )
             if replay is not None:
-                if replay.request_fingerprint != fingerprint:
-                    raise IdempotencyConflictError from None
-                return FeedbackSubmission(feedback=_audit_domain(replay), replayed=True)
+                return replay
             from app.domain.plans import PlanVersionConflictError
 
             raise PlanVersionConflictError from None
@@ -454,14 +460,14 @@ class PlanFeedbackService:
             await session.commit()
         except IntegrityError:
             await session.rollback()
-            replay = await session.scalar(
-                select(PlanFeedbackAuditModel).where(
-                    PlanFeedbackAuditModel.user_id == user_id,
-                    PlanFeedbackAuditModel.idempotency_key == key,
-                )
+            replay = await _feedback_replay(
+                session=session,
+                user_id=user_id,
+                key=key,
+                fingerprint=fingerprint,
             )
-            if replay is not None and replay.request_fingerprint == fingerprint:
-                return FeedbackSubmission(feedback=_audit_domain(replay), replayed=True)
+            if replay is not None:
+                return replay
             raise
         return FeedbackSubmission(feedback=_audit_domain(audit), replayed=False)
 
@@ -536,6 +542,26 @@ def _scoped_feedback_key(user_id: str, client_key: str) -> str:
     if not client_key or len(client_key) > 128:
         raise ValueError("idempotency key is invalid")
     return "feedback." + hashlib.sha256(f"{user_id}\0{client_key}".encode()).hexdigest()
+
+
+async def _feedback_replay(
+    *,
+    session: AsyncSession,
+    user_id: str,
+    key: str,
+    fingerprint: str,
+) -> FeedbackSubmission | None:
+    audit = await session.scalar(
+        select(PlanFeedbackAuditModel).where(
+            PlanFeedbackAuditModel.user_id == user_id,
+            PlanFeedbackAuditModel.idempotency_key == key,
+        )
+    )
+    if audit is None:
+        return None
+    if audit.request_fingerprint != fingerprint:
+        raise IdempotencyConflictError
+    return FeedbackSubmission(feedback=_audit_domain(audit), replayed=True)
 
 
 def _audit_domain(row: PlanFeedbackAuditModel) -> PlanFeedback:

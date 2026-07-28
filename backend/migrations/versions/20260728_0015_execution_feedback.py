@@ -75,35 +75,6 @@ def upgrade() -> None:
         )
 
     op.create_table(
-        "plan_feedback_states",
-        sa.Column("plan_id", sa.String(length=36), primary_key=True),
-        sa.Column("user_id", sa.String(length=36), nullable=False),
-        sa.Column("current_feedback_id", sa.String(length=36), nullable=False),
-        sa.Column("revision", sa.Integer(), nullable=False),
-        sa.Column("completion_status", sa.String(length=24), nullable=False),
-        sa.Column("reason", sa.String(length=500), nullable=True),
-        sa.Column("preference_suggestion_json", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["plan_id", "user_id"],
-            ["plans.id", "plans.user_id"],
-            name="fk_plan_feedback_states_plan_owner",
-            ondelete="CASCADE",
-        ),
-        sa.CheckConstraint("revision >= 1", name="ck_plan_feedback_states_revision"),
-        sa.CheckConstraint(
-            "completion_status IN ('completed', 'partially_completed', 'not_completed')",
-            name="ck_plan_feedback_states_completion_status",
-        ),
-    )
-    op.create_index(
-        "ix_plan_feedback_states_owner_updated",
-        "plan_feedback_states",
-        ["user_id", "updated_at"],
-    )
-
-    op.create_table(
         "plan_feedback_audits",
         sa.Column("id", sa.String(length=36), primary_key=True),
         sa.Column("plan_id", sa.String(length=36), nullable=False),
@@ -124,11 +95,21 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.ForeignKeyConstraint(
-            ["corrects_feedback_id"],
-            ["plan_feedback_audits.id"],
+            ["corrects_feedback_id", "plan_id", "user_id"],
+            [
+                "plan_feedback_audits.id",
+                "plan_feedback_audits.plan_id",
+                "plan_feedback_audits.user_id",
+            ],
             name="fk_plan_feedback_audits_corrects",
         ),
         sa.UniqueConstraint("id", "user_id", name="uq_plan_feedback_audits_id_user"),
+        sa.UniqueConstraint(
+            "id",
+            "plan_id",
+            "user_id",
+            name="uq_plan_feedback_audits_id_plan_owner",
+        ),
         sa.UniqueConstraint(
             "plan_id", "revision", name="uq_plan_feedback_audits_plan_revision"
         ),
@@ -145,6 +126,44 @@ def upgrade() -> None:
         "ix_plan_feedback_audits_plan_created",
         "plan_feedback_audits",
         ["plan_id", "created_at"],
+    )
+
+    op.create_table(
+        "plan_feedback_states",
+        sa.Column("plan_id", sa.String(length=36), primary_key=True),
+        sa.Column("user_id", sa.String(length=36), nullable=False),
+        sa.Column("current_feedback_id", sa.String(length=36), nullable=False),
+        sa.Column("revision", sa.Integer(), nullable=False),
+        sa.Column("completion_status", sa.String(length=24), nullable=False),
+        sa.Column("reason", sa.String(length=500), nullable=True),
+        sa.Column("preference_suggestion_json", sa.JSON(), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        sa.ForeignKeyConstraint(
+            ["plan_id", "user_id"],
+            ["plans.id", "plans.user_id"],
+            name="fk_plan_feedback_states_plan_owner",
+            ondelete="CASCADE",
+        ),
+        sa.ForeignKeyConstraint(
+            ["current_feedback_id", "plan_id", "user_id"],
+            [
+                "plan_feedback_audits.id",
+                "plan_feedback_audits.plan_id",
+                "plan_feedback_audits.user_id",
+            ],
+            name="fk_plan_feedback_states_current_audit",
+        ),
+        sa.CheckConstraint("revision >= 1", name="ck_plan_feedback_states_revision"),
+        sa.CheckConstraint(
+            "completion_status IN ('completed', 'partially_completed', 'not_completed')",
+            name="ck_plan_feedback_states_completion_status",
+        ),
+    )
+    op.create_index(
+        "ix_plan_feedback_states_owner_updated",
+        "plan_feedback_states",
+        ["user_id", "updated_at"],
     )
 
     op.create_table(
@@ -204,13 +223,13 @@ def downgrade() -> None:
     op.drop_table("collection_visit_sources")
     op.drop_table("collection_visit_states")
     op.drop_index(
-        "ix_plan_feedback_audits_plan_created", table_name="plan_feedback_audits"
-    )
-    op.drop_table("plan_feedback_audits")
-    op.drop_index(
         "ix_plan_feedback_states_owner_updated", table_name="plan_feedback_states"
     )
     op.drop_table("plan_feedback_states")
+    op.drop_index(
+        "ix_plan_feedback_audits_plan_created", table_name="plan_feedback_audits"
+    )
+    op.drop_table("plan_feedback_audits")
     with op.batch_alter_table("plan_items") as batch:
         batch.drop_constraint("ck_plan_items_execution_status", type_="check")
         batch.drop_column("execution_status")

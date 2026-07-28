@@ -196,6 +196,15 @@ class PlanFeedbackStateModel(Base):
             name="fk_plan_feedback_states_plan_owner",
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ["current_feedback_id", "plan_id", "user_id"],
+            [
+                "plan_feedback_audits.id",
+                "plan_feedback_audits.plan_id",
+                "plan_feedback_audits.user_id",
+            ],
+            name="fk_plan_feedback_states_current_audit",
+        ),
         CheckConstraint("revision >= 1", name="ck_plan_feedback_states_revision"),
         CheckConstraint(
             "completion_status IN ('completed', 'partially_completed', 'not_completed')",
@@ -221,11 +230,26 @@ class PlanFeedbackAuditModel(Base):
     __tablename__ = "plan_feedback_audits"
     __table_args__ = (
         UniqueConstraint("id", "user_id", name="uq_plan_feedback_audits_id_user"),
+        UniqueConstraint(
+            "id",
+            "plan_id",
+            "user_id",
+            name="uq_plan_feedback_audits_id_plan_owner",
+        ),
         ForeignKeyConstraint(
             ["plan_id", "user_id"],
             ["plans.id", "plans.user_id"],
             name="fk_plan_feedback_audits_plan_owner",
             ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["corrects_feedback_id", "plan_id", "user_id"],
+            [
+                "plan_feedback_audits.id",
+                "plan_feedback_audits.plan_id",
+                "plan_feedback_audits.user_id",
+            ],
+            name="fk_plan_feedback_audits_corrects",
         ),
         UniqueConstraint(
             "plan_id", "revision", name="uq_plan_feedback_audits_plan_revision"
@@ -253,14 +277,7 @@ class PlanFeedbackAuditModel(Base):
     )
     idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
-    corrects_feedback_id: Mapped[str | None] = mapped_column(
-        String(36),
-        ForeignKey(
-            "plan_feedback_audits.id",
-            name="fk_plan_feedback_audits_corrects",
-        ),
-        nullable=True,
-    )
+    corrects_feedback_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 

@@ -7,6 +7,8 @@
 - 指定基线：`7d66aa8310436fd9ef37561f533e455e0c664c61`。
 - 开发分支：`codex/m1-6-execution-feedback`。
 - 完整开发提交：`c10b68a123eafb1c0c114857d95aabec77c393ea`。
+- 初始交接提交：`d57996defa4f2c343ddcb21d799a09c6060afc7b`；本文件所在的
+  后续提交为主控 QA 联合修复提交，完整 SHA 由交接方从分支 HEAD 返回。
 - 开始门禁确认 `main` 与 `origin/main` 精确等于指定基线，工作区干净，
   Alembic 唯一 head 为 `20260728_0014`，M1-5 已完成且 M1-6 是唯一允许阶段。
 - 未合并 `main`，未推送 GitHub，未开始 M1-7。
@@ -33,7 +35,10 @@
   的到访来源都会保留，因此不会被一次更正错误撤销。
 - 同一用户幂等键和请求指纹承担重放边界；串行/并发相同请求只保留一条审计，
   同键不同载荷冲突。计划当前状态行、revision 唯一约束、行锁与单事务提交共同承担
-  并发冲突和原子回滚。
+  并发冲突和原子回滚。PostgreSQL 中等待 Plan 行锁的请求会在取得串行化边界后、
+  比较 expected revision 前重新读取幂等审计，因此同 key 同载荷并发得到两个
+  `200`，其中一个 `replayed=false`、另一个 `replayed=true`；不同 key 仍由乐观
+  revision 拒绝第二个写入。
 - 完成情况可生成 `pending` 的长期偏好建议，只展示给用户确认；本阶段没有 Memory
   写入、模型调用、关键词规则或 M1-7 管理入口。
 
@@ -45,7 +50,8 @@
 - 扩展 Plan 终态并保持 draft/confirmed_at 形状约束；
 - 为 PlanItem 增加 `pending / visited / not_visited` 执行状态；
 - 新增当前反馈、不可变反馈审计、收藏到访基线和收藏到访来源四张表；
-- 用复合外键绑定 Plan、PlanItem、Collection、Feedback 的用户所有权；
+- 用复合外键绑定 Plan、PlanItem、Collection、Feedback 的用户所有权；当前反馈
+  指针和更正指针都只能引用同一 `plan_id + user_id` 的审计；
 - 将每个 root 的唯一可执行版本索引覆盖确认及三个完成终态；
 - 有反馈审计数据时拒绝破坏性降级。
 
@@ -70,6 +76,10 @@
 - 部分完成逐项选择实际到访 PlanItem，并区分收藏与外部未收藏地点；
 - 刷新后读取权威反馈、选择和 revision；
 - 可更正反馈，并明确偏好建议尚未写入长期记忆。
+- execution 加载和反馈提交冻结 plan id 与 operation generation，并复用既有
+  AbortController；切换版本、新建计划或卸载后，旧响应及其 `finally` 均不能覆盖
+  新版本状态。网络结果不确定时，同一载荷继续复用原幂等键，成功或载荷改变后才
+  生成新键。
 
 真实离线 Playwright 流程未 mock 计划、执行、反馈、Job、SSE 或结果接口，穿过本地
 Next.js、FastAPI、临时 SQLite、既有 JobQueue/Worker、计划服务和 StubMapProvider：
@@ -90,23 +100,29 @@ Next.js、FastAPI、临时 SQLite、既有 JobQueue/Worker、计划服务和 Stu
 - `../.venv/bin/python -m mypy app migrations nanobot_core`：
   `129 source files`，0 错误。
 - M1-6 聚焦：`7 passed`。
-- 非真实全集：`1616 passed, 11 skipped, 2 deselected`。
-- 迁移专测：`23 passed`。
+- 非真实全集：`1617 passed, 14 skipped, 2 deselected`；新增的 3 项 PostgreSQL
+  专测在未提供 PostgreSQL URL 的普通全集中按既有 fixture 跳过。
+- SQLite 迁移专测：`24 passed`。
+- 一次性本地 PostgreSQL 16：反馈并发/约束 3 项与迁移往返 1 项合计
+  `4 passed`。同 key 并发实测两个响应均成功，审计、revision、收藏来源和
+  PlanItem 更新各一次，replayed 标志一真一假；同 key 不同载荷冲突，不同 key
+  同 revision 只有一个成功；事务失败后原 key 可安全重试。
 - `alembic heads`：`20260728_0015 (head)`。
 - 仓库外 pytest 插件同时封锁 DNS、`create_connection`、`connect`、
   `connect_ex` 后，M1-6 聚焦再次 `7 passed`，非真实全集再次
-  `1616 passed, 11 skipped, 2 deselected`。
+  `1617 passed, 14 skipped, 2 deselected`。
 
 前端：
 
 - `npm run lint`：通过。
 - `npm run typecheck`：通过。
-- Vitest：`61 passed`。
+- Vitest：`65 passed`，包含 3 类迟到 execution/feedback 隔离及不确定网络重试
+  稳定幂等键。
 - `npm run build`：通过。
 - Playwright：`26 passed`，包含上述真实离线 M06 闭环。
 
-覆盖包括：未确认拒绝、独立结构解析、时区/时间/地址/稳定 UID/中文/特殊字符/
-折行、准确导航、外部地点、三种完成状态、空选择、跨计划 PlanItem、用户隔离、
+覆盖包括：未确认拒绝、成熟独立 `icalendar` 解析器、时区/时间/地址/稳定 UID/
+中文/特殊字符/折行、准确导航、外部地点、三种完成状态、空选择、跨计划 PlanItem、用户隔离、
 串行/并发重放、同键冲突、反馈更正、事务回滚、其他有效到访来源保留以及偏好建议
 不写长期记忆。
 
@@ -114,16 +130,18 @@ Next.js、FastAPI、临时 SQLite、既有 JobQueue/Worker、计划服务和 Stu
 
 - 未读取或打印 `.env`；真实模型、地图、网页及其他外部/付费 API 调用为 0。
 - 日历和导航输出不包含密钥、Cookie、本机私人路径或用户凭据。日历下载使用
-  `private, no-store` 和 `nosniff`；导航 URI 仍由既有安全契约验证。
+  `private, no-store` 和 `nosniff`；日历不再生成没有可信公开 Base URL 的虚假
+  URL；导航 URI 仍由既有安全契约验证。
 - 没有自动收藏外部地点、自动写长期记忆、主动询问、提醒、微信消息、分享链接、
   数据导出、云部署或 M1-7 功能。
 - 新增复杂度对应四个产品行为边界；反馈来源表用于解决“更正不能撤销其他有效
   visited 依据”，不是重复状态机。测试故障注入证明中途异常不会留下审计、收藏或
   PlanItem 部分写入。
-- 当前没有已知未关闭 P0/P1。
-- 保留的非阻塞风险：M1-5 高基数候选截断 P2 不变；M1-6 并发行为已在 SQLite
-  API 层和数据库唯一约束验证，但尚未在真实 PostgreSQL 并发环境复测；日历已通过
-  独立结构解析器，但尚未在各手机厂商日历客户端逐一导入；高德 URI 尚未做真实
+- 当前没有已知未关闭 P0/P1。此前发现的 PostgreSQL 同 key 并发版本冲突、反馈
+  指针所有权缺口和前端迟到响应三个 P1 已关闭；日历虚假 URL/自制测试解析器 P2
+  已关闭。
+- 保留的非阻塞风险：M1-5 高基数候选截断 P2 不变；日历已通过成熟独立解析器，
+  但尚未在各手机厂商日历客户端逐一导入；高德 URI 尚未做真实
   设备拉起验证。以上不授权真实网络或设备调用。
 
 ## 主控验收建议

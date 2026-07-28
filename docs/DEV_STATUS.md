@@ -96,7 +96,9 @@ M1-5 也已通过主控验收：计划创建、后台生成、外部补充授权
 
 ## 下一步
 
-主控从实现提交 `c10b68a123eafb1c0c114857d95aabec77c393ea` 独立复核 M1-6：
+主控从当前阶段分支 HEAD（实现提交 `c10b68a123eafb1c0c114857d95aabec77c393ea`，
+初始交接提交 `d57996defa4f2c343ddcb21d799a09c6060afc7b`，其后为 QA 联合修复）
+独立复核 M1-6：
 检查确认门禁、iCalendar、导航、反馈幂等/并发/更正、收藏到访来源重算、M06 前端、
 线性迁移和断网测试。验收通过前不合并、不推送，也不开始 M1-7“我的/记忆/数据
 控制”。
@@ -2667,7 +2669,9 @@ M1-5 也已通过主控验收：计划创建、后台生成、外部补充授权
   当前状态、不可变审计、收藏访问基线和来源共同支持更正重算；用户原有 visited 或
   其他有效到访来源不会被错误撤销
 - 幂等与安全：用户作用域键、请求指纹、revision 唯一约束、行锁和单事务提交覆盖
-  串行/并发重放、同键冲突、用户隔离、跨计划 PlanItem、越权选择和中途异常回滚
+  串行重放、同键冲突、用户隔离、跨计划 PlanItem、越权选择和中途异常回滚；初始
+  交接时 PostgreSQL 同 key 并发曾错误返回版本冲突，已由下方 QA 联合修复关闭并
+  补充真实 PostgreSQL 并发证明
 - 偏好边界：只产生待确认建议，不写长期记忆，不同步调用模型，不增加关键词规则；
   未实现 M1-7、主动询问、提醒、消息、分享、导出或自动收藏
 - 数据库：单一迁移 `20260728_0015` 线性继承 `0014`，扩展确认后终态与 PlanItem
@@ -2677,15 +2681,48 @@ M1-5 也已通过主控验收：计划创建、后台生成、外部补充授权
   三种反馈、逐项选择、刷新恢复、更正和待确认偏好建议。真实离线 E2E 穿过
   Next.js、FastAPI、临时数据库、既有 Worker/计划服务完成确认 → 下载 → 导航 →
   部分完成 → 刷新 → 更正
-- 验证：pip check、Ruff、strict mypy（129 个源文件）通过；M1-6 聚焦
-  `7 passed`；非真实全集 `1616 passed, 11 skipped, 2 deselected`；迁移
-  `23 passed`。仓库外插件封锁 DNS 和全部连接入口后，聚焦及非真实全集以相同
-  数量再次通过。前端 lint、typecheck、build 通过，Vitest `61 passed`，
-  Playwright `26 passed`
+- 验证：初始交接结果已由下方 QA 联合修复复测取代；以最新结果
+  `7` 项聚焦、`24` 项 SQLite 迁移、`1617 passed, 14 skipped, 2 deselected`
+  非真实全集、`4` 项本地 PostgreSQL、`65` 项 Vitest 和 `26` 项 Playwright 为准
 - 复杂度、安全与风险：日历、导航、反馈、偏好建议各一个正式服务入口；没有第二套
   Plan、Repository、Provider、Job、Worker、AgentRun、状态机、API Client 或前端
   全局状态。未读取 `.env`，真实模型、地图、网页及其他外部/付费 API 调用为 0；
-  当前无未关闭 P0/P1。保留既有高基数候选截断 P2；真实 PostgreSQL 并发、各移动
-  日历客户端导入和高德真实设备拉起仍是非阻塞待验风险
+  当前无未关闭 P0/P1。保留既有高基数候选截断 P2；真实 PostgreSQL 并发已完成
+  本地 PostgreSQL 16 复测，各移动日历客户端导入和高德真实设备拉起仍是非阻塞
+  待验风险
 - 交接：详见 `docs/technical/M1_6_HANDOFF.md`；阶段保持“待主控验收”，不合并、
   不推送、不开始 M1-7
+
+#### 2026-07-28｜M1-6 主控 QA 联合修复｜待主控验收
+
+- 修复基线：在 `codex/m1-6-execution-feedback` 的初始交接 HEAD
+  `d57996defa4f2c343ddcb21d799a09c6060afc7b` 上追加一个可回滚修复提交；未 amend、
+  rebase、合并或推送，M1-7 未开始
+- PostgreSQL 并发幂等：继续使用数据库唯一约束与 Plan 行锁作为最终边界；取得
+  Plan 行锁后、比较 expected revision 前重新读取幂等审计。同 key 同 fingerprint
+  并发实测两个请求均成功且 replayed 一真一假，审计、revision、收藏来源及
+  PlanItem 更新各一次；同 key 不同载荷返回幂等冲突，不同 key 同 revision 仍只有
+  一个成功，事务失败后原 key 可安全重试
+- 审计关系：直接修正尚未集成 main 的 `20260728_0015`，不新增 `0016`。当前反馈
+  指针及 `corrects_feedback_id` 均以复合外键绑定同一 plan 和 user 的审计；ORM 与
+  迁移一致，合法更正链通过，SQLite 与 PostgreSQL 均拒绝孤儿、跨用户和跨计划指针
+- 前端竞态：execution 加载与反馈提交复用既有 operation generation、
+  AbortController 和局部状态；版本切换、新建计划、卸载后的旧响应及 `finally`
+  不再修改当前 Plan、execution、选择、提示或 busy。网络结果不确定时同载荷重试
+  保持幂等键，成功或载荷改变后才换键
+- 日历 P2：删除没有可信公开 Base URL 的 `shiguang.local` URL；测试改用成熟独立
+  `icalendar` 解析器验证稳定 UID、Asia/Shanghai、CRLF、UTF-8 折行、中文、地址和
+  特殊字符，没有复制生产解析逻辑
+- 验证：pip check、Ruff、strict mypy（129 个源文件）通过；M1-6 聚焦
+  `7 passed`，SQLite 迁移 `24 passed`，非真实全集
+  `1617 passed, 14 skipped, 2 deselected`。一次性本地 PostgreSQL 16 运行反馈
+  并发/约束 3 项及迁移往返 1 项，合计 `4 passed`。仓库外插件封锁 DNS 和全部
+  socket 连接入口后，聚焦与非真实全集以相同数量再次通过
+- 前端验证：lint、typecheck、build 通过，Vitest `65 passed`，Playwright
+  `26 passed`；真实离线 M06 继续穿过 Next.js、FastAPI、临时数据库和既有服务完成
+  确认 → 日历 → 导航 → 部分完成 → 刷新恢复 → 更正
+- 范围与安全：四个正式服务、Plan Repository、MapProvider、API Client 和前端
+  operation generation 均保持唯一；未新增进程锁、重试循环、sleep、第二套状态或
+  SQLite 特判。未读取 `.env`，真实模型、地图、网页及其他外部/付费 API 调用为
+  0；当前无未关闭 P0/P1。保留既有 M1-5 高基数候选截断 P2，以及移动日历客户端
+  和高德真实设备验证两项非阻塞风险
