@@ -1180,8 +1180,10 @@ PostgreSQL 16、Compose、前端、20 组计划硬约束与 21 组核心闭环�
 预检中文字、URL 和图片观测最大耗时未超过 12/20 秒目标，但每类只有 5 个样本，
 不得宣称 P95 已验证。地图失败样本定点诊断排除鉴权、限流、超时和网络不可用：
 1 组已完整成功，另外 2 组在 2xx 后稳定返回 `MAP_PROVIDER_INVALID_RESPONSE`；
-受授权输出边界限制，尚未区分供应商畸形候选与 Provider 契约过严，也未明确证明
-代码缺陷。阻塞关闭及主控复验完成前不得标记 M1-Gate 已完成，不得开始 M2。完整证据见
+安全结构分类进一步证明两个有效 20 候选响应分别由单个
+`typecode / nonempty_string` 畸形候选拖垮，且同批存在可映射候选。该
+`AmapMapProvider.search_poi` 候选隔离 P1 关闭及主控复验完成前不得标记 M1-Gate
+已完成，不得开始 M2。完整证据见
 `docs/technical/M1_VALIDATION_REPORT.md`。
 
 必须在不接微信的情况下完成：
