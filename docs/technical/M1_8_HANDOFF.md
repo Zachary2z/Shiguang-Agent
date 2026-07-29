@@ -213,3 +213,24 @@ expired 分享仍可关闭。原状态优先级未改变：到期前取消为 ca
 
 本次没有迁移、前端、DTO、第二套服务/Repository、生产特例、代理、重试或 M1-Gate
 改动。状态仍为“待主控复验”，不得据此宣布主控验收完成。
+
+## 主控最终验收（2026-07-29）
+
+主控对提交 `6afc2e8233f2129bf2a8103478e02d83ce0be264` 完成范围、安全、并发、
+迁移、前后端和净复杂度复核。原 4 项缺陷与取消后撤销 P1 均已关闭，当前无未关闭
+P0/P1。
+
+验证证据：
+
+- pip check、Ruff、strict mypy（139 个源文件）通过；
+- M1-8 与迁移聚焦 `38 passed`，独立取消后撤销探针 `1 passed`；
+- DNS/socket 封网聚焦 `35 passed`；
+- 非真实后端全集 `1654 passed, 16 skipped, 2 deselected`；
+- 全新 SQLite upgrade/check/downgrade/upgrade 通过，唯一 head
+  `20260729_0017`；
+- 一次性 PostgreSQL 16 分享并发测试 `1 passed`；
+- 前端 lint、typecheck、build、Vitest `81 passed`、Playwright `29 passed`
+  全部通过。
+
+分支已纯快进集成到 `main`，合并前后代码树一致。本轮没有真实模型、地图或网页
+调用；没有查看、打印、提交或输出密钥。M1-8 正式完成，下一允许阶段为 M1-Gate。
