@@ -30,7 +30,6 @@ from app.domain.plans import (
     PlanVersion,
     PlanVersionConflictError,
 )
-from app.domain.time import utc_now
 from app.infrastructure.db import Database
 from app.infrastructure.db.models import (
     CollectionItemModel,
@@ -53,7 +52,8 @@ async def _seed_confirmed_plan(
     user_id: str | None = None,
 ) -> tuple[str, str, str, tuple[str, str]]:
     owner = user_id or generate_user_id()
-    now = utc_now()
+    constraints = _constraints()
+    now = constraints.created_at
     collection_id = generate_collection_item_id()
     plan_id = generate_plan_id()
     async with database.session() as session:
@@ -84,7 +84,7 @@ async def _seed_confirmed_plan(
                 version=1,
                 operation=PlanOperation.GENERATE,
                 status=PlanStatus.GENERATING,
-                constraints=_constraints(),
+                constraints=constraints,
                 trace_id=generate_trace_id(),
                 idempotency_key=f"seed-{plan_id}",
                 created_at=now,

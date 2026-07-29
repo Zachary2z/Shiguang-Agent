@@ -24,6 +24,7 @@ from app.application.content_import_jobs import (
     CONTENT_IMPORT_JOB_TYPE,
     ContentImportJobHandler,
 )
+from app.application.image_recognition import ImageRecognitionService
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
 from app.application.map_plan_facts import MapPlanFactResolver
 from app.application.plan_experience import (
@@ -1404,10 +1405,17 @@ async def test_image_initial_and_repair_share_one_outer_workflow_budget(
 @pytest.mark.asyncio
 async def test_image_outer_deadline_cancels_longer_provider_safety_cap(
     test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = test_settings.model_copy(update={"agent_timeout_seconds": 0.6})
     request_cancelled = asyncio.Event()
     requests: list[httpx.Request] = []
+
+    monkeypatch.setattr(
+        ImageRecognitionService,
+        "_prepare_validated_image",
+        lambda _self, payload, content_type: (payload, content_type),
+    )
 
     async def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
