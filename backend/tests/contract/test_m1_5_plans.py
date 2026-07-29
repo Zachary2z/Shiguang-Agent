@@ -78,8 +78,12 @@ def _request(key: str) -> dict[str, object]:
     }
 
 
-def _draft(*, title: str = "海边咖啡") -> PlanDraftResult:
-    start = datetime(2026, 7, 29, 2, 15, tzinfo=UTC)
+def _draft(
+    *,
+    title: str = "海边咖啡",
+    start_at: datetime | None = None,
+) -> PlanDraftResult:
+    start = start_at or datetime(2026, 7, 29, 2, 15, tzinfo=UTC)
     risk_codes = (PlanRiskCode.PRICE_UNKNOWN,)
     item = PlanItem(
         role=PlanItemRole.CORE,
@@ -517,10 +521,17 @@ async def test_adjustment_worker_failures_never_create_a_version_or_live_job(
 async def test_confirmation_is_explicit_idempotent_current_version_only_and_owned(
     test_settings,
 ) -> None:
+    reference_now = datetime.now(UTC)
+    plan_start = reference_now + timedelta(days=1)
+    plan_end = plan_start + timedelta(hours=8)
+    request = _request("m15-confirm")
+    request["start_at"] = plan_start.isoformat()
+    request["end_at"] = plan_end.isoformat()
+
     async with _client(test_settings) as (api, client):
         api.state.map_provider = object()
         await _demo(client)
-        created = await client.post("/api/v1/plans", json=_request("m15-confirm"))
+        created = await client.post("/api/v1/plans", json=request)
         plan_id = created.json()["plan_id"]
 
         database = api.state.demo_database
@@ -533,7 +544,7 @@ async def test_confirmation_is_explicit_idempotent_current_version_only_and_owne
             await repository.complete_generation(
                 user_id=user_id,
                 plan_id=plan_id,
-                draft=_draft(),
+                draft=_draft(start_at=plan_start + timedelta(minutes=15)),
                 now=datetime.now(UTC),
             )
             await session.commit()
