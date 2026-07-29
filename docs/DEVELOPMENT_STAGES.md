@@ -8,7 +8,7 @@
 | 日期 | 2026-07-28 |
 | 状态 | 后续开发执行基线 |
 | 仓库 | /Users/zhangzihao/Documents/Shiguang_Nanobot |
-| 当前阶段 | M1-8 已通过主控验收；当前允许开始 M1-Gate 核心闭环验收 |
+| 当前阶段 | M1-Gate 已通过主控验收，M1 Web/H5 核心闭环正式完成；当前允许开始 M2-0 ClawBot 技术 Spike |
 
 ---
 
@@ -1175,16 +1175,14 @@ M1 的目标是不用微信也能完成完整 C 端闭环。正式前端参考 U
 
 #### 当前状态
 
-**进行中，存在真实地图 P1 Gate 阻塞，待定点诊断和主控最终验收。** 离线、封网、
-PostgreSQL 16、Compose、前端、20 组计划硬约束与 21 组核心闭环已通过。有限真实
-预检中文字、URL 和图片观测最大耗时未超过 12/20 秒目标，但每类只有 5 个样本，
-不得宣称 P95 已验证。地图失败样本定点诊断排除鉴权、限流、超时和网络不可用：
-1 组已完整成功，另外 2 组在 2xx 后稳定返回 `MAP_PROVIDER_INVALID_RESPONSE`；
-安全结构分类进一步证明两个有效 20 候选响应分别由单个
-`typecode / nonempty_string` 畸形候选拖垮，且同批存在可映射候选。该
-`AmapMapProvider.search_poi` 候选隔离 P1 关闭及主控复验完成前不得标记 M1-Gate
-已完成，不得开始 M2。完整证据见
-`docs/technical/M1_VALIDATION_REPORT.md`。
+**已完成。** 离线、封网、PostgreSQL 16、Compose、前端、20 组计划硬约束与
+21 组核心闭环均通过。有限真实预检中文字、URL 和图片观测最大耗时未超过
+12/20 秒目标，但每类只有 5 个样本，不宣称 P95 已得到统计验证。真实地图定点诊断
+发现并关闭了 `AmapMapProvider.search_poi` 单个畸形候选拖垮整批合法候选的 P1；
+修复后两个原失败样本各返回 19 个城市范围正确的合法候选，一轮标准
+search/detail/route/weather 验收也通过。最终普通及封网非真实全集均为
+`1660 passed, 16 skipped, 2 deselected`，当前没有未关闭 P0/P1。完整证据见
+`docs/technical/M1_VALIDATION_REPORT.md`。M1 正式关闭，当前允许开始 M2-0。
 
 必须在不接微信的情况下完成：
 
