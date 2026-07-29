@@ -1,6 +1,52 @@
 # M1-Gate 核心闭环验收报告
 
-## 1. 结论
+## 2026-07-30 稳定化纠正
+
+真实运行复验在下方 2026-07-29 历史验收之后确认了截图导入 500、收藏补充 422、
+地点确认不可达、Place/Event 与年份证据不稳、截图和文字互斥、Retry 未提交以及
+Agent 计划入口不可达。M1-Gate 因此重新打开；下方“M1 正式关闭、允许开始 M2-0”
+只作为历史记录保留，不再代表当前状态。
+
+稳定化候选已在基线 `ee701939fe2d61405b769324da3b8df575bfc2bb`、分支
+`codex/m1-stabilization-core-loop` 完成，当前状态只能是：
+
+- M1-Gate 稳定化修复：待主控验收；
+- M2-0：未开始，阻塞于主控复验；
+- M1 未重新关闭。
+
+本次收敛复用唯一正式入口：API 与 Worker 共用运行时 Storage 构造；统一输入提交
+负责截图、Message、AgentRun、Source、Job 的补偿；收藏补充继续使用唯一
+`CollectionWriteService → PlaceMatchingService → PlaceTargetSelectionService`；
+语义证据只在现有结构输出/规范化边界处理；计划按钮只导航到既有计划页。删除了
+API `storage=None` 与 Worker 单独构造的运行分叉，以及截图准备失败后保留无 Job
+运行记录的旧路径。未新增迁移、Provider、Runner、Registry、Storage、Parser、
+匹配器、收藏 Repository、计划服务、样本白名单或自动外部重试。
+
+离线验证结果：
+
+- pip editable 安装、`pip check`、Ruff、strict mypy（140 个源文件）：退出码均 0；
+- 后端非真实全量：`1672 passed, 18 skipped`，退出码 0；
+- 仓库外 pytest 插件封锁 `getaddrinfo/connect/connect_ex/create_connection` 后，
+  统一输入、截图补偿、收藏状态机、地点选择、语义和计划闭环：
+  `194 passed`，退出码 0；
+- Alembic：唯一 head `20260729_0017`；仓库外临时 SQLite
+  `upgrade head/current/check` 均退出码 0；迁移集成 `25 passed`；
+- 默认本地数据库只读 `alembic check` 退出码 1，原因是该本地库未升级。为避免修改
+  真实用户数据，本任务没有升级它；该结果不是迁移差异，临时干净库显示
+  `No new upgrade operations detected`；
+- 前端 `npm ci/lint/typecheck/test/build` 均退出码 0，单测 `84 passed`；
+  `npm ci` 报告既有开发依赖 9 个 high vulnerability；
+- Playwright E2E `29 passed`，退出码 0；覆盖 320、390、768、1024、1440，
+  输出 4 条 `NO_COLOR`/`FORCE_COLOR` 环境 warning；
+- 新增完全离线闭环：
+  文字 → 待补充收藏 → 补充地址 → 两个地点候选 → 用户选择 → active →
+  计划草案 → 自然语言调整 → 明确确认。
+
+真实模型、高德、网页、对象存储或付费 API 调用均为 0；`.env` 未读取；未合并、
+未推送、未开始 M2。当前未发现本次修复产生的 P0/P1；既有 P2 为 npm 开发依赖
+audit 和跨浏览器覆盖限制，保留给主控评估。
+
+## 1. 2026-07-29 历史结论
 
 M1-Gate 的离线、封网、PostgreSQL 16、Compose、前端、闭环场景和离线性能观测已
 完成。用户随后授权了有限真实 API 预检；文字、网页、图片及既有模型 Tool Calling
