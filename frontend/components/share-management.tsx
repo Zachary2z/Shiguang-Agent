@@ -3,7 +3,17 @@
 import { useEffect, useRef, useState } from "react";
 
 import { ApiClient, ApiError } from "@/lib/api-client";
-import type { OwnerPlanShare } from "@/lib/share-contracts";
+import type {
+  OwnerPlanShare,
+  SharedPlanSnapshot,
+} from "@/lib/share-contracts";
+
+const transportLabels: Record<string, string> = {
+  walking: "步行",
+  cycling: "骑行",
+  transit: "公共交通",
+  driving: "驾车",
+};
 
 type ShareManagementProps = {
   planId: string;
@@ -31,6 +41,9 @@ export function ShareManagement({ planId, csrfToken }: ShareManagementProps) {
   const [share, setShare] = useState<OwnerPlanShare | null>(null);
   const [busy, setBusy] = useState(true);
   const [message, setMessage] = useState("");
+  const [preview, setPreview] = useState<SharedPlanSnapshot | null>(null);
+  const [pendingAction, setPendingAction] = useState<"create" | "regenerate" | null>(null);
+  const idempotencyKey = useRef<string | null>(null);
   const operation = useRef(0);
 
   useEffect(() => {
@@ -51,6 +64,28 @@ export function ShareManagement({ planId, csrfToken }: ShareManagementProps) {
     };
   }, [planId]);
 
+  async function showPreview(action: "create" | "regenerate") {
+    const owner = ++operation.current;
+    idempotencyKey.current = crypto.randomUUID();
+    setPendingAction(action);
+    setBusy(true);
+    setMessage("");
+    try {
+      const result = await shareApiClient.request<SharedPlanSnapshot>(
+        `/api/v1/plans/${planId}/share/preview`,
+      );
+      if (operation.current === owner) setPreview(result);
+    } catch (error) {
+      if (operation.current === owner) {
+        setPendingAction(null);
+        idempotencyKey.current = null;
+        setMessage(errorMessage(error));
+      }
+    } finally {
+      if (operation.current === owner) setBusy(false);
+    }
+  }
+
   async function mutate(path: `/${string}`, method: "POST" | "DELETE") {
     const owner = ++operation.current;
     setBusy(true);
@@ -59,9 +94,16 @@ export function ShareManagement({ planId, csrfToken }: ShareManagementProps) {
       const result = await shareApiClient.request<OwnerPlanShare>(path, {
         method,
         csrfToken,
+        headers:
+          method === "POST" && idempotencyKey.current
+            ? { "Idempotency-Key": idempotencyKey.current }
+            : undefined,
       });
       if (operation.current !== owner) return;
       setShare(result);
+      setPreview(null);
+      setPendingAction(null);
+      idempotencyKey.current = null;
       if (result.share_url) {
         setMessage("新链接已生成。明文只在这一次显示，请立即复制。");
       } else if (method === "DELETE") {
@@ -125,9 +167,9 @@ export function ShareManagement({ planId, csrfToken }: ShareManagementProps) {
               className="primary-button"
               type="button"
               disabled={busy}
-              onClick={() => void mutate(`/api/v1/plans/${planId}/share`, "POST")}
+              onClick={() => void showPreview("create")}
             >
-              {busy ? "正在生成" : "生成只读链接"}
+              {busy ? "正在准备" : "预览并生成链接"}
             </button>
           )}
           {active && (
@@ -145,11 +187,7 @@ export function ShareManagement({ planId, csrfToken }: ShareManagementProps) {
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => {
-                  if (window.confirm("重建后旧链接会立即失效。继续吗？")) {
-                    void mutate(`/api/v1/plans/${planId}/share/regenerate`, "POST");
-                  }
-                }}
+                onClick={() => void showPreview("regenerate")}
               >
                 重建链接
               </button>
@@ -165,6 +203,79 @@ export function ShareManagement({ planId, csrfToken }: ShareManagementProps) {
           )}
         </div>
       </div>
+      {preview && pendingAction && (
+        <section className="share-owner-preview" aria-labelledby="share-preview-title">
+          <p className="eyebrow">Redacted preview</p>
+          <h3 id="share-preview-title">访客将看到这些内容</h3>
+          <p>
+            {dateTime(preview.start_at)} · {preview.origin_label} ·
+            确认版本 V{preview.version}
+          </p>
+          <ol>
+            {preview.items.map((item) => (
+              <li key={`${item.title}-${item.start_at}`}>
+                <strong>{item.title}</strong>
+                <span>{dateTime(item.start_at)}—{dateTime(item.end_at)}</span>
+                <span>{item.public_address ?? "不公开详细地址"}</span>
+                <span>
+                  {transportLabels[item.transport_mode] ?? item.transport_mode}
+                  {" "}{Math.round(item.travel_duration_seconds / 60)} 分钟
+                  {item.travel_distance_meters > 0
+                    ? ` · ${(item.travel_distance_meters / 1000).toFixed(1)} km`
+                    : ""} ·
+                  缓冲 {Math.round(item.buffer_after_seconds / 60)} 分钟 ·
+                  费用 {item.price_amount === null ? "待确认" : `¥${item.price_amount}`}
+                </span>
+                <span>
+                  风险：{item.risks.length ? item.risks.join("；") : "暂无"}
+                  {item.map_url ? " · 含公开路线入口" : " · 暂无路线入口"}
+                </span>
+                {item.queried_at && <span>地点信息查询于 {dateTime(item.queried_at)}</span>}
+              </li>
+            ))}
+          </ol>
+          {preview.risks.length > 0 && <p>整体风险：{preview.risks.join("；")}</p>}
+          <p>
+            预计总费用：
+            {preview.total_cost_amount === null
+              ? "待确认"
+              : `¥${preview.total_cost_amount}`}
+          </p>
+          <p>链接将在 {dateTime(preview.expires_at)} 自动过期。</p>
+          <div className="share-preview-actions">
+            <button
+              className="primary-button"
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                void mutate(
+                  pendingAction === "regenerate"
+                    ? `/api/v1/plans/${planId}/share/regenerate`
+                    : `/api/v1/plans/${planId}/share`,
+                  "POST",
+                )
+              }
+            >
+              {busy
+                ? "正在确认"
+                : pendingAction === "regenerate"
+                  ? "确认重建并使旧链接失效"
+                  : "确认并生成链接"}
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setPreview(null);
+                setPendingAction(null);
+                idempotencyKey.current = null;
+              }}
+            >
+              取消
+            </button>
+          </div>
+        </section>
+      )}
       {busy && <p className="share-message" role="status">正在更新分享状态…</p>}
       {!busy && message && <p className="share-message" role="status">{message}</p>}
     </section>

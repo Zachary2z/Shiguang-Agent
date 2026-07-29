@@ -2546,6 +2546,45 @@ a {
   color: var(--color-ink-muted);
 }
 
+.share-owner-preview {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+
+.share-owner-preview h3 {
+  margin: 4px 0 10px;
+}
+
+.share-owner-preview ol {
+  display: grid;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.share-owner-preview li {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border-left: 3px solid var(--color-light);
+  background: var(--color-surface-muted);
+}
+
+.share-owner-preview li span {
+  color: var(--color-ink-muted);
+}
+
+.share-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
 .share-expiry,
 .share-once-note {
   font-size: var(--text-sm);

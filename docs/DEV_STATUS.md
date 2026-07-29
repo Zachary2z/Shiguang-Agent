@@ -2958,3 +2958,40 @@ Web/H5 页面均已实现。后续阶段仍不得提前开发。
   环境复跑后再验收
 - 复杂度与安全复核：无测试样本白名单、进程锁、第二 Repository/Runner/Registry、
   真实外部调用或 `.env` 读取；未合并、未推送，等待主控与 QA
+
+#### 2026-07-29｜M1-8 主控验收缺陷修复｜待主控复验
+
+- 修复基线与范围：在失败候选
+  `c6f4023d7d8da4364fc57a76685a11fe9c7e8a8a` 上只追加修复；没有 amend、
+  rebase、合并、推送或进入 M1-Gate。原 3 个 P1 和 1 个 P2 均已关闭
+- P1 重建幂等与并发：`plan_share_links` 最小扩展既有 `20260729_0017`，保存
+  所有者作用域幂等键摘要、请求指纹和操作类型，并增加用户/幂等键唯一约束、指纹和操作检查；
+  复用既有 `IdempotencyKey`、`plan_request_fingerprint` 和根 Plan
+  PostgreSQL 行锁。同键串行或并发只执行一次，重放只返回无明文安全状态；同键跨
+  plan/操作返回 409，不同键明确重建会依次使旧 token 失效
+- P1 过期优先级：公开读取先以分享记录同步维护的 `expires_at` 判断撤销、无效和
+  到期，再判断计划取消；到期前一微秒的取消计划返回 cancelled，到达边界及之后统一
+  unavailable。确认后的过期同步改为重新读取最新确认版本，旧确认幂等重放不能回写
+  旧过期时间
+- P2 标准地图入口：标准 `create_app` 在存在高德配置时构造唯一
+  `AmapMapProvider`，公开分享和所有者预览复用既有 `build_navigation_uri`；
+  无配置安全降级，URI 构造 HTTP 调用为 0，应用 lifespan 关闭自建 Provider
+- P1 创建前预览：新增所有者只读 GET 预览，直接复用唯一
+  `PlanShareService._build_snapshot` 与 `SharedPlanSnapshot`；前端先展示实际公开
+  日期、地点、公开地址、交通/距离/缓冲、费用、风险、查询时间、路线入口、确认版本
+  和失效时间，明确确认后才携带幂等键创建。SQL 语句监听确认预览期间
+  `INSERT/UPDATE/DELETE` 为 0
+- 安全与冗余：原 token 仍只在首次成功响应出现且数据库只保存 SHA-256；同键重放
+  不生成第二个 token。Authorization、token、幂等键、私人字段和内部 ID 不进入
+  日志、异常或公开 DTO；仍只有一个分享服务、一个快照构造入口、一个 MapProvider
+  适配器和一套状态规则，没有进程锁、重试循环或第二套 DTO
+- 自动化证据：pip check、Ruff、strict mypy（139 个源文件）通过；M1-8 聚焦
+  `11 passed`，迁移合并聚焦 `36 passed`，普通非真实全集
+  `1652 passed, 16 skipped, 2 deselected`。仓库外插件同时封锁 DNS、
+  `connect`、`connect_ex` 和 `create_connection` 后受影响测试 `42 passed`
+- PostgreSQL 16：一次性 Docker 容器内运行八个独立客户端同键创建/重建、不同键
+  明确重建、不同计划并发及迁移往返，`2 passed`；测试完成后容器已删除
+- 前端证据：lint、typecheck、生产 build 通过；Vitest `81 passed`，Playwright
+  `29 passed`。新增创建前预览、确认创建/复制/重建/撤销及不确定结果同键重试覆盖
+- 下一步：保持 M1-8“待主控复验”；等待主控复跑 PostgreSQL 并发、迁移、安全和
+  Web/H5 交互，不合并、不推送、不调用真实 API、不开始 M1-Gate

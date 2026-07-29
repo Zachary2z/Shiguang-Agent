@@ -62,7 +62,10 @@ def test_postgresql_plan_share_creation_serializes_per_plan(
                     *(
                         client.post(
                             f"/api/v1/plans/{first_plan}/share",
-                            headers={"X-CSRF-Token": csrf},
+                            headers={
+                                "X-CSRF-Token": csrf,
+                                "Idempotency-Key": "pg-create-replay",
+                            },
                         )
                         for client in clients
                     )
@@ -73,14 +76,38 @@ def test_postgresql_plan_share_creation_serializes_per_plan(
                     for response in same_plan
                 ) == 1
 
+                regenerate = await asyncio.gather(
+                    *(
+                        client.post(
+                            f"/api/v1/plans/{first_plan}/share/regenerate",
+                            headers={
+                                "X-CSRF-Token": csrf,
+                                "Idempotency-Key": "pg-regenerate-replay",
+                            },
+                        )
+                        for client in clients
+                    )
+                )
+                assert all(response.status_code == 200 for response in regenerate)
+                assert sum(
+                    response.json()["share_url"] is not None
+                    for response in regenerate
+                ) == 1
+
                 independent = await asyncio.gather(
                     clients[0].post(
                         f"/api/v1/plans/{first_plan}/share/regenerate",
-                        headers={"X-CSRF-Token": csrf},
+                        headers={
+                            "X-CSRF-Token": csrf,
+                            "Idempotency-Key": "pg-explicit-regenerate-two",
+                        },
                     ),
                     clients[1].post(
                         f"/api/v1/plans/{second_plan}/share",
-                        headers={"X-CSRF-Token": csrf},
+                        headers={
+                            "X-CSRF-Token": csrf,
+                            "Idempotency-Key": "pg-independent-create",
+                        },
                     ),
                 )
                 assert all(response.status_code == 200 for response in independent)

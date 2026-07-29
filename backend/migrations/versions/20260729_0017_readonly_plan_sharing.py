@@ -24,6 +24,9 @@ def upgrade() -> None:
         sa.Column("plan_id", sa.String(36), nullable=False),
         sa.Column("user_id", sa.String(36), nullable=False),
         sa.Column("token_hash", sa.String(64), nullable=False),
+        sa.Column("idempotency_key", sa.String(128), nullable=False),
+        sa.Column("request_fingerprint", sa.String(64), nullable=False),
+        sa.Column("operation", sa.String(16), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("revoked_at", sa.DateTime(timezone=True)),
@@ -34,9 +37,19 @@ def upgrade() -> None:
             ondelete="CASCADE",
         ),
         sa.UniqueConstraint("token_hash", name="uq_plan_share_links_token_hash"),
+        sa.UniqueConstraint(
+            "user_id",
+            "idempotency_key",
+            name="uq_plan_share_links_owner_idempotency",
+        ),
         sa.CheckConstraint(
             "length(token_hash) = 64 AND token_hash = lower(token_hash)",
             name="ck_plan_share_links_token_hash_format",
+        ),
+        sa.CheckConstraint(
+            "length(request_fingerprint) = 64 "
+            "AND request_fingerprint = lower(request_fingerprint)",
+            name="ck_plan_share_links_fingerprint_format",
         ),
         sa.CheckConstraint(
             "expires_at > created_at",
@@ -45,6 +58,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "revoked_at IS NULL OR revoked_at >= created_at",
             name="ck_plan_share_links_revocation",
+        ),
+        sa.CheckConstraint(
+            "operation IN ('create', 'regenerate')",
+            name="ck_plan_share_links_operation",
         ),
     )
     op.create_index(

@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import func, select, update
+from pydantic import SecretStr
+from sqlalchemy import event, func, select, update
 
 from app.application.plan_sharing import PlanShareService
 from app.domain.identifiers import generate_plan_id, generate_trace_id
@@ -27,6 +30,7 @@ from app.infrastructure.repositories import (
     SqlAlchemyPlanRepository,
     plan_request_fingerprint,
 )
+from app.providers.amap import AmapMapProvider
 from tests.contract.test_m0_2d_api import _client, _demo
 from tests.contract.test_m1_6_execution import _constraints, _draft, _seed_plan
 from tests.fixtures.maps import make_stub_map_provider
@@ -49,11 +53,15 @@ async def _create_share(
     plan_id: str,
     csrf: str,
     regenerate: bool = False,
+    idempotency_key: str | None = None,
 ) -> httpx.Response:
     suffix = "/regenerate" if regenerate else ""
     return await client.post(
         f"/api/v1/plans/{plan_id}/share{suffix}",
-        headers={"X-CSRF-Token": csrf},
+        headers={
+            "X-CSRF-Token": csrf,
+            "Idempotency-Key": idempotency_key or f"share-{uuid4()}",
+        },
     )
 
 
@@ -139,6 +147,155 @@ async def test_create_repeat_regenerate_and_revoke_keep_only_hash(
 
 
 @pytest.mark.asyncio
+async def test_regenerate_idempotency_replays_conflicts_and_explicit_new_keys(
+    test_settings,
+) -> None:
+    async with _client(test_settings) as (api, client):
+        await _demo(client)
+        plan_id, _collection_id, _item_ids = await _seed_plan(api, confirmed=True)
+        csrf = str(client.headers["X-CSRF-Token"])
+        first = await _create_share(
+            client, plan_id=plan_id, csrf=csrf, idempotency_key="create-once"
+        )
+        first_token = _issued_token(first)
+
+        replayed = await asyncio.gather(
+            *(
+                _create_share(
+                    client,
+                    plan_id=plan_id,
+                    csrf=csrf,
+                    regenerate=True,
+                    idempotency_key="regenerate-replay",
+                )
+                for _ in range(8)
+            )
+        )
+        assert all(response.status_code == 200 for response in replayed)
+        assert sum(response.json()["created"] for response in replayed) == 1
+        issued = [response for response in replayed if response.json()["created"]]
+        second_token = _issued_token(issued[0])
+        assert (await _read_public(client, second_token)).json()["status"] == "active"
+        assert (await _read_public(client, first_token)).json()["status"] == "unavailable"
+
+        serial_replay = await _create_share(
+            client,
+            plan_id=plan_id,
+            csrf=csrf,
+            regenerate=True,
+            idempotency_key="regenerate-replay",
+        )
+        assert serial_replay.json()["created"] is False
+        assert serial_replay.json()["share_url"] is None
+        assert (await _read_public(client, second_token)).json()["status"] == "active"
+        async with api.state.demo_database.session_factory() as session:
+            stored_keys = set(
+                (await session.scalars(select(PlanShareLinkModel.idempotency_key))).all()
+            )
+        assert "create-once" not in stored_keys
+        assert "regenerate-replay" not in stored_keys
+        assert all(key.startswith("share.") and len(key) == 70 for key in stored_keys)
+
+        conflict = await _create_share(
+            client,
+            plan_id=plan_id,
+            csrf=csrf,
+            idempotency_key="regenerate-replay",
+        )
+        assert conflict.status_code == 409
+        assert "regenerate-replay" not in conflict.text
+        other_plan, _collection_id, _item_ids = await _seed_plan(
+            api, confirmed=True
+        )
+        cross_plan = await _create_share(
+            client,
+            plan_id=other_plan,
+            csrf=csrf,
+            regenerate=True,
+            idempotency_key="regenerate-replay",
+        )
+        assert cross_plan.status_code == 409
+
+        explicit = await _create_share(
+            client,
+            plan_id=plan_id,
+            csrf=csrf,
+            regenerate=True,
+            idempotency_key="regenerate-explicit-two",
+        )
+        third_token = _issued_token(explicit)
+        assert third_token != second_token
+        assert (await _read_public(client, second_token)).json()["status"] == "unavailable"
+        assert (await _read_public(client, third_token)).json()["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_owner_preview_is_exact_redacted_snapshot_with_zero_share_writes(
+    test_settings,
+) -> None:
+    async with _client(test_settings) as (api, client):
+        api.state.map_provider = make_stub_map_provider()
+        await _demo(client)
+        plan_id, collection_id, _item_ids = await _seed_plan(api, confirmed=True)
+        async with api.state.demo_database.session_factory() as session:
+            before = await session.scalar(
+                select(func.count()).select_from(PlanShareLinkModel)
+            )
+
+        writes: list[str] = []
+
+        def capture_write(
+            _connection: object,
+            _cursor: object,
+            statement: str,
+            _parameters: object,
+            _context: object,
+            _many: object,
+        ) -> None:
+            if statement.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")):
+                writes.append(statement)
+
+        event.listen(
+            api.state.demo_database.engine.sync_engine,
+            "before_cursor_execute",
+            capture_write,
+        )
+        try:
+            preview = await client.get(f"/api/v1/plans/{plan_id}/share/preview")
+        finally:
+            event.remove(
+                api.state.demo_database.engine.sync_engine,
+                "before_cursor_execute",
+                capture_write,
+            )
+        assert preview.status_code == 200
+        body = preview.json()
+        assert body["version"] == 1
+        assert body["origin_label"] == "福田区"
+        assert body["items"][0]["public_address"] == "福中路184号"
+        assert body["items"][0]["map_url"].startswith("geo:")
+        assert body["expires_at"]
+        assert all(
+            marker.lower() not in preview.text.lower()
+            for marker in (
+                plan_id,
+                collection_id,
+                "authorization",
+                "idempotency",
+                "memory",
+                "conversation",
+                "private_note",
+            )
+        )
+        async with api.state.demo_database.session_factory() as session:
+            after = await session.scalar(
+                select(func.count()).select_from(PlanShareLinkModel)
+            )
+        assert before == after == 0
+        assert writes == []
+
+
+@pytest.mark.asyncio
 async def test_public_snapshot_is_redacted_read_only_and_has_security_headers(
     test_settings,
 ) -> None:
@@ -213,6 +370,9 @@ async def test_latest_confirmation_updates_share_while_draft_stays_private(
             repository = SqlAlchemyPlanRepository(session)
             now = utc_now()
             version_two_id = generate_plan_id()
+            later_constraints = _constraints().model_copy(
+                update={"end_at": _constraints().end_at + timedelta(hours=1)}
+            )
             user_id = await session.scalar(
                 select(PlanModel.user_id).where(PlanModel.id == plan_id)
             )
@@ -225,7 +385,7 @@ async def test_latest_confirmation_updates_share_while_draft_stays_private(
                 version=2,
                 operation=PlanOperation.ADJUST,
                 status=PlanStatus.GENERATING,
-                constraints=_constraints(),
+                constraints=later_constraints,
                 adjustment_text="只修改未确认草稿",
                 trace_id=generate_trace_id(),
                 idempotency_key=f"draft-{version_two_id}",
@@ -277,12 +437,24 @@ async def test_latest_confirmation_updates_share_while_draft_stays_private(
                 ),
                 plan_id=version_two_id,
             )
-            await repository.confirm(
+            confirmed_result = await repository.confirm(
                 user_id=version_two.user_id,
                 plan_id=version_two_id,
                 idempotency_key=f"confirm-{version_two_id}",
                 request_fingerprint=plan_request_fingerprint("confirm-v2"),
                 now=utc_now(),
+            )
+            sharing = PlanShareService(session)
+            await sharing.sync_expiry_after_confirmation(confirmed_result[0])
+            old_version = await repository.require(
+                user_id=version_two.user_id,
+                plan_id=plan_id,
+            )
+            await sharing.sync_expiry_after_confirmation(old_version)
+            share_row = await session.scalar(select(PlanShareLinkModel))
+            assert share_row is not None
+            assert share_row.expires_at.replace(tzinfo=UTC) == share_expiry_for(
+                later_constraints.end_at
             )
             await session.commit()
 
@@ -317,6 +489,83 @@ async def test_cancelled_and_unavailable_states_are_safe(test_settings) -> None:
         missing = await _read_public(client, "not-a-real-share")
         assert cancelled.json() == {"status": "cancelled", "plan": None}
         assert missing.json() == {"status": "unavailable", "plan": None}
+
+        async with api.state.demo_database.session_factory() as session:
+            row = await session.scalar(select(PlanShareLinkModel))
+            assert row is not None
+            expiry = row.expires_at.replace(tzinfo=UTC)
+            before = await PlanShareService(session).read_public(
+                token=token,
+                now=expiry - timedelta(microseconds=1),
+            )
+            boundary = await PlanShareService(session).read_public(
+                token=token,
+                now=expiry,
+            )
+            after = await PlanShareService(session).read_public(
+                token=token,
+                now=expiry + timedelta(microseconds=1),
+            )
+        assert before.status is PublicShareStatus.CANCELLED
+        assert boundary.status is PublicShareStatus.UNAVAILABLE
+        assert after.status is PublicShareStatus.UNAVAILABLE
+
+
+@pytest.mark.asyncio
+async def test_standard_app_map_configuration_builds_public_uri_without_http(
+    test_settings,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls = 0
+    closes = 0
+
+    async def forbidden_http(*_args: object, **_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("navigation URI generation must not use HTTP")
+
+    monkeypatch.setattr(
+        "app.providers.amap.AmapMapProvider._request_json",
+        forbidden_http,
+    )
+    original_close = AmapMapProvider.close
+
+    async def tracked_close(provider: AmapMapProvider) -> None:
+        nonlocal closes
+        closes += 1
+        await original_close(provider)
+
+    monkeypatch.setattr(AmapMapProvider, "close", tracked_close)
+    configured = test_settings.model_copy(
+        update={"amap_api_key": SecretStr("offline-fixture-amap-key")}
+    )
+    async with _client(configured) as (api, client):
+        await _demo(client)
+        plan_id, _collection_id, _item_ids = await _seed_plan(api, confirmed=True)
+        preview = await client.get(f"/api/v1/plans/{plan_id}/share/preview")
+        assert preview.status_code == 200
+        assert preview.json()["items"][0]["map_url"].startswith("https://uri.amap.com/")
+    assert calls == 0
+    assert closes == 1
+
+    no_map_settings = test_settings.model_copy(
+        update={
+            "database_url": (
+                f"sqlite+aiosqlite:///{tmp_path / 'no-map-real.db'}"
+            ),
+            "demo_database_url": (
+                f"sqlite+aiosqlite:///{tmp_path / 'no-map-demo.db'}"
+            ),
+        }
+    )
+    async with _client(no_map_settings) as (api, client):
+        await _demo(client)
+        plan_id, _collection_id, _item_ids = await _seed_plan(api, confirmed=True)
+        preview = await client.get(f"/api/v1/plans/{plan_id}/share/preview")
+        assert preview.status_code == 200
+        assert all(item["map_url"] is None for item in preview.json()["items"])
+    assert closes == 1
 
 
 @pytest.mark.asyncio

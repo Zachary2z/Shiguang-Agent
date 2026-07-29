@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,7 +12,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.collections import ResourceNotFoundError
+from app.domain.collections import IdempotencyConflictError, ResourceNotFoundError
 from app.domain.identifiers import generate_share_link_id
 from app.domain.places import CityScope, NavigationRequest
 from app.domain.plans import (
@@ -32,7 +33,10 @@ from app.domain.sharing import (
 )
 from app.domain.time import as_utc, require_aware_utc, utc_now
 from app.infrastructure.db.models import PlanModel, PlanShareLinkModel
-from app.infrastructure.repositories import SqlAlchemyPlanRepository
+from app.infrastructure.repositories import (
+    SqlAlchemyPlanRepository,
+    plan_request_fingerprint,
+)
 from app.providers.map import MapProvider, MapProviderError
 
 
@@ -59,6 +63,11 @@ def _stored_time(value: datetime) -> datetime:
     normalized = as_utc(value)
     assert normalized is not None
     return normalized
+
+
+def _scoped_share_key(user_id: str, client_key: str) -> str:
+    digest = hashlib.sha256(f"{user_id}\0{client_key}".encode()).hexdigest()
+    return f"share.{digest}"
 
 
 class PlanShareService:
@@ -93,7 +102,7 @@ class PlanShareService:
         )
         if row is None or row.revoked_at is not None:
             return OwnerPlanShareView(status=OwnerShareStatus.INACTIVE)
-        expiry = share_expiry_for(context.confirmed.constraints.end_at)
+        expiry = _stored_time(row.expires_at)
         status = (
             OwnerShareStatus.EXPIRED
             if timestamp >= expiry
@@ -111,15 +120,37 @@ class PlanShareService:
         user_id: str,
         plan_id: str,
         regenerate: bool,
+        idempotency_key: str,
         now: datetime | None = None,
     ) -> OwnerPlanShareView:
         timestamp = require_aware_utc(now or utc_now())
+        operation = "regenerate" if regenerate else "create"
+        stored_key = _scoped_share_key(user_id, idempotency_key)
+        fingerprint = plan_request_fingerprint(
+            {"operation": operation, "plan_id": plan_id}
+        )
+        replay = await self._idempotent_replay(
+            user_id=user_id,
+            idempotency_key=stored_key,
+            request_fingerprint=fingerprint,
+            now=timestamp,
+        )
+        if replay is not None:
+            return replay
         context = await self._require_shareable_plan(
             user_id=user_id,
             plan_id=plan_id,
             lock=True,
         )
         root_plan_id = context.requested.root_plan_id
+        replay = await self._idempotent_replay(
+            user_id=user_id,
+            idempotency_key=stored_key,
+            request_fingerprint=fingerprint,
+            now=timestamp,
+        )
+        if replay is not None:
+            return replay
         expiry = share_expiry_for(context.confirmed.constraints.end_at)
         if timestamp >= expiry:
             return OwnerPlanShareView(
@@ -151,6 +182,9 @@ class PlanShareService:
             plan_id=root_plan_id,
             user_id=user_id,
             token_hash=hash_share_token(token),
+            idempotency_key=stored_key,
+            request_fingerprint=fingerprint,
+            operation=operation,
             created_at=timestamp,
             expires_at=expiry,
             revoked_at=None,
@@ -160,17 +194,25 @@ class PlanShareService:
             await self._session.commit()
         except IntegrityError:
             await self._session.rollback()
+            replay = await self._idempotent_replay(
+                user_id=user_id,
+                idempotency_key=stored_key,
+                request_fingerprint=fingerprint,
+                now=timestamp,
+            )
+            if replay is not None:
+                return replay
             # PostgreSQL serializes on the root Plan row; this fallback preserves
-            # SQLite unit-test compatibility without exposing another bearer.
-            replay = await self._current_row(
+            # SQLite compatibility for a different-key create race.
+            current_replay = await self._current_row(
                 user_id=user_id,
                 root_plan_id=root_plan_id,
             )
-            if replay is None or replay.revoked_at is not None:
+            if current_replay is None or current_replay.revoked_at is not None:
                 raise
             return OwnerPlanShareView(
                 status=OwnerShareStatus.ACTIVE,
-                created_at=_stored_time(replay.created_at),
+                created_at=_stored_time(current_replay.created_at),
                 expires_at=share_expiry_for(context.confirmed.constraints.end_at),
             )
         return OwnerPlanShareView(
@@ -221,11 +263,10 @@ class PlanShareService:
         )
         stored_digest = row.token_hash if row is not None else ("0" * 64)
         digest_matches = hmac.compare_digest(stored_digest, digest)
-        if (
-            row is None
-            or not digest_matches
-            or row.revoked_at is not None
-        ):
+        if row is None or not digest_matches or row.revoked_at is not None:
+            return PublicPlanShareView(status=PublicShareStatus.UNAVAILABLE)
+        expiry = _stored_time(row.expires_at)
+        if timestamp >= expiry:
             return PublicPlanShareView(status=PublicShareStatus.UNAVAILABLE)
 
         root = await self._session.scalar(
@@ -244,9 +285,6 @@ class PlanShareService:
         )
         if confirmed is None:
             return PublicPlanShareView(status=PublicShareStatus.UNAVAILABLE)
-        expiry = share_expiry_for(confirmed.constraints.end_at)
-        if timestamp >= expiry:
-            return PublicPlanShareView(status=PublicShareStatus.UNAVAILABLE)
         snapshot = await self._build_snapshot(confirmed, expires_at=expiry)
         return PublicPlanShareView(
             status=PublicShareStatus.ACTIVE,
@@ -256,6 +294,12 @@ class PlanShareService:
     async def sync_expiry_after_confirmation(self, plan: PlanVersion) -> None:
         """Keep the stored audit expiry aligned when a new version is confirmed."""
 
+        latest = await self._plans.latest_confirmed(
+            user_id=plan.user_id,
+            root_plan_id=plan.root_plan_id,
+        )
+        if latest is None:
+            return
         await self._session.execute(
             update(PlanShareLinkModel)
             .where(
@@ -263,7 +307,58 @@ class PlanShareService:
                 PlanShareLinkModel.user_id == plan.user_id,
                 PlanShareLinkModel.revoked_at.is_(None),
             )
-            .values(expires_at=share_expiry_for(plan.constraints.end_at))
+            .values(expires_at=share_expiry_for(latest.constraints.end_at))
+        )
+
+    async def preview(
+        self,
+        *,
+        user_id: str,
+        plan_id: str,
+    ) -> SharedPlanSnapshot:
+        """Build the exact redacted owner preview without creating a share."""
+
+        context = await self._require_shareable_plan(
+            user_id=user_id,
+            plan_id=plan_id,
+            lock=False,
+        )
+        expiry = share_expiry_for(context.confirmed.constraints.end_at)
+        return await self._build_snapshot(context.confirmed, expires_at=expiry)
+
+    async def _idempotent_replay(
+        self,
+        *,
+        user_id: str,
+        idempotency_key: str,
+        request_fingerprint: str,
+        now: datetime,
+    ) -> OwnerPlanShareView | None:
+        operation = await self._session.scalar(
+            select(PlanShareLinkModel).where(
+                PlanShareLinkModel.user_id == user_id,
+                PlanShareLinkModel.idempotency_key == idempotency_key,
+            )
+        )
+        if operation is None:
+            return None
+        if operation.request_fingerprint != request_fingerprint:
+            raise IdempotencyConflictError
+        current = await self._current_row(
+            user_id=user_id,
+            root_plan_id=operation.plan_id,
+        )
+        if current is None:
+            return OwnerPlanShareView(status=OwnerShareStatus.INACTIVE)
+        expiry = _stored_time(current.expires_at)
+        return OwnerPlanShareView(
+            status=(
+                OwnerShareStatus.EXPIRED
+                if now >= expiry
+                else OwnerShareStatus.ACTIVE
+            ),
+            created_at=_stored_time(current.created_at),
+            expires_at=expiry,
         )
 
     async def _require_shareable_plan(

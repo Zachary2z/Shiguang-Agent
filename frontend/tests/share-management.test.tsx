@@ -6,6 +6,7 @@ import {
   ShareManagement,
   shareApiClient,
 } from "@/components/share-management";
+import { ApiError } from "@/lib/api-client";
 
 const inactive = {
   status: "inactive" as const,
@@ -21,6 +22,37 @@ const active = {
   share_url: "/share#new-secret-token",
   created: true,
 };
+const preview = {
+  version: 1,
+  confirmed_at: "2026-07-29T01:00:00Z",
+  updated_at: "2026-07-29T01:00:00Z",
+  start_at: "2026-07-30T02:00:00Z",
+  end_at: "2026-07-30T08:00:00Z",
+  origin_label: "福田区",
+  items: [
+    {
+      title: "深圳博物馆",
+      start_at: "2026-07-30T02:00:00Z",
+      end_at: "2026-07-30T04:00:00Z",
+      public_address: "福中路184号",
+      visit_duration_seconds: 7200,
+      transport_mode: "walking",
+      travel_duration_seconds: 900,
+      travel_distance_meters: 800,
+      buffer_after_seconds: 600,
+      price_amount: "20.00",
+      price_currency: "CNY",
+      source_label: "计划地点",
+      risks: ["出发前复核开放时间"],
+      queried_at: "2026-07-29T00:00:00Z",
+      map_url: "https://uri.amap.com/marker?position=114,22",
+    },
+  ],
+  total_cost_amount: "20.00",
+  total_cost_currency: "CNY",
+  risks: ["留意天气"],
+  expires_at: "2026-08-06T08:00:00Z",
+};
 
 beforeEach(() => {
   vi.restoreAllMocks();
@@ -33,6 +65,7 @@ describe("ShareManagement", () => {
     const request = vi
       .spyOn(shareApiClient, "request")
       .mockResolvedValueOnce(inactive)
+      .mockResolvedValueOnce(preview)
       .mockResolvedValueOnce(active);
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {
@@ -42,11 +75,21 @@ describe("ShareManagement", () => {
     render(<ShareManagement planId="pln_example" csrfToken="csrf-token" />);
 
     await userEvent.click(
-      await screen.findByRole("button", { name: "生成只读链接" }),
+      await screen.findByRole("button", { name: "预览并生成链接" }),
+    );
+    expect(request).toHaveBeenLastCalledWith(
+      "/api/v1/plans/pln_example/share/preview",
+    );
+    expect(await screen.findByText("深圳博物馆")).toBeInTheDocument();
+    expect(screen.getByText("福中路184号")).toBeInTheDocument();
+    expect(screen.getByText(/含公开路线入口/)).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "确认并生成链接" }),
     );
     expect(request).toHaveBeenLastCalledWith("/api/v1/plans/pln_example/share", {
       method: "POST",
       csrfToken: "csrf-token",
+      headers: { "Idempotency-Key": expect.any(String) },
     });
     await userEvent.click(
       screen.getByRole("button", { name: "复制新链接" }),
@@ -62,9 +105,9 @@ describe("ShareManagement", () => {
     const request = vi
       .spyOn(shareApiClient, "request")
       .mockResolvedValueOnce(hashedOnly)
+      .mockResolvedValueOnce(preview)
       .mockResolvedValueOnce(active)
       .mockResolvedValueOnce(inactive);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<ShareManagement planId="pln_example" csrfToken="csrf-token" />);
 
     expect(
@@ -75,9 +118,18 @@ describe("ShareManagement", () => {
     ).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "重建链接" }));
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: "确认重建并使旧链接失效",
+      }),
+    );
     expect(request).toHaveBeenLastCalledWith(
       "/api/v1/plans/pln_example/share/regenerate",
-      { method: "POST", csrfToken: "csrf-token" },
+      {
+        method: "POST",
+        csrfToken: "csrf-token",
+        headers: { "Idempotency-Key": expect.any(String) },
+      },
     );
     await userEvent.click(screen.getByRole("button", { name: "撤销分享" }));
     await waitFor(() =>
@@ -87,6 +139,29 @@ describe("ShareManagement", () => {
       ),
     );
     expect(screen.getByRole("status")).toHaveTextContent("旧链接立即失效");
+  });
+
+  it("reuses one idempotency key after an uncertain regenerate result", async () => {
+    const request = vi
+      .spyOn(shareApiClient, "request")
+      .mockResolvedValueOnce({ ...active, share_url: null, created: false })
+      .mockResolvedValueOnce(preview)
+      .mockRejectedValueOnce(new ApiError("network_error", null, null))
+      .mockResolvedValueOnce(active);
+    render(<ShareManagement planId="pln_example" csrfToken="csrf-token" />);
+
+    await userEvent.click(await screen.findByRole("button", { name: "重建链接" }));
+    const confirm = await screen.findByRole("button", {
+      name: "确认重建并使旧链接失效",
+    });
+    await userEvent.click(confirm);
+    await screen.findByText("分享状态暂时不可用，请稍后重试。");
+    await userEvent.click(confirm);
+
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(4));
+    const firstOptions = request.mock.calls[2][1];
+    const retryOptions = request.mock.calls[3][1];
+    expect(firstOptions?.headers).toEqual(retryOptions?.headers);
   });
 
   it("exposes accessible busy state and disables mutations while loading", () => {

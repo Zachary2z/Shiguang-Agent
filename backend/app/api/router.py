@@ -71,7 +71,7 @@ from app.domain.identity import SESSION_COOKIE_NAME, CurrentPrincipal
 from app.domain.memories import MemorySuggestionDecision, MemoryType
 from app.domain.places import PlaceSelection
 from app.domain.plans import ActivityArea, PlanConstraints, PlanPace, PlanPaceSource
-from app.domain.sharing import PublicShareStatus
+from app.domain.sharing import PublicShareStatus, SharedPlanSnapshot
 from app.domain.time import utc_now
 from app.infrastructure.db import Database
 from app.infrastructure.jobs import PostgresJobQueue
@@ -896,6 +896,22 @@ async def submit_plan_feedback(
 
 
 @api_router.get(
+    "/plans/{plan_id}/share/preview",
+    response_model=SharedPlanSnapshot,
+)
+async def preview_plan_share(
+    request: Request,
+    plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> SharedPlanSnapshot:
+    return await PlanShareService(
+        session,
+        map_provider=request.app.state.map_provider,
+    ).preview(user_id=user_id, plan_id=plan_id)
+
+
+@api_router.get(
     "/plans/{plan_id}/share",
     response_model=OwnerPlanShareResponse,
 )
@@ -919,11 +935,13 @@ async def create_plan_share(
     plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
     session: DbSession,
     user_id: CurrentUserId,
+    idempotency_key: Annotated[IdempotencyKey, Header(alias="Idempotency-Key")],
 ) -> OwnerPlanShareResponse:
     view = await PlanShareService(session).create(
         user_id=user_id,
         plan_id=plan_id,
         regenerate=False,
+        idempotency_key=idempotency_key,
     )
     return OwnerPlanShareResponse.model_validate(view.model_dump())
 
@@ -936,11 +954,13 @@ async def regenerate_plan_share(
     plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
     session: DbSession,
     user_id: CurrentUserId,
+    idempotency_key: Annotated[IdempotencyKey, Header(alias="Idempotency-Key")],
 ) -> OwnerPlanShareResponse:
     view = await PlanShareService(session).create(
         user_id=user_id,
         plan_id=plan_id,
         regenerate=True,
+        idempotency_key=idempotency_key,
     )
     return OwnerPlanShareResponse.model_validate(view.model_dump())
 

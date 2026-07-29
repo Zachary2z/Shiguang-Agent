@@ -13,6 +13,7 @@ from app.application.text_collection_workflow import IdempotencyLockRegistry
 from app.config import Settings, load_settings
 from app.infrastructure.db import Database
 from app.observability import RequestContextMiddleware, configure_logging
+from app.providers.amap import AmapMapProvider
 from app.providers.map import MapProvider
 from app.providers.storage import StorageProvider
 from app.providers.web import WebContentProvider
@@ -32,6 +33,12 @@ def create_app(
 
     resolved_settings = settings or load_settings()
     configure_logging(resolved_settings.log_level)
+    owned_map_provider = (
+        AmapMapProvider.from_settings(resolved_settings)
+        if map_provider is None and resolved_settings.amap_api_key is not None
+        else None
+    )
+    resolved_map_provider = map_provider or owned_map_provider
 
     @asynccontextmanager
     async def lifespan(api: FastAPI) -> AsyncIterator[None]:
@@ -46,6 +53,8 @@ def create_app(
                 await demo_database.connect()
             yield
         finally:
+            if owned_map_provider is not None:
+                await owned_map_provider.close()
             if demo_database is not None:
                 await demo_database.close()
             await database.close()
@@ -62,7 +71,7 @@ def create_app(
     api.state.web_provider = web_provider
     api.state.storage_provider = storage_provider
     api.state.demo_storage_provider = demo_storage_provider
-    api.state.map_provider = map_provider
+    api.state.map_provider = resolved_map_provider
     api.state.idempotency_locks = IdempotencyLockRegistry()
     api.add_middleware(RequestContextMiddleware)
     install_error_handlers(api)

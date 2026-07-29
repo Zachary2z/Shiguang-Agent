@@ -23,6 +23,11 @@ class PlanShareLinkModel(Base):
     __tablename__ = "plan_share_links"
     __table_args__ = (
         UniqueConstraint("token_hash", name="uq_plan_share_links_token_hash"),
+        UniqueConstraint(
+            "user_id",
+            "idempotency_key",
+            name="uq_plan_share_links_owner_idempotency",
+        ),
         ForeignKeyConstraint(
             ["plan_id", "user_id"],
             ["plans.id", "plans.user_id"],
@@ -34,12 +39,21 @@ class PlanShareLinkModel(Base):
             name="ck_plan_share_links_token_hash_format",
         ),
         CheckConstraint(
+            "length(request_fingerprint) = 64 "
+            "AND request_fingerprint = lower(request_fingerprint)",
+            name="ck_plan_share_links_fingerprint_format",
+        ),
+        CheckConstraint(
             "expires_at > created_at",
             name="ck_plan_share_links_expiry",
         ),
         CheckConstraint(
             "revoked_at IS NULL OR revoked_at >= created_at",
             name="ck_plan_share_links_revocation",
+        ),
+        CheckConstraint(
+            "operation IN ('create', 'regenerate')",
+            name="ck_plan_share_links_operation",
         ),
         Index(
             "uq_plan_share_links_one_unrevoked_per_plan",
@@ -59,6 +73,9 @@ class PlanShareLinkModel(Base):
     plan_id: Mapped[str] = mapped_column(String(36), nullable=False)
     user_id: Mapped[str] = mapped_column(String(36), nullable=False)
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    operation: Mapped[str] = mapped_column(String(16), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utc_now
     )

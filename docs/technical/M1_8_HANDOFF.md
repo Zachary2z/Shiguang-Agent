@@ -143,3 +143,44 @@ TEST_POSTGRESQL_URL='postgresql+asyncpg://USER:PASSWORD@127.0.0.1:5432/ADMIN_DB'
 ToolRegistry 和正式分享服务。分享规则只在应用服务与领域契约中定义，Controller
 不复制脱敏逻辑；前后端共用稳定 DTO 形状。没有样本白名单、关键词地址判断、进程锁、
 测试专用生产分支、第二 Repository、第二前端状态框架或静默跳过核心断言。
+
+## 主控验收缺陷修复（2026-07-29）
+
+本轮在失败候选 `c6f4023d7d8da4364fc57a76685a11fe9c7e8a8a` 上追加单独修复提交，
+关闭原 3 个 P1 与 1 个 P2：
+
+1. P1 重建幂等与并发：仍由唯一 `PlanShareService` 执行。尚未合并的
+   `20260729_0017` 在分享记录中增加经过用户作用域 SHA-256 处理的
+   `idempotency_key`、`request_fingerprint`
+   和 `operation`，以 `(user_id, idempotency_key)` 唯一约束作为跨 plan
+   最终边界。请求先检查指纹，再在根 Plan `FOR UPDATE` 后二次检查；同键并发只生成
+   一个 bearer，其余响应为 `created=false` 且无 `share_url`。同键跨 plan/操作
+   冲突，不同键代表新的明确重建
+2. P1 过期状态优先级：`read_public` 在读取计划状态前先检查记录的权威
+   `expires_at`。到期前取消返回 cancelled，到达边界或之后统一 unavailable；
+   确认同步始终查询最新确认版本，旧确认重放不能回退当前分享过期时间
+3. P2 标准运行入口路线：`create_app` 有配置时创建既有 `AmapMapProvider` 并放入
+   应用状态，lifespan 结束时关闭；无配置保持 `None`。标准配置入口测试取得既有
+   `https://uri.amap.com/` 导航 URI，并断言 HTTP 调用为 0
+4. P1 创建前脱敏预览：新增
+   `GET /api/v1/plans/{plan_id}/share/preview`，复用唯一快照构造入口，不创建分享
+   记录或 token。所有者先看到实际公开时间、地点、地址、路线、费用、风险、查询时间
+   和失效时间，确认后才 POST；网络结果不确定时前端保留同一个幂等键
+
+安全复核保持原结论：数据库没有明文 token，重放不能再次展示或生成 bearer；
+Authorization、token、幂等键、私人字段和内部 ID 不进入日志、异常或公开 DTO。
+没有新增分享服务、脱敏器、MapProvider、进程锁或重试循环。
+
+修复验证：
+
+- pip check、Ruff、strict mypy（139 个源文件）通过；
+- M1-8 聚焦 `11 passed`，M1-8 加迁移聚焦 `36 passed`；
+- 非真实全集 `1652 passed, 16 skipped, 2 deselected`；
+- 仓库外插件封锁 DNS、socket `connect`/`connect_ex` 与
+  `create_connection` 后，受影响测试 `42 passed`；
+- 一次性 PostgreSQL 16 的八客户端重放与迁移往返 `2 passed`，容器已删除；
+- 前端 lint、typecheck、build 通过，Vitest `81 passed`，Playwright
+  `29 passed`。
+
+当前仍为“待主控复验”。本分支不合并、不推送，不调用真实地图、模型、网页或其他
+外部 API，也不开始 M1-Gate。

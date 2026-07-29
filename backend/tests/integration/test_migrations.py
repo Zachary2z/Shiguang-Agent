@@ -414,6 +414,9 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
         "plan_id",
         "user_id",
         "token_hash",
+        "idempotency_key",
+        "request_fingerprint",
+        "operation",
         "created_at",
         "expires_at",
         "revoked_at",
@@ -454,6 +457,10 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
         unique and columns == ("plan_id",)
         for unique, columns in share_indexes.values()
     )
+    assert any(
+        unique and columns == ("user_id", "idempotency_key")
+        for unique, columns in share_indexes.values()
+    )
     assert len(share_foreign_keys) == 2
     assert {row[2] for row in share_foreign_keys} == {"plans"}
     assert "uq_agent_runs_trace_id" in table_sql
@@ -480,6 +487,8 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
         "ck_web_sessions_expiry_order",
         "ck_web_sessions_revocation_order",
         "ck_plan_share_links_token_hash_format",
+        "ck_plan_share_links_fingerprint_format",
+        "ck_plan_share_links_operation",
         "ck_plan_share_links_expiry",
         "ck_plan_share_links_revocation",
     ):
