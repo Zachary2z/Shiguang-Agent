@@ -8,11 +8,12 @@ M1-Gate 的离线、封网、PostgreSQL 16、Compose、前端、闭环场景和�
 返回脱敏 `MapProviderError`。定点零重试诊断后，其中 1 组已完整成功，另外 2 组
 稳定返回 `MAP_PROVIDER_INVALID_RESPONSE`。安全结构分类进一步确认：两个有效
 20 候选响应各含一个 `typecode / nonempty_string` 畸形候选，同时存在可成功映射
-候选；当前实现却令整批失败。该候选隔离缺陷登记为 **P1 Gate 阻塞项**。
+候选；修复前实现会令整批失败。现已在唯一 `AmapMapProvider.search_poi` 映射边界
+完成逐候选隔离，并通过离线、契约和封网聚焦回归。
 
-因此 M1-Gate **仍在进行中，等待地图候选隔离 P1 修复和主控最终验收**。本报告
-不宣布 M1 关闭，不允许开始 M2。真实预检全程零自动重试，没有输出密钥、模型名、
-端点、完整请求或响应；对象存储等其他外部 API 调用为 0。
+当前状态为 **生产修复完成，等待主控复验**。M1-Gate 仍在进行中；本报告不宣布
+M1 关闭，不允许开始 M2，也不自行进行真实复测。真实预检全程零自动重试，没有
+输出密钥、模型名、端点、完整请求或响应；本次修复阶段真实 API 调用为 0。
 
 ## 2. 基线与开始门禁
 
@@ -236,11 +237,11 @@ P95。预检到此停止。
 映射失败隔离到该候选，保留可映射候选。若非空响应全部候选均无法映射，仍返回安全
 `MAP_PROVIDER_INVALID_RESPONSE`。
 
-## 10. 阻塞项与剩余 P2
+## 10. 修复项、复验状态与剩余 P2
 
-### P1：单个畸形地图候选导致整批合法候选失败
+### P1：单个畸形地图候选导致整批合法候选失败（生产修复完成，等待主控复验）
 
-- 定位：`backend/app/providers/amap.py:193` 的搜索映射、
+- 定位：`backend/app/providers/amap.py` 的 `search_poi` 搜索映射、
   `backend/tests/integration/test_amap_real.py:42` 的显式真实验收入口。
 - 复现：两个固定公共样本均得到有效 20 候选列表；序号 5/9 的首个失败候选为
   `typecode / nonempty_string`，其他候选至少有一个可成功映射，最终仍整体返回
@@ -248,9 +249,18 @@ P95。预检到此停止。
 - 实际：单个候选的畸形必需分类字段使同批所有合法候选不可用。
 - 预期：不伪造畸形字段；隔离候选本地映射失败并保留合法候选。只有非空响应全部
   候选无法映射、envelope/list 损坏或有效候选存在跨候选冲突时才整体安全失败。
-- 影响：路线与地点能力的真实可靠性证据不足，不能关闭 M1-Gate。
+- 修复：在唯一搜索映射边界逐候选调用既有 `_map_poi()`；候选本地的
+  `_InvalidAmapResponse`、Pydantic `ValidationError`、`TypeError` 或
+  `ValueError` 只丢弃当前候选，合法候选按供应商原顺序返回。没有伪造或猜测任何
+  字段，没有增加白名单、第二套 parser、Provider、DTO、候选规则或响应日志。
+- 保持的安全边界：原始 `pois=[]` 仍正常返回空结果；原始列表非空但零个候选成功
+  映射时仍返回 `MAP_PROVIDER_INVALID_RESPONSE`；重复有效 identity 仍整体失败；
+  envelope、HTTP 错误、城市校验、`get_poi`、路线、天气、DTO、重试及公开错误
+  映射保持不变。
+- 影响与状态：生产缺陷已定点修复，但未经新的真实调用授权复测，且 M1-Gate 仍需
+  主控复验，因此不关闭 M1。
 
-最小生产修复 Prompt：
+已执行的最小生产修复 Prompt：
 
 > 只修复 M0-3B `AmapMapProvider.search_poi` 的候选隔离 P1，不新增产品功能、不
 > 调用真实 API。当前 `backend/app/providers/amap.py:211-220` 使用单个 tuple
@@ -267,11 +277,31 @@ P95。预检到此停止。
 > 与输入不变；运行 Ruff、strict mypy、完整 `test_amap_provider.py`、地图契约、
 > 非真实全集和 M1 核心闭环。修复后真实复测仍须重新取得授权。
 
+离线复验证据：
+
+- `python -m pip check`、`python -m ruff check .` 通过；strict mypy
+  `139` 个源文件通过。
+- `tests/unit/test_amap_provider.py`：`130 passed`。
+- 指定基线不存在任务文本中的
+  `tests/contract/test_m0_3d_place_targets.py`，因此原命令未收集测试；仓库现有
+  权威等价入口 `tests/application/test_place_target_service.py` 与
+  `tests/application/test_external_place_supplement.py`：`70 passed`。
+- 仓库外 pytest 插件封锁 DNS、`connect`、`connect_ex` 和
+  `create_connection` 后，Amap 与上述应用层聚焦回归：`200 passed`。
+- 普通及封网非真实全集结果一致：
+  `1 failed, 1659 passed, 16 skipped, 2 deselected`。唯一失败为既有
+  `tests/contract/test_m1_5_plans.py:517`：固定 2026-07-29 行程配合
+  `datetime.now(UTC)`，在当前墙上时钟超过固定行程有效边界后，确认写入触发
+  `ck_approvals_expiry_order`。该文件未被本修复修改，属于独立测试稳定性问题，
+  本分支不越过允许范围修复。
+- 本次修复未读取 `.env`，真实地图、模型、网页、图片或其他外部 API 调用为 0；
+  未修改迁移，未自行进行真实复测。
+
 - 既有 M1-5 高基数候选截断为非阻断 P2。
 - npm 完整开发依赖 audit 仍有 9 个 high，位于既有 ESLint/minimatch 开发依赖链；
   生产构建通过，既有阶段证据中的生产依赖 audit 为 0。
 - 浏览器自动化仍以本机 Chromium 为主，未覆盖 Safari/Firefox/Windows。
 - M1-2 没有独立 HANDOFF 文件是历史文档组织差异，不是缺陷。
 
-地图阻塞项关闭且主控复验完成前，M1-Gate 不得标记“已完成”，不得合并、推送或
-开始 M2。
+候选隔离生产修复已完成，等待主控复验；主控处理独立测试稳定性问题并完成最终
+复验前，M1-Gate 不得标记“已完成”，不得合并、推送或开始 M2。

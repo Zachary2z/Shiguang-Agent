@@ -5,9 +5,9 @@
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-Gate 核心闭环验收 |
 | 状态 | 进行中 |
-| 当前分支 | codex/m1-gate |
+| 当前分支 | codex/m1-gate-amap-candidate-isolation |
 | 最近更新 | 2026-07-29 |
-| 阻塞项 | P1：单个畸形 typecode 候选导致整批合法地图候选失败，待 M0-3B 定点修复；M1-Gate 待主控最终验收 |
+| 阻塞项 | 高德候选隔离 P1 已完成生产修复，等待主控复验；非真实全集另有一个与本修复无关的 M1-5 固定日期测试失败待主控处理；M1-Gate 未关闭 |
 
 ## 当前任务
 
@@ -58,7 +58,7 @@ M1-5 也已通过主控验收：计划创建、后台生成、外部补充授权
 | M1-6 执行入口与手动反馈 | 已完成 | 主控复核 iCalendar、导航、反馈更正、收藏到访重算、PostgreSQL 并发/外键、迟到响应与真实离线 M06 闭环通过 |
 | M1-7 我的、记忆和数据控制 | 已完成 | 主控复核 Memory 授权、建议终态、pace 优先级、粗区域、计划使用、并发幂等、私有导出及 M07 竞态通过 |
 | M1-8 只读分享能力 | 已完成 | 主控复核哈希 bearer、创建前脱敏预览、并发重放、取消后撤销、七天过期、匿名 GET、PostgreSQL 与 M08 响应式页面通过 |
-| M1-Gate 核心闭环验收 | 进行中 | 离线、封网、PostgreSQL 16、Compose、前端、21 组闭环通过；安全分类证明单个畸形地图候选拖垮整批合法候选 |
+| M1-Gate 核心闭环验收 | 进行中 | 高德候选隔离 P1 已完成生产修复并通过聚焦/封网回归，等待主控复验；M1 未关闭 |
 
 状态只允许使用：未开始、进行中、待验收、待主控验收、已完成、阻塞。
 
@@ -105,13 +105,13 @@ M1-5 也已通过主控验收：计划创建、后台生成、外部补充授权
 
 ## 下一步
 
-主控复验 `codex/m1-gate` 的两项测试稳定性修复和
-`docs/technical/M1_VALIDATION_REPORT.md`。真实模型/网页/图片有限预检已安全终止；
-地图定点诊断中原失败样本 1 已完整成功，另外两个样本在 2xx 后稳定返回
-`MAP_PROVIDER_INVALID_RESPONSE`。后续安全结构分类已证明两个有效 20 候选响应
-分别由单个 `typecode / nonempty_string` 畸形候选拖垮，且同批存在可映射候选。
-按验证报告的最小 Prompt 修复唯一搜索映射边界并完成复测前，M1-Gate 不得标记
-完成。不得提前实现微信、主动提醒、云部署或 M2。
+主控复验 `codex/m1-gate-amap-candidate-isolation` 的唯一搜索映射边界和
+`docs/technical/M1_VALIDATION_REPORT.md`。高德候选隔离 P1 已完成生产修复：
+逐候选复用现有 `_map_poi()`，只丢弃候选本地映射失败，保留合法候选顺序；非空
+响应全部候选失败和重复有效 identity 仍整体安全失败。聚焦、契约和封网回归通过。
+非真实全集另暴露一个与本修复无关的 M1-5 固定日期测试失败，本分支不越界修复。
+主控复验并处理该测试稳定性问题前，M1-Gate 不得标记完成。不得自行真实复测，
+不得提前实现微信、主动提醒、云部署或 M2。
 
 ## 已确认 M0-Gate 延迟与超时校准
 
@@ -3114,3 +3114,34 @@ M1-5 也已通过主控验收：计划创建、后台生成、外部补充授权
   `docs/technical/M1_VALIDATION_REPORT.md`，要求只在唯一搜索映射边界逐候选隔离，
   禁止样本白名单、第二套 parser、宽泛吞错或响应日志。P1 关闭前不关闭 M1、不
   合并、不推送、不开始 M2
+
+#### 2026-07-29｜M1-Gate 高德候选隔离 P1 修复｜待主控复验
+
+- 基线与范围：从 `ae55dcc3877ede7a6ae8acf98fb2820fb73c9a3e` 创建
+  `codex/m1-gate-amap-candidate-isolation`；只修改唯一
+  `AmapMapProvider.search_poi` 候选映射边界、对应离线测试和 Gate 记录，没有
+  修改迁移、其他 Provider/API/DTO、路线、天气、`get_poi`、重试或 M2 功能
+- 生产修复：逐候选调用既有 `_map_poi()`；候选本地的
+  `_InvalidAmapResponse`、`ValidationError`、`TypeError`、`ValueError` 只丢弃
+  当前候选，合法候选保持原顺序。没有伪造 typecode、坐标、地址、城市或其他字段，
+  没有地点/字段白名单、第二套 parser、宽泛异常捕获或响应日志
+- 安全语义：原始空列表仍正常返回空结果；非空列表零个候选映射成功仍返回
+  `MAP_PROVIDER_INVALID_RESPONSE`；多个有效候选 identity 重复仍整体安全失败；
+  混城、非法坐标和必填字段畸形按候选隔离，不削弱内部 POI 契约
+- 离线验证：pip check、Ruff 和 strict mypy（139 个源文件）通过；Amap 单元
+  `130 passed`；地点目标与外部补充等价契约入口 `70 passed`；仓库外插件封锁
+  DNS、connect、connect_ex、create_connection 后聚焦回归 `200 passed`
+- 测试路径差异：任务指定的
+  `tests/contract/test_m0_3d_place_targets.py` 在指定基线不存在，原命令因此未收集
+  测试；使用仓库现有权威等价入口
+  `tests/application/test_place_target_service.py` 与
+  `tests/application/test_external_place_supplement.py` 完成上述 `70 passed`
+- 全集结果：普通和封网非真实全集均为
+  `1 failed, 1659 passed, 16 skipped, 2 deselected`。唯一失败位于既有
+  `tests/contract/test_m1_5_plans.py:517`：测试在固定 2026-07-29 行程上使用
+  `datetime.now(UTC)` 完成生成，当前墙上时钟晚于固定行程有效边界，确认时触发
+  `ck_approvals_expiry_order`。该文件未被本分支修改，属于与候选隔离无关的测试
+  稳定性问题；本任务按允许范围不修改
+- 外部调用与状态：未读取 `.env`，真实高德、模型、网页、图片及其他外部 API
+  调用均为 0；没有进行真实复测，没有合并或推送。候选隔离生产修复完成，等待
+  主控复验；不得据此关闭 M1-Gate 或开始 M2

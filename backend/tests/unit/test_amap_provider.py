@@ -339,6 +339,156 @@ async def test_search_preserves_empty_unique_and_multiple_results(
     await provider.close()
 
 
+@pytest.mark.parametrize("invalid_index", [0, 2, 4])
+@pytest.mark.asyncio
+async def test_search_isolates_malformed_candidate_and_preserves_valid_order(
+    invalid_index: int,
+) -> None:
+    valid = [
+        raw_poi(poi_id=f"B0SZ00000{index}", name=f"合法候选{index}")
+        for index in range(1, 5)
+    ]
+    malformed = raw_poi(poi_id="B0SZ000009", name="畸形候选", typecode="damaged")
+    pois = [*valid]
+    pois.insert(invalid_index, malformed)
+    snapshot = deepcopy(pois)
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(
+            lambda request: httpx.Response(200, json=envelope(pois=pois))
+        ),
+    )
+
+    result = await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
+
+    assert [poi.poi_id for poi in result.pois] == [
+        "B0SZ000001",
+        "B0SZ000002",
+        "B0SZ000003",
+        "B0SZ000004",
+    ]
+    assert pois == snapshot
+    await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_search_isolates_multiple_candidate_local_mapping_failures() -> None:
+    invalid_type = raw_poi(poi_id="B0SZ000002", typecode="damaged")
+    invalid_coordinate = raw_poi(poi_id="B0SZ000003")
+    invalid_coordinate["location"] = "not-a-coordinate"
+    missing_address = raw_poi(poi_id="B0SZ000004")
+    missing_address.pop("address")
+    invalid_dto = raw_poi(
+        poi_id="B0SZ000006",
+        name="过长候选" * 100,
+    )
+    valid_first = raw_poi(poi_id="B0SZ000001", name="第一个合法候选")
+    valid_last = raw_poi(poi_id="B0SZ000005", name="最后一个合法候选")
+    pois = [
+        invalid_type,
+        valid_first,
+        invalid_coordinate,
+        missing_address,
+        invalid_dto,
+        valid_last,
+    ]
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(
+            lambda request: httpx.Response(200, json=envelope(pois=pois))
+        ),
+    )
+
+    result = await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
+
+    assert [poi.poi_id for poi in result.pois] == ["B0SZ000001", "B0SZ000005"]
+    await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_search_isolates_mixed_city_candidate_without_weakening_city_scope() -> None:
+    pois = [
+        raw_poi(poi_id="B0SZ000001", name="深圳合法候选一"),
+        raw_poi(
+            poi_id="B0GZ000001",
+            name="其他城市候选",
+            city_code="guangzhou",
+        ),
+        raw_poi(poi_id="B0SZ000002", name="深圳合法候选二"),
+    ]
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(
+            lambda request: httpx.Response(200, json=envelope(pois=pois))
+        ),
+    )
+
+    result = await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
+
+    assert [poi.poi_id for poi in result.pois] == ["B0SZ000001", "B0SZ000002"]
+    assert all(poi.city_code == "shenzhen" for poi in result.pois)
+    await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_search_repeated_and_concurrent_candidate_isolation_has_no_state() -> None:
+    invalid = raw_poi(poi_id="B0SZ000002", typecode="damaged")
+    pois = [
+        raw_poi(poi_id="B0SZ000001", name="合法候选一"),
+        invalid,
+        raw_poi(poi_id="B0SZ000003", name="合法候选二"),
+    ]
+    payload = envelope(pois=pois)
+    snapshot = deepcopy(payload)
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=payload)
+        ),
+    )
+    request = SearchPoiRequest(query="地点", city=SHENZHEN)
+
+    results = await asyncio.gather(*(provider.search_poi(request) for _ in range(12)))
+
+    assert all(
+        [poi.poi_id for poi in result.pois] == ["B0SZ000001", "B0SZ000003"]
+        for result in results
+    )
+    assert payload == snapshot
+    await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_search_success_does_not_expose_discarded_candidate_content(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    discarded_secret = "discarded-candidate-secret-must-not-leak"
+    malformed = raw_poi(
+        poi_id="B0SZ000002",
+        name=discarded_secret,
+        typecode="damaged",
+    )
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(
+            lambda request: httpx.Response(
+                200,
+                json=envelope(pois=[malformed, raw_poi()]),
+            )
+        ),
+    )
+
+    with caplog.at_level(logging.DEBUG):
+        result = await provider.search_poi(
+            SearchPoiRequest(query="safe query", city=SHENZHEN)
+        )
+
+    exposed = repr(result) + str(result.model_dump()) + caplog.text
+    assert [poi.poi_id for poi in result.pois] == ["B0SZ000001"]
+    assert discarded_secret not in exposed
+    await provider.close()
+
+
 @pytest.mark.parametrize(
     ("business_area", "tel", "expected_business_area", "expected_phone"),
     [
@@ -507,17 +657,9 @@ async def test_optional_poi_text_rejects_nonempty_lists_and_other_non_strings(
     await provider.close()
 
 
-@pytest.mark.parametrize(
-    "pois",
-    [
-        [raw_poi(), raw_poi()],
-        [raw_poi(), raw_poi(poi_id="B0GZ000001", city_code="guangzhou")],
-    ],
-)
 @pytest.mark.asyncio
-async def test_search_rejects_duplicate_or_mixed_city_results(
-    pois: list[dict[str, object]],
-) -> None:
+async def test_search_rejects_duplicate_valid_identities() -> None:
+    pois = [raw_poi(), raw_poi()]
     provider = AmapMapProvider(
         config=amap_config(max_retries=0),
         transport=mock_transport(lambda request: httpx.Response(200, json=envelope(pois=pois))),

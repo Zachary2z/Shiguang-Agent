@@ -210,7 +210,16 @@ class AmapMapProvider(MapProvider):
         invalid_response = False
         try:
             raw_pois = _required_list(payload, "pois")
-            pois = tuple(_map_poi(item, city=city) for item in raw_pois)
+            mapped_pois: list[Poi] = []
+            for item in raw_pois:
+                try:
+                    poi = _map_poi(item, city=city)
+                except (_InvalidAmapResponse, ValidationError, TypeError, ValueError):
+                    continue
+                mapped_pois.append(poi)
+            if raw_pois and not mapped_pois:
+                raise _InvalidAmapResponse
+            pois = tuple(mapped_pois)
             if len({(poi.provider, poi.poi_id) for poi in pois}) != len(pois):
                 raise _InvalidAmapResponse
             result = PoiSearchResult(city_code=city.city_code, pois=pois)
