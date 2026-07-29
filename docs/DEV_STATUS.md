@@ -6,7 +6,7 @@
 | 当前子阶段 | M1-7 我的、记忆和数据控制 |
 | 状态 | 待主控验收 |
 | 当前分支 | codex/m1-7-memory-data-control |
-| 最近更新 | 2026-07-28 |
+| 最近更新 | 2026-07-29 |
 | 阻塞项 | 无；M1-8 及后续阶段不得提前开始 |
 
 ## 当前任务
@@ -31,6 +31,9 @@ M1-7 第二轮主控验收缺陷修复已完成并待复验：反馈入口恢复
 偏好候选；计划约束显式区分本次节奏与系统默认，只有后者可由有效 Memory 补全；
 常用区域改为复用 `ActivityArea` 的城市无关粗区域契约并恢复安全修改。M1-8 及后续
 阶段不得提前开发。
+M1-7 第三轮主控验收缺陷修复已完成并待复验：Memory 领域模块可在全新解释器中独立
+导入；非用户 pace 默认会在每次生成前重新计算；建议终态按用户、来源计划和规范化
+证据稳定识别；M06/M07 与公开 API 统一为三值 pace 候选契约。阶段仍待主控验收。
 
 ## M0 状态
 
@@ -2860,3 +2863,34 @@ M1-7 第二轮主控验收缺陷修复已完成并待复验：反馈入口恢复
   PostgreSQL 容器已移除，没有数据库、导出或真实用户数据进入仓库。三个 P1 的实现
   与回归已完成，但阶段仍保持“待主控验收”，不提前声明验收通过，不合并、不推送、
   不开始 M1-8
+
+#### 2026-07-29｜M1-7 第三轮主控验收缺陷修复｜待主控验收
+
+- 修复基线：在 `codex/m1-7-memory-data-control` 当前
+  `1baa982dbec8d8dc2a8d7c68dbd34b4506de32a8` 上追加独立修复；完整提交 SHA 由本次
+  最终交付返回。未 amend、rebase、合并 main 或推送
+- 领域导入：移除 `app.domain.memories` 对 plans 包的顶层初始化依赖；usual_area
+  验证时才延迟引用唯一 `ActivityArea`。新增真实子进程回归，未依赖 pytest
+  `conftest` 或预导入 `app.main`
+- pace 重算：唯一 `PlanConstraints` 和唯一规划执行器不变。`user_request` 永远
+  保留；其余来源每次先恢复 `balanced/system_default`，再应用当前有效且确定性最新
+  的 pace Memory。删除、停用、过期和被替换的旧默认立即退出，只有实际改变系统默认
+  的 Memory 才记录使用依据
+- 建议终态：既有反馈审计和 Memory Repository 使用当前用户、来源 plan 与 NFKC/
+  空白/casefold 规范化证据摘要作为稳定身份。confirmed/rejected 均为终态；同计划
+  更正 content/value/type 不会重复询问或创建 Memory，不同计划相同文字保持独立；
+  0015 历史中性 JSON 继续读取
+- pace 契约与界面：`PreferenceSuggestion` 和公开反馈请求统一复用 `PlanPace`
+  枚举；非法值在保存反馈前返回 422。M06/M07 pace 值均为 relaxed、balanced、packed
+  三项原生选择控件，正负偏好仍为文本；未新增前端状态框架
+- 验证：全新进程导入通过；M1-6/M1-7/检索/草案/迁移聚焦 `150 passed`；pip check、
+  Ruff、strict mypy（135 个源文件）通过；普通非真实全集及仓库外 DNS/socket 封网
+  全集均为 `1641 passed, 15 skipped, 2 deselected`；SQLite 迁移 `25 passed`，
+  Alembic 唯一 head `20260728_0016`；一次性 PostgreSQL 16 强制行锁并发与迁移往返
+  `2 passed`，容器已移除
+- 前端与范围：lint、typecheck、Vitest `73 passed`、build 和 Playwright
+  `27 passed`。既有行锁、并发重放、结构化区域、千条 Memory 有界排序、幂等键和
+  409 恢复未重做且回归通过。未读取 `.env`，未调用真实模型、地图、网页或付费 API；
+  没有地名白名单、关键词推断、第二套服务/仓储/排序器/Runner/状态框架或 M1-8 功能
+- 状态与风险：四项修复及自动化验证已完成，但仍保持“待主控验收”，不提前声明验收
+  通过。保留既有 M1-5 高基数候选截断 P2；本分支不合并、不推送、不开始 M1-8

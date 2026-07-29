@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
@@ -487,6 +487,15 @@ class PreferenceCandidateRequest(ApiModel):
     content: str = Field(min_length=1, max_length=500)
     value: str = Field(min_length=1, max_length=100)
     evidence_summary: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_pace_value(self) -> Self:
+        if self.memory_type == "pace_preference":
+            try:
+                PlanPace(self.value)
+            except ValueError as error:
+                raise ValueError("pace preference value is invalid") from error
+        return self
 
     def to_domain(self) -> PreferenceSuggestion:
         return PreferenceSuggestion(

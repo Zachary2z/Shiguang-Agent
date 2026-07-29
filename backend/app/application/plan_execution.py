@@ -248,9 +248,10 @@ class PlanFeedbackService:
             preference_candidate is not None
             and await SqlAlchemyMemoryRepository(
                 session
-            ).suggestion_payload_was_rejected(
+            ).suggestion_evidence_is_terminal(
                 user_id=user_id,
-                payload=preference_candidate.model_dump(mode="json"),
+                plan_id=plan_id,
+                suggestion=preference_candidate,
             )
         ):
             stored_candidate = None

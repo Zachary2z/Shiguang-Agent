@@ -23,7 +23,7 @@ from app.application.map_plan_facts import (
     MAX_PLAN_ROUTE_CALLS,
     MapPlanFactResolver,
 )
-from app.application.memories import MemoryService
+from app.application.memories import MemoryPlanningService, MemoryService
 from app.application.plan_experience import (
     ExistingPlanServicesExecutor,
     PlanGenerationOutcome,
@@ -277,6 +277,90 @@ def _constraints(
         created_at=NOW,
         expires_at=END + timedelta(days=1),
     )
+
+
+def _pace_memory(value: PlanPace) -> Memory:
+    return Memory(
+        id=generate_memory_id(),
+        type=MemoryType.PACE_PREFERENCE,
+        content=f"默认使用{value.value}节奏",
+        value=value.value,
+        source=MemorySource(
+            type=MemorySourceType.EXPLICIT_USER,
+            summary="由你明确设置并授权保存",
+        ),
+        confidence=100,
+        created_at=NOW,
+        updated_at=NOW,
+        version=1,
+    )
+
+
+@pytest.mark.parametrize("inactive_state", ["deleted", "disabled", "expired"])
+def test_pace_default_is_recomputed_after_memory_becomes_inactive(
+    inactive_state: str,
+) -> None:
+    current = NOW + timedelta(hours=2)
+    inactive = _pace_memory(PlanPace.RELAXED)
+    if inactive_state == "deleted":
+        inactive = inactive.model_copy(update={"deleted_at": NOW + timedelta(hours=1)})
+    elif inactive_state == "disabled":
+        inactive = inactive.model_copy(update={"disabled_at": NOW + timedelta(hours=1)})
+    else:
+        inactive = inactive.model_copy(update={"expires_at": NOW + timedelta(hours=1)})
+    stale = _constraints().model_copy(
+        update={
+            "pace": PlanPace.RELAXED,
+            "pace_source": PlanPaceSource.MEMORY_DEFAULT,
+        }
+    )
+
+    effective, usages = MemoryPlanningService.apply_pace_default(
+        constraints=stale,
+        memories=tuple(memory for memory in (inactive,) if memory.is_effective(current)),
+    )
+
+    assert effective.pace is PlanPace.BALANCED
+    assert effective.pace_source is PlanPaceSource.SYSTEM_DEFAULT
+    assert usages == {}
+
+
+def test_pace_default_uses_only_latest_effective_memory_and_never_user_request() -> None:
+    relaxed = _pace_memory(PlanPace.RELAXED)
+    packed = _pace_memory(PlanPace.PACKED).model_copy(
+        update={"created_at": NOW + timedelta(minutes=1), "updated_at": NOW + timedelta(minutes=1)}
+    )
+    system_default = _constraints().model_copy(
+        update={"pace_source": PlanPaceSource.SYSTEM_DEFAULT}
+    )
+
+    effective, usages = MemoryPlanningService.apply_pace_default(
+        constraints=system_default,
+        memories=(relaxed, packed),
+    )
+    explicit = system_default.model_copy(
+        update={
+            "pace": PlanPace.RELAXED,
+            "pace_source": PlanPaceSource.USER_REQUEST,
+        }
+    )
+    preserved, explicit_usages = MemoryPlanningService.apply_pace_default(
+        constraints=explicit,
+        memories=(packed,),
+    )
+    balanced, balanced_usages = MemoryPlanningService.apply_pace_default(
+        constraints=system_default,
+        memories=(_pace_memory(PlanPace.BALANCED),),
+    )
+
+    assert effective.pace is PlanPace.PACKED
+    assert effective.pace_source is PlanPaceSource.MEMORY_DEFAULT
+    assert set(usages) == {packed.id}
+    assert preserved == explicit
+    assert explicit_usages == {}
+    assert balanced.pace is PlanPace.BALANCED
+    assert balanced.pace_source is PlanPaceSource.SYSTEM_DEFAULT
+    assert balanced_usages == {}
 
 
 def _known_poi_facts(poi: Poi, *, duration: int = 600) -> PoiPlanningFacts:

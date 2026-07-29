@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from unicodedata import normalize
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -129,7 +130,7 @@ class SqlAlchemyMemoryRepository:
         )
 
     async def pending_suggestions(self, *, user_id: str) -> tuple[MemorySuggestion, ...]:
-        rejected = await self._rejected_suggestion_payloads(user_id=user_id)
+        terminal_evidence = await self._terminal_suggestion_evidence(user_id=user_id)
         rows = (
             await self._session.execute(
                 select(PlanFeedbackAuditModel)
@@ -153,11 +154,16 @@ class SqlAlchemyMemoryRepository:
         ).scalars()
         suggestions: list[MemorySuggestion] = []
         for row in rows:
-            if self._suggestion_payload_identity(row.preference_suggestion_json) in rejected:
-                continue
             payload = PreferenceSuggestion.model_validate_json(
                 json.dumps(row.preference_suggestion_json)
             )
+            identity = self._suggestion_evidence_identity(
+                user_id=user_id,
+                plan_id=row.plan_id,
+                suggestion=payload,
+            )
+            if identity is not None and identity in terminal_evidence:
+                continue
             suggestions.append(
                 MemorySuggestion(
                     id=row.id,
@@ -198,15 +204,27 @@ class SqlAlchemyMemoryRepository:
         payload = PreferenceSuggestion.model_validate_json(
             json.dumps(row.preference_suggestion_json)
         )
-        rejected = await self._rejected_suggestion_payloads(user_id=user_id)
-        if self._suggestion_payload_identity(row.preference_suggestion_json) in rejected:
+        identity = self._suggestion_evidence_identity(
+            user_id=user_id,
+            plan_id=row.plan_id,
+            suggestion=payload,
+        )
+        if (
+            identity is not None
+            and identity in await self._terminal_suggestion_evidence(user_id=user_id)
+        ):
             return None
         return row, payload
 
-    async def _rejected_suggestion_payloads(self, *, user_id: str) -> set[str]:
-        payloads = (
+    async def _terminal_suggestion_evidence(
+        self, *, user_id: str
+    ) -> set[tuple[str, str, str]]:
+        rows = (
             await self._session.execute(
-                select(PlanFeedbackAuditModel.preference_suggestion_json)
+                select(
+                    PlanFeedbackAuditModel.plan_id,
+                    PlanFeedbackAuditModel.preference_suggestion_json,
+                )
                 .join(
                     MemorySuggestionDecisionModel,
                     (
@@ -220,30 +238,59 @@ class SqlAlchemyMemoryRepository:
                 )
                 .where(
                     PlanFeedbackAuditModel.user_id == user_id,
-                    MemorySuggestionDecisionModel.decision == "rejected",
+                    MemorySuggestionDecisionModel.decision.in_(
+                        ("confirmed", "rejected")
+                    ),
                 )
             )
-        ).scalars()
-        return {
-            self._suggestion_payload_identity(payload)
-            for payload in payloads
-            if payload is not None
-        }
+        ).all()
+        identities: set[tuple[str, str, str]] = set()
+        for plan_id, payload_json in rows:
+            if payload_json is None:
+                continue
+            payload = PreferenceSuggestion.model_validate_json(json.dumps(payload_json))
+            identity = self._suggestion_evidence_identity(
+                user_id=user_id,
+                plan_id=plan_id,
+                suggestion=payload,
+            )
+            if identity is not None:
+                identities.add(identity)
+        return identities
 
-    async def suggestion_payload_was_rejected(
-        self, *, user_id: str, payload: object
+    async def suggestion_evidence_is_terminal(
+        self,
+        *,
+        user_id: str,
+        plan_id: str,
+        suggestion: PreferenceSuggestion,
     ) -> bool:
-        return self._suggestion_payload_identity(
-            payload
-        ) in await self._rejected_suggestion_payloads(user_id=user_id)
+        identity = self._suggestion_evidence_identity(
+            user_id=user_id,
+            plan_id=plan_id,
+            suggestion=suggestion,
+        )
+        return (
+            identity is not None
+            and identity in await self._terminal_suggestion_evidence(user_id=user_id)
+        )
 
     @staticmethod
-    def _suggestion_payload_identity(payload: object) -> str:
-        return json.dumps(
-            payload,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
+    def _suggestion_evidence_identity(
+        *,
+        user_id: str,
+        plan_id: str,
+        suggestion: PreferenceSuggestion,
+    ) -> tuple[str, str, str] | None:
+        if suggestion.evidence_summary is None:
+            return None
+        normalized = normalize(
+            "NFKC", " ".join(suggestion.evidence_summary.split())
+        ).casefold()
+        return (
+            user_id,
+            plan_id,
+            normalized,
         )
 
     async def operation_replay(

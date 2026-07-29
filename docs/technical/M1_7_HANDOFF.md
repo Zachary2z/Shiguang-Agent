@@ -11,7 +11,8 @@
 - 初始交接：`2342cfef31cb0962cb4f212f6bfea68a01d4883e`。
 - 主控验收缺陷修复：`aa21144f83d536426578ba333ab449121a881289`。
 - 第一轮修复交接：`f3cf6b165f00afb752fedf08660c440d5d2699e6`。
-- 第二轮主控验收缺陷修复提交完整 SHA 由最终交付返回。
+- 第二轮主控验收缺陷修复：`1baa982dbec8d8dc2a8d7c68dbd34b4506de32a8`。
+- 第三轮主控验收缺陷修复提交完整 SHA 由最终交付返回。
 
 开始和修复门禁均满足：main 与 origin/main 保持
 `c4d23b716af1426054705912ed0d7067e95e11e4`，修复从指定 HEAD 追加；没有 amend、
@@ -28,6 +29,10 @@ rebase、合并或推送。
 - 新结构化候选与 0015 历史候选都只是 pending。M07 必须再次明确提交 Memory
   字段并确认后才创建 Memory；拒绝只保存决定。相同结构化证据之后即使通过反馈更正
   再提交也会被抑制，不重新出现在待确认列表。
+- 结构化候选的稳定证据身份由当前用户、来源计划和 NFKC/空白/casefold 规范化后的
+  `evidence_summary` 构成，不再使用完整候选 JSON。确认和拒绝都是该证据的终态；
+  同一计划更正候选类型、内容或值不会重复询问或创建 Memory，不同计划的独立证据
+  不会互相抑制。
 - 0015 历史 JSON 中只有 `content/confirmation_status` 的建议继续可读，但统一作为
   中性证据候选。用户确认时必须明确提交 Memory 类型、内容和值；拒绝只保存决定，
   不创建 Memory，同一证据不再出现。
@@ -46,6 +51,10 @@ rebase、合并或推送。
   `system_default` 和 `memory_default`。公开请求明确提交任意 pace（包括 balanced）
   时当前请求优先；只有省略 pace 的系统默认场景，唯一
   `MemoryPlanningService` 才可选择确定性的有效 pace Memory 作为默认。
+- 每次生成、调整、重试或审批恢复时，非 `user_request` 节奏先重置为
+  `balanced/system_default`，再从本次读取的有效 Memory 确定性选择最新值。没有
+  有效 Memory 或有效值就是 balanced 时保持系统默认且不记录 usage；删除、停用、
+  过期或被新值替换的旧默认不会从持久化约束继续泄漏。
 - 应用 Memory 后得到的仍是同一个 `PlanConstraints` 实例类型；事实解析、收藏检索、
   草案、持久化和公开响应全部使用这份最终有效约束。只有 Memory 实际改变计划输入
   时才附带使用依据；停用、删除或过期记录不会进入候选。
@@ -105,12 +114,20 @@ rebase、合并或推送。
 计划和已确认 Memory；不输出 Cookie、Token、幂等键、密钥、内部审计或服务端配置，
 并返回 `private, no-store`、`no-cache`、`nosniff` 和附件响应头。
 
+领域导入边界也已收敛：`Memory` 只在验证 `usual_area` 值时延迟引用唯一
+`ActivityArea`，模块顶层不再初始化整个 `plans` 包。全新 Python 解释器无需
+pytest `conftest` 或预先导入 `app.main` 即可独立执行
+`import app.domain.memories`。
+
 ## Web/H5 M07
 
 `/me` 继续复用 App Shell、API Client、既有设计 token 和组件局部状态：
 
 - 新反馈建议预填其结构化类型、内容和值并展示证据；历史建议仍显示为中性候选，
   明确补齐类型、内容和值后才能确认；
+- M06 和 M07 的 pace 候选值都使用 `relaxed / balanced / packed` 三项选择控件；
+  正向、负向偏好仍使用文本值。领域 `PreferenceSuggestion` 与公开反馈请求同时
+  执行同一 `PlanPace` 枚举校验，非法 pace 在反馈写入前返回安全 422；
 - Memory 列表、详情、来源、有效期、最后使用和影响计划；
 - 普通 Memory 修改、全部 Memory 停用/启用和两步删除；
 - usual_area 通过“行政区 / 商圈或粗区域”结构化表单修改，和创建共用后端边界；
@@ -129,15 +146,15 @@ rebase、合并或推送。
 后端：
 
 - `pip check`、Ruff、strict mypy（135 个源文件）：通过。
-- 指定 M1-7/检索/草案/迁移聚焦：`133 passed`。
-- 普通非真实全集：`1631 passed, 15 skipped, 2 deselected`。
+- 指定 M1-6/M1-7/检索/草案/迁移聚焦：`150 passed`。
+- 普通非真实全集：`1641 passed, 15 skipped, 2 deselected`。
 - 首次完整运行曾有一个既有图片外层超时取消测试偶发失败；该测试单独立即通过，
   随后普通全集和封网全集均完整通过。
 - SQLite 迁移：`25 passed`；Alembic 唯一 head：`20260728_0016 (head)`。
 - 一次性 PostgreSQL 16 强制行锁并发及迁移往返：`2 passed`，容器已移除。
 - 仓库外插件封锁 DNS、`create_connection`、`connect`、`connect_ex`、`sendto` 后，
-  聚焦 `133 passed`；非真实全集再次
-  `1631 passed, 15 skipped, 2 deselected`。
+  聚焦 `150 passed`；非真实全集再次
+  `1641 passed, 15 skipped, 2 deselected`。
 
 前端：
 
@@ -155,7 +172,7 @@ rebase、合并或推送。
 - 删除了无产品依据的反馈推断服务；规则分别收敛在既有 Memory 写边界、唯一结构化
   检索和 M07 局部状态，没有生产白名单、样本特例或重复校验。
 - 没有实现 M1-8 分享、微信、提醒任务、云部署、账号注销或后续阶段。
-- 第二轮三个 P1 的实现和回归已完成，但尚待主控独立复验，不在交接中提前声明验收
+- 第三轮四项缺陷的实现和回归已完成，但尚待主控独立复验，不在交接中提前声明验收
   通过。保留既有 M1-5 高基数候选截断 P2：事实读取仍先按稳定仓储顺序截取有限候选，
   较晚收藏可能不进入排序；后续只能在唯一检索边界内收敛。
 

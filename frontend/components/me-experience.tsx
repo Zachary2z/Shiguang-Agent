@@ -144,12 +144,15 @@ function SuggestionCard({
           <select
             name={`suggestion_type_${suggestion.id}`}
             value={draft.memory_type}
-            onChange={(event) =>
+            onChange={(event) => {
+              const memoryType = event.target
+                .value as SuggestionMemoryDraft["memory_type"];
               setDraft((current) => ({
                 ...current,
-                memory_type: event.target.value as SuggestionMemoryDraft["memory_type"],
-              }))
-            }
+                memory_type: memoryType,
+                value: memoryType === "pace_preference" ? "balanced" : "",
+              }));
+            }}
           >
             <option value="">请选择</option>
             <option value="positive_preference">喜欢</option>
@@ -169,13 +172,32 @@ function SuggestionCard({
         </label>
         <label>
           结构化值
-          <input
-            value={draft.value}
-            maxLength={100}
-            onChange={(event) =>
-              setDraft((current) => ({ ...current, value: event.target.value }))
-            }
-          />
+          {draft.memory_type === "pace_preference" ? (
+            <select
+              value={draft.value}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  value: event.target.value,
+                }))
+              }
+            >
+              <option value="relaxed">轻松</option>
+              <option value="balanced">均衡</option>
+              <option value="packed">紧凑</option>
+            </select>
+          ) : (
+            <input
+              value={draft.value}
+              maxLength={100}
+              onChange={(event) =>
+                setDraft((current) => ({
+                  ...current,
+                  value: event.target.value,
+                }))
+              }
+            />
+          )}
         </label>
         <div className="memory-actions">
           <button

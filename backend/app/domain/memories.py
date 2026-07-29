@@ -13,7 +13,6 @@ from app.domain.identifiers import (
     validate_memory_id,
     validate_plan_id,
 )
-from app.domain.plans.contracts import ActivityArea
 from app.domain.time import require_aware_utc
 
 
@@ -113,6 +112,11 @@ class Memory(MemoryContract):
             if self.value not in {"relaxed", "balanced", "packed"}:
                 raise ValueError("pace memory value is invalid")
         if self.type is MemoryType.USUAL_AREA:
+            # Import the plan-side coarse-area contract only when a location memory
+            # is validated. Importing the ``plans`` package while this module is
+            # defining MemoryType creates a genuine domain initialization cycle.
+            from app.domain.plans.contracts import ActivityArea
+
             ActivityArea.from_memory_value(self.value)
         if self.expires_at is not None and self.expires_at <= self.created_at:
             raise ValueError("memory expiry must follow creation")

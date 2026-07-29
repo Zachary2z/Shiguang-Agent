@@ -1016,11 +1016,14 @@ export function PlansExperience() {
                         <select
                           name="preference_candidate_type"
                           value={suggestionType}
-                          onChange={(event) =>
-                            setSuggestionType(
-                              event.target.value as typeof suggestionType,
-                            )
-                          }
+                          onChange={(event) => {
+                            const nextType = event.target
+                              .value as typeof suggestionType;
+                            setSuggestionType(nextType);
+                            setSuggestionValue(
+                              nextType === "pace_preference" ? "balanced" : "",
+                            );
+                          }}
                         >
                           <option value="positive_preference">喜欢</option>
                           <option value="negative_preference">避开</option>
@@ -1038,12 +1041,28 @@ export function PlansExperience() {
                       </label>
                       <label>
                         结构化值
-                        <input
-                          name="preference_candidate_value"
-                          value={suggestionValue}
-                          maxLength={100}
-                          onChange={(event) => setSuggestionValue(event.target.value)}
-                        />
+                        {suggestionType === "pace_preference" ? (
+                          <select
+                            name="preference_candidate_value"
+                            value={suggestionValue}
+                            onChange={(event) =>
+                              setSuggestionValue(event.target.value)
+                            }
+                          >
+                            <option value="relaxed">轻松</option>
+                            <option value="balanced">均衡</option>
+                            <option value="packed">紧凑</option>
+                          </select>
+                        ) : (
+                          <input
+                            name="preference_candidate_value"
+                            value={suggestionValue}
+                            maxLength={100}
+                            onChange={(event) =>
+                              setSuggestionValue(event.target.value)
+                            }
+                          />
+                        )}
                       </label>
                       <label>
                         候选依据

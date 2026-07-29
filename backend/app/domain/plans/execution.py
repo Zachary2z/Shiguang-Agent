@@ -15,7 +15,7 @@ from app.domain.identifiers import (
     validate_plan_item_id,
 )
 from app.domain.memories import MemoryType
-from app.domain.plans.contracts import PlanContract
+from app.domain.plans.contracts import PlanContract, PlanPace
 from app.domain.time import require_aware_utc
 
 
@@ -46,6 +46,12 @@ class PreferenceSuggestion(PlanContract):
                 raise ValueError("structured suggestions require type, value, and evidence")
             if self.memory_type is MemoryType.USUAL_AREA:
                 raise ValueError("feedback suggestions cannot propose location memories")
+            if self.memory_type is MemoryType.PACE_PREFERENCE:
+                assert self.value is not None
+                try:
+                    PlanPace(self.value)
+                except ValueError as error:
+                    raise ValueError("pace suggestion value is invalid") from error
         return self
 
 

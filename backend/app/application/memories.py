@@ -546,21 +546,24 @@ class MemoryPlanningService:
 
         if constraints.pace_source is PlanPaceSource.USER_REQUEST:
             return constraints, {}
+        baseline = constraints.model_copy(
+            update={
+                "pace": PlanPace.BALANCED,
+                "pace_source": PlanPaceSource.SYSTEM_DEFAULT,
+            }
+        )
         candidates = tuple(
             memory
             for memory in memories
             if memory.type is MemoryType.PACE_PREFERENCE
         )
         if not candidates:
-            return constraints, {}
+            return baseline, {}
         selected = candidates[-1]
         pace = PlanPace(selected.value)
-        if (
-            constraints.pace_source is PlanPaceSource.SYSTEM_DEFAULT
-            and pace is constraints.pace
-        ):
-            return constraints, {}
-        effective = constraints.model_copy(
+        if pace is PlanPace.BALANCED:
+            return baseline, {}
+        effective = baseline.model_copy(
             update={"pace": pace, "pace_source": PlanPaceSource.MEMORY_DEFAULT}
         )
         return effective, {

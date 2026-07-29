@@ -114,7 +114,9 @@ test("M07 memory and data controls survive refresh on mobile", async ({ page }) 
   await page.getByRole("combobox", { name: "记忆类型" }).selectOption(
     "pace_preference",
   );
-  await page.getByRole("textbox", { name: "结构化值" }).fill("relaxed");
+  const paceValue = page.getByRole("combobox", { name: "结构化值" });
+  await expect(paceValue.locator("option")).toHaveCount(3);
+  await paceValue.selectOption("relaxed");
   await page.getByRole("button", { name: "确认记住" }).focus();
   await expect(page.getByRole("button", { name: "确认记住" })).toBeFocused();
   await page.getByRole("button", { name: "确认记住" }).click();

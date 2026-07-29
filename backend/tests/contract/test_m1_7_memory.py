@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -32,6 +34,19 @@ from app.infrastructure.db.models import (
 from app.infrastructure.repositories import SqlAlchemyPlanRepository
 from tests.contract.test_m0_2d_api import _client, _demo
 from tests.contract.test_m1_6_execution import _seed_plan
+
+
+def test_memory_domain_imports_in_a_fresh_interpreter() -> None:
+    completed = subprocess.run(
+        [sys.executable, "-c", "import app.domain.memories"],
+        cwd=Path(__file__).resolve().parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 async def _current_user_id(api) -> str:
@@ -399,11 +414,161 @@ async def test_structured_feedback_candidate_is_pending_and_auditable(
                 **body,
                 "idempotency_key": "structured-candidate-correction",
                 "expected_revision": 1,
+                "preference_candidate": {
+                    "memory_type": "positive_preference",
+                    "content": "改写后的候选文字",
+                    "value": "展览",
+                    "evidence_summary": f"  {candidate['evidence_summary']}  ",
+                },
             },
         )
         assert corrected.status_code == 200
         assert corrected.json()["feedback"]["preference_suggestion"] is None
         assert (await client.get("/api/v1/memory-suggestions")).json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_confirmed_evidence_suppresses_corrections_but_not_another_plan(
+    test_settings,
+) -> None:
+    async with _client(test_settings) as (api, client):
+        await _demo(client)
+        evidence = "用户在反馈表单中明确选择保存节奏候选"
+        plan_id, _collection_id, item_ids = await _seed_plan(api, confirmed=True)
+        body = {
+            "idempotency_key": "confirmed-evidence",
+            "completion_status": "partially_completed",
+            "visited_plan_item_ids": [item_ids[0]],
+            "reason": None,
+            "expected_revision": None,
+            "preference_candidate": {
+                "memory_type": "pace_preference",
+                "content": "以后默认使用轻松节奏",
+                "value": "relaxed",
+                "evidence_summary": evidence,
+            },
+        }
+        submitted = await client.post(f"/api/v1/plans/{plan_id}/feedback", json=body)
+        suggestion_id = submitted.json()["feedback"]["id"]
+        confirmed = await client.post(
+            f"/api/v1/memory-suggestions/{suggestion_id}/decision",
+            json={
+                "idempotency_key": "confirm-stable-evidence",
+                "decision": "confirmed",
+                "memory_type": "pace_preference",
+                "content": "以后默认使用轻松节奏",
+                "value": "relaxed",
+            },
+        )
+        assert confirmed.status_code == 200
+
+        corrected = await client.post(
+            f"/api/v1/plans/{plan_id}/feedback",
+            json={
+                **body,
+                "idempotency_key": "correct-confirmed-evidence",
+                "expected_revision": 1,
+                "preference_candidate": {
+                    "memory_type": "negative_preference",
+                    "content": "候选类型和值已被更正",
+                    "value": "拥挤",
+                    "evidence_summary": evidence,
+                },
+            },
+        )
+        assert corrected.status_code == 200
+        assert corrected.json()["feedback"]["preference_suggestion"] is None
+        assert (await client.get("/api/v1/memory-suggestions")).json()["items"] == []
+
+        other_plan_id, _collection_id, other_items = await _seed_plan(
+            api, confirmed=True
+        )
+        other = await client.post(
+            f"/api/v1/plans/{other_plan_id}/feedback",
+            json={
+                **body,
+                "idempotency_key": "same-evidence-other-plan",
+                "visited_plan_item_ids": [other_items[0]],
+            },
+        )
+        assert other.status_code == 200
+        pending = (await client.get("/api/v1/memory-suggestions")).json()["items"]
+        assert [item["plan_id"] for item in pending] == [other_plan_id]
+        async with api.state.demo_database.session_factory() as session:
+            assert await session.scalar(
+                select(func.count()).select_from(MemoryModel)
+            ) == 1
+
+
+@pytest.mark.asyncio
+async def test_invalid_pace_candidate_is_rejected_before_feedback_is_saved(
+    test_settings,
+) -> None:
+    async with _client(test_settings) as (api, client):
+        await _demo(client)
+        plan_id, _collection_id, item_ids = await _seed_plan(api, confirmed=True)
+        response = await client.post(
+            f"/api/v1/plans/{plan_id}/feedback",
+            json={
+                "idempotency_key": "invalid-pace-candidate",
+                "completion_status": "partially_completed",
+                "visited_plan_item_ids": [item_ids[0]],
+                "reason": None,
+                "expected_revision": None,
+                "preference_candidate": {
+                    "memory_type": "pace_preference",
+                    "content": "非法节奏不应保存",
+                    "value": "fast",
+                    "evidence_summary": "用户明确选择了一个不受支持的值",
+                },
+            },
+        )
+        assert response.status_code == 422
+        async with api.state.demo_database.session_factory() as session:
+            assert await session.scalar(
+                select(func.count()).select_from(PlanFeedbackAuditModel)
+            ) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pace", ["relaxed", "balanced", "packed"])
+async def test_every_legal_pace_candidate_can_be_submitted_and_confirmed(
+    test_settings,
+    pace: str,
+) -> None:
+    async with _client(test_settings) as (api, client):
+        await _demo(client)
+        plan_id, _collection_id, item_ids = await _seed_plan(api, confirmed=True)
+        submitted = await client.post(
+            f"/api/v1/plans/{plan_id}/feedback",
+            json={
+                "idempotency_key": f"legal-pace-{pace}",
+                "completion_status": "partially_completed",
+                "visited_plan_item_ids": [item_ids[0]],
+                "reason": None,
+                "expected_revision": None,
+                "preference_candidate": {
+                    "memory_type": "pace_preference",
+                    "content": f"以后默认使用 {pace} 节奏",
+                    "value": pace,
+                    "evidence_summary": f"用户明确选择 {pace} 作为候选",
+                },
+            },
+        )
+        assert submitted.status_code == 200
+        suggestion_id = submitted.json()["feedback"]["id"]
+        confirmed = await client.post(
+            f"/api/v1/memory-suggestions/{suggestion_id}/decision",
+            json={
+                "idempotency_key": f"confirm-legal-{pace}",
+                "decision": "confirmed",
+                "memory_type": "pace_preference",
+                "content": f"以后默认使用 {pace} 节奏",
+                "value": pace,
+            },
+        )
+        assert confirmed.status_code == 200
+        assert confirmed.json()["memory"]["value"] == pace
 
 
 @pytest.mark.asyncio

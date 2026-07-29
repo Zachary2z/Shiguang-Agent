@@ -440,8 +440,10 @@ describe("PlansExperience", () => {
       screen.getByRole("textbox", { name: "候选内容" }),
       "以后默认使用轻松节奏",
     );
-    await userEvent.type(
-      screen.getByRole("textbox", { name: "结构化值" }),
+    const paceValue = screen.getByRole("combobox", { name: "结构化值" });
+    expect(within(paceValue).getAllByRole("option")).toHaveLength(3);
+    await userEvent.selectOptions(
+      paceValue,
       "relaxed",
     );
     await userEvent.type(

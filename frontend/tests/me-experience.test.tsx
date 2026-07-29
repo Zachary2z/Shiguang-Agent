@@ -151,7 +151,9 @@ describe("MeExperience", () => {
     expect(screen.getByRole("combobox", { name: "记忆类型" })).toHaveValue(
       "pace_preference",
     );
-    expect(screen.getByRole("textbox", { name: "结构化值" })).toHaveValue(
+    const paceValue = screen.getByRole("combobox", { name: "结构化值" });
+    expect(within(paceValue).getAllByRole("option")).toHaveLength(3);
+    expect(paceValue).toHaveValue(
       "relaxed",
     );
     await user.click(confirm);
