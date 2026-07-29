@@ -54,6 +54,12 @@ class PublicPlanShareView(ShareContract):
 
 
 @dataclass(frozen=True)
+class _OwnedPlanContext:
+    requested: PlanVersion
+    root: PlanModel
+
+
+@dataclass(frozen=True)
 class _ShareContext:
     requested: PlanVersion
     confirmed: PlanVersion
@@ -91,14 +97,14 @@ class PlanShareService:
         now: datetime | None = None,
     ) -> OwnerPlanShareView:
         timestamp = require_aware_utc(now or utc_now())
-        context = await self._require_shareable_plan(
+        context = await self._require_owned_root(
             user_id=user_id,
             plan_id=plan_id,
             lock=False,
         )
         row = await self._current_row(
             user_id=user_id,
-            root_plan_id=context.requested.root_plan_id,
+            root_plan_id=context.root.id,
         )
         if row is None or row.revoked_at is not None:
             return OwnerPlanShareView(status=OwnerShareStatus.INACTIVE)
@@ -231,7 +237,7 @@ class PlanShareService:
         now: datetime | None = None,
     ) -> OwnerPlanShareView:
         timestamp = require_aware_utc(now or utc_now())
-        context = await self._require_shareable_plan(
+        context = await self._require_owned_root(
             user_id=user_id,
             plan_id=plan_id,
             lock=True,
@@ -239,7 +245,7 @@ class PlanShareService:
         await self._session.execute(
             update(PlanShareLinkModel)
             .where(
-                PlanShareLinkModel.plan_id == context.requested.root_plan_id,
+                PlanShareLinkModel.plan_id == context.root.id,
                 PlanShareLinkModel.user_id == user_id,
                 PlanShareLinkModel.revoked_at.is_(None),
             )
@@ -368,27 +374,41 @@ class PlanShareService:
         plan_id: str,
         lock: bool,
     ) -> _ShareContext:
-        requested = await self._plans.require(user_id=user_id, plan_id=plan_id)
-        if lock:
-            root = await self._session.scalar(
-                select(PlanModel)
-                .where(
-                    PlanModel.id == requested.root_plan_id,
-                    PlanModel.user_id == user_id,
-                )
-                .with_for_update()
-            )
-            if root is None:
-                raise ResourceNotFoundError
+        owned = await self._require_owned_root(
+            user_id=user_id,
+            plan_id=plan_id,
+            lock=lock,
+        )
         confirmed = await self._plans.latest_confirmed(
             user_id=user_id,
-            root_plan_id=requested.root_plan_id,
+            root_plan_id=owned.requested.root_plan_id,
         )
         if confirmed is None:
             from app.domain.plans import PlanExecutionNotAllowedError
 
             raise PlanExecutionNotAllowedError
-        return _ShareContext(requested=requested, confirmed=confirmed)
+        return _ShareContext(requested=owned.requested, confirmed=confirmed)
+
+    async def _require_owned_root(
+        self,
+        *,
+        user_id: str,
+        plan_id: str,
+        lock: bool,
+    ) -> _OwnedPlanContext:
+        """Validate ownership and resolve the root without requiring confirmation."""
+
+        requested = await self._plans.require(user_id=user_id, plan_id=plan_id)
+        statement = select(PlanModel).where(
+            PlanModel.id == requested.root_plan_id,
+            PlanModel.user_id == user_id,
+        )
+        if lock:
+            statement = statement.with_for_update()
+        root = await self._session.scalar(statement)
+        if root is None:
+            raise ResourceNotFoundError
+        return _OwnedPlanContext(requested=requested, root=root)
 
     async def _current_row(
         self,

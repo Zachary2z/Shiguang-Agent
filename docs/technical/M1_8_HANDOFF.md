@@ -184,3 +184,32 @@ Authorization、token、幂等键、私人字段和内部 ID 不进入日志、�
 
 当前仍为“待主控复验”。本分支不合并、不推送，不调用真实地图、模型、网页或其他
 外部 API，也不开始 M1-Gate。
+
+## 取消计划后的所有者分享管理修复（2026-07-29）
+
+在 `8b8bfdb9356bf49cac46296d87070bd677120963` 上追加修复一个 P1：根计划取消并
+清除 `confirmed_at`、`draft_json` 后，所有者分享状态和撤销不应依赖最新确认版本。
+
+实现仍只有一个 `PlanShareService`。服务内部增加 `_require_owned_root()`，负责通过
+既有 `SqlAlchemyPlanRepository.require()` 校验所有权，再解析根 Plan：
+
+- `status()` 使用该边界读取分享记录，不要求最新确认版本；
+- `revoke()` 使用该边界并对根 Plan 加 `FOR UPDATE`；
+- `create()`、regenerate 和 `preview()` 继续使用 `_require_shareable_plan()`，
+  因而继续要求最新确认版本。
+
+契约覆盖取消后 owner GET 200 active、owner DELETE 200 inactive、撤销前 public
+cancelled、撤销后 unavailable、重复 DELETE 幂等、非所有者 GET/DELETE 404，以及
+expired 分享仍可关闭。原状态优先级未改变：到期前取消为 cancelled，到期后及撤销后
+均为 unavailable。
+
+验证结果：
+
+- Ruff、strict mypy（139 个源文件）通过；
+- M1-8 契约 `13 passed`；
+- SQLite 迁移 `25 passed`；
+- 非真实全集 `1654 passed, 16 skipped, 2 deselected`；
+- 一次性 PostgreSQL 16 分享并发测试 `1 passed`，容器已删除。
+
+本次没有迁移、前端、DTO、第二套服务/Repository、生产特例、代理、重试或 M1-Gate
+改动。状态仍为“待主控复验”，不得据此宣布主控验收完成。

@@ -512,6 +512,121 @@ async def test_cancelled_and_unavailable_states_are_safe(test_settings) -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancelled_plan_owner_can_inspect_and_idempotently_revoke_share(
+    test_settings,
+) -> None:
+    async with _client(test_settings) as (api, owner):
+        await _demo(owner)
+        plan_id, _collection_id, _item_ids = await _seed_plan(api, confirmed=True)
+        csrf = str(owner.headers["X-CSRF-Token"])
+        created = await _create_share(owner, plan_id=plan_id, csrf=csrf)
+        token = _issued_token(created)
+
+        async with api.state.demo_database.session_factory() as session:
+            await session.execute(
+                update(PlanModel)
+                .where(PlanModel.id == plan_id)
+                .values(
+                    status=PlanStatus.CANCELLED.value,
+                    draft_json=None,
+                    confirmed_at=None,
+                )
+            )
+            await session.commit()
+
+        owner_status = await owner.get(f"/api/v1/plans/{plan_id}/share")
+        assert owner_status.status_code == 200
+        assert owner_status.json()["status"] == "active"
+        assert owner_status.json()["created_at"] is not None
+        assert owner_status.json()["expires_at"] is not None
+        assert (await _read_public(owner, token)).json() == {
+            "status": "cancelled",
+            "plan": None,
+        }
+
+        transport = httpx.ASGITransport(app=api)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as stranger:
+            await _demo(stranger)
+            stranger_status = await stranger.get(
+                f"/api/v1/plans/{plan_id}/share"
+            )
+            stranger_revoke = await stranger.delete(
+                f"/api/v1/plans/{plan_id}/share",
+                headers={
+                    "X-CSRF-Token": str(stranger.headers["X-CSRF-Token"])
+                },
+            )
+        assert stranger_status.status_code == 404
+        assert stranger_revoke.status_code == 404
+
+        revoked = await owner.delete(
+            f"/api/v1/plans/{plan_id}/share",
+            headers={"X-CSRF-Token": csrf},
+        )
+        repeated = await owner.delete(
+            f"/api/v1/plans/{plan_id}/share",
+            headers={"X-CSRF-Token": csrf},
+        )
+        expected = {
+            "status": "inactive",
+            "created_at": None,
+            "expires_at": None,
+            "share_url": None,
+            "created": False,
+        }
+        assert revoked.status_code == 200
+        assert repeated.status_code == 200
+        assert revoked.json() == expected
+        assert repeated.json() == expected
+        assert (await _read_public(owner, token)).json() == {
+            "status": "unavailable",
+            "plan": None,
+        }
+
+
+@pytest.mark.asyncio
+async def test_expired_share_remains_revocable_by_owner(
+    test_settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with _client(test_settings) as (api, owner):
+        await _demo(owner)
+        plan_id, _collection_id, _item_ids = await _seed_plan(api, confirmed=True)
+        csrf = str(owner.headers["X-CSRF-Token"])
+        created = await _create_share(owner, plan_id=plan_id, csrf=csrf)
+        token = _issued_token(created)
+        async with api.state.demo_database.session_factory() as session:
+            share = await session.scalar(select(PlanShareLinkModel))
+            assert share is not None
+            expiry = share.expires_at.replace(tzinfo=UTC)
+
+        monkeypatch.setattr("app.application.plan_sharing.utc_now", lambda: expiry)
+        owner_status = await owner.get(f"/api/v1/plans/{plan_id}/share")
+        assert owner_status.status_code == 200
+        assert owner_status.json()["status"] == "expired"
+        assert (await _read_public(owner, token)).json() == {
+            "status": "unavailable",
+            "plan": None,
+        }
+
+        revoked = await owner.delete(
+            f"/api/v1/plans/{plan_id}/share",
+            headers={"X-CSRF-Token": csrf},
+        )
+        repeated = await owner.delete(
+            f"/api/v1/plans/{plan_id}/share",
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert revoked.status_code == 200
+        assert repeated.status_code == 200
+        assert revoked.json()["status"] == "inactive"
+        assert repeated.json()["status"] == "inactive"
+
+
+@pytest.mark.asyncio
 async def test_standard_app_map_configuration_builds_public_uri_without_http(
     test_settings,
     monkeypatch: pytest.MonkeyPatch,

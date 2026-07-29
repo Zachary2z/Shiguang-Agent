@@ -2995,3 +2995,27 @@ Web/H5 页面均已实现。后续阶段仍不得提前开发。
   `29 passed`。新增创建前预览、确认创建/复制/重建/撤销及不确定结果同键重试覆盖
 - 下一步：保持 M1-8“待主控复验”；等待主控复跑 PostgreSQL 并发、迁移、安全和
   Web/H5 交互，不合并、不推送、不调用真实 API、不开始 M1-Gate
+
+#### 2026-07-29｜M1-8 取消计划所有者分享管理修复｜待主控复验
+
+- 修复基线与范围：在
+  `8b8bfdb9356bf49cac46296d87070bd677120963` 上只修复“计划取消后所有者无法
+  查看和撤销分享”的 P1；没有修改前端、迁移、公开 DTO 或此前四项修复，也没有进入
+  M1-Gate
+- 根因与职责收敛：`status()` 和 `revoke()` 不再复用要求最新确认版本的
+  `_require_shareable_plan()`。唯一 `PlanShareService` 新增一个内部
+  `_require_owned_root()`，统一校验所有权并解析根 Plan；status 只读使用，revoke
+  使用同一边界并对根 Plan `FOR UPDATE`。create、regenerate 和 preview 继续要求
+  最新确认版本
+- 行为关闭：取消并清除 `confirmed_at`/`draft_json` 后，所有者 GET 仍按分享记录
+  返回 active 或 expired，DELETE 返回 inactive；撤销前匿名访问为 cancelled，
+  撤销后为 unavailable。重复 DELETE 幂等，非所有者查询和撤销保持 404，已过期分享
+  仍可由所有者关闭
+- 状态优先级保持：到期前取消仍为 public cancelled；到达过期边界及之后仍为
+  public unavailable；任意有效期内主动撤销后均为 public unavailable
+- 自动化证据：Ruff、strict mypy（139 个源文件）通过；M1-8 契约
+  `13 passed`，SQLite 迁移 `25 passed`，普通非真实全集
+  `1654 passed, 16 skipped, 2 deselected`；一次性 PostgreSQL 16 分享并发测试
+  `1 passed`，容器已删除
+- 下一步：继续保持 M1-8“待主控复验”，等待主控验证本 P1；不合并、不推送、不调用
+  真实 API、不开始 M1-Gate
