@@ -823,7 +823,9 @@ class PlaceTargetSelectionService:
         address: str | None,
         business_district: str | None,
     ) -> None:
-        resolved = {
+        resolved = {CandidateField.CITY_HINT}
+        resolved.update(
+            {
             field
             for field, value in (
                 (CandidateField.DISTRICT, district),
@@ -831,7 +833,8 @@ class PlaceTargetSelectionService:
                 (CandidateField.BUSINESS_DISTRICT, business_district),
             )
             if value is not None
-        }
+            }
+        )
         values["missing_fields"] = tuple(
             field for field in values.get("missing_fields", ()) if field not in resolved
         )

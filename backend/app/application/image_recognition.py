@@ -207,6 +207,7 @@ class ImageRecognitionService:
         *,
         content_type: str,
         original_filename: str | None = None,
+        supplemental_text: str | None = None,
     ) -> tuple[PrivateFileMetadata, ExtractionResult]:
         """Return the existing file metadata and existing extraction result contracts."""
 
@@ -260,6 +261,7 @@ class ImageRecognitionService:
             result = await self._extract(
                 inference_bytes,
                 content_type=inference_content_type,
+                supplemental_text=supplemental_text,
             )
             return stored_file, result
         except asyncio.CancelledError as error:
@@ -287,6 +289,7 @@ class ImageRecognitionService:
         file: AsyncIterable[bytes],
         *,
         metadata: PrivateFileMetadata,
+        supplemental_text: str | None = None,
     ) -> ExtractionResult:
         """Recognize an API-staged private image without creating a second object."""
 
@@ -308,6 +311,7 @@ class ImageRecognitionService:
             return await self._extract(
                 inference_bytes,
                 content_type=inference_content_type,
+                supplemental_text=supplemental_text,
             )
         except asyncio.CancelledError:
             raise
@@ -323,14 +327,21 @@ class ImageRecognitionService:
         image_bytes: bytes,
         *,
         content_type: str,
+        supplemental_text: str | None,
     ) -> ExtractionResult:
         data_url = _build_model_data_url(image_bytes, content_type=content_type)
+        instruction = _USER_INSTRUCTION
+        if supplemental_text is not None:
+            instruction = (
+                f"{instruction}\nThe user also supplied this bounded context; use it only as "
+                f"evidence for the same screenshot:\n{supplemental_text}"
+            )
         initial_messages: list[Message] = [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": _USER_INSTRUCTION},
+                    {"type": "text", "text": instruction},
                     {
                         "type": "image_url",
                         "image_url": {"url": data_url, "detail": "high"},

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
@@ -59,6 +60,12 @@ class ImageInput(_InputModel):
     content_type: str = Field(min_length=1, max_length=127)
     payload: bytes = Field(min_length=1, repr=False)
     content_sha256: str = Field(pattern=r"^[a-f0-9]{64}$", repr=False)
+    supplemental_text: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=MAX_TEXT_INPUT_CHARS,
+        repr=False,
+    )
 
     @field_validator("content_type")
     @classmethod
@@ -77,15 +84,54 @@ class ImageInput(_InputModel):
             raise ValueError("content_sha256 must match payload")
         return value
 
+    @field_validator("supplemental_text")
     @classmethod
-    def from_bytes(cls, payload: bytes, *, content_type: str) -> ImageInput:
+    def reject_blank_supplemental_text(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("supplemental_text cannot be blank")
+        return value
+
+    @classmethod
+    def from_bytes(
+        cls,
+        payload: bytes,
+        *,
+        content_type: str,
+        supplemental_text: str | None = None,
+    ) -> ImageInput:
         if not isinstance(payload, bytes):
             raise TypeError("payload must be bytes")
         return cls(
             content_type=content_type,
             payload=payload,
             content_sha256=hashlib.sha256(payload).hexdigest(),
+            supplemental_text=supplemental_text,
         )
+
+    def message_content(self) -> str:
+        """Persist only bounded association metadata, never image bytes or paths."""
+
+        return json.dumps(
+            {
+                "content_sha256": self.content_sha256,
+                "content_type": self.content_type,
+                "supplemental_text": self.supplemental_text,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @staticmethod
+    def supplemental_text_from_message(content: str) -> str | None:
+        try:
+            value = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(value, dict):
+            return None
+        supplemental = value.get("supplemental_text")
+        return supplemental if isinstance(supplemental, str) and supplemental.strip() else None
 
 
 CollectionInput = Annotated[TextInput | UrlInput | ImageInput, Field(discriminator="type")]

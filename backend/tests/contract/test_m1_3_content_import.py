@@ -21,10 +21,18 @@ from app.application.content_import_jobs import (
     CONTENT_IMPORT_JOB_TYPE,
     ContentImportJobHandler,
 )
+from app.application.plan_adjustments import PlanAdjustmentParser
+from app.application.plan_experience import (
+    PLAN_GENERATION_JOB_TYPE,
+    PlanGenerationJobHandler,
+    PlanGenerationOutcome,
+    PlanGenerationResult,
+)
 from app.application.pricing import ConfiguredPricingPolicy
 from app.config import Settings
-from app.domain.collections import ExtractionResult, PlaceCandidate
+from app.domain.collections import CandidateField, ExtractionResult, PlaceCandidate
 from app.domain.jobs import JobCreate
+from app.domain.plans.drafts import PlanItemSource
 from app.infrastructure.db.models import (
     AgentRunModel,
     MessageModel,
@@ -32,11 +40,15 @@ from app.infrastructure.db.models import (
     SourceModel,
 )
 from app.infrastructure.jobs import PostgresJobQueue
+from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.main import create_app
 from app.worker.service import JobWorker
+from nanobot_core.providers import StructuredOutputMode
+from tests.contract.test_m1_5_plans import _draft, _request
 from tests.core.fakes import FakeProvider, fake_response
 from tests.fixtures.images import PNG_SCREENSHOT
+from tests.fixtures.maps import make_stub_map_provider
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 COUNTED_MODELS = (MessageModel, AgentRunModel, ScheduledJobModel, SourceModel)
@@ -263,6 +275,103 @@ async def test_private_image_reference_and_real_delete_restore(
 
 
 @pytest.mark.asyncio
+async def test_multipart_image_and_text_stay_one_idempotent_unified_input(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider([_response("深圳湾公园")])
+    async with _runtime(test_settings, provider) as (api, client, worker, storage):
+        session = await _session(client)
+        path = f"/api/v1/sessions/{session['session_id']}/messages"
+
+        async def request() -> httpx.Response:
+            return await client.post(
+                path,
+                data={
+                    "idempotency_key": "m1-image-with-text",
+                    "text": "截图补充：想去看日落",
+                },
+                files={"image": ("screenshot.png", PNG_SCREENSHOT, "image/png")},
+            )
+
+        first = await request()
+        replay = await request()
+
+        assert first.status_code == replay.status_code == 202
+        assert replay.json()["message_id"] == first.json()["message_id"]
+        assert replay.json()["trace_id"] == first.json()["trace_id"]
+        async with api.state.demo_database.session() as database_session:
+            assert await _row_counts(database_session) == (1, 1, 1, 1)
+        storage_root = (
+            Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
+            / "demo-private"
+        )
+        assert len(tuple((storage_root / "objects").iterdir())) == 1
+
+        assert await worker.run_once() is not None
+        rendered_call = str(provider.calls[0].messages)
+        assert "截图补充：想去看日落" in rendered_call
+        assert first.json()["input_type"] == "image"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ("storage", "database", "cancel"))
+async def test_image_prepare_failures_leave_no_records_or_private_files(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    provider = FakeProvider([_response()])
+    async with _runtime(test_settings, provider) as (api, client, _worker, storage):
+        session = await _session(client)
+        path = f"/api/v1/sessions/{session['session_id']}/messages"
+
+        if failure == "database":
+            async def fail_add_source(
+                repository: SqlAlchemyCollectionRepository,
+                *,
+                user_id: str,
+                source: object,
+            ) -> None:
+                del repository, user_id, source
+                raise RuntimeError("database write failed")
+
+            monkeypatch.setattr(
+                SqlAlchemyCollectionRepository,
+                "add_source",
+                fail_add_source,
+            )
+            expected_error: type[BaseException] = RuntimeError
+        else:
+            async def fail_put(*args: object, **kwargs: object) -> object:
+                del args, kwargs
+                if failure == "cancel":
+                    raise asyncio.CancelledError
+                raise RuntimeError("storage write failed")
+
+            monkeypatch.setattr(storage, "put_private", fail_put)
+            expected_error = asyncio.CancelledError if failure == "cancel" else RuntimeError
+
+        with pytest.raises(expected_error):
+            await client.post(
+                path,
+                content=PNG_SCREENSHOT,
+                headers={
+                    "Content-Type": "image/png",
+                    "Idempotency-Key": f"m1-image-{failure}",
+                },
+            )
+
+        async with api.state.demo_database.session() as database_session:
+            assert await _row_counts(database_session) == (0, 0, 0, 0)
+        object_root = (
+            Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
+            / "demo-private"
+            / "objects"
+        )
+        assert not object_root.exists() or list(object_root.iterdir()) == []
+
+
+@pytest.mark.asyncio
 async def test_session_auth_and_csrf_are_enforced(test_settings: Settings) -> None:
     provider = FakeProvider([_response()])
     async with _runtime(test_settings, provider) as (_api, client, _worker, _storage):
@@ -370,3 +479,156 @@ async def test_queue_failure_compensates_and_same_key_retries_without_orphans(
         async with api.state.demo_database.session() as database_session:
             final_counts = await _row_counts(database_session)
         assert final_counts == (1, 1, 1, 1)
+
+
+@pytest.mark.asyncio
+async def test_offline_text_details_selection_plan_adjust_confirm_core_loop(
+    test_settings: Settings,
+) -> None:
+    extracted = ExtractionResult.with_candidates(
+        (
+            PlaceCandidate(
+                title="未名咖啡",
+                city_hint="深圳",
+                missing_fields=(
+                    CandidateField.DISTRICT,
+                    CandidateField.ADDRESS,
+                    CandidateField.BUSINESS_DISTRICT,
+                    CandidateField.LANDMARK,
+                    CandidateField.METRO_STATION,
+                    CandidateField.PRICE,
+                    CandidateField.TAGS,
+                ),
+            ),
+        )
+    )
+    provider = FakeProvider(
+        [
+            fake_response(content=extracted.model_dump_json()),
+            fake_response(content='{"pace":"relaxed"}'),
+        ]
+    )
+
+    async with _runtime(test_settings, provider) as (api, client, import_worker, _storage):
+        api.state.map_provider = make_stub_map_provider()
+        session = await _session(client)
+        accepted = await client.post(
+            f"/api/v1/sessions/{session['session_id']}/messages",
+            json={
+                "type": "text",
+                "idempotency_key": "offline-core-import",
+                "text": "收藏一下深圳的未名咖啡",
+            },
+        )
+        assert accepted.status_code == 202
+        assert await import_worker.run_once() is not None
+        imported = await client.get(accepted.json()["result_url"])
+        item = imported.json()["collections"][0]
+        assert item["title"] == "未名咖啡"
+        assert item["status"] == "pending_details"
+        assert item["planning_eligible"] is False
+
+        supplemented = await client.patch(
+            f"/api/v1/collections/{item['id']}",
+            json={
+                "expected_version": item["version"],
+                "changes": {"address": "福中一路"},
+            },
+        )
+        assert supplemented.status_code == 200, supplemented.text
+        pending = supplemented.json()
+        assert pending["status"] == "pending_selection"
+        assert "address" not in pending["missing_fields"]
+        assert pending["planning_eligible"] is False
+
+        candidates_response = await client.get(
+            f"/api/v1/collections/{item['id']}/poi-candidates"
+        )
+        choices = candidates_response.json()
+        assert len(choices["candidates"]) == 2
+        chosen = choices["candidates"][0]
+        selected = await client.post(
+            f"/api/v1/collections/{item['id']}/poi-selection",
+            json={
+                "expected_version": choices["expected_version"],
+                "snapshot_fingerprint": choices["snapshot_fingerprint"],
+                "idempotency_key": "offline-core-select",
+                "choice": "candidate",
+                "provider": chosen["provider"],
+                "poi_id": chosen["poi_id"],
+            },
+        )
+        active = selected.json()["items"][0]
+        assert active["status"] == "active"
+        assert active["planning_eligible"] is True
+
+        draft = _draft(title=active["title"])
+        option = draft.options[0]
+        plan_item = option.items[0]
+        linked_item = plan_item.model_copy(
+            update={
+                "source": PlanItemSource(collection_item_ids=(active["id"],)),
+                "inbound_route": plan_item.inbound_route.model_copy(
+                    update={"to_collection_item_ids": (active["id"],)}
+                ),
+            }
+        )
+        linked_draft = draft.model_copy(
+            update={
+                "options": (
+                    option.model_copy(update={"items": (linked_item,)}),
+                )
+            }
+        )
+
+        class DraftExecutor:
+            async def execute(self, *, user_id, constraints, approval):
+                del user_id, constraints, approval
+                return PlanGenerationResult(
+                    outcome=PlanGenerationOutcome.DRAFT,
+                    draft=linked_draft,
+                )
+
+        plan_worker = JobWorker(
+            queue=PostgresJobQueue(api.state.demo_database.session_factory),
+            worker_id="worker_offline_core_plan",
+            handlers={
+                PLAN_GENERATION_JOB_TYPE: PlanGenerationJobHandler(
+                    session_factory=api.state.demo_database.session_factory,
+                    pricing=ConfiguredPricingPolicy.from_settings(test_settings),
+                    executor_factory=lambda session: DraftExecutor(),
+                    adjustment_parser=PlanAdjustmentParser(
+                        provider,
+                        structured_output_mode=StructuredOutputMode.JSON_OBJECT,
+                    ),
+                )
+            },
+            poll_seconds=0.01,
+        )
+        plan_request = _request("offline-core-plan")
+        plan_request["start_at"] = "2026-08-02T10:00:00+08:00"
+        plan_request["end_at"] = "2026-08-02T18:00:00+08:00"
+        created = await client.post("/api/v1/plans", json=plan_request)
+        assert created.status_code == 202, created.text
+        assert await plan_worker.run_once() is not None
+
+        adjusted = await client.post(
+            f"/api/v1/plans/{created.json()['plan_id']}/adjustments",
+            json={
+                "idempotency_key": "offline-core-adjust",
+                "instruction": "节奏轻松一点",
+            },
+        )
+        assert adjusted.status_code == 202, adjusted.text
+        assert await plan_worker.run_once() is not None
+        listed = await client.get("/api/v1/plans")
+        current = listed.json()["items"][0]
+        assert current["version"] == 2
+        assert current["constraints"]["pace"] == "relaxed"
+
+        confirmed = await client.post(
+            f"/api/v1/plans/{current['id']}/confirm",
+            json={"idempotency_key": "offline-core-confirm"},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json()["plan"]["status"] == "confirmed"

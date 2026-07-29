@@ -6,11 +6,22 @@ import json
 from datetime import timedelta
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, Header, Path, Query, Request, Response, status
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    Header,
+    Path,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.datastructures import UploadFile
 
 from app.api.dependencies import (
     PlanProviderNotConfiguredError,
@@ -40,6 +51,7 @@ from app.application.data_exports import UserDataExportService
 from app.application.demo_sessions import DemoSessionService
 from app.application.input_contracts import ImageInput, TextInput, UrlInput
 from app.application.memories import MemoryService
+from app.application.place_matching import PlaceMatchingService
 from app.application.place_targets import PlaceTargetSelectionService
 from app.application.plan_execution import (
     PlanCalendarService,
@@ -79,6 +91,7 @@ from app.infrastructure.repositories import (
     SqlAlchemyCollectionRepository,
     SqlAlchemyPlanRepository,
 )
+from app.providers.map import MapProvider
 from app.providers.storage import StorageProvider
 from app.schemas.api import (
     AgentRunResponse,
@@ -197,6 +210,18 @@ _MESSAGE_REQUEST_BODY = {
         "image/jpeg": {"schema": {"type": "string", "format": "binary"}},
         "image/png": {"schema": {"type": "string", "format": "binary"}},
         "image/webp": {"schema": {"type": "string", "format": "binary"}},
+        "multipart/form-data": {
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["idempotency_key", "image"],
+                "properties": {
+                    "idempotency_key": _IDEMPOTENCY_SCHEMA,
+                    "text": {"type": "string", "minLength": 1, "maxLength": 20000},
+                    "image": {"type": "string", "format": "binary"},
+                },
+            }
+        },
     },
 }
 
@@ -482,6 +507,38 @@ async def _parse_collection_input(
         except ValidationError:
             raise _safe_request_validation_error() from None
 
+    if media_type == "multipart/form-data":
+        try:
+            multipart_settings: Settings = request.app.state.settings
+            form = await request.form(
+                max_files=1,
+                max_fields=2,
+                max_part_size=multipart_settings.storage_max_file_size_bytes,
+            )
+            key_value = form.get("idempotency_key")
+            text_value = form.get("text")
+            image = form.get("image")
+            if not isinstance(key_value, str) or not isinstance(image, UploadFile):
+                raise ValueError
+            validated_key = _IDEMPOTENCY_KEY_ADAPTER.validate_python(key_value)
+            supplemental_text = (
+                None if text_value is None else TextInput(text=str(text_value)).text
+            )
+            image_media_type = (image.content_type or "").lower()
+            if image_media_type not in {"image/jpeg", "image/png", "image/webp"}:
+                raise ValueError
+            payload = await _read_limited_upload(
+                image,
+                limit=multipart_settings.storage_max_file_size_bytes,
+            )
+            return validated_key, ImageInput.from_bytes(
+                payload,
+                content_type=image_media_type,
+                supplemental_text=supplemental_text,
+            )
+        except (ValidationError, ValueError):
+            raise _safe_request_validation_error() from None
+
     raise _safe_request_validation_error()
 
 
@@ -495,6 +552,17 @@ async def _read_limited_body(request: Request, *, limit: int) -> bytes:
             raise _safe_request_validation_error() from None
     payload = bytearray()
     async for chunk in request.stream():
+        if len(payload) + len(chunk) > limit:
+            raise _safe_request_validation_error()
+        payload.extend(chunk)
+    if not payload:
+        raise _safe_request_validation_error()
+    return bytes(payload)
+
+
+async def _read_limited_upload(upload: UploadFile, *, limit: int) -> bytes:
+    payload = bytearray()
+    while chunk := await upload.read(64 * 1024):
         if len(payload) + len(chunk) > limit:
             raise _safe_request_validation_error()
         payload.extend(chunk)
@@ -1365,15 +1433,25 @@ async def select_collection_poi(
 )
 async def patch_collection(
     item_id: Annotated[str, Path(pattern=_COLLECTION_PATH)],
-    request: CollectionPatchRequest,
+    payload: CollectionPatchRequest,
+    request: Request,
     session: DbSession,
     user_id: CurrentUserId,
 ) -> CollectionItemResponse:
+    map_provider: MapProvider | None = request.app.state.map_provider
     item = await CollectionWriteService(session=session).patch(
         user_id=user_id,
         collection_item_id=item_id,
-        expected_version=request.expected_version,
-        patch=request.changes,
+        expected_version=payload.expected_version,
+        patch=payload.changes,
+        place_matching=(
+            None
+            if map_provider is None
+            else PlaceMatchingService(
+                map_provider=map_provider,
+                policy=request.app.state.settings.place_matching_policy(),
+            )
+        ),
     )
     return CollectionItemResponse.from_domain(item)
 

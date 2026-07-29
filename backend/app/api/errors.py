@@ -38,6 +38,7 @@ from app.domain.plans import (
     PlanNotReadyError,
     PlanVersionConflictError,
 )
+from app.providers.storage import StorageProviderError, StorageProviderErrorCode
 
 
 class UndoNotAvailableError(LookupError):
@@ -80,6 +81,7 @@ def install_error_handlers(api: FastAPI) -> None:
     api.add_exception_handler(AuthenticationRequiredError, _authentication_required)
     api.add_exception_handler(CsrfRejectedError, _csrf_rejected)
     api.add_exception_handler(DemoNotAvailableError, _demo_not_available)
+    api.add_exception_handler(StorageProviderError, _storage_provider_error)
 
 
 async def _authentication_required(request: Request, exc: Exception) -> JSONResponse:
@@ -95,6 +97,25 @@ async def _csrf_rejected(request: Request, exc: Exception) -> JSONResponse:
 async def _demo_not_available(request: Request, exc: Exception) -> JSONResponse:
     del request, exc
     return _error(503, "DEMO_NOT_AVAILABLE", "Demo is not available.")
+
+
+async def _storage_provider_error(request: Request, exc: Exception) -> JSONResponse:
+    del request
+    assert isinstance(exc, StorageProviderError)
+    image_codes = {
+        StorageProviderErrorCode.CONTENT_TYPE_NOT_ALLOWED: "IMAGE_CONTENT_TYPE_NOT_ALLOWED",
+        StorageProviderErrorCode.CONTENT_SIGNATURE_MISMATCH: (
+            "IMAGE_CONTENT_SIGNATURE_MISMATCH"
+        ),
+        StorageProviderErrorCode.FILE_EMPTY: "IMAGE_FILE_EMPTY",
+        StorageProviderErrorCode.FILE_TOO_LARGE: "IMAGE_FILE_TOO_LARGE",
+    }
+    return _error(
+        500,
+        image_codes.get(exc.code, exc.code.value),
+        "The screenshot could not be prepared.",
+        recovery_actions=("reupload_image", "supply_text"),
+    )
 
 
 async def _request_validation_error(

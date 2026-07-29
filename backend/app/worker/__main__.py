@@ -22,7 +22,6 @@ from app.application.text_collection_workflow import IdempotencyLockRegistry
 from app.config import load_settings
 from app.infrastructure.db import Database
 from app.infrastructure.jobs import PostgresJobQueue
-from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.providers import (
     AmapMapProvider,
     HttpxWebContentProvider,
@@ -30,6 +29,7 @@ from app.providers import (
     configured_model_provider,
     create_web_http_client,
 )
+from app.runtime_dependencies import build_runtime_storage_providers
 from app.worker.service import JobHandler, JobWorker, deterministic_noop
 
 
@@ -55,7 +55,8 @@ async def _run() -> None:
         http_client=web_client,
         resolver=SystemHostResolver(),
     )
-    storage = LocalPrivateStorageProvider(config=settings.storage_provider_settings())
+    runtime_storage = build_runtime_storage_providers(settings)
+    storage = runtime_storage.real
     handlers: dict[str, JobHandler] = {
         "deterministic.noop": deterministic_noop,
         CONTENT_IMPORT_JOB_TYPE: ContentImportJobHandler(
@@ -106,9 +107,9 @@ async def _run() -> None:
         )
     ]
     if demo_database is not None:
-        demo_storage = LocalPrivateStorageProvider(
-            config=settings.demo_storage_provider_settings()
-        )
+        demo_storage = runtime_storage.demo
+        if demo_storage is None:
+            raise RuntimeError("demo storage must be configured with the demo database")
         demo_handlers: dict[str, JobHandler] = {
             "deterministic.noop": deterministic_noop,
             CONTENT_IMPORT_JOB_TYPE: ContentImportJobHandler(

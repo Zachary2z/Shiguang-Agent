@@ -405,7 +405,7 @@ async def test_text_url_and_image_share_one_result_and_collection_mapping(
 
 
 @pytest.mark.asyncio
-async def test_text_url_and_image_preserve_date_only_events_without_inventing_times(
+async def test_text_and_url_require_year_evidence_while_image_keeps_model_date_clue(
     test_settings: Settings,
 ) -> None:
     provider = FakeProvider(
@@ -445,8 +445,10 @@ async def test_text_url_and_image_preserve_date_only_events_without_inventing_ti
         "URL dates",
         "Image dates",
     ]
-    assert {item["event_start_date"] for item in collections} == {"2026-08-30"}
-    assert {item["event_end_date"] for item in collections} == {"2026-09-01"}
+    assert {item["event_start_date"] for item in collections[:2]} == {None}
+    assert {item["event_end_date"] for item in collections[:2]} == {None}
+    assert collections[2]["event_start_date"] == "2026-08-30"
+    assert collections[2]["event_end_date"] == "2026-09-01"
     assert {item["event_start_at"] for item in collections} == {None}
     assert {item["event_end_at"] for item in collections} == {None}
     assert {item["status"] for item in collections} == {"pending_details"}
@@ -463,11 +465,16 @@ async def test_public_text_replay_preserves_event_dates_and_existing_candidate_b
             for candidate in candidates
         ]
     )
+    source_texts = (
+        "夏季展览，2026年6月13日至2026年7月31日",
+        "准确场次，2026年7月31日14:00至17:00",
+        "Replay place",
+    )
     payloads = [
         {
             "type": "text",
             "idempotency_key": f"replay-{index}",
-            "text": f"immutable input {index}",
+            "text": source_texts[index],
         }
         for index in range(len(candidates))
     ]
@@ -751,7 +758,10 @@ async def test_event_import_requires_explicit_poi_choice_before_plan_use(
                 json={
                     "type": "text",
                     "idempotency_key": "event-location-flow-text",
-                    "text": "准确场次，海上世界文化艺术中心",
+                    "text": (
+                        "准确场次，2026年7月31日14:00至17:00，"
+                        "海上世界文化艺术中心"
+                    ),
                 },
             )
         else:
@@ -912,7 +922,7 @@ async def test_event_none_of_above_clears_snapshot_replays_and_conflicts_safely(
             json={
                 "type": "text",
                 "idempotency_key": "event-none-import",
-                "text": "准确场次但候选地点都不对",
+                "text": "2026年7月31日14:00至17:00的准确场次，但候选地点都不对",
             },
         )
         original = imported.json()["collections"][0]
@@ -1050,7 +1060,6 @@ async def test_invalid_and_different_image_payloads_never_duplicate_or_leak_file
             content=PNG_SCREENSHOT + b"different",
             headers={"Content-Type": "image/png", "Idempotency-Key": "image-conflict"},
         )
-        invalid_run = await client.get(f"/api/v1/agent-runs/{invalid.json()['trace_id']}")
 
     private_root = (
         Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
@@ -1059,7 +1068,6 @@ async def test_invalid_and_different_image_payloads_never_duplicate_or_leak_file
     objects = list((private_root / "objects").iterdir())
     combined = (
         invalid.text
-        + invalid_run.text
         + repr(
             ImageInput.from_bytes(
                 PNG_SCREENSHOT,
@@ -1070,9 +1078,7 @@ async def test_invalid_and_different_image_payloads_never_duplicate_or_leak_file
     assert invalid.status_code == 500
     assert invalid.json()["error_code"] == "IMAGE_CONTENT_SIGNATURE_MISMATCH"
     assert invalid.json()["recovery_actions"] == ["reupload_image", "supply_text"]
-    assert invalid_run.json()["status"] == "failed"
-    assert invalid_run.json()["error_code"] == "IMAGE_CONTENT_SIGNATURE_MISMATCH"
-    assert invalid_run.json()["tool_runs"] == []
+    assert "trace_id" not in invalid.json()
     assert first.status_code == 200 and conflict.status_code == 409
     assert len(provider.calls) == 1 and len(objects) == 1
     assert "not-an-image-private-marker" not in combined
@@ -1083,7 +1089,7 @@ async def test_invalid_and_different_image_payloads_never_duplicate_or_leak_file
 async def test_image_idempotency_identity_includes_normalized_media_type(
     test_settings: Settings,
 ) -> None:
-    provider = FakeProvider([])
+    provider = FakeProvider([_response("Image")])
     async with _client(test_settings, provider) as (api, client, _storage):
         session_id = await _demo(client)
         declared_jpeg = await client.post(
@@ -1101,11 +1107,11 @@ async def test_image_idempotency_identity_includes_normalized_media_type(
 
     assert declared_jpeg.status_code == 500
     assert declared_jpeg.json()["error_code"] == "IMAGE_CONTENT_SIGNATURE_MISMATCH"
-    assert declared_png.status_code == 409
-    assert declared_png.json()["error_code"] == "IDEMPOTENCY_CONFLICT"
-    assert provider.calls == []
+    assert declared_png.status_code == 200
+    assert len(provider.calls) == 1
     assert isinstance(message_content, str)
-    assert message_content.startswith("image:image/jpeg:sha256:")
+    assert '"content_type":"image/png"' in message_content
+    assert '"supplemental_text":null' in message_content
     assert "PNG" not in message_content
 
 

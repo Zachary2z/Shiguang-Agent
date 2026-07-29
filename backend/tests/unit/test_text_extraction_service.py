@@ -279,6 +279,117 @@ async def test_only_store_name_keeps_candidate_with_missing_city_hint() -> None:
 
 
 @pytest.mark.asyncio
+async def test_clear_save_intent_preserves_named_place_for_details_flow() -> None:
+    candidate = _only_name_place(title="虾一跳")
+    provider = FakeProvider(
+        [_result_response(ExtractionResult.with_candidates((candidate,)))]
+    )
+
+    result = await TextExtractionService(provider).extract("收藏一下虾一跳")
+
+    assert result.outcome is ExtractionOutcome.CANDIDATES
+    assert result.candidates == (candidate,)
+    assert CandidateField.TITLE not in result.missing_fields
+    system_prompt = provider.calls[0].messages[0]["content"]
+    assert "clear named destination" in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_weekend_visit_preference_cannot_turn_a_place_into_event() -> None:
+    modeled_as_event = EventCandidate(
+        **_candidate_fields_for_temporal_test(title="深圳天文台"),
+        event_start_clue="周末",
+        missing_fields=(
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
+    )
+    provider = FakeProvider(
+        [_result_response(ExtractionResult.with_candidates((modeled_as_event,)))]
+    )
+
+    result = await TextExtractionService(provider).extract("周末想去深圳天文台")
+
+    candidate = result.candidates[0]
+    assert isinstance(candidate, PlaceCandidate)
+    assert candidate.title == "深圳天文台"
+    assert all(not field.value.startswith("event_") for field in candidate.missing_fields)
+    system_prompt = provider.calls[0].messages[0]["content"]
+    assert "visit preference" in system_prompt
+    assert "visit preference alone is not an Event fact" in system_prompt
+
+
+def _candidate_fields_for_temporal_test(*, title: str) -> dict[str, object]:
+    return {
+        "title": title,
+        "city_hint": "深圳",
+        "district": "南山区",
+        "address": "海上世界",
+        "business_district": "海上世界",
+        "landmark": "文化艺术中心",
+        "metro_station": "海上世界站",
+        "price_amount": Decimal("0.00"),
+        "price_currency": "CNY",
+        "tags": ("展览",),
+    }
+
+
+@pytest.mark.asyncio
+async def test_month_day_without_year_cannot_preserve_model_fabricated_year() -> None:
+    fabricated = EventCandidate(
+        **_candidate_fields_for_temporal_test(title="夏季展览"),
+        event_start_date=date(2026, 8, 2),
+        event_end_date=date(2026, 8, 2),
+        event_start_at=datetime(2026, 8, 2, 10, 0, tzinfo=UTC),
+        event_end_at=datetime(2026, 8, 2, 18, 0, tzinfo=UTC),
+    )
+    provider = FakeProvider(
+        [_result_response(ExtractionResult.with_candidates((fabricated,)))]
+    )
+
+    result = await TextExtractionService(provider).extract("夏季展览在 8 月 2 日")
+
+    candidate = result.candidates[0]
+    assert isinstance(candidate, EventCandidate)
+    assert candidate.event_start_date is None
+    assert candidate.event_end_date is None
+    assert candidate.event_start_at is None
+    assert candidate.event_end_at is None
+    assert candidate.event_start_clue == "8 月 2 日"
+    assert {item.field for item in candidate.uncertainties} >= {
+        CandidateField.EVENT_START_DATE,
+        CandidateField.EVENT_END_DATE,
+    }
+
+
+@pytest.mark.asyncio
+async def test_explicit_year_keeps_date_but_no_time_evidence_clears_exact_timestamp() -> None:
+    modeled = EventCandidate(
+        **_candidate_fields_for_temporal_test(title="夏季展览"),
+        event_start_date=date(2026, 8, 2),
+        event_end_date=date(2026, 8, 2),
+        event_start_at=datetime(2026, 8, 2, 10, 0, tzinfo=UTC),
+        event_end_at=datetime(2026, 8, 2, 18, 0, tzinfo=UTC),
+    )
+    provider = FakeProvider(
+        [_result_response(ExtractionResult.with_candidates((modeled,)))]
+    )
+
+    result = await TextExtractionService(provider).extract("夏季展览在 2026 年 8 月 2 日")
+
+    candidate = result.candidates[0]
+    assert isinstance(candidate, EventCandidate)
+    assert candidate.event_start_date == date(2026, 8, 2)
+    assert candidate.event_end_date == date(2026, 8, 2)
+    assert candidate.event_start_at is None
+    assert candidate.event_end_at is None
+    assert CandidateField.EVENT_START_AT in candidate.missing_fields
+    assert CandidateField.EVENT_END_AT in candidate.missing_fields
+
+
+@pytest.mark.asyncio
 async def test_overly_generic_name_is_insufficient_without_provider_call() -> None:
     provider = FakeProvider([])
 
@@ -316,7 +427,8 @@ async def test_explicit_other_city_content_enters_provider_and_is_collectable(
     result = await TextExtractionService(provider).extract(text)
 
     assert result.outcome is ExtractionOutcome.CANDIDATES
-    assert result.candidates == (candidate,)
+    assert type(result.candidates[0]) is type(candidate)
+    assert result.candidates[0].title == candidate.title
     assert result.candidates[0].city_hint == "广州"
     assert len(provider.calls) == 1
 
@@ -339,7 +451,8 @@ async def test_event_title_keywords_do_not_trigger_unsupported_preflight(
 
     result = await TextExtractionService(provider).extract(text)
 
-    assert result.candidates == (event,)
+    assert isinstance(result.candidates[0], EventCandidate)
+    assert result.candidates[0].title == event.title
     assert len(provider.calls) == 1
 
 
@@ -396,14 +509,18 @@ async def test_place_name_city_substring_does_not_confirm_or_reject_city(title: 
 
 
 @pytest.mark.asyncio
-async def test_shenzhen_event_with_complete_times_is_preserved() -> None:
+async def test_shenzhen_event_without_year_does_not_preserve_complete_times() -> None:
     event = _full_event()
     provider = FakeProvider([_result_response(ExtractionResult.with_candidates((event,)))])
 
     result = await TextExtractionService(provider).extract("深圳设计周主题展，7月25日14:00到17:00")
 
-    assert result.candidates == (event,)
-    assert isinstance(result.candidates[0], EventCandidate)
+    candidate = result.candidates[0]
+    assert isinstance(candidate, EventCandidate)
+    assert candidate.event_start_date is None
+    assert candidate.event_end_date is None
+    assert candidate.event_start_at is None
+    assert candidate.event_end_at is None
     assert len(provider.calls) == 1
 
 

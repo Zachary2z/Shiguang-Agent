@@ -19,8 +19,12 @@ from app.application.extraction_output import (
 )
 from app.domain.collections import (
     CandidateField,
+    EventCandidate,
+    ExtractionOutcome,
     ExtractionReasonCode,
     ExtractionResult,
+    PlaceCandidate,
+    Uncertainty,
     UnsupportedReason,
 )
 from nanobot_core.providers import (
@@ -70,6 +74,10 @@ _COMPLEX_ROUTE_EVIDENCE = re.compile(
     re.IGNORECASE,
 )
 _ROUTE_REQUEST = re.compile(r"给我|帮我|规划|制定|生成|导航|下载|怎么走")
+_EXPLICIT_YEAR = re.compile(r"(?<!\d)(?:19|20)\d{2}\s*(?:年|[-/.])")
+_MONTH_DAY_CLUE = re.compile(r"(?<!\d)\d{1,2}\s*月\s*\d{1,2}\s*日")
+_EXPLICIT_TIME = re.compile(r"(?<!\d)(?:[01]?\d|2[0-3])\s*(?::|点|时)")
+_EXPLICIT_EVENT_FACT = re.compile(r"展期|展览?|演出|活动|场次|市集|讲座|赛事")
 
 _SYSTEM_PROMPT = (
     "You extract structured collection candidates for Shiguang.\n"
@@ -129,11 +137,14 @@ class TextExtractionService:
         self._observe(first_response)
         first_result, issues = parse_extraction_response(first_response)
         if first_result is not None:
-            return canonicalize_extraction_result(
+            return _enforce_text_semantic_evidence(
+                canonicalize_extraction_result(
                 first_result,
                 insufficient_recovery_suggestions=(
                     "请补充具体店名、活动名、区域、商圈或地标。",
                 ),
+                ),
+                text,
             )
 
         repair_messages = build_repair_messages(
@@ -150,11 +161,14 @@ class TextExtractionService:
         self._observe(repaired_response)
         repaired_result, _repaired_issues = parse_extraction_response(repaired_response)
         if repaired_result is not None:
-            return canonicalize_extraction_result(
+            return _enforce_text_semantic_evidence(
+                canonicalize_extraction_result(
                 repaired_result,
                 insufficient_recovery_suggestions=(
                     "请补充具体店名、活动名、区域、商圈或地标。",
                 ),
+                ),
+                text,
             )
         return ExtractionResult.model_invalid()
 
@@ -211,6 +225,120 @@ def _explicit_unsupported_reason(text: str) -> UnsupportedReason | None:
     ):
         return UnsupportedReason.COMPLEX_OUTDOOR_ROUTE
     return None
+
+
+def _enforce_text_semantic_evidence(
+    result: ExtractionResult,
+    source_text: str,
+) -> ExtractionResult:
+    """Keep Event identity and complete time facts behind source-text evidence."""
+
+    if result.outcome is not ExtractionOutcome.CANDIDATES:
+        return result
+    has_year = _EXPLICIT_YEAR.search(source_text) is not None
+    has_time = _EXPLICIT_TIME.search(source_text) is not None
+    has_event_fact = _EXPLICIT_EVENT_FACT.search(source_text) is not None
+    clue_match = _MONTH_DAY_CLUE.search(source_text)
+    clue = None if clue_match is None else clue_match.group(0)
+    normalized: list[PlaceCandidate | EventCandidate] = []
+    for candidate in result.candidates:
+        if not isinstance(candidate, EventCandidate):
+            normalized.append(candidate)
+            continue
+        payload = candidate.model_dump(mode="python")
+        if not has_event_fact:
+            event_fields = {
+                CandidateField.EVENT_START_DATE,
+                CandidateField.EVENT_END_DATE,
+                CandidateField.EVENT_START_AT,
+                CandidateField.EVENT_END_AT,
+            }
+            payload["missing_fields"] = tuple(
+                field for field in candidate.missing_fields if field not in event_fields
+            )
+            payload["uncertainties"] = tuple(
+                item for item in candidate.uncertainties if item.field not in event_fields
+            )
+            normalized.append(
+                PlaceCandidate.model_validate(
+                    {
+                        key: value
+                        for key, value in payload.items()
+                        if key
+                        not in {
+                            "kind",
+                            "event_start_date",
+                            "event_end_date",
+                            "event_start_at",
+                            "event_end_at",
+                            "event_start_clue",
+                            "event_end_clue",
+                        }
+                    }
+                )
+            )
+            continue
+        removed_dates = not has_year and (
+            candidate.event_start_date is not None
+            or candidate.event_end_date is not None
+            or candidate.event_start_at is not None
+            or candidate.event_end_at is not None
+        )
+        removed_times = (not has_year or not has_time) and (
+            candidate.event_start_at is not None or candidate.event_end_at is not None
+        )
+        if not removed_dates and not removed_times:
+            normalized.append(candidate)
+            continue
+        if not has_year:
+            payload["event_start_date"] = None
+            payload["event_end_date"] = None
+        if not has_year or not has_time:
+            payload["event_start_at"] = None
+            payload["event_end_at"] = None
+        if clue is not None and payload.get("event_start_clue") is None:
+            payload["event_start_clue"] = clue
+        missing = [
+            field
+            for field in candidate.missing_fields
+            if field
+            not in {
+                CandidateField.EVENT_START_DATE,
+                CandidateField.EVENT_END_DATE,
+                CandidateField.EVENT_START_AT,
+                CandidateField.EVENT_END_AT,
+            }
+        ]
+        uncertainties = [
+            item
+            for item in candidate.uncertainties
+            if item.field
+            not in {
+                CandidateField.EVENT_START_DATE,
+                CandidateField.EVENT_END_DATE,
+                CandidateField.EVENT_START_AT,
+                CandidateField.EVENT_END_AT,
+            }
+        ]
+        if not has_year:
+            for field in (CandidateField.EVENT_START_DATE, CandidateField.EVENT_END_DATE):
+                if clue is None:
+                    missing.append(field)
+                else:
+                    uncertainties.append(
+                        Uncertainty(
+                            field=field,
+                            reason="原文提供了日期线索，但没有提供可确认的年份。",
+                        )
+                    )
+        if not has_year or not has_time:
+            missing.extend(
+                (CandidateField.EVENT_START_AT, CandidateField.EVENT_END_AT)
+            )
+        payload["missing_fields"] = tuple(missing)
+        payload["uncertainties"] = tuple(uncertainties)
+        normalized.append(EventCandidate.model_validate(payload))
+    return ExtractionResult.with_candidates(tuple(normalized))
 
 
 __all__ = [

@@ -7,24 +7,31 @@ import json
 import secrets
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from typing import cast
 
 from pydantic import SecretStr
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.place_matching import PlaceMatchingService
+from app.application.place_targets import PlaceTargetSelectionService
 from app.domain.collections import (
     AutoSaveResult,
+    CandidateField,
     CollectionItem,
     CollectionItemPatch,
     CollectionKind,
+    CollectionStatus,
     CollectionWriteOperation,
     EventCandidate,
     ExtractionOutcome,
     ExtractionResult,
     IdempotencyConflictError,
     PlaceCandidate,
+    PlanCity,
     ResourceNotFoundError,
     Source,
+    Uncertainty,
     UndoOutcome,
     UndoResult,
     VersionConflictError,
@@ -32,8 +39,14 @@ from app.domain.collections import (
 )
 from app.domain.collections.writes import validate_idempotency_key
 from app.domain.identifiers import validate_collection_item_id, validate_user_id
+from app.domain.places import (
+    CityScope,
+    PlaceMatchRequest,
+    resolve_city_hint,
+)
 from app.domain.time import require_aware_utc, utc_now
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
+from app.providers.map import MapProviderError
 
 DEFAULT_UNDO_TTL = timedelta(minutes=10)
 MAX_UNDO_TTL = timedelta(hours=24)
@@ -101,6 +114,7 @@ class CollectionWriteService:
         collection_item_id: str,
         expected_version: int,
         patch: CollectionItemPatch,
+        place_matching: PlaceMatchingService | None = None,
     ) -> CollectionItem:
         owner = validate_user_id(user_id)
         identifier = validate_collection_item_id(collection_item_id)
@@ -114,13 +128,150 @@ class CollectionWriteService:
                 raise ResourceNotFoundError
             values = current.model_dump(mode="python")
             values.update(patch.updates())
+            self._recalculate_candidate_metadata(values, patch=patch)
             values["updated_at"] = now
             desired = CollectionItem.model_validate(values)
-            return await self._repository.update_collection_item(
+            updated = await self._repository.update_collection_item(
                 user_id=owner,
                 item=desired,
                 expected_version=expected_version,
             )
+        if (
+            place_matching is None
+            or updated.kind is not CollectionKind.PLACE
+            or updated.status is not CollectionStatus.PENDING_DETAILS
+        ):
+            return updated
+        return await self._match_updated_place(
+            owner=owner,
+            item=updated,
+            place_matching=place_matching,
+        )
+
+    async def _match_updated_place(
+        self,
+        *,
+        owner: str,
+        item: CollectionItem,
+        place_matching: PlaceMatchingService,
+    ) -> CollectionItem:
+        has_city_hint, city_code = resolve_city_hint(item.city_hint)
+        if has_city_hint and city_code != PlanCity.SHENZHEN.value:
+            return item
+        links = await self._repository.list_collection_sources(
+            user_id=owner,
+            collection_item_id=item.id,
+        )
+        if not links:
+            return item
+        candidate = self._place_candidate_from_item(item)
+        try:
+            match_result = await place_matching.match(
+                PlaceMatchRequest(
+                    candidate=candidate,
+                    city=CityScope(city_code=PlanCity.SHENZHEN.value),
+                    search_district=item.district,
+                )
+            )
+        except MapProviderError:
+            await self._session.rollback()
+            return item
+        await self._session.rollback()
+        return await PlaceTargetSelectionService(session=self._session).record_candidates(
+            user_id=owner,
+            collection_item_id=item.id,
+            source_id=links[0].source_id,
+            match_result=match_result,
+            queried_at=self._now(),
+            expected_version=item.version,
+        )
+
+    @staticmethod
+    def _place_candidate_from_item(item: CollectionItem) -> PlaceCandidate:
+        present = {
+            CandidateField.CITY_HINT: item.city_hint is not None,
+            CandidateField.DISTRICT: item.district is not None,
+            CandidateField.ADDRESS: item.address is not None,
+            CandidateField.BUSINESS_DISTRICT: item.business_district is not None,
+            CandidateField.LANDMARK: item.landmark is not None,
+            CandidateField.METRO_STATION: item.metro_station is not None,
+            CandidateField.PRICE: item.price_amount is not None,
+            CandidateField.TAGS: bool(item.tags),
+        }
+        uncertain_fields = {entry.field for entry in item.uncertainties}
+        missing = tuple(
+            field
+            for field, is_present in present.items()
+            if not is_present and field not in uncertain_fields
+        )
+        return PlaceCandidate(
+            title=item.title,
+            city_hint=item.city_hint,
+            district=item.district,
+            address=item.address,
+            business_district=item.business_district,
+            landmark=item.landmark,
+            metro_station=item.metro_station,
+            price_amount=item.price_amount,
+            price_currency=item.price_currency,
+            tags=item.tags,
+            missing_fields=missing,
+            uncertainties=tuple(
+                entry for entry in item.uncertainties if entry.field in present
+            ),
+        )
+
+    @staticmethod
+    def _recalculate_candidate_metadata(
+        values: dict[str, object],
+        *,
+        patch: CollectionItemPatch,
+    ) -> None:
+        field_by_patch_name = {
+            "city_hint": CandidateField.CITY_HINT,
+            "district": CandidateField.DISTRICT,
+            "address": CandidateField.ADDRESS,
+            "business_district": CandidateField.BUSINESS_DISTRICT,
+            "landmark": CandidateField.LANDMARK,
+            "metro_station": CandidateField.METRO_STATION,
+            "event_start_date": CandidateField.EVENT_START_DATE,
+            "event_end_date": CandidateField.EVENT_END_DATE,
+            "event_start_at": CandidateField.EVENT_START_AT,
+            "event_end_at": CandidateField.EVENT_END_AT,
+            "price_amount": CandidateField.PRICE,
+            "tags": CandidateField.TAGS,
+        }
+        touched = {
+            field_by_patch_name[name]
+            for name in patch.model_fields_set
+            if name in field_by_patch_name
+        }
+        if not touched:
+            return
+        missing = [
+            CandidateField(field)
+            for field in cast(tuple[CandidateField | str, ...], values.get("missing_fields", ()))
+        ]
+        uncertainties = [
+            Uncertainty.model_validate(entry)
+            for entry in cast(
+                tuple[Uncertainty | dict[str, object], ...],
+                values.get("uncertainties", ()),
+            )
+        ]
+        for name, field in field_by_patch_name.items():
+            if field not in touched:
+                continue
+            value = values.get(name)
+            is_present = bool(value) if field is CandidateField.TAGS else value is not None
+            missing = [existing for existing in missing if existing is not field]
+            uncertainties = [
+                existing for existing in uncertainties if existing.field is not field
+            ]
+            if not is_present:
+                missing.append(field)
+        values["missing_fields"] = tuple(dict.fromkeys(missing))
+        values["uncertainties"] = tuple(uncertainties)
 
     async def delete(
         self,

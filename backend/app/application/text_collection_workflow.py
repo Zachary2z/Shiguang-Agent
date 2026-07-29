@@ -882,11 +882,13 @@ class TextCollectionWorkflow:
                     staged_extraction = await service.recognize_existing(
                         _single_chunk(staged_payload),
                         metadata=staged_metadata,
+                        supplemental_text=input.supplemental_text,
                     )
                     return staged_metadata, staged_extraction
                 return await service.recognize(
                     _single_chunk(input.payload),
                     content_type=input.content_type,
+                    supplemental_text=input.supplemental_text,
                 )
 
             metadata, extraction = await observer.run_tool(
@@ -1218,7 +1220,7 @@ class TextCollectionWorkflow:
                 value = input.url
             return value, MessageContentType.URL
         return (
-            f"image:{input.content_type}:sha256:{input.content_sha256}",
+            input.message_content(),
             MessageContentType.IMAGE,
         )
 

@@ -16,7 +16,11 @@ from alembic import command
 from alembic.config import Config
 from pydantic import ValidationError
 
-from app.application import CollectionWriteService
+from app.application import (
+    CollectionWriteService,
+    PlaceMatchingService,
+    PlaceTargetSelectionService,
+)
 from app.domain.collections import (
     CandidateField,
     CollectionItemPatch,
@@ -38,8 +42,14 @@ from app.domain.collections import (
     VersionConflictError,
 )
 from app.domain.identifiers import generate_source_id, generate_user_id
+from app.domain.places import (
+    PlaceMatchingPolicy,
+    PlaceSelection,
+    PlaceSelectionKind,
+)
 from app.infrastructure.db import Database
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
+from tests.fixtures.maps import make_stub_map_provider
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 7, 21, 9, 0, tzinfo=UTC)
@@ -932,6 +942,142 @@ async def test_patch_all_allowed_fields_version_conflict_noop_and_domain_validat
         assert cleared.price_amount is None
         assert cleared.price_currency is None
         assert cleared.version == 3
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_patch_resolves_missing_metadata_then_requires_ambiguous_place_selection(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    source = _source(user.id)
+    candidate = PlaceCandidate(
+        title="未名咖啡",
+        city_hint="深圳",
+        missing_fields=(
+            CandidateField.DISTRICT,
+            CandidateField.BUSINESS_DISTRICT,
+            CandidateField.LANDMARK,
+            CandidateField.METRO_STATION,
+            CandidateField.PRICE,
+            CandidateField.TAGS,
+        ),
+        uncertainties=(
+            Uncertainty(field=CandidateField.ADDRESS, reason="地址待补充"),
+        ),
+    )
+    matching = PlaceMatchingService(
+        map_provider=make_stub_map_provider(),
+        policy=PlaceMatchingPolicy(
+            unique_match_score=70,
+            minimum_score_gap=10,
+            candidate_score=35,
+        ),
+    )
+
+    async with database.session() as session:
+        saved = await _service(session).auto_save(
+            user_id=user.id,
+            idempotency_key="details-to-candidates",
+            source=source,
+            extraction_result=ExtractionResult.with_candidates((candidate,)),
+        )
+        pending = await _service(session).patch(
+            user_id=user.id,
+            collection_item_id=saved.items[0].id,
+            expected_version=saved.items[0].version,
+            patch=CollectionItemPatch(address="福中一路"),
+            place_matching=matching,
+        )
+
+        assert pending.status is CollectionStatus.PENDING_SELECTION
+        assert CandidateField.ADDRESS not in pending.missing_fields
+        assert all(
+            uncertainty.field is not CandidateField.ADDRESS
+            for uncertainty in pending.uncertainties
+        )
+        assert pending.place_candidate_snapshot is not None
+        assert len(pending.place_candidate_snapshot.candidates) == 2
+
+        selected_candidate = pending.place_candidate_snapshot.candidates[0]
+        selection = await PlaceTargetSelectionService(
+            session=session
+        ).apply_selection(
+            user_id=user.id,
+            collection_item_id=pending.id,
+            source_id=source.id,
+            selections=(
+                PlaceSelection(
+                    kind=PlaceSelectionKind.CANDIDATE,
+                    provider=selected_candidate.provider,
+                    poi_id=selected_candidate.poi_id,
+                ),
+            ),
+            queried_at=pending.place_candidate_snapshot.queried_at,
+            snapshot_fingerprint=pending.place_candidate_snapshot.fingerprint,
+            idempotency_key="choose-branch",
+            expected_version=pending.version,
+        )
+
+    active = selection.items[0]
+    assert active.status is CollectionStatus.ACTIVE
+    assert active.place_target is not None
+    assert CandidateField.CITY_HINT not in active.missing_fields
+    assert CandidateField.ADDRESS not in active.missing_fields
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_patch_can_activate_one_clear_place_but_never_provider_rank_alone(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    candidate = PlaceCandidate(
+        title="深圳当代艺术与城市规划馆",
+        city_hint="深圳",
+        missing_fields=(
+            CandidateField.DISTRICT,
+            CandidateField.ADDRESS,
+            CandidateField.BUSINESS_DISTRICT,
+            CandidateField.LANDMARK,
+            CandidateField.METRO_STATION,
+            CandidateField.PRICE,
+            CandidateField.TAGS,
+        ),
+    )
+    matching = PlaceMatchingService(
+        map_provider=make_stub_map_provider(),
+        policy=PlaceMatchingPolicy(
+            unique_match_score=35,
+            minimum_score_gap=5,
+            candidate_score=30,
+        ),
+    )
+
+    async with database.session() as session:
+        saved = await _service(session).auto_save(
+            user_id=user.id,
+            idempotency_key="unique-place",
+            source=_source(user.id),
+            extraction_result=ExtractionResult.with_candidates((candidate,)),
+        )
+        active = await _service(session).patch(
+            user_id=user.id,
+            collection_item_id=saved.items[0].id,
+            expected_version=saved.items[0].version,
+            patch=CollectionItemPatch(address="福中路184号"),
+            place_matching=matching,
+        )
+
+    assert active.status is CollectionStatus.ACTIVE
+    assert active.place_target is not None
+    assert active.place_target.poi.poi_id == "poi_sz_moca_up"
     await database.close()
 
 

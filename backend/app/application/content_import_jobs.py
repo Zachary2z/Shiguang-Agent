@@ -44,8 +44,6 @@ from app.providers.map import MapProvider
 from app.providers.storage import (
     RetentionPolicy,
     StorageProvider,
-    StorageProviderError,
-    StorageProviderErrorCode,
 )
 from app.providers.web import WebContentProvider
 from nanobot_core.providers import ModelProvider, StructuredOutputMode
@@ -126,48 +124,43 @@ class ContentImportSubmissionService:
             locks=self._locks,
             timeout_seconds=self._timeout_seconds,
         )
-        prepared = await workflow.prepare_input(
-            user_id=user_id,
-            session_id=session_id,
-            idempotency_key=key,
-            input=input,
-        )
         source_id = workflow.source_id_for(
             user_id=user_id,
             session_id=session_id,
             idempotency_key=key,
         )
-        if isinstance(input, ImageInput):
-            try:
+        prepared = None
+        try:
+            prepared = await workflow.prepare_input(
+                user_id=user_id,
+                session_id=session_id,
+                idempotency_key=key,
+                input=input,
+            )
+            if isinstance(input, ImageInput):
                 await self._stage_image(
                     user_id=user_id,
                     source_id=source_id,
                     input=input,
                 )
-            except StorageProviderError as exc:
-                await workflow.fail_queued(
-                    user_id=user_id,
-                    session_id=session_id,
-                    trace_id=prepared.trace_id,
-                    error_code=_image_storage_error_code(exc.code),
-                )
-        payload = ContentImportJobPayload(
-            session_id=session_id,
-            message_id=prepared.message.id,
-            source_id=source_id,
-            input_type=prepared.message.content_type.value,
-        )
-        request = JobCreate(
-            user_id=user_id,
-            job_type=CONTENT_IMPORT_JOB_TYPE,
-            payload=payload.model_dump(mode="json"),
-            run_at=prepared.run_created_at,
-            idempotency_key=key,
-            trace_id=prepared.trace_id,
-        )
-        try:
+            payload = ContentImportJobPayload(
+                session_id=session_id,
+                message_id=prepared.message.id,
+                source_id=source_id,
+                input_type=prepared.message.content_type.value,
+            )
+            request = JobCreate(
+                user_id=user_id,
+                job_type=CONTENT_IMPORT_JOB_TYPE,
+                payload=payload.model_dump(mode="json"),
+                run_at=prepared.run_created_at,
+                idempotency_key=key,
+                trace_id=prepared.trace_id,
+            )
             job = await self._queue.create(request)
         except BaseException as error:
+            if prepared is None:
+                raise
             existing = await asyncio.shield(
                 self._queue.get_by_trace(
                     user_id=user_id,
@@ -283,6 +276,10 @@ class ContentImportSubmissionService:
                 or replay.metadata.media_type != input.content_type
             ):
                 raise IdempotencyConflictError from None
+        except BaseException:
+            await asyncio.shield(self._session.rollback())
+            await asyncio.shield(self._storage.delete(metadata.file_key))
+            raise
 
 
 class ContentImportJobHandler:
@@ -383,15 +380,15 @@ class ContentImportJobHandler:
         if source is None or source.file_key is None:
             raise ResourceNotFoundError
         metadata, file_bytes = await self._storage.read_private(source.file_key)
-        return ImageInput.from_bytes(file_bytes, content_type=metadata.content_type)
+        return ImageInput.from_bytes(
+            file_bytes,
+            content_type=metadata.content_type,
+            supplemental_text=ImageInput.supplemental_text_from_message(content),
+        )
 
 
 async def _single_chunk(payload: bytes) -> AsyncIterator[bytes]:
     yield payload
-
-
-def _image_storage_error_code(code: StorageProviderErrorCode) -> str:
-    return f"IMAGE_{code.value.removeprefix('STORAGE_')}"
 
 
 __all__ = [

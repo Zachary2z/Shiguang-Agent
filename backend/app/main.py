@@ -17,6 +17,7 @@ from app.providers.amap import AmapMapProvider
 from app.providers.map import MapProvider
 from app.providers.storage import StorageProvider
 from app.providers.web import WebContentProvider
+from app.runtime_dependencies import build_runtime_storage_providers
 from nanobot_core.providers import ModelProvider
 
 
@@ -39,6 +40,11 @@ def create_app(
         else None
     )
     resolved_map_provider = map_provider or owned_map_provider
+    runtime_storage = build_runtime_storage_providers(
+        resolved_settings,
+        real=storage_provider,
+        demo=demo_storage_provider,
+    )
 
     @asynccontextmanager
     async def lifespan(api: FastAPI) -> AsyncIterator[None]:
@@ -69,8 +75,8 @@ def create_app(
     api.state.demo_database = None
     api.state.text_provider = text_provider
     api.state.web_provider = web_provider
-    api.state.storage_provider = storage_provider
-    api.state.demo_storage_provider = demo_storage_provider
+    api.state.storage_provider = runtime_storage.real
+    api.state.demo_storage_provider = runtime_storage.demo
     api.state.map_provider = resolved_map_provider
     api.state.idempotency_locks = IdempotencyLockRegistry()
     api.add_middleware(RequestContextMiddleware)
