@@ -96,6 +96,7 @@ class PlanGenerationResult(PlanContract):
     approval_requirement: ExternalPlaceApprovalRequirement | None = None
     error_code: str | None = None
     memory_usages: dict[str, str] = Field(default_factory=dict)
+    effective_constraints: PlanConstraints | None = None
 
     @model_validator(mode="after")
     def validate_shape(self) -> PlanGenerationResult:
@@ -149,15 +150,18 @@ class ExistingPlanServicesExecutor:
         now = utc_now()
         memory_service = MemoryPlanningService(self._session)
         memories = await memory_service.effective(user_id=user_id, at=now)
-        memory_usages: dict[str, str] = {}
+        effective_constraints, memory_usages = memory_service.apply_pace_default(
+            constraints=constraints,
+            memories=memories,
+        )
         facts = await self._facts.resolve(
-            user_id=user_id, constraints=constraints
+            user_id=user_id, constraints=effective_constraints
         )
         collections = await StructuredCollectionRetrievalService(
             repository=SqlAlchemyCollectionRepository(self._session),
         ).retrieve(
             user_id=user_id,
-            constraints=constraints,
+            constraints=effective_constraints,
             facts=facts.retrieval,
             now=now,
             memories=memories,
@@ -179,7 +183,7 @@ class ExistingPlanServicesExecutor:
             place_matching=self._matching,
             plan_drafts=PlanDraftService(),
         ).generate(
-            constraints=constraints,
+            constraints=effective_constraints,
             collections=collections,
             facts=facts.draft,
             required_gap=facts.required_gap,
@@ -190,6 +194,8 @@ class ExistingPlanServicesExecutor:
             return PlanGenerationResult(
                 outcome=PlanGenerationOutcome.WAITING_APPROVAL,
                 approval_requirement=result.approval,
+                memory_usages=memory_usages,
+                effective_constraints=effective_constraints,
             )
         if result.draft is not None:
             selected_ids = {
@@ -208,6 +214,7 @@ class ExistingPlanServicesExecutor:
                 outcome=PlanGenerationOutcome.DRAFT,
                 draft=result.draft,
                 memory_usages=memory_usages,
+                effective_constraints=effective_constraints,
             )
         return PlanGenerationResult(
             outcome=PlanGenerationOutcome.FAILED,
@@ -216,6 +223,7 @@ class ExistingPlanServicesExecutor:
                 if result.recovery_code is None
                 else result.recovery_code.value
             ),
+            effective_constraints=effective_constraints,
         )
 
 
@@ -682,20 +690,21 @@ class PlanGenerationJobHandler:
                     )
                     await session.commit()
                 assert plan is not None
+                current_plan = plan
                 approval = await plans.get_external_approval(
                     user_id=job.user_id,
-                    plan_id=plan.id,
+                    plan_id=current_plan.id,
                 )
                 await observer.set_stage("collections.filtered")
                 result = await observer.run_tool(
                     tool_name="plan_draft",
                     arguments_fingerprint=plan_request_fingerprint(
-                        plan.constraints.model_dump(mode="json")
+                        current_plan.constraints.model_dump(mode="json")
                     ),
-                    input_summary=f"plan_version:{plan.version}",
+                    input_summary=f"plan_version:{current_plan.version}",
                     operation=lambda: executor.execute(
                         user_id=job.user_id,
-                        constraints=plan.constraints,
+                        constraints=current_plan.constraints,
                         approval=approval,
                     ),
                     summarize=lambda value: ApplicationToolOutcome(
@@ -704,6 +713,24 @@ class PlanGenerationJobHandler:
                         error_code=value.error_code,
                     ),
                 )
+                assert plan is not None
+                if (
+                    result.effective_constraints is not None
+                    and result.effective_constraints != plan.constraints
+                ):
+                    timestamp = utc_now()
+                    await plans.set_effective_constraints(
+                        user_id=job.user_id,
+                        plan_id=plan.id,
+                        constraints=result.effective_constraints,
+                        now=timestamp,
+                    )
+                    plan = plan.model_copy(
+                        update={
+                            "constraints": result.effective_constraints,
+                            "updated_at": timestamp,
+                        }
+                    )
                 if result.outcome is PlanGenerationOutcome.WAITING_APPROVAL:
                     assert result.approval_requirement is not None
                     timestamp = utc_now()

@@ -156,7 +156,7 @@ test("real offline stack creates, adjusts, confirms, restarts, and recovers a pl
   await navigation.click();
 
   await page.getByRole("radio", { name: /部分完成/ }).click();
-  const visits = page.getByRole("checkbox");
+  const visits = page.locator('input[name="visited_plan_items"]');
   await expect(visits).toHaveCount(2);
   await visits.first().check();
   await page.getByRole("button", { name: "保存完成反馈" }).click();

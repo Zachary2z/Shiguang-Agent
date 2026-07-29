@@ -60,6 +60,7 @@ type Plan = {
     area_labels: string[];
     budget: string | null;
     pace: "relaxed" | "balanced" | "packed";
+    pace_source: "user_request" | "system_default" | "memory_default";
     transport_modes: string[];
     include: string[];
     exclude: string[];
@@ -122,6 +123,9 @@ type FeedbackRecord = {
   visited_plan_item_ids: string[];
   preference_suggestion: {
     content: string;
+    memory_type: "positive_preference" | "negative_preference" | "pace_preference" | null;
+    value: string | null;
+    evidence_summary: string | null;
     confirmation_status: "pending";
   } | null;
 };
@@ -212,6 +216,13 @@ export function PlansExperience() {
   const [feedbackMode, setFeedbackMode] = useState<CompletionStatus | null>(null);
   const [visitedItems, setVisitedItems] = useState<Set<string>>(new Set());
   const [incompleteReason, setIncompleteReason] = useState("");
+  const [suggestPreference, setSuggestPreference] = useState(false);
+  const [suggestionType, setSuggestionType] = useState<
+    "positive_preference" | "negative_preference" | "pace_preference"
+  >("positive_preference");
+  const [suggestionContent, setSuggestionContent] = useState("");
+  const [suggestionValue, setSuggestionValue] = useState("");
+  const [suggestionEvidence, setSuggestionEvidence] = useState("");
   const [executionBusy, setExecutionBusy] = useState(false);
   const [stage, setStage] = useState("正在读取计划");
   const [dirty, setDirty] = useState(false);
@@ -648,8 +659,25 @@ export function PlansExperience() {
       visited_plan_item_ids:
         feedbackMode === "completed" ? [] : [...visitedItems].sort(),
       reason: incompleteReason.trim() || null,
+      preference_candidate: suggestPreference
+        ? {
+            memory_type: suggestionType,
+            content: suggestionContent.trim(),
+            value: suggestionValue.trim(),
+            evidence_summary: suggestionEvidence.trim(),
+          }
+        : null,
       expected_revision: execution.feedback?.revision ?? null,
     };
+    if (
+      suggestPreference &&
+      (!suggestionContent.trim() ||
+        !suggestionValue.trim() ||
+        !suggestionEvidence.trim())
+    ) {
+      setFeedback("请完整填写偏好候选的内容、结构化值和依据。");
+      return;
+    }
     const fingerprint = JSON.stringify({ plan_id: planId, ...payload });
     if (feedbackAttempt.current?.fingerprint !== fingerprint) {
       feedbackAttempt.current = {
@@ -967,6 +995,68 @@ export function PlansExperience() {
                     />
                   </label>
                 )}
+                <fieldset className="visited-choices">
+                  <legend>长期偏好候选（选填）</legend>
+                  <label>
+                    <input
+                      type="checkbox"
+                      name="suggest_preference"
+                      checked={suggestPreference}
+                      onChange={(event) => setSuggestPreference(event.target.checked)}
+                    />
+                    <span>
+                      把一项明确偏好送到“我的”待确认
+                      <small>完成状态和原因本身不会自动推断长期偏好</small>
+                    </span>
+                  </label>
+                  {suggestPreference ? (
+                    <>
+                      <label>
+                        候选类型
+                        <select
+                          name="preference_candidate_type"
+                          value={suggestionType}
+                          onChange={(event) =>
+                            setSuggestionType(
+                              event.target.value as typeof suggestionType,
+                            )
+                          }
+                        >
+                          <option value="positive_preference">喜欢</option>
+                          <option value="negative_preference">避开</option>
+                          <option value="pace_preference">节奏</option>
+                        </select>
+                      </label>
+                      <label>
+                        候选内容
+                        <input
+                          name="preference_candidate_content"
+                          value={suggestionContent}
+                          maxLength={500}
+                          onChange={(event) => setSuggestionContent(event.target.value)}
+                        />
+                      </label>
+                      <label>
+                        结构化值
+                        <input
+                          name="preference_candidate_value"
+                          value={suggestionValue}
+                          maxLength={100}
+                          onChange={(event) => setSuggestionValue(event.target.value)}
+                        />
+                      </label>
+                      <label>
+                        候选依据
+                        <textarea
+                          name="preference_candidate_evidence"
+                          value={suggestionEvidence}
+                          maxLength={500}
+                          onChange={(event) => setSuggestionEvidence(event.target.value)}
+                        />
+                      </label>
+                    </>
+                  ) : null}
+                </fieldset>
                 <button
                   className="primary-button"
                   type="button"
@@ -979,7 +1069,11 @@ export function PlansExperience() {
                   <aside className="preference-suggestion">
                     <strong>待确认的长期偏好建议</strong>
                     <p>{execution.feedback.preference_suggestion.content}</p>
-                    <span>本阶段不会自动写入长期记忆。</span>
+                    <span>
+                      {execution.feedback.preference_suggestion.evidence_summary ??
+                        "历史候选需在记忆中心补充明确含义。"}
+                      本阶段不会自动写入长期记忆。
+                    </span>
                   </aside>
                 )}
               </div>

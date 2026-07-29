@@ -227,6 +227,35 @@ class SqlAlchemyPlanRepository:
         )
         return await self.require(user_id=user_id, plan_id=plan_id)
 
+    async def set_effective_constraints(
+        self,
+        *,
+        user_id: str,
+        plan_id: str,
+        constraints: PlanConstraints,
+        now: datetime,
+    ) -> None:
+        rowcount = await execute_dml_rowcount(
+            self._session,
+            update(PlanModel)
+            .where(
+                PlanModel.id == plan_id,
+                PlanModel.user_id == user_id,
+                PlanModel.status.in_(
+                    {
+                        PlanStatus.GENERATING.value,
+                        PlanStatus.WAITING_APPROVAL.value,
+                    }
+                ),
+            )
+            .values(
+                constraints_json=constraints.model_dump(mode="json"),
+                updated_at=require_aware_utc(now),
+            ),
+        )
+        if rowcount != 1:
+            raise PlanVersionConflictError
+
     async def wait_for_approval(
         self, *, user_id: str, plan_id: str, now: datetime
     ) -> PlanVersion:

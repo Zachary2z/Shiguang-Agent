@@ -27,7 +27,10 @@ M1-5 也已通过主控验收：计划创建、后台生成、外部补充授权
 响应隔离均已复核。M1-7 开发及主控验收缺陷修复已完成并待复验：结构化 Memory、
 历史建议显式确认/拒绝、有界记忆计划检索、实际使用记录、M07 管理页和私有数据
 导出均已实现。
-M1-8 及后续阶段不得提前开发。
+M1-7 第二轮主控验收缺陷修复已完成并待复验：反馈入口恢复结构化且可审计的 pending
+偏好候选；计划约束显式区分本次节奏与系统默认，只有后者可由有效 Memory 补全；
+常用区域改为复用 `ActivityArea` 的城市无关粗区域契约并恢复安全修改。M1-8 及后续
+阶段不得提前开发。
 
 ## M0 状态
 
@@ -2824,3 +2827,36 @@ M1-8 及后续阶段不得提前开发。
   一次性 PostgreSQL 容器已移除，仓库未包含数据库、导出、缓存或真实用户数据。
   六类主控缺陷均已关闭，当前无已知未关闭 P0/P1；保留既有 M1-5 高基数候选截断
   P2。阶段保持“待主控验收”，不合并、不推送、不开始 M1-8
+
+#### 2026-07-29｜M1-7 第二轮主控验收缺陷修复｜待主控验收
+
+- 修复基线：在 `codex/m1-7-memory-data-control` 当前
+  `f3cf6b165f00afb752fedf08660c440d5d2699e6` 上追加独立修复；完整提交 SHA 由本次
+  最终交付返回。未 amend、rebase、合并 main 或推送
+- 反馈建议：现有反馈请求新增可选 `preference_candidate`，必须同时包含类型、内容、
+  结构化值和证据摘要；原完成状态、部分/未完成和任意 reason 继续不产生建议。候选
+  只进入既有反馈审计并保持 pending，M07 明确确认后才创建 Memory；拒绝决定按完整
+  结构化证据阻止后续反馈再次展示。0015 历史 `content/confirmation_status` JSON
+  仍按中性候选读取
+- 节奏优先级：唯一 `PlanConstraints` 新增 `pace_source`，公开请求省略 pace 时标记
+  `system_default`，明确提交（包括 balanced）标记 `user_request`。唯一规划执行器只
+  在系统默认场景应用有效 pace Memory，并把同一最终约束用于事实、检索、草案、
+  持久化和公开响应；只有 Memory 真正改变输入时产生使用依据
+- 常用区域：删除深圳行政区名单，复用唯一 `ActivityArea`，常用区域值由一个明确
+  分类的 district 或粗区域 label 服务器端规范化生成；创建和修改使用同一边界，
+  支持南山区、大学城附近和大鹏新区。请求契约不接受 origin、坐标、地址或 POI
+  字段，推断建议仍禁止创建位置 Memory；没有城市白名单或位置关键词解析
+- 保留回归：update/delete 取行锁后重查 operation、PostgreSQL 同键并发、一千条
+  Memory 有界聚合、前端不确定结果幂等键、409 列表/详情恢复和迟到响应隔离均未
+  改写。代码扫描确认不存在 `_SHENZHEN_ADMIN_DISTRICTS`、新增偏好推断服务、
+  第二 MemoryService/Repository、排序器、Runner 或前端状态框架
+- 验证：pip check、Ruff、strict mypy（135 个源文件）通过；M1-7/检索/草案/迁移
+  聚焦 `133 passed`；普通及仓库外 DNS/socket 硬封网非真实全集均为
+  `1631 passed, 15 skipped, 2 deselected`；SQLite 迁移与 Alembic 唯一
+  `20260728_0016` head 通过；一次性
+  PostgreSQL 16 行锁并发及迁移往返 `2 passed`。前端 lint、typecheck、build 通过，
+  Vitest `73 passed`，Playwright `27 passed`
+- 安全、复杂度与状态：未读取 `.env`，未调用真实模型、地图、网页或付费 API；
+  PostgreSQL 容器已移除，没有数据库、导出或真实用户数据进入仓库。三个 P1 的实现
+  与回归已完成，但阶段仍保持“待主控验收”，不提前声明验收通过，不合并、不推送、
+  不开始 M1-8

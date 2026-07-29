@@ -24,7 +24,7 @@ from app.domain.places import (
     ResolvedPlaceTargetKind,
     resolve_place_target,
 )
-from app.domain.plans import PlanConstraints
+from app.domain.plans import ActivityArea, PlanConstraints
 from app.domain.plans.retrieval import (
     REASON_SUMMARIES,
     AvailabilityAssessment,
@@ -237,7 +237,11 @@ def assess_collection_candidate(
     for memory in memories:
         if memory.type is MemoryType.PACE_PREFERENCE:
             continue
-        if not _matches_term(memory.value, searchable):
+        memory_terms: tuple[str, ...] = (memory.value,)
+        if memory.type is MemoryType.USUAL_AREA:
+            area = ActivityArea.from_memory_value(memory.value)
+            memory_terms = (*area.districts, *area.labels)
+        if not any(_matches_term(term, searchable) for term in memory_terms):
             continue
         target = (
             negative_matches

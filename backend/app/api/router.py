@@ -69,7 +69,7 @@ from app.domain.collections import (
 from app.domain.identity import SESSION_COOKIE_NAME, CurrentPrincipal
 from app.domain.memories import MemorySuggestionDecision, MemoryType
 from app.domain.places import PlaceSelection
-from app.domain.plans import ActivityArea, PlanConstraints
+from app.domain.plans import ActivityArea, PlanConstraints, PlanPace, PlanPaceSource
 from app.domain.time import utc_now
 from app.infrastructure.db import Database
 from app.infrastructure.jobs import PostgresJobQueue
@@ -659,7 +659,12 @@ async def create_plan(
         ),
         origin=payload.origin,
         budget=payload.budget,
-        pace=payload.pace,
+        pace=payload.pace or PlanPace.BALANCED,
+        pace_source=(
+            PlanPaceSource.USER_REQUEST
+            if payload.pace is not None
+            else PlanPaceSource.SYSTEM_DEFAULT
+        ),
         transport_modes=payload.transport_modes,
         include=payload.include,
         exclude=payload.exclude,
@@ -872,6 +877,11 @@ async def submit_plan_feedback(
         completion_status=payload.completion_status,
         visited_plan_item_ids=payload.visited_plan_item_ids,
         reason=payload.reason,
+        preference_candidate=(
+            None
+            if payload.preference_candidate is None
+            else payload.preference_candidate.to_domain()
+        ),
         client_idempotency_key=payload.idempotency_key,
         expected_revision=payload.expected_revision,
     )
@@ -902,6 +912,7 @@ async def create_memory(
         memory_type=MemoryType(payload.type),
         content=payload.content,
         value=payload.value,
+        area=payload.area,
         expires_at=payload.expires_at,
         explicit_authorization=payload.explicit_authorization,
         location_granularity=payload.location_granularity,
@@ -935,6 +946,7 @@ async def update_memory(
         expected_version=payload.expected_version,
         content=payload.content,
         value=payload.value,
+        area=payload.area,
         enabled=payload.enabled,
         expires_at=payload.expires_at,
         change_expiry=payload.change_expiry,

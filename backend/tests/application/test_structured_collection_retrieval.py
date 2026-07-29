@@ -75,7 +75,7 @@ from app.domain.places import (
     WeatherResult,
     normalize_brand_name,
 )
-from app.domain.plans import ActivityArea, PlanConstraints, PlanPace
+from app.domain.plans import ActivityArea, PlanConstraints, PlanPace, PlanPaceSource
 from app.domain.plans.drafts import (
     DraftCandidateFacts,
     DraftRouteFacts,
@@ -2089,8 +2089,6 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
             ).place_matching_policy(),
             facts=CapturingFacts(),  # type: ignore[arg-type]
         ).execute(user_id=user_id, constraints=constraints, approval=None)
-    await database.close()
-
     assert result.outcome is PlanGenerationOutcome.DRAFT
     assert resolved_constraints == [constraints]
     assert resolved_constraints[0].pace is PlanPace.PACKED
@@ -2105,6 +2103,46 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
     assert planned, result.draft.model_dump(mode="json")
     assert all(draft_item.source.concrete_poi == branch for draft_item in planned)
     assert sum(isinstance(call, SearchPoiRequest) for call in calls) == 1
+
+    calls.clear()
+    default_constraints = constraints.model_copy(
+        update={
+            "pace": PlanPace.BALANCED,
+            "pace_source": PlanPaceSource.SYSTEM_DEFAULT,
+        }
+    )
+    async with database.session() as session:
+        default_resolved: list[PlanConstraints] = []
+        delegate = MapPlanFactResolver(
+            session=session,
+            map_provider=provider,
+            matching_policy=Settings(
+                _env_file=None,
+                app_env="test",
+            ).place_matching_policy(),
+        )
+
+        class CapturingDefaultFacts:
+            async def resolve(self, *, user_id: str, constraints: PlanConstraints):
+                default_resolved.append(constraints)
+                return await delegate.resolve(user_id=user_id, constraints=constraints)
+
+        default_result = await ExistingPlanServicesExecutor(
+            session=session,
+            map_provider=provider,
+            matching_policy=Settings(
+                _env_file=None,
+                app_env="test",
+            ).place_matching_policy(),
+            facts=CapturingDefaultFacts(),  # type: ignore[arg-type]
+        ).execute(user_id=user_id, constraints=default_constraints, approval=None)
+    await database.close()
+
+    assert default_result.outcome is PlanGenerationOutcome.DRAFT
+    assert default_resolved[0].pace is PlanPace.RELAXED
+    assert default_resolved[0].pace_source is PlanPaceSource.MEMORY_DEFAULT
+    assert len(default_result.memory_usages) == 1
+    assert default_result.effective_constraints == default_resolved[0]
 
 
 @pytest.mark.asyncio

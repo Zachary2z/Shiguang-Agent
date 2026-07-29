@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -56,6 +57,14 @@ class PlanPace(StrEnum):
     RELAXED = "relaxed"
     BALANCED = "balanced"
     PACKED = "packed"
+
+
+class PlanPaceSource(StrEnum):
+    """Why the effective pace has its current value."""
+
+    USER_REQUEST = "user_request"
+    SYSTEM_DEFAULT = "system_default"
+    MEMORY_DEFAULT = "memory_default"
 
 
 class MissingPlanConstraint(StrEnum):
@@ -149,6 +158,34 @@ class ActivityArea(PlanContract):
             raise ValueError("activity area requires a district or label")
         return self
 
+    def as_memory_value(self) -> str:
+        """Serialize one explicitly classified coarse area for long-term storage."""
+
+        if len(self.districts) + len(self.labels) != 1:
+            raise ValueError("a usual area requires exactly one district or area label")
+        name = (self.districts or self.labels)[0]
+        if len(name) > 40:
+            raise ValueError("a usual area name is too long")
+        return json.dumps(
+            self.model_dump(mode="json"),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @classmethod
+    def from_memory_value(cls, value: str) -> ActivityArea:
+        area = cls.model_validate_json(value)
+        if area.as_memory_value() != value:
+            raise ValueError("usual area value is not canonical")
+        return area
+
+    @property
+    def display_name(self) -> str:
+        if len(self.districts) + len(self.labels) != 1:
+            raise ValueError("a usual area requires exactly one district or area label")
+        return (self.districts or self.labels)[0]
+
 
 class _PlanConstraintValues(PlanContract):
     """Common optional preferences and explicit temporary lifetime."""
@@ -164,6 +201,7 @@ class _PlanConstraintValues(PlanContract):
         decimal_places=2,
     )
     pace: PlanPace = PlanPace.BALANCED
+    pace_source: PlanPaceSource = PlanPaceSource.USER_REQUEST
     transport_modes: tuple[TransportMode, ...] = Field(default_factory=tuple, max_length=4)
     include: tuple[str, ...] = Field(default_factory=tuple, repr=False)
     exclude: tuple[str, ...] = Field(default_factory=tuple, repr=False)
@@ -331,6 +369,7 @@ def resolve_plan_constraints(
         origin=value.origin,
         budget=value.budget,
         pace=value.pace,
+        pace_source=value.pace_source,
         transport_modes=value.transport_modes,
         include=value.include,
         exclude=value.exclude,

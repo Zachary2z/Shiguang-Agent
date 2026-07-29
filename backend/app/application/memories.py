@@ -26,6 +26,7 @@ from app.domain.memories import (
     MemoryVersionConflictError,
     SensitiveMemoryRejectedError,
 )
+from app.domain.plans import ActivityArea, PlanConstraints, PlanPace, PlanPaceSource
 from app.domain.time import utc_now
 from app.infrastructure.db.models import (
     MemoryModel,
@@ -36,20 +37,6 @@ from app.infrastructure.db.models import (
 from app.infrastructure.repositories import (
     SqlAlchemyMemoryRepository,
     plan_request_fingerprint,
-)
-
-_SHENZHEN_ADMIN_DISTRICTS = frozenset(
-    {
-        "福田区",
-        "罗湖区",
-        "盐田区",
-        "南山区",
-        "宝安区",
-        "龙岗区",
-        "龙华区",
-        "坪山区",
-        "光明区",
-    }
 )
 
 
@@ -98,20 +85,26 @@ class MemoryService:
         *,
         user_id: str,
         memory_type: MemoryType,
-        content: str,
-        value: str,
+        content: str | None,
+        value: str | None,
         expires_at: datetime | None,
         explicit_authorization: bool,
         location_granularity: str | None,
         client_idempotency_key: str,
+        area: ActivityArea | None = None,
     ) -> MemoryWriteResult:
         self._require_safe_explicit_write(
             memory_type=memory_type,
-            content=content,
-            value=value,
+            area=area,
             explicit_authorization=explicit_authorization,
             location_granularity=location_granularity,
         )
+        if memory_type is MemoryType.USUAL_AREA:
+            assert area is not None
+            content = f"常用区域：{area.display_name}"
+            value = area.as_memory_value()
+        elif content is None or value is None:
+            raise ValueError("preference memories require content and value")
         key = _scoped_key(user_id, client_idempotency_key)
         fingerprint = plan_request_fingerprint(
             {
@@ -119,6 +112,7 @@ class MemoryService:
                 "type": memory_type.value,
                 "content": content,
                 "value": value,
+                "area": None if area is None else area.model_dump(mode="json"),
                 "expires_at": None if expires_at is None else expires_at.isoformat(),
                 "explicit_authorization": explicit_authorization,
                 "location_granularity": location_granularity,
@@ -171,6 +165,7 @@ class MemoryService:
         expires_at: datetime | None,
         change_expiry: bool,
         client_idempotency_key: str,
+        area: ActivityArea | None = None,
     ) -> MemoryWriteResult:
         key = _scoped_key(user_id, client_idempotency_key)
         fingerprint = plan_request_fingerprint(
@@ -180,6 +175,7 @@ class MemoryService:
                 "expected_version": expected_version,
                 "content": content,
                 "value": value,
+                "area": None if area is None else area.model_dump(mode="json"),
                 "enabled": enabled,
                 "expires_at": None if expires_at is None else expires_at.isoformat(),
                 "change_expiry": change_expiry,
@@ -202,9 +198,13 @@ class MemoryService:
             raise MemoryNotFoundError
         if row.version != expected_version:
             raise MemoryVersionConflictError
-        if row.type == MemoryType.USUAL_AREA.value and (
-            content is not None or value is not None
-        ):
+        if row.type == MemoryType.USUAL_AREA.value:
+            if content is not None or value is not None:
+                raise SensitiveMemoryRejectedError
+            if area is not None:
+                content = f"常用区域：{area.display_name}"
+                value = area.as_memory_value()
+        elif area is not None:
             raise SensitiveMemoryRejectedError
         now = utc_now()
         candidate = SqlAlchemyMemoryRepository.to_domain(row).model_copy(
@@ -353,7 +353,7 @@ class MemoryService:
         )
         if suggestion is None:
             raise MemorySuggestionUnavailableError
-        audit, _legacy_payload = suggestion
+        audit, suggestion_payload = suggestion
         now = utc_now()
         memory: Memory | None = None
         if decision is MemorySuggestionDecision.CONFIRMED:
@@ -365,7 +365,10 @@ class MemoryService:
                 value=value,
                 source=MemorySource(
                     type=MemorySourceType.FEEDBACK_INFERENCE,
-                    summary="由你根据一次历史反馈建议明确确认",
+                    summary=(
+                        suggestion_payload.evidence_summary
+                        or "由你根据一次历史反馈建议明确确认"
+                    ),
                     feedback_id=audit.id,
                     plan_id=audit.plan_id,
                 ),
@@ -430,21 +433,20 @@ class MemoryService:
     def _require_safe_explicit_write(
         *,
         memory_type: MemoryType,
-        content: str,
-        value: str,
+        area: ActivityArea | None,
         explicit_authorization: bool,
         location_granularity: str | None,
     ) -> None:
         if not explicit_authorization:
             raise SensitiveMemoryRejectedError
         if memory_type is MemoryType.USUAL_AREA:
-            if (
-                location_granularity != "coarse"
-                or value not in _SHENZHEN_ADMIN_DISTRICTS
-                or content not in {value, f"常用区域：{value}"}
-            ):
+            if location_granularity != "coarse" or area is None:
                 raise SensitiveMemoryRejectedError
-        elif location_granularity is not None:
+            try:
+                area.as_memory_value()
+            except ValueError:
+                raise SensitiveMemoryRejectedError from None
+        elif location_granularity is not None or area is not None:
             raise SensitiveMemoryRejectedError
 
     @staticmethod
@@ -533,6 +535,37 @@ class MemoryPlanningService:
 
     async def effective(self, *, user_id: str, at: datetime) -> tuple[Memory, ...]:
         return await self._repository.list_effective(user_id=user_id, at=at)
+
+    @staticmethod
+    def apply_pace_default(
+        *,
+        constraints: PlanConstraints,
+        memories: tuple[Memory, ...],
+    ) -> tuple[PlanConstraints, dict[str, str]]:
+        """Apply one deterministic pace default without overriding this request."""
+
+        if constraints.pace_source is PlanPaceSource.USER_REQUEST:
+            return constraints, {}
+        candidates = tuple(
+            memory
+            for memory in memories
+            if memory.type is MemoryType.PACE_PREFERENCE
+        )
+        if not candidates:
+            return constraints, {}
+        selected = candidates[-1]
+        pace = PlanPace(selected.value)
+        if (
+            constraints.pace_source is PlanPaceSource.SYSTEM_DEFAULT
+            and pace is constraints.pace
+        ):
+            return constraints, {}
+        effective = constraints.model_copy(
+            update={"pace": pace, "pace_source": PlanPaceSource.MEMORY_DEFAULT}
+        )
+        return effective, {
+            selected.id: f"该节奏记忆将本次计划默认节奏调整为{pace.value}"
+        }
 
     async def record_usage(
         self,

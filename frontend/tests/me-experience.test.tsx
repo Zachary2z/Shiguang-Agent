@@ -148,12 +148,10 @@ describe("MeExperience", () => {
     });
     render(<MeExperience />);
     const confirm = await screen.findByRole("button", { name: "确认记住" });
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "记忆类型" }),
+    expect(screen.getByRole("combobox", { name: "记忆类型" })).toHaveValue(
       "pace_preference",
     );
-    await user.type(
-      screen.getByRole("textbox", { name: "结构化值" }),
+    expect(screen.getByRole("textbox", { name: "结构化值" })).toHaveValue(
       "relaxed",
     );
     await user.click(confirm);
@@ -397,34 +395,59 @@ describe("MeExperience", () => {
     });
   });
 
-  it("keeps usual-area content read-only while retaining lifecycle controls", async () => {
+  it("edits a usual area through the structured coarse-area boundary", async () => {
     const user = userEvent.setup();
     const areaMemory = {
       ...secondMemory,
       type: "usual_area",
       content: "常用区域：福田区",
-      value: "福田区",
+      value: '{"districts":["福田区"],"labels":[]}',
     } as const;
-    vi.mocked(apiClient.request).mockImplementation(async (path) => {
+    vi.mocked(apiClient.request).mockImplementation(async (path, options) => {
       if (path === "/api/v1/demo/sessions")
         return { csrf_token: "csrf-runtime-only" } as never;
       if (path === "/api/v1/memories")
         return { items: [areaMemory] } as never;
       if (path === "/api/v1/memory-suggestions") return { items: [] } as never;
-      if (path === `/api/v1/memories/${areaMemory.id}`)
+      if (path === `/api/v1/memories/${areaMemory.id}`) {
+        if (options?.method === "PATCH") {
+          const body = JSON.parse(String(options.body));
+          expect(body.area).toEqual({
+            districts: [],
+            labels: ["大学城附近"],
+          });
+          return {
+            memory: {
+              ...areaMemory,
+              content: "常用区域：大学城附近",
+              value: '{"districts":[],"labels":["大学城附近"]}',
+              version: 2,
+            },
+            usages: [],
+            replayed: false,
+          } as never;
+        }
         return { memory: areaMemory, usages: [], replayed: false } as never;
+      }
       throw new Error("unexpected");
     });
     render(<MeExperience />);
     await user.click(
       await screen.findByRole("button", { name: /常用区域：福田区/ }),
     );
-    expect(
-      await screen.findByText(/当前版本不允许修改其内容或值/),
-    ).toBeVisible();
-    expect(screen.getByRole("textbox", { name: "记忆内容" })).toBeDisabled();
-    expect(screen.getByRole("textbox", { name: "结构化值" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "保存修改" })).toBeDisabled();
+    expect(await screen.findByText(/不接受地址、坐标或具体地点/)).toBeVisible();
+    expect(screen.getByRole("textbox", { name: "常用区域" })).toHaveValue("福田区");
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "区域类型" }),
+      "label",
+    );
+    await user.clear(screen.getByRole("textbox", { name: "常用区域" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "常用区域" }),
+      "大学城附近",
+    );
+    await user.click(screen.getByRole("button", { name: "保存修改" }));
+    expect(await screen.findByText("记忆已更新。")).toBeVisible();
     expect(screen.getByRole("button", { name: "停用记忆" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "删除记忆" })).toBeEnabled();
   });

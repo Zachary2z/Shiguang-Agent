@@ -129,6 +129,7 @@ class SqlAlchemyMemoryRepository:
         )
 
     async def pending_suggestions(self, *, user_id: str) -> tuple[MemorySuggestion, ...]:
+        rejected = await self._rejected_suggestion_payloads(user_id=user_id)
         rows = (
             await self._session.execute(
                 select(PlanFeedbackAuditModel)
@@ -152,6 +153,8 @@ class SqlAlchemyMemoryRepository:
         ).scalars()
         suggestions: list[MemorySuggestion] = []
         for row in rows:
+            if self._suggestion_payload_identity(row.preference_suggestion_json) in rejected:
+                continue
             payload = PreferenceSuggestion.model_validate_json(
                 json.dumps(row.preference_suggestion_json)
             )
@@ -159,10 +162,13 @@ class SqlAlchemyMemoryRepository:
                 MemorySuggestion(
                     id=row.id,
                     plan_id=row.plan_id,
-                    memory_type=None,
+                    memory_type=payload.memory_type,
                     content=payload.content,
-                    value=None,
-                    evidence_summary="来自一次历史反馈建议，尚未形成长期偏好",
+                    value=payload.value,
+                    evidence_summary=(
+                        payload.evidence_summary
+                        or "来自一次历史反馈建议，尚未形成长期偏好"
+                    ),
                     created_at=_time(row.created_at),
                 )
             )
@@ -192,7 +198,53 @@ class SqlAlchemyMemoryRepository:
         payload = PreferenceSuggestion.model_validate_json(
             json.dumps(row.preference_suggestion_json)
         )
+        rejected = await self._rejected_suggestion_payloads(user_id=user_id)
+        if self._suggestion_payload_identity(row.preference_suggestion_json) in rejected:
+            return None
         return row, payload
+
+    async def _rejected_suggestion_payloads(self, *, user_id: str) -> set[str]:
+        payloads = (
+            await self._session.execute(
+                select(PlanFeedbackAuditModel.preference_suggestion_json)
+                .join(
+                    MemorySuggestionDecisionModel,
+                    (
+                        MemorySuggestionDecisionModel.suggestion_id
+                        == PlanFeedbackAuditModel.id
+                    )
+                    & (
+                        MemorySuggestionDecisionModel.user_id
+                        == PlanFeedbackAuditModel.user_id
+                    ),
+                )
+                .where(
+                    PlanFeedbackAuditModel.user_id == user_id,
+                    MemorySuggestionDecisionModel.decision == "rejected",
+                )
+            )
+        ).scalars()
+        return {
+            self._suggestion_payload_identity(payload)
+            for payload in payloads
+            if payload is not None
+        }
+
+    async def suggestion_payload_was_rejected(
+        self, *, user_id: str, payload: object
+    ) -> bool:
+        return self._suggestion_payload_identity(
+            payload
+        ) in await self._rejected_suggestion_payloads(user_id=user_id)
+
+    @staticmethod
+    def _suggestion_payload_identity(payload: object) -> str:
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
 
     async def operation_replay(
         self, *, user_id: str, idempotency_key: str, fingerprint: str

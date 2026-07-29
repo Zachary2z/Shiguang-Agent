@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
@@ -17,6 +18,7 @@ from app.domain.memories import (
     MemorySuggestionUnavailableError,
     MemoryType,
 )
+from app.domain.plans import PlanPace, PlanPaceSource
 from app.domain.time import utc_now
 from app.infrastructure.db.models import (
     MemoryModel,
@@ -27,6 +29,7 @@ from app.infrastructure.db.models import (
     PlanFeedbackStateModel,
     UserModel,
 )
+from app.infrastructure.repositories import SqlAlchemyPlanRepository
 from tests.contract.test_m0_2d_api import _client, _demo
 from tests.contract.test_m1_6_execution import _seed_plan
 
@@ -341,6 +344,123 @@ async def test_feedback_suggestion_confirm_reject_and_evidence_is_not_reasked(
 
 
 @pytest.mark.asyncio
+async def test_structured_feedback_candidate_is_pending_and_auditable(
+    test_settings,
+) -> None:
+    async with _client(test_settings) as (api, client):
+        await _demo(client)
+        plan_id, _collection_id, item_ids = await _seed_plan(api, confirmed=True)
+        candidate = {
+            "memory_type": "pace_preference",
+            "content": "以后默认使用轻松节奏",
+            "value": "relaxed",
+            "evidence_summary": "你在反馈表单中明确选择保存这项节奏候选",
+        }
+        body = {
+            "idempotency_key": "structured-candidate",
+            "completion_status": "partially_completed",
+            "visited_plan_item_ids": [item_ids[0]],
+            "reason": "任何自由文本都不是候选依据",
+            "expected_revision": None,
+            "preference_candidate": candidate,
+        }
+        submitted = await client.post(
+            f"/api/v1/plans/{plan_id}/feedback", json=body
+        )
+        replay = await client.post(f"/api/v1/plans/{plan_id}/feedback", json=body)
+        assert submitted.status_code == replay.status_code == 200
+        assert replay.json()["replayed"] is True
+        suggestion = submitted.json()["feedback"]["preference_suggestion"]
+        assert suggestion == {**candidate, "confirmation_status": "pending"}
+        assert (await client.get("/api/v1/memories")).json()["items"] == []
+        pending = (await client.get("/api/v1/memory-suggestions")).json()["items"]
+        assert len(pending) == 1
+        assert pending[0]["memory_type"] == "pace_preference"
+        assert pending[0]["value"] == "relaxed"
+        assert pending[0]["evidence_summary"] == candidate["evidence_summary"]
+
+        conflict = await client.post(
+            f"/api/v1/plans/{plan_id}/feedback",
+            json={
+                **body,
+                "preference_candidate": {**candidate, "value": "packed"},
+            },
+        )
+        assert conflict.status_code == 409
+        suggestion_id = submitted.json()["feedback"]["id"]
+        rejected = await client.post(
+            f"/api/v1/memory-suggestions/{suggestion_id}/decision",
+            json={"idempotency_key": "reject-structured", "decision": "rejected"},
+        )
+        assert rejected.status_code == 200
+        corrected = await client.post(
+            f"/api/v1/plans/{plan_id}/feedback",
+            json={
+                **body,
+                "idempotency_key": "structured-candidate-correction",
+                "expected_revision": 1,
+            },
+        )
+        assert corrected.status_code == 200
+        assert corrected.json()["feedback"]["preference_suggestion"] is None
+        assert (await client.get("/api/v1/memory-suggestions")).json()["items"] == []
+
+
+@pytest.mark.asyncio
+async def test_effective_pace_constraint_is_persisted_and_public(test_settings) -> None:
+    async with _client(test_settings) as (api, client):
+        api.state.map_provider = object()
+        await _demo(client)
+        request = {
+            "idempotency_key": "memory-default-pace-plan",
+            "start_at": "2026-07-30T10:00:00+08:00",
+            "end_at": "2026-07-30T18:00:00+08:00",
+            "area": {"districts": ["南山区"], "labels": []},
+            "transport_modes": ["transit"],
+        }
+        created = await client.post("/api/v1/plans", json=request)
+        assert created.status_code == 202, created.text
+        plan_id = created.json()["plan_id"]
+        user_id = await _current_user_id(api)
+        async with api.state.demo_database.session_factory() as session:
+            plans = SqlAlchemyPlanRepository(session)
+            plan = await plans.require(user_id=user_id, plan_id=plan_id)
+            assert plan.constraints.pace is PlanPace.BALANCED
+            assert plan.constraints.pace_source is PlanPaceSource.SYSTEM_DEFAULT
+            effective = plan.constraints.model_copy(
+                update={
+                    "pace": PlanPace.RELAXED,
+                    "pace_source": PlanPaceSource.MEMORY_DEFAULT,
+                }
+            )
+            await plans.set_effective_constraints(
+                user_id=user_id,
+                plan_id=plan_id,
+                constraints=effective,
+                now=utc_now(),
+            )
+            await session.commit()
+        public = await client.get(f"/api/v1/plans/{plan_id}")
+        assert public.status_code == 200
+        assert public.json()["constraints"]["pace"] == "relaxed"
+        assert public.json()["constraints"]["pace_source"] == "memory_default"
+        explicit = await client.post(
+            "/api/v1/plans",
+            json={
+                **request,
+                "idempotency_key": "explicit-balanced-pace-plan",
+                "pace": "balanced",
+            },
+        )
+        assert explicit.status_code == 202
+        explicit_public = await client.get(
+            f"/api/v1/plans/{explicit.json()['plan_id']}"
+        )
+        assert explicit_public.json()["constraints"]["pace"] == "balanced"
+        assert explicit_public.json()["constraints"]["pace_source"] == "user_request"
+
+
+@pytest.mark.asyncio
 async def test_only_effective_memories_are_used_and_usage_is_owner_plan_scoped(
     test_settings,
 ) -> None:
@@ -456,33 +576,65 @@ async def test_sensitive_location_and_failed_commit_leave_no_partial_memory(
             == 422
         )
 
-        coarse = await _create_memory(
-            client,
-            key="coarse-area",
-            type="usual_area",
-            content="常用区域：福田区",
-            value="福田区",
-            location_granularity="coarse",
-        )
-        assert coarse.status_code == 200
-        forbidden_edit = await client.patch(
-            f"/api/v1/memories/{coarse.json()['memory']['id']}",
+        coarse_memories = []
+        for index, area in enumerate(
+            (
+                {"districts": ["南山区"], "labels": []},
+                {"districts": [], "labels": ["大学城附近"]},
+                {"districts": ["大鹏新区"], "labels": []},
+            )
+        ):
+            response = await client.post(
+                "/api/v1/memories",
+                json={
+                    "idempotency_key": f"coarse-area-{index}",
+                    "type": "usual_area",
+                    "content": None,
+                    "value": None,
+                    "area": area,
+                    "expires_at": None,
+                    "explicit_authorization": True,
+                    "location_granularity": "coarse",
+                },
+            )
+            assert response.status_code == 200, response.text
+            coarse_memories.append(response.json()["memory"])
+        coarse = coarse_memories[0]
+        edited = await client.patch(
+            f"/api/v1/memories/{coarse['id']}",
             json={
                 "idempotency_key": "edit-coarse-area",
-                "expected_version": coarse.json()["memory"]["version"],
-                "content": "常用区域：南山区",
-                "value": "南山区",
+                "expected_version": coarse["version"],
+                "content": None,
+                "value": None,
+                "area": {"districts": [], "labels": ["大学城附近"]},
                 "enabled": None,
                 "expires_at": None,
                 "change_expiry": False,
             },
         )
-        assert forbidden_edit.status_code == 422
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["memory"]["content"] == "常用区域：大学城附近"
+        for unsafe in (
+            {"origin": {"longitude": 114.0, "latitude": 22.5}},
+            {"coordinates": [114.0, 22.5]},
+            {"poi_id": "B0PRIVATE"},
+            {"address": "深圳市福田区某小区 2 栋 201"},
+        ):
+            rejected_update = await client.patch(
+                f"/api/v1/memories/{coarse['id']}",
+                json={
+                    "idempotency_key": f"unsafe-{next(iter(unsafe))}",
+                    "expected_version": edited.json()["memory"]["version"],
+                    "area": unsafe,
+                },
+            )
+            assert rejected_update.status_code == 422
         disabled = await client.patch(
-            f"/api/v1/memories/{coarse.json()['memory']['id']}",
+            f"/api/v1/memories/{coarse['id']}",
             json={
                 "idempotency_key": "disable-coarse-area",
-                "expected_version": coarse.json()["memory"]["version"],
+                "expected_version": edited.json()["memory"]["version"],
                 "content": None,
                 "value": None,
                 "enabled": False,
@@ -512,10 +664,10 @@ async def test_sensitive_location_and_failed_commit_leave_no_partial_memory(
                     client_idempotency_key="rollback",
                 )
         async with api.state.demo_database.session_factory() as session:
-            assert await session.scalar(select(func.count()).select_from(MemoryModel)) == 1
+            assert await session.scalar(select(func.count()).select_from(MemoryModel)) == 3
             assert await session.scalar(
                 select(func.count()).select_from(MemoryOperationModel)
-            ) == 2
+            ) == 5
 
 
 @pytest.mark.asyncio
@@ -540,3 +692,16 @@ async def test_private_export_is_current_user_allowlist_and_no_store(test_settin
         serialized = json.dumps(payload).lower()
         for forbidden in ("cookie", "token", "secret", "password", "idempotency"):
             assert forbidden not in serialized
+
+
+def test_memory_repairs_keep_one_service_and_no_location_or_inference_lists() -> None:
+    application = Path(__file__).resolve().parents[2] / "app"
+    production = "\n".join(
+        path.read_text()
+        for path in application.rglob("*.py")
+        if "__pycache__" not in path.parts
+    )
+    assert "_SHENZHEN_ADMIN_DISTRICTS" not in production
+    assert "PreferenceSuggestionService" not in production
+    assert production.count("class MemoryService:") == 1
+    assert production.count("class SqlAlchemyMemoryRepository:") == 1

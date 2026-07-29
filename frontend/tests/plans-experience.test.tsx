@@ -429,11 +429,30 @@ describe("PlansExperience", () => {
 
     await userEvent.click(screen.getByRole("radio", { name: /部分完成/ }));
     await userEvent.click(screen.getByRole("checkbox", { name: /海边咖啡/ }));
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: /把一项明确偏好送到“我的”待确认/ }),
+    );
+    await userEvent.selectOptions(
+      screen.getByRole("combobox", { name: "候选类型" }),
+      "pace_preference",
+    );
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "候选内容" }),
+      "以后默认使用轻松节奏",
+    );
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "结构化值" }),
+      "relaxed",
+    );
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "候选依据" }),
+      "我在本次反馈中明确选择了这项候选",
+    );
     await userEvent.click(screen.getByRole("button", { name: "保存完成反馈" }));
 
     await waitFor(() => expect(screen.getByText("完成反馈已保存。")).toBeInTheDocument());
     expect(screen.getByText("待确认的长期偏好建议")).toBeInTheDocument();
-    expect(screen.getByText("本阶段不会自动写入长期记忆。")).toBeInTheDocument();
+    expect(screen.getByText(/本阶段不会自动写入长期记忆/)).toBeInTheDocument();
     expect(requests).toHaveBeenNthCalledWith(
       4,
       `/api/v1/plans/${plan.id}/feedback`,
@@ -448,11 +467,23 @@ describe("PlansExperience", () => {
       completion_status?: string;
       visited_plan_item_ids?: string[];
       expected_revision?: number | null;
+      preference_candidate?: {
+        memory_type: string;
+        content: string;
+        value: string;
+        evidence_summary: string;
+      };
     };
     expect(submittedBody).toMatchObject({
       completion_status: "partially_completed",
       visited_plan_item_ids: [execution.items[0].id],
       expected_revision: null,
+      preference_candidate: {
+        memory_type: "pace_preference",
+        content: "以后默认使用轻松节奏",
+        value: "relaxed",
+        evidence_summary: "我在本次反馈中明确选择了这项候选",
+      },
     });
   });
 

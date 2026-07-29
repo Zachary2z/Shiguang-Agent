@@ -12,7 +12,7 @@ from pydantic import Field, ValidationError, model_validator
 
 from app.application.extraction_output import structured_response_format
 from app.domain.places import TransportMode
-from app.domain.plans import PlanConstraints, PlanPace
+from app.domain.plans import PlanConstraints, PlanPace, PlanPaceSource
 from app.domain.plans.contracts import PlanContract
 from nanobot_core.providers import (
     Message,
@@ -140,6 +140,8 @@ def apply_plan_adjustment(
     values = constraints.model_dump()
     for field_name in patch.model_fields_set:
         values[field_name] = getattr(patch, field_name)
+    if "pace" in patch.model_fields_set:
+        values["pace_source"] = PlanPaceSource.USER_REQUEST
     return PlanConstraints.model_validate(values)
 
 

@@ -36,6 +36,7 @@ from app.infrastructure.db.models import (
     PlanModel,
 )
 from app.infrastructure.repositories import (
+    SqlAlchemyMemoryRepository,
     SqlAlchemyPlanRepository,
     plan_request_fingerprint,
 )
@@ -217,6 +218,7 @@ class PlanFeedbackService:
         reason: str | None,
         client_idempotency_key: str,
         expected_revision: int | None,
+        preference_candidate: PreferenceSuggestion | None = None,
     ) -> FeedbackSubmission:
         key = _scoped_feedback_key(user_id, client_idempotency_key)
         fingerprint = plan_request_fingerprint(
@@ -225,6 +227,11 @@ class PlanFeedbackService:
                 "completion_status": completion_status.value,
                 "visited_plan_item_ids": sorted(visited_plan_item_ids),
                 "reason": reason,
+                "preference_candidate": (
+                    None
+                    if preference_candidate is None
+                    else preference_candidate.model_dump(mode="json")
+                ),
                 "expected_revision": expected_revision,
             }
         )
@@ -236,6 +243,17 @@ class PlanFeedbackService:
         )
         if replay is not None:
             return replay
+        stored_candidate = preference_candidate
+        if (
+            preference_candidate is not None
+            and await SqlAlchemyMemoryRepository(
+                session
+            ).suggestion_payload_was_rejected(
+                user_id=user_id,
+                payload=preference_candidate.model_dump(mode="json"),
+            )
+        ):
+            stored_candidate = None
 
         plan = await _require_execution_plan(session, user_id=user_id, plan_id=plan_id)
         # The Plan row lock is the cross-process serialization boundary. A competing
@@ -294,7 +312,11 @@ class PlanFeedbackService:
             completion_status=completion_status.value,
             reason=reason,
             visited_plan_item_ids_json=sorted(requested),
-            preference_suggestion_json=None,
+            preference_suggestion_json=(
+                None
+                if stored_candidate is None
+                else stored_candidate.model_dump(mode="json")
+            ),
             idempotency_key=key,
             request_fingerprint=fingerprint,
             corrects_feedback_id=None if state is None else state.current_feedback_id,
@@ -310,7 +332,11 @@ class PlanFeedbackService:
                     revision=revision,
                     completion_status=completion_status.value,
                     reason=reason,
-                    preference_suggestion_json=None,
+                    preference_suggestion_json=(
+                        None
+                        if stored_candidate is None
+                        else stored_candidate.model_dump(mode="json")
+                    ),
                     created_at=now,
                     updated_at=now,
                 )
@@ -320,7 +346,11 @@ class PlanFeedbackService:
             state.revision = revision
             state.completion_status = completion_status.value
             state.reason = reason
-            state.preference_suggestion_json = None
+            state.preference_suggestion_json = (
+                None
+                if stored_candidate is None
+                else stored_candidate.model_dump(mode="json")
+            )
             state.updated_at = now
         try:
             await session.flush()

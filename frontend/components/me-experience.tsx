@@ -113,9 +113,12 @@ function SuggestionCard({
   ) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<SuggestionMemoryDraft>({
-    memory_type: "",
+    memory_type:
+      suggestion.memory_type === "usual_area"
+        ? ""
+        : suggestion.memory_type ?? "",
     content: suggestion.content,
-    value: "",
+    value: suggestion.value ?? "",
   });
   const canConfirm = Boolean(
     draft.memory_type && draft.content.trim() && draft.value.trim(),
@@ -123,7 +126,9 @@ function SuggestionCard({
 
   return (
     <article className="suggestion-card">
-      <span className="memory-type">中性证据候选</span>
+      <span className="memory-type">
+        {suggestion.memory_type ? "结构化证据候选" : "中性证据候选"}
+      </span>
       <h3>{suggestion.content}</h3>
       <p>{suggestion.evidence_summary}</p>
       <small>未经确认，不会进入计划。请明确要保存的长期含义。</small>
@@ -202,6 +207,8 @@ export function MeExperience() {
   const [detail, setDetail] = useState<MemoryDetail | null>(null);
   const [content, setContent] = useState("");
   const [value, setValue] = useState("");
+  const [areaKind, setAreaKind] = useState<"district" | "label">("district");
+  const [areaName, setAreaName] = useState("");
   const [feedback, setFeedback] = useState("");
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -245,6 +252,20 @@ export function MeExperience() {
       setDetail(result);
       setContent(result.memory.content);
       setValue(result.memory.value);
+      if (result.memory.type === "usual_area") {
+        try {
+          const area = JSON.parse(result.memory.value) as {
+            districts?: string[];
+            labels?: string[];
+          };
+          const district = area.districts?.[0];
+          setAreaKind(district ? "district" : "label");
+          setAreaName(district ?? area.labels?.[0] ?? "");
+        } catch {
+          setAreaKind("district");
+          setAreaName("");
+        }
+      }
     } catch (error) {
       if (
         detailGeneration.current !== generation ||
@@ -380,6 +401,7 @@ export function MeExperience() {
       content: string | null;
       value: string | null;
       enabled: boolean | null;
+      area?: { districts: string[]; labels: string[] } | null;
     },
   ) {
     if (!csrf) return;
@@ -470,7 +492,21 @@ export function MeExperience() {
 
   function submitEdit(event: FormEvent) {
     event.preventDefault();
-    if (!detail || !content.trim() || !value.trim()) return;
+    if (!detail) return;
+    if (detail.memory.type === "usual_area") {
+      if (!areaName.trim()) return;
+      void patchMemory(detail.memory, {
+        content: null,
+        value: null,
+        enabled: null,
+        area:
+          areaKind === "district"
+            ? { districts: [areaName.trim()], labels: [] }
+            : { districts: [], labels: [areaName.trim()] },
+      });
+      return;
+    }
+    if (!content.trim() || !value.trim()) return;
     void patchMemory(detail.memory, {
       content: content.trim(),
       value: value.trim(),
@@ -593,39 +629,65 @@ export function MeExperience() {
                   </div>
                   <form className="memory-edit-form" onSubmit={submitEdit}>
                     {detail.memory.type === "usual_area" ? (
-                      <p role="note">
-                        常用区域只保存结构化行政区。当前版本不允许修改其内容或值；
-                        你仍可停用、启用或删除。
-                      </p>
+                      <>
+                        <p role="note">
+                          这里只保存区级或商圈级粗区域，不接受地址、坐标或具体地点。
+                        </p>
+                        <label>
+                          区域类型
+                          <select
+                            name="usual_area_kind"
+                            value={areaKind}
+                            onChange={(event) =>
+                              setAreaKind(event.target.value as "district" | "label")
+                            }
+                          >
+                            <option value="district">行政区</option>
+                            <option value="label">商圈或粗区域</option>
+                          </select>
+                        </label>
+                        <label>
+                          常用区域
+                          <input
+                            name="usual_area_name"
+                            value={areaName}
+                            maxLength={40}
+                            onChange={(event) => setAreaName(event.target.value)}
+                            placeholder="例如：南山区、大学城附近"
+                          />
+                        </label>
+                      </>
                     ) : null}
-                    <label>
-                      记忆内容
-                      <textarea
-                        name="memory_content"
-                        value={content}
-                        maxLength={500}
-                        disabled={detail.memory.type === "usual_area"}
-                        onChange={(event) => setContent(event.target.value)}
-                      />
-                    </label>
-                    <label>
-                      结构化值
-                      <input
-                        name="memory_value"
-                        value={value}
-                        maxLength={100}
-                        disabled={detail.memory.type === "usual_area"}
-                        onChange={(event) => setValue(event.target.value)}
-                      />
-                    </label>
+                    {detail.memory.type !== "usual_area" ? (
+                      <>
+                        <label>
+                          记忆内容
+                          <textarea
+                            name="memory_content"
+                            value={content}
+                            maxLength={500}
+                            onChange={(event) => setContent(event.target.value)}
+                          />
+                        </label>
+                        <label>
+                          结构化值
+                          <input
+                            name="memory_value"
+                            value={value}
+                            maxLength={100}
+                            onChange={(event) => setValue(event.target.value)}
+                          />
+                        </label>
+                      </>
+                    ) : null}
                     <button
                       className="primary-button"
                       type="submit"
                       disabled={
                         saving ||
-                        detail.memory.type === "usual_area" ||
-                        !content.trim() ||
-                        !value.trim()
+                        (detail.memory.type === "usual_area"
+                          ? !areaName.trim()
+                          : !content.trim() || !value.trim())
                       }
                     >
                       保存修改

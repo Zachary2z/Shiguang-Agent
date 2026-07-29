@@ -38,6 +38,16 @@ class PreferenceSuggestion(PlanContract):
     evidence_summary: str | None = Field(default=None, min_length=1, max_length=500)
     confirmation_status: str = Field(default="pending", pattern=r"^pending$")
 
+    @model_validator(mode="after")
+    def require_structured_candidate_or_legacy_shape(self) -> Self:
+        structured = (self.memory_type, self.value, self.evidence_summary)
+        if any(value is not None for value in structured):
+            if any(value is None for value in structured):
+                raise ValueError("structured suggestions require type, value, and evidence")
+            if self.memory_type is MemoryType.USUAL_AREA:
+                raise ValueError("feedback suggestions cannot propose location memories")
+        return self
+
 
 class PlanFeedbackSelectionError(ValueError):
     """The selected items cannot represent the requested completion state."""

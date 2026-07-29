@@ -30,6 +30,7 @@ from app.domain.memories import (
     Memory,
     MemorySuggestion,
     MemorySuggestionDecision,
+    MemoryType,
     MemoryUsage,
 )
 from app.domain.places import (
@@ -43,6 +44,7 @@ from app.domain.places import (
     TransportMode,
 )
 from app.domain.plans import (
+    ActivityArea,
     ApprovalStatus,
     PlanApproval,
     PlanCompletionStatus,
@@ -50,8 +52,10 @@ from app.domain.plans import (
     PlanExecutionItem,
     PlanFeedback,
     PlanPace,
+    PlanPaceSource,
     PlanStatus,
     PlanVersion,
+    PreferenceSuggestion,
 )
 from app.domain.runs import AgentRunStatus, ToolRunStatus
 from nanobot_core.providers import FinishReason, TokenUsage
@@ -69,11 +73,23 @@ class MemoryCreateRequest(ApiModel):
         "pace_preference",
         "usual_area",
     ]
-    content: str = Field(min_length=1, max_length=500)
-    value: str = Field(min_length=1, max_length=100)
+    content: str | None = Field(default=None, min_length=1, max_length=500)
+    value: str | None = Field(default=None, min_length=1, max_length=100)
+    area: ActivityArea | None = None
     expires_at: datetime | None = None
     explicit_authorization: bool
     location_granularity: Literal["coarse"] | None = None
+
+    @field_validator("area", mode="before")
+    @classmethod
+    def json_area(cls, value: object) -> object:
+        if isinstance(value, dict):
+            normalized = {
+                key: tuple(item) if isinstance(item, list) else item
+                for key, item in value.items()
+            }
+            return ActivityArea.model_validate(normalized)
+        return value
 
     @field_validator("expires_at", mode="before")
     @classmethod
@@ -82,15 +98,30 @@ class MemoryCreateRequest(ApiModel):
             return datetime.fromisoformat(value)
         return value
 
+    @model_validator(mode="after")
+    def require_memory_shape(self) -> MemoryCreateRequest:
+        if self.type == "usual_area":
+            if self.area is None or self.content is not None or self.value is not None:
+                raise ValueError("usual area requires only a structured coarse area")
+        elif self.area is not None or self.content is None or self.value is None:
+            raise ValueError("preference memories require content and value")
+        return self
+
 
 class MemoryPatchRequest(ApiModel):
     idempotency_key: IdempotencyKey = Field(repr=False)
     expected_version: int = Field(ge=1)
     content: str | None = Field(default=None, min_length=1, max_length=500)
     value: str | None = Field(default=None, min_length=1, max_length=100)
+    area: ActivityArea | None = None
     enabled: bool | None = None
     expires_at: datetime | None = None
     change_expiry: bool = False
+
+    @field_validator("area", mode="before")
+    @classmethod
+    def json_area(cls, value: object) -> object:
+        return MemoryCreateRequest.json_area(value)
 
     @field_validator("expires_at", mode="before")
     @classmethod
@@ -104,12 +135,15 @@ class MemoryPatchRequest(ApiModel):
         if (
             self.content is None
             and self.value is None
+            and self.area is None
             and self.enabled is None
             and not self.change_expiry
         ):
             raise ValueError("memory patch requires a change")
         if self.expires_at is not None and not self.change_expiry:
             raise ValueError("expiry value requires change_expiry")
+        if self.area is not None and (self.content is not None or self.value is not None):
+            raise ValueError("structured area cannot be combined with content or value")
         return self
 
 
@@ -207,7 +241,7 @@ class PlanCreateRequest(ApiModel):
     area: PlanAreaRequest | None = None
     origin: Coordinate | None = Field(default=None, repr=False)
     budget: Decimal | None = Field(default=None, ge=0)
-    pace: PlanPace = PlanPace.BALANCED
+    pace: PlanPace | None = None
     transport_modes: tuple[TransportMode, ...] = ()
     include: tuple[str, ...] = ()
     exclude: tuple[str, ...] = ()
@@ -297,6 +331,7 @@ class PlanConstraintsResponse(ApiModel):
     budget: Decimal | None
     budget_currency: Literal["CNY"] | None
     pace: PlanPace
+    pace_source: PlanPaceSource
     transport_modes: tuple[TransportMode, ...]
     include: tuple[str, ...]
     exclude: tuple[str, ...]
@@ -382,6 +417,7 @@ class PlanResponse(ApiModel):
                 budget=constraints.budget,
                 budget_currency=None if constraints.budget is None else "CNY",
                 pace=constraints.pace,
+                pace_source=constraints.pace_source,
                 transport_modes=constraints.transport_modes,
                 include=constraints.include,
                 exclude=constraints.exclude,
@@ -442,11 +478,31 @@ class PlanConfirmationResponse(ApiModel):
     replayed: bool
 
 
+class PreferenceCandidateRequest(ApiModel):
+    memory_type: Literal[
+        "positive_preference",
+        "negative_preference",
+        "pace_preference",
+    ]
+    content: str = Field(min_length=1, max_length=500)
+    value: str = Field(min_length=1, max_length=100)
+    evidence_summary: str = Field(min_length=1, max_length=500)
+
+    def to_domain(self) -> PreferenceSuggestion:
+        return PreferenceSuggestion(
+            memory_type=MemoryType(self.memory_type),
+            content=self.content,
+            value=self.value,
+            evidence_summary=self.evidence_summary,
+        )
+
+
 class PlanFeedbackRequest(ApiModel):
     idempotency_key: IdempotencyKey = Field(repr=False)
     completion_status: PlanCompletionStatus
     visited_plan_item_ids: tuple[str, ...] = ()
     reason: str | None = Field(default=None, max_length=500)
+    preference_candidate: PreferenceCandidateRequest | None = None
     expected_revision: int | None = Field(default=None, ge=1)
 
     @field_validator("completion_status", mode="before")
