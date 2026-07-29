@@ -235,7 +235,7 @@ describe("Agent experience", () => {
     expect(container.querySelector("img")).toBeNull();
   });
 
-  it("reuses one idempotency key after an uncertain network failure", async () => {
+  it("actively retries the same prepared input once with a new idempotency key", async () => {
     const user = userEvent.setup();
     request
       .mockRejectedValueOnce(new ApiError("network_error", null, null))
@@ -247,7 +247,7 @@ describe("Agent experience", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
     await screen.findByText("网络连接中断，请重试。");
     await user.click(screen.getByRole("button", { name: "重试" }));
-    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(4));
 
     const submissions = request.mock.calls.filter(
       ([path, options]) =>
@@ -256,7 +256,53 @@ describe("Agent experience", () => {
     expect(submissions).toHaveLength(2);
     const first = JSON.parse(String(submissions[0][1]?.body));
     const second = JSON.parse(String(submissions[1][1]?.body));
-    expect(second.idempotency_key).toBe(first.idempotency_key);
+    expect(second.text).toBe(first.text);
+    expect(second.idempotency_key).not.toBe(first.idempotency_key);
+  });
+
+  it("keeps screenshot and text together, submits both, and allows explicit removal", async () => {
+    const user = userEvent.setup();
+    request.mockResolvedValueOnce({ ...accepted, input_type: "image" });
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+
+    const input = screen.getByRole("textbox", { name: "收藏内容" });
+    await user.type(input, "南山区这家分店");
+    const image = new File(["jpeg"], "place.jpg", { type: "image/jpeg" });
+    await user.upload(screen.getByLabelText("添加截图"), image);
+    expect(input).toHaveValue("南山区这家分店");
+    await user.type(input, "，靠近地铁");
+    expect(screen.getByText("place.jpg")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    const submission = request.mock.calls.find(
+      ([path, options]) =>
+        String(path).endsWith("/messages") && options?.method === "POST",
+    );
+    expect(submission).toBeDefined();
+    const body = submission?.[1]?.body;
+    expect(body).toBeInstanceOf(FormData);
+    expect((body as FormData).get("text")).toBe("南山区这家分店，靠近地铁");
+    expect((body as FormData).get("image")).toBe(image);
+  });
+
+  it("removes a selected screenshot without clearing typed text", async () => {
+    const user = userEvent.setup();
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    const input = screen.getByRole("textbox", { name: "收藏内容" });
+    await user.type(input, "保留这段文字");
+    await user.upload(
+      screen.getByLabelText("添加截图"),
+      new File(["jpeg"], "place.jpg", { type: "image/jpeg" }),
+    );
+    await user.click(screen.getByRole("button", { name: "删除截图" }));
+    expect(input).toHaveValue("保留这段文字");
+    expect(screen.queryByText("place.jpg")).toBeNull();
+    expect(screen.getByRole("link", { name: "帮我安排时间" })).toHaveAttribute(
+      "href",
+      "/plans",
+    );
   });
 
   it("creates a new submission identity only after the input changes", async () => {

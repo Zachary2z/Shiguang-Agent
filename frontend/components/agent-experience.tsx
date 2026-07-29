@@ -190,7 +190,6 @@ export function AgentExperience() {
   const fileInput = useRef<HTMLInputElement | null>(null);
   const mainInput = useRef<HTMLTextAreaElement | null>(null);
   const operationGeneration = useRef(0);
-  const submissionKey = useRef<string | null>(null);
 
   const readAuthoritativeResult = useCallback(
     async (path: `/${string}`, generation: number) => {
@@ -301,8 +300,8 @@ export function AgentExperience() {
     };
   }, [followRun, readAuthoritativeResult]);
 
-  async function submit(event: FormEvent) {
-    event.preventDefault();
+  async function submit(event?: FormEvent) {
+    event?.preventDefault();
     if (
       !session ||
       ["recovering", "submitting", "queued", "processing"].includes(state)
@@ -323,21 +322,23 @@ export function AgentExperience() {
     setResult(null);
     const controller = new AbortController();
     submitController.current = controller;
-    const key = submissionKey.current ?? crypto.randomUUID();
-    submissionKey.current = key;
+    const key = crypto.randomUUID();
     const path = `/api/v1/sessions/${session.session_id}/messages` as const;
     try {
       const requestHeaders = file
-        ? new Headers({
-            "Content-Type": file.type,
-            "Idempotency-Key": key,
-          })
+        ? new Headers()
         : new Headers({ "Content-Type": "application/json" });
+      const form = new FormData();
+      if (file) {
+        form.set("idempotency_key", key);
+        if (text.trim()) form.set("text", text.trim());
+        form.set("image", file);
+      }
       const options = file
         ? {
             method: "POST",
             headers: requestHeaders,
-            body: file,
+            body: form,
             csrfToken: session.csrf_token,
             signal: controller.signal,
             timeoutMs: 30_000,
@@ -370,7 +371,6 @@ export function AgentExperience() {
   function chooseFile(event: ChangeEvent<HTMLInputElement>) {
     const selected = event.target.files?.[0] ?? null;
     if (!selected) return;
-    submissionKey.current = null;
     if (!acceptedImageTypes.has(selected.type)) {
       setFeedback("请选择 JPEG、PNG 或 WebP 图片。");
       event.target.value = "";
@@ -382,8 +382,6 @@ export function AgentExperience() {
       return;
     }
     setFile(selected);
-    setText("");
-    submissionKey.current = null;
     setFeedback("");
   }
 
@@ -498,7 +496,6 @@ export function AgentExperience() {
   function continueAdding() {
     operationGeneration.current += 1;
     sseCancel.current?.();
-    submissionKey.current = null;
     setText("");
     setFile(null);
     setResult(null);
@@ -535,9 +532,7 @@ export function AgentExperience() {
         </p>
         <div className="intent-switch" aria-label="Agent 能力">
           <span aria-current="true">收藏一个地点</span>
-          <button type="button" disabled title="将在 M1-5 开放">
-            帮我安排时间 · 稍后开放
-          </button>
+          <a href="/plans">帮我安排时间</a>
         </div>
       </header>
 
@@ -674,7 +669,14 @@ export function AgentExperience() {
             <div className="recovery-list">
               <button type="button" onClick={returnToInput}>补充文字</button>
               <button type="button" className="quiet-button" onClick={() => fileInput.current?.click()}>改发截图</button>
-              <button type="button" className="quiet-button" onClick={returnToInput}>重试</button>
+              <button
+                type="button"
+                className="quiet-button"
+                disabled={busy}
+                onClick={() => void submit()}
+              >
+                重试
+              </button>
             </div>
           </article>
         )}
@@ -709,8 +711,6 @@ export function AgentExperience() {
             disabled={busy}
             onChange={(event) => {
               setText(event.target.value);
-              setFile(null);
-              submissionKey.current = null;
               setFeedback("");
             }}
           />
@@ -730,7 +730,22 @@ export function AgentExperience() {
             />
             添加截图
           </label>
-          {file && <span className="file-name">{file.name}</span>}
+          {file && (
+            <span className="file-name">
+              {file.name}
+              <button
+                type="button"
+                className="quiet-button"
+                disabled={busy}
+                onClick={() => {
+                  setFile(null);
+                  if (fileInput.current) fileInput.current.value = "";
+                }}
+              >
+                删除截图
+              </button>
+            </span>
+          )}
           {state === "submitting" && (
             <button type="button" className="cancel-upload" onClick={() => submitController.current?.abort()}>
               取消上传

@@ -344,15 +344,79 @@ describe("CollectionsExperience", () => {
 
     render(<CollectionsExperience />);
     const dialog = await screen.findByRole("dialog");
+    const title = await within(dialog).findByRole("textbox", { name: "名称" });
+    await userEvent.clear(title);
+    await userEvent.type(title, "未保存草稿");
     await userEvent.click(
       await within(dialog).findByRole("button", { name: "保存修改" }),
     );
     expect(
-      await screen.findByText("收藏库暂时没有加载完成。"),
+      await screen.findByText("补充信息没有保存，请检查后重试。"),
     ).toBeInTheDocument();
+    expect(title).toHaveValue(baseItem.title);
     expect(
       screen.queryByText(/Agent 与收藏库会读取同一条数据/),
     ).toBeNull();
+  });
+
+  it("loads existing candidates after a successful details save and confirms one", async () => {
+    const pendingDetails = {
+      ...baseItem,
+      status: "pending_details",
+      planning_eligible: false,
+      planning_exclusion_reason: "pending_confirmation",
+    };
+    currentQuery = `item=${pendingDetails.id}`;
+    const pendingSelection = {
+      ...pendingDetails,
+      address: "福中一路",
+      status: "pending_selection",
+      version: 2,
+    };
+    const active = {
+      ...pendingSelection,
+      status: "active",
+      version: 3,
+      planning_eligible: true,
+      planning_exclusion_reason: null,
+    };
+    const choices = {
+      ...candidatePage(pendingDetails.id),
+      expected_version: 2,
+    };
+    let currentItem: Record<string, unknown> = pendingDetails;
+    vi.spyOn(apiClient, "request").mockImplementation(
+      async (path, options) => {
+        if (path === "/api/v1/demo/sessions") return session as never;
+        if (path.startsWith("/api/v1/collections?")) {
+          return { ...filledPage, items: [currentItem] } as never;
+        }
+        if (options?.method === "PATCH") {
+          currentItem = pendingSelection;
+          return pendingSelection as never;
+        }
+        if (path.endsWith("/poi-candidates")) return choices as never;
+        if (path.endsWith("/poi-selection")) {
+          currentItem = active;
+          return { items: [active], replayed: false } as never;
+        }
+        return { item: currentItem, sources: [] } as never;
+      },
+    );
+
+    render(<CollectionsExperience />);
+    const dialog = await screen.findByRole("dialog");
+    const address = await within(dialog).findByRole("textbox", { name: "公开地址" });
+    await userEvent.clear(address);
+    await userEvent.type(address, "福中一路");
+    await userEvent.click(within(dialog).getByRole("button", { name: "保存修改" }));
+
+    expect(await screen.findByText("修改已保存，请选择准确地点。")).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: /一尺花园 · 海上世界店/ }),
+    );
+    expect(await screen.findByText("准确地点已保存。")).toBeInTheDocument();
+    expect(within(dialog).getByText("想去")).toBeInTheDocument();
   });
 
   it("reuses the candidate idempotency key after an uncertain failure", async () => {

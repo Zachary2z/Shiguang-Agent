@@ -117,6 +117,9 @@ function errorCopy(error: unknown): string {
   if (error.code === "forbidden") return "会话校验已失效，请刷新页面。";
   if (error.code === "not_found") return "这条收藏不存在，或你没有查看权限。";
   if (error.code === "timeout") return "请求等待超时，请重试。";
+  if (error.status === 422 || error.code === "request_failed") {
+    return "补充信息没有保存，请检查后重试。";
+  }
   return "收藏库暂时没有加载完成。";
 }
 
@@ -205,6 +208,14 @@ export function CollectionsExperience() {
     identity: string;
     idempotencyKey: string;
   } | null>(null);
+
+  function restoreDrafts(item: CollectionItem) {
+    setDraftTitle(item.title);
+    setDraftCity(item.city_hint ?? "");
+    setDraftDistrict(item.district ?? "");
+    setDraftAddress(item.address ?? "");
+    setDraftTags(item.tags.join("、"));
+  }
   useLayoutEffect(() => {
     if (activeDetailId.current === selectedId) return;
     activeDetailId.current = selectedId;
@@ -325,11 +336,7 @@ export function CollectionsExperience() {
         );
         if (detailGeneration.current !== generation) return;
         setDetail(loaded);
-        setDraftTitle(loaded.item.title);
-        setDraftCity(loaded.item.city_hint ?? "");
-        setDraftDistrict(loaded.item.district ?? "");
-        setDraftAddress(loaded.item.address ?? "");
-        setDraftTags(loaded.item.tags.join("、"));
+        restoreDrafts(loaded.item);
         if (loaded.item.status === "pending_selection") {
           const choices = await apiClient.request<CandidatePage>(
             `/api/v1/collections/${selectedId}/poi-candidates`,
@@ -369,7 +376,8 @@ export function CollectionsExperience() {
   async function runDetailOperation(
     collectionId: string,
     request: () => Promise<CollectionItem>,
-    onSuccess: (result: CollectionItem) => void,
+    onSuccess: (result: CollectionItem) => void | Promise<void>,
+    onFailure?: () => void,
   ) {
     if (!csrf) return;
     const operation = detailOperation(collectionId);
@@ -380,10 +388,11 @@ export function CollectionsExperience() {
       const result = await request();
       if (!ownsDetailOperation(operation)) return;
       if (result.id !== collectionId) return;
-      onSuccess(result);
+      await onSuccess(result);
       await loadList();
     } catch (error) {
       if (!ownsDetailOperation(operation)) return;
+      onFailure?.();
       setFeedback(errorCopy(error));
     } finally {
       if (ownsDetailOperation(operation)) setSaving(false);
@@ -418,10 +427,35 @@ export function CollectionsExperience() {
             }),
           },
         ),
-      (item) => {
+      async (item) => {
         setDetail((current) => (current ? { ...current, item } : current));
-        setFeedback("修改已保存，Agent 与收藏库会读取同一条数据。");
+        restoreDrafts(item);
+        if (item.status === "pending_selection") {
+          const candidateGeneration = detailGeneration.current;
+          let choices: CandidatePage;
+          try {
+            choices = await apiClient.request<CandidatePage>(
+              `/api/v1/collections/${collectionId}/poi-candidates`,
+            );
+          } catch {
+            setCandidates(null);
+            setFeedback("修改已保存，但地点候选暂时没有加载完成，请重新打开详情。");
+            return;
+          }
+          if (
+            detailGeneration.current !== candidateGeneration ||
+            activeDetailId.current !== collectionId
+          ) {
+            return;
+          }
+          setCandidates(choices);
+          setFeedback("修改已保存，请选择准确地点。");
+        } else {
+          setCandidates(null);
+          setFeedback("修改已保存，Agent 与收藏库会读取同一条数据。");
+        }
       },
+      () => restoreDrafts(detail.item),
     );
   }
 
