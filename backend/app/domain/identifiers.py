@@ -22,6 +22,7 @@ _OPAQUE_ID_PATTERNS = {
     "fdb": re.compile(r"^fdb_[a-f0-9]{32}$"),
     "mem": re.compile(r"^mem_[a-f0-9]{32}$"),
     "mop": re.compile(r"^mop_[a-f0-9]{32}$"),
+    "shr": re.compile(r"^shr_[a-f0-9]{32}$"),
 }
 
 
@@ -93,6 +94,10 @@ def generate_memory_operation_id() -> str:
     return _generate_opaque_id("mop")
 
 
+def generate_share_link_id() -> str:
+    return _generate_opaque_id("shr")
+
+
 def validate_agent_run_id(value: str) -> str:
     return _validate_opaque_id(value, "arn", "agent_run_id")
 
@@ -147,6 +152,10 @@ def validate_memory_id(value: str) -> str:
 
 def validate_memory_operation_id(value: str) -> str:
     return _validate_opaque_id(value, "mop", "memory_operation_id")
+
+
+def validate_share_link_id(value: str) -> str:
+    return _validate_opaque_id(value, "shr", "share_link_id")
 
 
 def _generate_opaque_id(prefix: str) -> str:

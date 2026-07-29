@@ -47,6 +47,7 @@ from app.application.plan_execution import (
     PlanNavigationService,
 )
 from app.application.plan_experience import PlanExperienceService
+from app.application.plan_sharing import PlanShareService
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.run_events import RunEventService
 from app.application.run_tracking import AgentRunService
@@ -70,6 +71,7 @@ from app.domain.identity import SESSION_COOKIE_NAME, CurrentPrincipal
 from app.domain.memories import MemorySuggestionDecision, MemoryType
 from app.domain.places import PlaceSelection
 from app.domain.plans import ActivityArea, PlanConstraints, PlanPace, PlanPaceSource
+from app.domain.sharing import PublicShareStatus
 from app.domain.time import utc_now
 from app.infrastructure.db import Database
 from app.infrastructure.jobs import PostgresJobQueue
@@ -104,6 +106,7 @@ from app.schemas.api import (
     MemorySuggestionDecisionResponse,
     MemorySuggestionListResponse,
     MessageCreateRequest,
+    OwnerPlanShareResponse,
     PlaceCandidateResponse,
     PlaceCandidatesResponse,
     PlaceSelectionRequest,
@@ -121,6 +124,7 @@ from app.schemas.api import (
     PlanListResponse,
     PlanResponse,
     PublicModelCallResponse,
+    PublicPlanShareResponse,
     PublicToolRunResponse,
     SourceSummaryResponse,
     UndoRequest,
@@ -888,6 +892,111 @@ async def submit_plan_feedback(
     return PlanFeedbackResponse(
         feedback=submission.feedback,
         replayed=submission.replayed,
+    )
+
+
+@api_router.get(
+    "/plans/{plan_id}/share",
+    response_model=OwnerPlanShareResponse,
+)
+async def get_plan_share_status(
+    plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> OwnerPlanShareResponse:
+    view = await PlanShareService(session).status(
+        user_id=user_id,
+        plan_id=plan_id,
+    )
+    return OwnerPlanShareResponse.model_validate(view.model_dump())
+
+
+@api_router.post(
+    "/plans/{plan_id}/share",
+    response_model=OwnerPlanShareResponse,
+)
+async def create_plan_share(
+    plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> OwnerPlanShareResponse:
+    view = await PlanShareService(session).create(
+        user_id=user_id,
+        plan_id=plan_id,
+        regenerate=False,
+    )
+    return OwnerPlanShareResponse.model_validate(view.model_dump())
+
+
+@api_router.post(
+    "/plans/{plan_id}/share/regenerate",
+    response_model=OwnerPlanShareResponse,
+)
+async def regenerate_plan_share(
+    plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> OwnerPlanShareResponse:
+    view = await PlanShareService(session).create(
+        user_id=user_id,
+        plan_id=plan_id,
+        regenerate=True,
+    )
+    return OwnerPlanShareResponse.model_validate(view.model_dump())
+
+
+@api_router.delete(
+    "/plans/{plan_id}/share",
+    response_model=OwnerPlanShareResponse,
+)
+async def revoke_plan_share(
+    plan_id: Annotated[str, Path(pattern=_PLAN_PATH)],
+    session: DbSession,
+    user_id: CurrentUserId,
+) -> OwnerPlanShareResponse:
+    view = await PlanShareService(session).revoke(
+        user_id=user_id,
+        plan_id=plan_id,
+    )
+    return OwnerPlanShareResponse.model_validate(view.model_dump())
+
+
+@api_router.get(
+    "/public/plan-share",
+    response_model=PublicPlanShareResponse,
+)
+async def read_public_plan_share(
+    request: Request,
+    response: Response,
+    authorization: Annotated[str | None, Header(alias="Authorization")] = None,
+) -> PublicPlanShareResponse:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Robots-Tag"] = "noindex, nofollow, noarchive"
+    token = (
+        authorization.removeprefix("Share ")
+        if authorization is not None and authorization.startswith("Share ")
+        else ""
+    )
+    databases = (request.app.state.database, request.app.state.demo_database)
+    available = None
+    for database in databases:
+        if database is None:
+            continue
+        async with database.session() as session:
+            view = await PlanShareService(
+                session,
+                map_provider=request.app.state.map_provider,
+            ).read_public(token=token)
+        if available is None and view.status is not PublicShareStatus.UNAVAILABLE:
+            available = view
+    if available is not None:
+        return PublicPlanShareResponse.model_validate(available.model_dump())
+    return PublicPlanShareResponse(
+        status=PublicShareStatus.UNAVAILABLE,
+        plan=None,
     )
 
 

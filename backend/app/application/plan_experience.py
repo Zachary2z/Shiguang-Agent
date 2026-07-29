@@ -23,6 +23,7 @@ from app.application.plan_adjustments import (
     apply_plan_adjustment,
 )
 from app.application.plan_drafts import PlanDraftService
+from app.application.plan_sharing import PlanShareService
 from app.application.pricing import PricingPolicy
 from app.application.run_tracking import (
     AgentRunService,
@@ -448,6 +449,7 @@ class PlanExperienceService:
             request_fingerprint=fingerprint,
             now=utc_now(),
         )
+        await PlanShareService(self._session).sync_expiry_after_confirmation(result[0])
         await self._session.commit()
         return result
 

@@ -190,6 +190,32 @@ class SqlAlchemyPlanRepository:
         rows = (await self._session.scalars(statement)).all()
         return tuple(self._plan(row) for row in rows)
 
+    async def latest_confirmed(
+        self,
+        *,
+        user_id: str,
+        root_plan_id: str,
+    ) -> PlanVersion | None:
+        """Return the newest version that crossed the existing confirmation gate."""
+
+        row = await self._session.scalar(
+            select(PlanModel)
+            .where(
+                PlanModel.user_id == user_id,
+                PlanModel.root_plan_id == root_plan_id,
+                PlanModel.status.in_(
+                    {
+                        PlanStatus.CONFIRMED.value,
+                        PlanStatus.COMPLETED.value,
+                        PlanStatus.PARTIALLY_COMPLETED.value,
+                        PlanStatus.NOT_COMPLETED.value,
+                    }
+                ),
+            )
+            .order_by(PlanModel.version.desc())
+        )
+        return None if row is None else self._plan(row)
+
     async def complete_generation(
         self,
         *,

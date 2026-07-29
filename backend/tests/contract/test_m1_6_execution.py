@@ -41,7 +41,6 @@ from app.domain.plans.drafts import (
     PlanItemSource,
     PlanRouteLeg,
 )
-from app.domain.time import utc_now
 from app.infrastructure.db.models import (
     CollectionItemModel,
     PlanFeedbackAuditModel,
@@ -148,7 +147,10 @@ async def _seed_plan(
     async with database.session_factory() as session:
         user_id = await session.scalar(select(UserModel.id))
         assert user_id is not None
-        now = utc_now()
+        # Keep this shared historical plan fixture inside its approval window.
+        # Wall-clock time would make every M1-6/M1-7 consumer fail after the
+        # fixed 2026-07-29 itinerary ends.
+        now = datetime(2026, 7, 28, 2, tzinfo=UTC)
         if collection_id is None:
             collection_id = generate_collection_item_id()
             collection = CollectionItem(

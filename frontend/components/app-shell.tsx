@@ -1,9 +1,20 @@
+"use client";
+
+import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 
 import { Brand } from "@/components/brand";
 import { PrimaryNav } from "@/components/primary-nav";
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  if (pathname === "/share" || pathname.startsWith("/share/")) {
+    return (
+      <div className="public-shell" id="main-content" tabIndex={-1}>
+        {children}
+      </div>
+    );
+  }
   return (
     <div className="app-shell">
       <header className="mobile-header">

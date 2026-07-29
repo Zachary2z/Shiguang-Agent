@@ -29,6 +29,7 @@ from app.infrastructure.db.models.plans import (
     PlanModel,
 )
 from app.infrastructure.db.models.runs import AgentRunModel, RunEventModel, ToolRunModel
+from app.infrastructure.db.models.sharing import PlanShareLinkModel
 
 __all__ = [
     "AgentRunModel",
@@ -47,6 +48,7 @@ __all__ = [
     "MemorySuggestionDecisionModel",
     "PlanItemModel",
     "PlanModel",
+    "PlanShareLinkModel",
     "PlanFeedbackAuditModel",
     "PlanFeedbackStateModel",
     "PlaceSelectionOperationModel",

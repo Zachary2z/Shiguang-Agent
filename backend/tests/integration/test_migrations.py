@@ -12,7 +12,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
-HEAD_REVISION = "20260728_0016"
+HEAD_REVISION = "20260729_0017"
 MEMORY_PREVIOUS_REVISION = "20260728_0015"
 PREVIOUS_REVISION = "20260726_0009"
 EVENT_REVISION = "20260724_0007"
@@ -52,6 +52,7 @@ HEAD_TABLES = PREVIOUS_TABLES | {
     "memory_operations",
     "memory_plan_usages",
     "memory_suggestion_decisions",
+    "plan_share_links",
 }
 
 
@@ -310,13 +311,21 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
         web_session_foreign_keys = connection.execute(
             "PRAGMA foreign_key_list(web_sessions)"
         ).fetchall()
+        share_columns = {
+            str(row[1])
+            for row in connection.execute("PRAGMA table_info(plan_share_links)")
+        }
+        share_indexes = index_definitions(connection, "plan_share_links")
+        share_foreign_keys = connection.execute(
+            "PRAGMA foreign_key_list(plan_share_links)"
+        ).fetchall()
         foreign_keys = connection.execute("PRAGMA foreign_key_list(tool_runs)").fetchall()
         table_sql = " ".join(
             str(row[0])
             for row in connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type='table' "
                 "AND name IN ('agent_runs', 'tool_runs', 'scheduled_jobs', "
-                "'run_events', 'web_sessions')"
+                "'run_events', 'web_sessions', 'plan_share_links')"
             )
         )
 
@@ -400,6 +409,15 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
         "expires_at",
         "revoked_at",
     } == web_session_columns
+    assert {
+        "id",
+        "plan_id",
+        "user_id",
+        "token_hash",
+        "created_at",
+        "expires_at",
+        "revoked_at",
+    } == share_columns
     assert "ix_agent_runs_trace_id" not in agent_indexes
     assert "ix_tool_runs_agent_run_id" not in tool_indexes
     assert any(
@@ -428,6 +446,16 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
         unique and columns == ("token_hash",)
         for unique, columns in web_session_indexes.values()
     )
+    assert any(
+        unique and columns == ("token_hash",)
+        for unique, columns in share_indexes.values()
+    )
+    assert any(
+        unique and columns == ("plan_id",)
+        for unique, columns in share_indexes.values()
+    )
+    assert len(share_foreign_keys) == 2
+    assert {row[2] for row in share_foreign_keys} == {"plans"}
     assert "uq_agent_runs_trace_id" in table_sql
     assert "uq_tool_runs_run_sequence" in table_sql
     assert len(foreign_keys) == 1
@@ -451,6 +479,9 @@ def test_alembic_upgrade_downgrade_upgrade_round_trip_and_schema(
         "ck_web_sessions_csrf_hash_format",
         "ck_web_sessions_expiry_order",
         "ck_web_sessions_revocation_order",
+        "ck_plan_share_links_token_hash_format",
+        "ck_plan_share_links_expiry",
+        "ck_plan_share_links_revocation",
     ):
         assert constraint_name in table_sql
 

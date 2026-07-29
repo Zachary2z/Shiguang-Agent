@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 
+import { ShareManagement } from "@/components/share-management";
 import { ApiError, apiClient } from "@/lib/api-client";
 import { sseClient, type SseEvent } from "@/lib/sse-client";
 
@@ -887,7 +888,13 @@ export function PlansExperience() {
       )}
 
       {executable && ["ready", "failed"].includes(phase) && (
-        <section className="execution-panel" aria-label="计划执行与完成反馈">
+        <>
+          <ShareManagement
+            key={plan.id}
+            planId={plan.id}
+            csrfToken={session?.csrf_token ?? ""}
+          />
+          <section className="execution-panel" aria-label="计划执行与完成反馈">
           <div className="plan-section-title"><span>06</span><h2>行动入口</h2></div>
           {!execution ? (
             <button className="primary-button" type="button" disabled={executionBusy} onClick={() => void loadExecution()}>
@@ -1098,7 +1105,8 @@ export function PlansExperience() {
               </div>
             </>
           )}
-        </section>
+          </section>
+        </>
       )}
 
       {feedback && <p className="plan-feedback" role="status">{feedback}</p>}

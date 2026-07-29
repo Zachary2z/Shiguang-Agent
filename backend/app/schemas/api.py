@@ -58,6 +58,11 @@ from app.domain.plans import (
     PreferenceSuggestion,
 )
 from app.domain.runs import AgentRunStatus, ToolRunStatus
+from app.domain.sharing import (
+    OwnerShareStatus,
+    PublicShareStatus,
+    SharedPlanSnapshot,
+)
 from nanobot_core.providers import FinishReason, TokenUsage
 
 
@@ -539,6 +544,19 @@ class PlanExecutionResponse(ApiModel):
     plan_id: str
     items: tuple[PlanExecutionItem, ...]
     feedback: PlanFeedback | None
+
+
+class OwnerPlanShareResponse(ApiModel):
+    status: OwnerShareStatus
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
+    share_url: str | None = Field(default=None, repr=False)
+    created: bool = False
+
+
+class PublicPlanShareResponse(ApiModel):
+    status: PublicShareStatus
+    plan: SharedPlanSnapshot | None = None
 
 
 class ApprovalDecisionResponse(ApiModel):
