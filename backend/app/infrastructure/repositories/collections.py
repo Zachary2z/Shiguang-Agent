@@ -1111,18 +1111,32 @@ class SqlAlchemyCollectionRepository:
         original_identifier = validate_collection_item_id(original_item_id)
         target_identifier = validate_collection_item_id(target_item_id)
         await self._require_collection_item(owner, target_identifier)
-        rowcount = await execute_dml_rowcount(
-            self._session,
-            update(CollectionWriteOperationItemModel)
-            .where(
+        target_is_already_linked = await self._session.scalar(
+            select(CollectionWriteOperationItemModel.collection_item_id).where(
                 CollectionWriteOperationItemModel.operation_id
                 == operation_identifier,
                 CollectionWriteOperationItemModel.collection_item_id
-                == original_identifier,
+                == target_identifier,
                 CollectionWriteOperationItemModel.user_id == owner,
             )
-            .values(collection_item_id=target_identifier),
         )
+        original_link = (
+            CollectionWriteOperationItemModel.operation_id == operation_identifier,
+            CollectionWriteOperationItemModel.collection_item_id == original_identifier,
+            CollectionWriteOperationItemModel.user_id == owner,
+        )
+        if target_is_already_linked is not None:
+            rowcount = await execute_dml_rowcount(
+                self._session,
+                delete(CollectionWriteOperationItemModel).where(*original_link),
+            )
+        else:
+            rowcount = await execute_dml_rowcount(
+                self._session,
+                update(CollectionWriteOperationItemModel)
+                .where(*original_link)
+                .values(collection_item_id=target_identifier),
+            )
         if rowcount != 1:
             raise ResourceNotFoundError
 

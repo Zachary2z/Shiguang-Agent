@@ -384,6 +384,308 @@ async def test_first_place_save_matches_once_and_replay_does_not_search(
 
 
 @pytest.mark.asyncio
+async def test_same_operation_exact_poi_merge_deduplicates_replay_and_undo(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, database_path = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    source = _source(user.id)
+    calls: list[SearchPoiRequest] = []
+
+    async def record_call(request: object) -> None:
+        assert isinstance(request, SearchPoiRequest)
+        calls.append(request)
+
+    candidate = PlaceCandidate(
+        **{
+            **_candidate_fields(title=SHENZHEN_MUSEUM.name),
+            "district": SHENZHEN_MUSEUM.district,
+            "address": SHENZHEN_MUSEUM.address,
+        }
+    )
+    extraction = ExtractionResult.with_candidates((candidate, candidate))
+    matching = _matching_service(
+        StubMapProvider(
+            search_results={
+                SearchPoiRequest(
+                    query=SHENZHEN_MUSEUM.name,
+                    city=CityScope(city_code="shenzhen"),
+                    district=SHENZHEN_MUSEUM.district,
+                ): PoiSearchResult(
+                    city_code="shenzhen",
+                    pois=(SHENZHEN_MUSEUM,),
+                )
+            },
+            call_hook=record_call,
+        )
+    )
+
+    async with database.session() as session:
+        service = _service(session)
+        saved = await service.auto_save(
+            user_id=user.id,
+            idempotency_key="same-operation-same-poi",
+            source=source,
+            extraction_result=extraction,
+            place_matching=matching,
+        )
+        replay = await service.auto_save(
+            user_id=user.id,
+            idempotency_key="same-operation-same-poi",
+            source=source,
+            extraction_result=extraction,
+            place_matching=matching,
+        )
+        with pytest.raises(IdempotencyConflictError):
+            await service.auto_save(
+                user_id=user.id,
+                idempotency_key="same-operation-same-poi",
+                source=source,
+                extraction_result=ExtractionResult.with_candidates((candidate,)),
+                place_matching=matching,
+            )
+        assert saved.undo_token is not None
+        undone = await service.undo(
+            user_id=user.id,
+            undo_token=saved.undo_token.get_secret_value(),
+        )
+        repeated = await service.undo(
+            user_id=user.id,
+            undo_token=saved.undo_token.get_secret_value(),
+        )
+
+    assert len(calls) == 2
+    assert len(saved.items) == 1
+    authority = saved.items[0]
+    assert authority.status is CollectionStatus.ACTIVE
+    assert authority.place_target is not None
+    assert authority.place_target.poi.poi_id == SHENZHEN_MUSEUM.poi_id
+    assert replay.replayed is True
+    assert replay.items == saved.items
+    assert undone.outcome is UndoOutcome.UNDONE
+    assert undone.collection_item_ids == (authority.id,)
+    assert repeated.outcome is UndoOutcome.ALREADY_UNDONE
+    assert repeated.collection_item_ids == (authority.id,)
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM collection_write_operation_items"
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM collection_sources "
+            "WHERE collection_item_id = ? AND source_id = ?",
+            (authority.id, source.id),
+        ).fetchone() == (1,)
+        assert connection.execute(
+            "SELECT status, COUNT(*) FROM collection_items GROUP BY status"
+        ).fetchall() == [("deleted", 2)]
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_different_candidate_clues_converge_in_first_item_order(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, database_path = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    first = PlaceCandidate(
+        **{
+            **_candidate_fields(title=SHENZHEN_MUSEUM.name),
+            "district": SHENZHEN_MUSEUM.district,
+            "address": SHENZHEN_MUSEUM.address,
+        }
+    )
+    second = PlaceCandidate(
+        **{
+            **_candidate_fields(
+                title=f"{SHENZHEN_MUSEUM.name}展馆",
+                city_hint="深圳市",
+            ),
+            "district": SHENZHEN_MUSEUM.district,
+            "address": SHENZHEN_MUSEUM.address,
+            "landmark": "市民中心附近",
+        }
+    )
+    searches = {
+        SearchPoiRequest(
+            query=candidate.title,
+            city=CityScope(city_code="shenzhen"),
+            district=candidate.district,
+        ): PoiSearchResult(city_code="shenzhen", pois=(SHENZHEN_MUSEUM,))
+        for candidate in (first, second)
+    }
+
+    async with database.session() as session:
+        saved = await _service(session).auto_save(
+            user_id=user.id,
+            idempotency_key="different-clues-same-poi",
+            source=_source(user.id),
+            extraction_result=ExtractionResult.with_candidates((first, second)),
+            place_matching=_matching_service(StubMapProvider(search_results=searches)),
+        )
+
+    assert len(saved.items) == 1
+    assert saved.items[0].title == SHENZHEN_MUSEUM.name
+    with sqlite3.connect(database_path) as connection:
+        operation_items = connection.execute(
+            "SELECT collection_item_id, sequence "
+            "FROM collection_write_operation_items"
+        ).fetchall()
+        assert operation_items == [(saved.items[0].id, 1)]
+        assert connection.execute(
+            "SELECT COUNT(*) FROM collection_items WHERE status = 'pending_details'"
+        ).fetchone() == (0,)
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_existing_exact_poi_is_linked_once_per_distinct_write_operation(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, database_path = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    first_source = _source(user.id)
+    second_source = _source(user.id)
+    candidate = PlaceCandidate(
+        **{
+            **_candidate_fields(title=SHENZHEN_MUSEUM.name),
+            "district": SHENZHEN_MUSEUM.district,
+            "address": SHENZHEN_MUSEUM.address,
+        }
+    )
+    search = SearchPoiRequest(
+        query=candidate.title,
+        city=CityScope(city_code="shenzhen"),
+        district=candidate.district,
+    )
+    calls: list[object] = []
+
+    async def record_call(request: object) -> None:
+        calls.append(request)
+
+    matching = _matching_service(
+        StubMapProvider(
+            search_results={
+                search: PoiSearchResult(
+                    city_code="shenzhen",
+                    pois=(SHENZHEN_MUSEUM,),
+                )
+            },
+            call_hook=record_call,
+        )
+    )
+    extraction = ExtractionResult.with_candidates((candidate,))
+
+    async with database.session() as session:
+        service = _service(session)
+        first_saved = await service.auto_save(
+            user_id=user.id,
+            idempotency_key="existing-poi-first-operation",
+            source=first_source,
+            extraction_result=extraction,
+            place_matching=matching,
+        )
+        second_saved = await _service(session, token=TOKEN_TWO).auto_save(
+            user_id=user.id,
+            idempotency_key="existing-poi-second-operation",
+            source=second_source,
+            extraction_result=extraction,
+            place_matching=matching,
+        )
+        replay = await service.get_idempotent_result(
+            user_id=user.id,
+            idempotency_key="existing-poi-second-operation",
+        )
+
+    authority_id = first_saved.items[0].id
+    assert second_saved.items[0].id == authority_id
+    assert replay is not None and replay.items == second_saved.items
+    assert len(calls) == 2
+    with sqlite3.connect(database_path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM collection_write_operation_items "
+            "WHERE collection_item_id = ?",
+            (authority_id,),
+        ).fetchone() == (2,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM collection_sources WHERE collection_item_id = ?",
+            (authority_id,),
+        ).fetchone() == (2,)
+        assert connection.execute(
+            "SELECT COUNT(DISTINCT source_id) FROM collection_sources "
+            "WHERE collection_item_id = ?",
+            (authority_id,),
+        ).fetchone() == (2,)
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_same_operation_keeps_distinct_exact_pois(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    other_poi = SHENZHEN_MUSEUM.model_copy(
+        update={
+            "poi_id": "poi_sz_other_museum",
+            "name": "深圳另一座博物馆",
+            "address": "福中三路1号",
+        }
+    )
+    candidates = (
+        PlaceCandidate(
+            **{
+                **_candidate_fields(title=SHENZHEN_MUSEUM.name),
+                "district": SHENZHEN_MUSEUM.district,
+                "address": SHENZHEN_MUSEUM.address,
+            }
+        ),
+        PlaceCandidate(
+            **{
+                **_candidate_fields(title=other_poi.name),
+                "district": other_poi.district,
+                "address": other_poi.address,
+            }
+        ),
+    )
+    searches = {
+        SearchPoiRequest(
+            query=candidate.title,
+            city=CityScope(city_code="shenzhen"),
+            district=candidate.district,
+        ): PoiSearchResult(city_code="shenzhen", pois=(poi,))
+        for candidate, poi in zip(
+            candidates,
+            (SHENZHEN_MUSEUM, other_poi),
+            strict=True,
+        )
+    }
+
+    async with database.session() as session:
+        saved = await _service(session).auto_save(
+            user_id=user.id,
+            idempotency_key="same-operation-distinct-pois",
+            source=_source(user.id),
+            extraction_result=ExtractionResult.with_candidates(candidates),
+            place_matching=_matching_service(StubMapProvider(search_results=searches)),
+        )
+
+    assert len(saved.items) == 2
+    assert [item.place_target.poi.poi_id for item in saved.items if item.place_target] == [
+        SHENZHEN_MUSEUM.poi_id,
+        other_poi.poi_id,
+    ]
+    await database.close()
+
+
+@pytest.mark.asyncio
 async def test_first_place_save_records_multiple_candidates_without_auto_selection(
     write_database: tuple[str, Path],
 ) -> None:

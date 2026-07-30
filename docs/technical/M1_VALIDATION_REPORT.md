@@ -2,8 +2,22 @@
 
 ## 2026-07-31 M1-Gate 地点确认修复 1
 
-地点确认修复 1 已开发完成，等待主控验收；M1-Gate 继续打开，M2-0 未开始且阻塞。
+地点确认修复 1 完成，等待主控复验；M1-Gate 继续打开，M2-0 未开始且阻塞。
 本轮没有处理移动端详情遮挡、SSE 或运行配置，也没有开始 M2。
+
+问题提交 `438d127075bdb6f3175f1177ab80c0e3cc02fc9e` 的两个 P1 已在原有
+边界内返修。第一处根因是 `replace_write_operation_item` 无条件将原关联更新为
+权威收藏 ID；当同一 ExtractionResult 的前一条候选已把该权威收藏加入同一 write
+operation 后，后一条候选再次改向会违反 `(operation_id, collection_item_id)` 复合
+主键。现有 Repository 方法现在先检查目标是否已属于当前 operation：未属于时保留
+原序号安全改向，已属于时删除原中间关联。`AutoSaveResult` 按收藏 ID 保留首次顺序
+去重，Source 全部合并到权威收藏，回放不再搜索且返回同一结果，Undo 只处理权威收藏
+一次；不同 POI 和不同 write operation 指向同一 POI 的既有语义保持不变。
+
+第二处根因是 Agent 结果页仅为 `pending_selection` 显示说明文字。结果卡现提供
+“选择地点”链接，精确进入 `/collections?item=<collection_id>`，继续复用唯一收藏
+详情及候选选择界面。active、pending_details、deleted、Event 时间确认和恶意标题
+纯文本渲染均有回归覆盖，Agent 页没有新增候选表单或选择逻辑。
 
 离线回归确认首次收藏链路此前只对 Event 调用地点确认，Place 保存后不会进入地图
 搜索；同时默认可靠阈值保持 75 分，但旧权重让非分店地点的全部持久化地点证据最高
@@ -24,20 +38,22 @@ PATCH 为 0，地点身份实际变化只重匹配一次。自动匹配合并已
 验证结果：
 
 - `pip check`、Ruff、strict mypy（140 个源文件）：通过；
-- 用户指定后端聚焦集：`190 passed`；
-- 非真实 Provider/Map 全集：`1720 passed, 16 skipped, 2 deselected`；
+- 用户指定后端聚焦集：`225 passed`；
+- 非真实 Provider/Map 全集：
+  `1724 passed, 16 skipped, 2 deselected, 1 warning`；
 - 仓库外 pytest 插件封锁 `getaddrinfo`、`connect`、`connect_ex`、
-  `create_connection` 后，聚焦集 `190 passed`，全集
-  `1720 passed, 16 skipped, 2 deselected`；
-- 封网全集出现 2 条既有 aiosqlite 线程收尾 warning；对应测试把该 warning
-  升级为错误后复跑 `1 passed`；
-- 前端 lint、typecheck 通过，指定组件 `80 passed`，完整 Vitest `123 passed`；
-- Alembic 唯一 head：`20260729_0017`，无迁移。
+  `create_connection` 后，聚焦集 `225 passed`，全集
+  `1724 passed, 16 skipped, 2 deselected, 1 warning`；
+- 普通及封网全集各出现 1 条既有 aiosqlite 事件循环关闭后的线程收尾 warning，
+  与本轮生产路径无关，保留为 P2 监测；
+- 前端 lint、typecheck 通过，指定组件 `81 passed`，完整 Vitest `124 passed`；
+- 迁移回归 `25 passed`；Alembic 唯一 head：`20260729_0017`，无迁移。
 
 架构复核仍只有一套 MapProvider、地点匹配服务、目标选择服务、CollectionItem、
 收藏 Repository 和候选 DTO；没有样本/店名/地址白名单、第一名直选、自动重试、
 阈值降低、第二套状态机或 M2 实现。未读取 `.env`，真实模型、地图、网页和付费 API
-调用为 0；未合并、未推送。
+调用为 0；未合并、未推送。当前无未解决 P0/P1；地点确认修复 2、移动端详情、
+SSE 和运行配置修复均未开始。
 
 ## 2026-07-30 稳定化纠正
 

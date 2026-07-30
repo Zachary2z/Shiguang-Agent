@@ -4,16 +4,26 @@
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-Gate 地点确认修复 1 |
-| 状态 | M1-Gate 地点确认修复 1：开发完成，等待主控验收；M1-Gate 继续打开；M2-0 未开始且阻塞。 |
+| 状态 | M1-Gate 地点确认修复 1 完成，等待主控复验；M1-Gate 继续打开；M2-0 未开始且阻塞。 |
 | 当前分支 | codex/m1-gate-place-confirmation |
 | 最近更新 | 2026-07-31 |
 | 阻塞项 | M1-Gate 尚未最终关闭；M2-0 未开始且阻塞 |
 
 ## 2026-07-31 M1-Gate 地点确认修复 1
 
-- 地点确认修复 1 开发完成，等待主控验收；M1-Gate 继续打开，M2-0 未开始且阻塞。
+- 地点确认修复 1 完成，等待主控复验；M1-Gate 继续打开，M2-0 未开始且阻塞。
   本轮只处理 Place/Event 共用的首次地点匹配、准确候选确认、幂等回放和必要的候选
   展示文案；移动端详情、SSE 和运行配置问题留给独立后续修复。
+- P1 返修将正式 POI 合并时的 write-operation 关联收敛集中在现有 Repository
+  方法：目标尚未属于当前 operation 时保留原序号并安全改向；目标已经属于当前
+  operation 时删除原中间关联，不再写入重复复合主键。应用返回按收藏 ID 保留首次
+  顺序去重，回放读取同一份权威关联，Undo 只处理权威收藏一次。全部 Source 继续
+  关联权威收藏，中间条目只保留安全逻辑删除状态，不再出现 active 加
+  pending_details 的失败部分结果；不同 POI 及不同 operation 指向同一 POI 的语义
+  保持不变。
+- Agent 的 `pending_selection` 结果卡新增“选择地点”入口，精确指向既有
+  `/collections?item=<collection_id>` 收藏详情和候选选择界面；没有复制候选表单或
+  选择规则。active、pending_details、deleted 和 Event 时间确认入口未改。
 - 根因有两处：首次收藏后的编排显式只让 Event 进入既有地点确认入口，Place 保存后
   没有搜索；默认 75 分可靠阈值不变，但旧证据权重使非分店地点即使结构化地点线索
   全部一致也无法达到阈值。现由唯一 `CollectionWriteService` 在首次保存后统一调用
@@ -29,14 +39,17 @@
   身份线索实际变化时清除旧正式目标/候选后只重新匹配一次。首次自动匹配命中既有
   正式 POI 时，写操作关联同步指向权威收藏，回放不会返回已删除的中间条目。
 - 后端 `pip check`、Ruff、strict mypy（140 个源文件）通过；用户指定聚焦集
-  `190 passed`，非真实 Provider/Map 全集
-  `1720 passed, 16 skipped, 2 deselected`。仓库外插件封锁 DNS、
-  `connect`、`connect_ex` 和 `create_connection` 后，聚焦集仍为 `190 passed`，
-  全集仍为 `1720 passed, 16 skipped, 2 deselected`；封网全集出现 2 条既有
-  aiosqlite 收尾 warning，对应测试将其升级为错误后独立复跑 `1 passed`。
-- 前端 lint、typecheck 通过；指定组件 `80 passed`，完整 Vitest `123 passed`。
-  Alembic 唯一 head 仍为 `20260729_0017`，无迁移。未读取 `.env`，真实模型、
-  高德、网页和付费 API 调用为 0；未合并、未推送。
+  `225 passed`，非真实 Provider/Map 全集
+  `1724 passed, 16 skipped, 2 deselected, 1 warning`。仓库外插件封锁 DNS、
+  `connect`、`connect_ex` 和 `create_connection` 后，聚焦集仍为 `225 passed`，
+  全集仍为 `1724 passed, 16 skipped, 2 deselected, 1 warning`；warning 是既有
+  aiosqlite 事件循环关闭后的线程收尾告警，不涉及本轮生产路径，保留为 P2 监测。
+- 前端 lint、typecheck 通过；指定组件 `81 passed`，完整 Vitest `124 passed`。
+  迁移回归 `25 passed`，Alembic 唯一 head 仍为 `20260729_0017`，无迁移。复杂度
+  检查确认未新增 Provider、MatchingService、TargetSelectionService、
+  CollectionWriteService、Repository、DTO、状态机或幂等机制，且未修改地点阈值
+  和权重；当前无未解决 P0/P1。未读取 `.env`，真实模型、高德、网页和付费 API
+  调用为 0；未合并、未推送，地点确认修复 2 未开始。
 
 ## 2026-07-30 M1-Gate 修复 4 主控复验与集成
 

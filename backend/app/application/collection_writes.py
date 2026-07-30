@@ -141,7 +141,8 @@ class CollectionWriteService:
                 raise
             except MapProviderError:
                 resolved_items.append(item)
-        return saved.model_copy(update={"items": tuple(resolved_items)})
+        unique_items = tuple({item.id: item for item in resolved_items}.values())
+        return saved.model_copy(update={"items": unique_items})
 
     async def patch(
         self,

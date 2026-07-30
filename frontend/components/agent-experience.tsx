@@ -699,6 +699,11 @@ export function AgentExperience() {
                     <div className="result-actions">
                       {item.status !== "deleted" ? (
                         <>
+                          {item.status === "pending_selection" ? (
+                            <a href={`/collections?item=${item.id}`}>
+                              选择地点
+                            </a>
+                          ) : null}
                           {needsEventTimeConfirmation(item) ? (
                             <a href={`/collections?item=${item.id}`}>
                               确认活动时间

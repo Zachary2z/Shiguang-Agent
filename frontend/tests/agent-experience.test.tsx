@@ -53,7 +53,11 @@ const accepted = {
 function collection(
   id: string,
   title: string,
-  status: "active" | "pending_details" | "deleted" = "active",
+  status:
+    | "active"
+    | "pending_selection"
+    | "pending_details"
+    | "deleted" = "active",
   kind: "place" | "event" = "place",
 ) {
   return {
@@ -578,6 +582,36 @@ describe("Agent experience", () => {
     expect(
       within(card!).queryByLabelText("准确开始时间"),
     ).toBeNull();
+  });
+
+  it("links only pending selection cards to the existing place chooser", async () => {
+    const pending = collection(
+      "col_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "<img src=x onerror=alert(1)>",
+      "pending_selection",
+    );
+    const active = collection(
+      "col_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "深圳天文台",
+    );
+    queueCompletedImport([pending, active]);
+    const { container } = render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    const user = userEvent.setup();
+    await user.type(screen.getByRole("textbox", { name: "收藏内容" }), "两个地点");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    const pendingCard = (await screen.findByText(pending.title)).closest("article");
+    const activeCard = screen.getByText(active.title).closest("article");
+    expect(pendingCard).not.toBeNull();
+    expect(activeCard).not.toBeNull();
+    expect(
+      within(pendingCard!).getByRole("link", { name: "选择地点" }),
+    ).toHaveAttribute("href", `/collections?item=${pending.id}`);
+    expect(
+      within(activeCard!).queryByRole("link", { name: "选择地点" }),
+    ).toBeNull();
+    expect(container.querySelector("img")).toBeNull();
   });
 
   it.each([
