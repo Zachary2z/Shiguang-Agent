@@ -1,5 +1,43 @@
 # M1-Gate 核心闭环验收报告
 
+## 2026-07-31 地点确认修复 1 主控复验
+
+主控独立确认问题提交 `438d127075bdb6f3175f1177ab80c0e3cc02fc9e` 和返修提交
+`8ed6ca705b587de84ea00433b12b196a58198e35` 直接建立在原 `main`
+`e3cc9fa3baf417fe43e9e0c8c4ff3977473e48bb` 上，提交链线性、范围明确且工作区
+干净。分支已以 `--ff-only` 集成到 `main`，没有冲突、merge commit 或额外代码
+变化。
+
+独立代码审查和回归确认：
+
+- 同一 write operation 的不同抽取候选命中同一 POI 时，Repository 在权威目标已
+  属于该 operation 时删除中间关联，否则保留原 sequence 安全改向；应用结果按
+  收藏 ID 保留首次顺序，回放、Undo、Source 和不同 operation 语义一致；
+- Agent 的 `pending_selection` 结果只增加进入既有收藏详情的“选择地点”链接，
+  没有复制候选选择、状态机、Repository、DTO 或地点业务规则；
+- 仍只有一个 MapProvider、PlaceMatchingService、PlaceTargetSelectionService、
+  CollectionWriteService、收藏 Repository 和候选 DTO；没有样本白名单、第一名
+  直选、隐藏 fallback、自动重试、阈值变更、迁移或 M2 实现。
+
+验证结果：
+
+- `pip check`、Ruff、strict mypy（140 个源文件）：通过；
+- 后端聚焦：`225 passed`；
+- 非真实 Provider/Map 全集：
+  `1724 passed, 16 skipped, 2 deselected, 2 warnings`；
+- 封锁 DNS、`connect`、`connect_ex`、`create_connection` 后，聚焦
+  `225 passed`，全集数量不变；
+- aiosqlite 收尾 warning 对应目标以
+  `PytestUnhandledThreadExceptionWarning` 升级为错误后独立复跑 `1 passed`，
+  未连续复现，保留为既有 P2；
+- 迁移 `25 passed`，Alembic 唯一 head `20260729_0017`；
+- 前端 lint、typecheck、指定组件 `81 passed`、完整 Vitest `124 passed`；
+- 纯快进合并后最小检查：后端 `4 passed`，Agent 组件 `18 passed`。
+
+本轮未读取 `.env`，真实模型、地图、网页和付费 API 调用为 0。当前没有未关闭
+P0/P1；M1-Gate 仍打开，下一项只允许修复移动端收藏详情操作可达性，SSE、运行配置
+和 M2-0 继续阻塞。
+
 ## 2026-07-31 M1-Gate 地点确认修复 1
 
 地点确认修复 1 完成，等待主控复验；M1-Gate 继续打开，M2-0 未开始且阻塞。

@@ -3,11 +3,38 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
-| 当前子阶段 | M1-Gate 地点确认修复 1 |
-| 状态 | M1-Gate 地点确认修复 1 完成，等待主控复验；M1-Gate 继续打开；M2-0 未开始且阻塞。 |
-| 当前分支 | codex/m1-gate-place-confirmation |
+| 当前子阶段 | M1-Gate 修复 2：移动端收藏详情操作可达性 |
+| 状态 | 地点确认修复 1 已通过主控验收并集成；当前允许开始修复 2；M1-Gate 继续打开；M2-0 未开始且阻塞。 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-31 |
 | 阻塞项 | M1-Gate 尚未最终关闭；M2-0 未开始且阻塞 |
+
+## 2026-07-31 M1-Gate 地点确认修复 1 主控复验与集成
+
+- 主控确认开发提交 `438d127075bdb6f3175f1177ab80c0e3cc02fc9e` 及返修提交
+  `8ed6ca705b587de84ea00433b12b196a58198e35` 构成从原 `main`
+  `e3cc9fa3baf417fe43e9e0c8c4ff3977473e48bb` 开始的线性提交链；工作区干净，
+  最终以 `--ff-only` 集成，未产生冲突、merge commit 或额外代码变化。
+- 独立复核确认同一 write operation 内多个抽取候选命中同一正式 POI 时，只保留
+  一条权威 operation-item 关联；返回、回放和 Undo 按收藏 ID 去重，Source 保留，
+  不再触发复合主键冲突。不同 POI、不同 operation、Event 人工选择、地图错误和
+  原有状态边界保持不变。
+- Agent 的 `pending_selection` 卡片可直接进入既有
+  `/collections?item=<collection_id>` 候选选择界面；未复制候选表单、前端状态机
+  或地点规则，其他收藏状态与 Event 时间入口保持不变。
+- 后端 `pip check`、Ruff、strict mypy（140 个源文件）通过；聚焦测试
+  `225 passed`，非真实 Provider/Map 全集
+  `1724 passed, 16 skipped, 2 deselected`，迁移 `25 passed`，Alembic 唯一
+  head 为 `20260729_0017`。封锁 DNS、`connect`、`connect_ex` 和
+  `create_connection` 后，聚焦及全集数量不变。
+- 普通及封网全集各出现 2 条既有 aiosqlite 线程收尾 warning；目标测试将
+  `PytestUnhandledThreadExceptionWarning` 升级为错误后独立复跑 `1 passed`，
+  未连续复现，继续作为既有 P2 监测。前端 lint、typecheck 通过，指定组件
+  `81 passed`，完整 Vitest `124 passed`；纯快进后的最小检查为后端
+  `4 passed`、Agent 组件 `18 passed`。
+- 当前无未关闭 P0/P1。未读取 `.env`，真实模型、地图、网页和付费 API 调用为 0；
+  M1-Gate 继续打开，当前只允许开始修复 2“移动端收藏详情操作可达性”，不得开始
+  SSE、运行配置、M2-0 或其他后续范围。
 
 ## 2026-07-31 M1-Gate 地点确认修复 1
 
