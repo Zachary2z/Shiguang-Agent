@@ -19,6 +19,7 @@ from app.domain.collections import (
     IdempotencyConflictError,
     ResourceNotFoundError,
     VersionConflictError,
+    event_schedule_is_confirmed,
 )
 from app.domain.identifiers import (
     validate_collection_item_id,
@@ -433,7 +434,13 @@ class PlaceTargetSelectionService:
                 item,
                 status=(
                     CollectionStatus.ACTIVE
-                    if item.event_start_at is not None and item.event_end_at is not None
+                    if event_schedule_is_confirmed(
+                        event_start_date=item.event_start_date,
+                        event_end_date=item.event_end_date,
+                        event_start_at=item.event_start_at,
+                        event_end_at=item.event_end_at,
+                        uncertainties=item.uncertainties,
+                    )
                     else CollectionStatus.PENDING_DETAILS
                 ),
                 target=target,

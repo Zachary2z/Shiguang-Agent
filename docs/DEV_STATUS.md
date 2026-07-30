@@ -21,6 +21,34 @@ M2-0”的结论只保留为历史验收记录，不再代表当前 Gate 状态�
 
 ## 2026-07-30 稳定化候选
 
+- 本轮“语义理解与可信确认边界收敛”生产修复完成，等待主控复验。此前文字抽取的
+  `source_evidence`、候选标题切片、中文日期/钟点正则和格式解析表已从正式
+  Schema、Prompt、解析及 canonicalization 全部删除；模型不再用自报
+  `candidate_index/value/quote` 证明自己的时间结论，应用也不再实现第二套自然
+  语言时间解析器。
+- 文字、URL 和截图现在共用唯一 extraction canonicalization：模型提出的每个
+  非空 Event 日期/准确时刻原值都保留用于展示和编辑，同时逐字段自动加入
+  uncertainty。年份缺失、模糊时间、截图状态栏、多个 Event、重复或改写标题均不
+  再由代码猜测语义；在用户确认前收藏保持 `pending_details`，Event 类型不变且
+  不能进入计划。
+- 用户继续通过既有收藏 PATCH 显式保存日期/时刻。被保存字段从 missing 和
+  uncertainty 中移除；未触及字段的时间 uncertainty 不能被客户端直接改写元数据
+  绕过。已有准确地点且准确场次起止均满足、所有已提出时间字段均确认后，既有状态
+  机才转为 `active`。地点选择、API `planning_eligible`、结构检索和地图计划事实
+  统一复用 `event_schedule_is_confirmed`，没有新增确认服务、Repository 或计划
+  流程。
+- 生产语义硬编码审计删除了“咖啡店/餐厅/展览/活动”等 `_GENERIC_INPUTS` 词表，
+  这些输入改由模型按统一语义契约判断。保留的文字预检仅包括空输入、长度上限和
+  PRD 明确不支持类型的高置信组合判定；既有测试继续证明标题中单独出现菜谱、商品
+  或路线字样不会被预检拒绝。该组合判定仍是后续主控应审视的有限维护风险。
+- 本轮最终离线复验：`pip check`、Ruff、strict mypy（140 个源文件）均退出码 0；
+  后端全量 `1691 passed, 18 skipped`；仓库外插件封锁 DNS 与
+  `connect/connect_ex/create_connection` 后，语义、图片、统一输入、内容导入、
+  收藏 PATCH、计划和 Memory 聚焦集 `340 passed`；Alembic 唯一 head 仍为
+  `20260729_0017`。前端未改生产代码，`lint/typecheck/test/build` 均退出码 0，
+  单测 `87 passed`；因此本轮未额外运行 Playwright。
+- 状态保持“M1-Gate 稳定化修复待主控验收”；本窗口不宣布 Event 时间证据 P1
+  关闭，不关闭 M1，也不允许开始 M2。
 - 候选 `d60975814a1d4d0ae35d246bb6e6d44e1babb58d` 复验发现临时
   `source_evidence` 的候选序号、字段值和原文片段仍全部来自同一次模型响应；仅验证
   片段存在和字段值相等，无法证明片段确实表达该日期/时刻或属于当前候选。

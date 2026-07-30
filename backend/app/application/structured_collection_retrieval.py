@@ -15,6 +15,7 @@ from app.domain.collections import (
     CollectionRepository,
     CollectionStatus,
     PlaceCandidate,
+    event_schedule_is_confirmed,
 )
 from app.domain.memories import Memory, MemoryType
 from app.domain.places import (
@@ -183,9 +184,17 @@ def assess_collection_candidate(
         reasons.add(CandidateReasonCode.CITY_MISMATCH)
 
     if item.kind is CollectionKind.EVENT:
-        if item.event_start_at is None or item.event_end_at is None:
+        if not event_schedule_is_confirmed(
+            event_start_date=item.event_start_date,
+            event_end_date=item.event_end_date,
+            event_start_at=item.event_start_at,
+            event_end_at=item.event_end_at,
+            uncertainties=item.uncertainties,
+        ):
             reasons.add(CandidateReasonCode.EVENT_TIME_UNKNOWN)
         else:
+            assert item.event_start_at is not None
+            assert item.event_end_at is not None
             if item.event_end_at <= constraints.start_at:
                 reasons.add(CandidateReasonCode.EVENT_ENDED)
             elif (

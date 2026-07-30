@@ -141,8 +141,8 @@ class CollectionItemPatch(BaseModel):
     metro_station: str | None = None
     event_start_date: date | None = Field(default=None, strict=False)
     event_end_date: date | None = Field(default=None, strict=False)
-    event_start_at: datetime | None = None
-    event_end_at: datetime | None = None
+    event_start_at: datetime | None = Field(default=None, strict=False)
+    event_end_at: datetime | None = Field(default=None, strict=False)
     event_start_clue: str | None = None
     event_end_clue: str | None = None
     price_amount: Decimal | None = None

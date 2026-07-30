@@ -18,6 +18,7 @@ from app.domain.collections import (
     CollectionItem,
     CollectionKind,
     PlaceCandidate,
+    event_schedule_is_confirmed,
 )
 from app.domain.places import (
     Coordinate,
@@ -118,8 +119,13 @@ class MapPlanFactResolver:
             if item.kind is CollectionKind.EVENT:
                 if (
                     resolved.poi is None
-                    or item.event_start_at is None
-                    or item.event_end_at is None
+                    or not event_schedule_is_confirmed(
+                        event_start_date=item.event_start_date,
+                        event_end_date=item.event_end_date,
+                        event_start_at=item.event_start_at,
+                        event_end_at=item.event_end_at,
+                        uncertainties=item.uncertainties,
+                    )
                 ):
                     continue
                 candidate = await self._qualify_concrete(

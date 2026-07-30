@@ -628,7 +628,12 @@ def _canonicalize_image_result(result: ExtractionResult) -> ExtractionResult:
             ),
         )
     candidates = tuple(_mark_screenshot_uncertainties(item) for item in result.candidates)
-    return ExtractionResult.with_candidates(candidates)
+    return canonicalize_extraction_result(
+        ExtractionResult.with_candidates(candidates),
+        insufficient_recovery_suggestions=(
+            "请重新上传更清晰的截图，或补充具体店名、活动名和位置线索。",
+        ),
+    )
 
 
 def _mark_screenshot_uncertainties(

@@ -1,10 +1,12 @@
 """Public M0-2A collection domain contract."""
 
 from app.domain.collections.candidate_metadata import (
+    EVENT_TEMPORAL_FIELDS,
     PRICE_CURRENCY_CNY,
     CandidateField,
     Uncertainty,
     default_cny_for_known_price,
+    event_schedule_is_confirmed,
     validate_cny_price_pair,
 )
 from app.domain.collections.entities import (
@@ -78,6 +80,7 @@ __all__ = [
     "TERMINAL_COLLECTION_STATUSES",
     "TERMINAL_RECOGNITION_STATUSES",
     "MAX_EXTRACTION_CANDIDATES",
+    "EVENT_TEMPORAL_FIELDS",
     "PRICE_CURRENCY_CNY",
     "CandidateField",
     "AutoSaveResult",
@@ -122,6 +125,7 @@ __all__ = [
     "VersionConflictError",
     "can_collection_enter_plan",
     "default_cny_for_known_price",
+    "event_schedule_is_confirmed",
     "ensure_collection_transition",
     "ensure_persistable_collection_status",
     "is_collection_visible_by_default",

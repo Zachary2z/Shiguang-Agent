@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.place_matching import PlaceMatchingService
 from app.application.place_targets import PlaceTargetSelectionService
 from app.domain.collections import (
+    EVENT_TEMPORAL_FIELDS,
     AutoSaveResult,
     CandidateField,
     CollectionItem,
@@ -35,6 +36,7 @@ from app.domain.collections import (
     UndoOutcome,
     UndoResult,
     VersionConflictError,
+    event_schedule_is_confirmed,
     status_for_extraction_candidate,
 )
 from app.domain.collections.writes import validate_idempotency_key
@@ -42,6 +44,8 @@ from app.domain.identifiers import validate_collection_item_id, validate_user_id
 from app.domain.places import (
     CityScope,
     PlaceMatchRequest,
+    PlaceScope,
+    PlaceTarget,
     resolve_city_hint,
 )
 from app.domain.time import require_aware_utc, utc_now
@@ -129,6 +133,11 @@ class CollectionWriteService:
             values = current.model_dump(mode="python")
             values.update(patch.updates())
             self._recalculate_candidate_metadata(values, patch=patch)
+            self._preserve_unconfirmed_event_time_metadata(
+                current=current,
+                values=values,
+                patch=patch,
+            )
             values["updated_at"] = now
             desired = CollectionItem.model_validate(values)
             updated = await self._repository.update_collection_item(
@@ -136,6 +145,14 @@ class CollectionWriteService:
                 item=desired,
                 expected_version=expected_version,
             )
+            target_status = self._event_status_after_confirmation(updated)
+            if target_status is not updated.status:
+                updated = await self._repository.transition_collection_status(
+                    user_id=owner,
+                    collection_item_id=identifier,
+                    target=target_status,
+                    updated_at=now,
+                )
         if (
             place_matching is None
             or updated.kind is not CollectionKind.PLACE
@@ -272,6 +289,60 @@ class CollectionWriteService:
                 missing.append(field)
         values["missing_fields"] = tuple(dict.fromkeys(missing))
         values["uncertainties"] = tuple(uncertainties)
+
+    @staticmethod
+    def _preserve_unconfirmed_event_time_metadata(
+        *,
+        current: CollectionItem,
+        values: dict[str, object],
+        patch: CollectionItemPatch,
+    ) -> None:
+        if current.kind is not CollectionKind.EVENT:
+            return
+        touched = {
+            field
+            for field in EVENT_TEMPORAL_FIELDS
+            if field.value in patch.model_fields_set
+        }
+        existing = {
+            uncertainty.field: uncertainty
+            for uncertainty in current.uncertainties
+            if uncertainty.field in EVENT_TEMPORAL_FIELDS
+        }
+        uncertainties: list[Uncertainty] = []
+        for raw in cast(
+            tuple[Uncertainty | dict[str, object], ...],
+            values.get("uncertainties", ()),
+        ):
+            uncertainty = Uncertainty.model_validate(raw)
+            if uncertainty.field not in existing or uncertainty.field in touched:
+                uncertainties.append(uncertainty)
+        uncertainties.extend(
+            uncertainty
+            for field, uncertainty in existing.items()
+            if field not in touched
+        )
+        values["uncertainties"] = tuple(uncertainties)
+
+    @staticmethod
+    def _event_status_after_confirmation(item: CollectionItem) -> CollectionStatus:
+        if (
+            item.kind is not CollectionKind.EVENT
+            or item.status
+            not in {CollectionStatus.ACTIVE, CollectionStatus.PENDING_DETAILS}
+            or not isinstance(item.place_target, PlaceTarget)
+            or item.place_target.scope is not PlaceScope.EXACT
+        ):
+            return item.status
+        if event_schedule_is_confirmed(
+            event_start_date=item.event_start_date,
+            event_end_date=item.event_end_date,
+            event_start_at=item.event_start_at,
+            event_end_at=item.event_end_at,
+            uncertainties=item.uncertainties,
+        ):
+            return CollectionStatus.ACTIVE
+        return CollectionStatus.PENDING_DETAILS
 
     async def delete(
         self,

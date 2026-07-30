@@ -18,7 +18,6 @@ from app.application.extraction_output import (
     unsupported_extraction_result,
 )
 from app.domain.collections import (
-    CandidateField,
     ExtractionReasonCode,
     ExtractionResult,
     UnsupportedReason,
@@ -31,17 +30,6 @@ from nanobot_core.providers import (
 )
 
 MAX_TEXT_INPUT_CHARS: Final = 20_000
-_GENERIC_INPUTS = frozenset(
-    {
-        "一个地方",
-        "去哪玩",
-        "咖啡店",
-        "地点",
-        "展览",
-        "活动",
-        "餐厅",
-    }
-)
 _RECIPE_FORMAT = re.compile(r"菜谱|食谱|做法|烹饪步骤|配料表|食材清单")
 _RECIPE_PROCEDURE_REQUEST = re.compile(
     r"怎么做|如何做|教我做|怎么烹饪|烹饪步骤|制作步骤|"
@@ -73,7 +61,7 @@ _ROUTE_REQUEST = re.compile(r"给我|帮我|规划|制定|生成|导航|下载|�
 _SYSTEM_PROMPT = (
     "You extract structured collection candidates for Shiguang.\n"
     "Return exactly one JSON object matching this JSON Schema, without Markdown or "
-    f"commentary:\n{extraction_result_schema_json(include_source_evidence=True)}\n\n"
+    f"commentary:\n{extraction_result_schema_json()}\n\n"
     "Rules:\n"
     f"{EXTRACTION_SEMANTIC_RULES}"
     "- Produce one candidate object per distinct Place or user-supplied Event; never "
@@ -105,10 +93,7 @@ class TextExtractionService:
         response_observer: Callable[[ModelResponse], None] | None = None,
     ) -> None:
         self._provider = provider
-        self._response_format = extraction_response_format(
-            structured_output_mode,
-            include_source_evidence=True,
-        )
+        self._response_format = extraction_response_format(structured_output_mode)
         self._response_observer = response_observer
 
     async def extract(self, text: str) -> ExtractionResult:
@@ -129,10 +114,7 @@ class TextExtractionService:
             response_format=self._response_format,
         )
         self._observe(first_response)
-        first_result, issues = parse_extraction_response(
-            first_response,
-            source_text=text,
-        )
+        first_result, issues = parse_extraction_response(first_response)
         if first_result is not None:
             return canonicalize_extraction_result(
                 first_result,
@@ -153,10 +135,7 @@ class TextExtractionService:
             response_format=self._response_format,
         )
         self._observe(repaired_response)
-        repaired_result, _repaired_issues = parse_extraction_response(
-            repaired_response,
-            source_text=text,
-        )
+        repaired_result, _repaired_issues = parse_extraction_response(repaired_response)
         if repaired_result is not None:
             return canonicalize_extraction_result(
                 repaired_result,
@@ -186,17 +165,6 @@ def _preflight_result(text: str) -> ExtractionResult | None:
     if unsupported_reason is not None:
         return unsupported_extraction_result(reason=unsupported_reason)
 
-    generic_key = re.sub(r"[\s，。！？,.!?]+", "", text).casefold()
-    if generic_key in _GENERIC_INPUTS:
-        return ExtractionResult.insufficient(
-            missing_fields=(
-                CandidateField.TITLE,
-                CandidateField.CITY_HINT,
-                CandidateField.DISTRICT,
-                CandidateField.ADDRESS,
-            ),
-            recovery_suggestions=("请补充具体店名、活动名、区域、商圈或地标。",),
-        )
     return None
 
 

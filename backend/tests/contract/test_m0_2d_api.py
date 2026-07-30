@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import sqlite3
@@ -136,23 +135,11 @@ def _response(*candidates: PlaceCandidate | EventCandidate):
 
 
 def _date_only_text_response():
-    payload = json.loads(
-        ExtractionResult.with_candidates((_date_only_event(),)).model_dump_json()
+    return fake_response(
+        content=ExtractionResult.with_candidates(
+            (_date_only_event(),)
+        ).model_dump_json()
     )
-    quote = "夏季展览展期：2026.6.13–7.31"
-    payload["source_evidence"] = [
-        {
-            "candidate_index": 0,
-            "field": field.value,
-            "value": payload["candidates"][0][field.value],
-            "quote": quote,
-        }
-        for field in (
-            CandidateField.EVENT_START_DATE,
-            CandidateField.EVENT_END_DATE,
-        )
-    ]
-    return fake_response(content=json.dumps(payload, ensure_ascii=False))
 
 
 def _migrate(settings: Settings) -> None:
@@ -573,7 +560,16 @@ async def test_preflight_rejections_repair_failure_and_strict_message_schema(
     test_settings: Settings,
 ) -> None:
     provider = FakeProvider(
-        [fake_response(content="not-json"), fake_response(content='{"outcome":"broken"}')]
+        [
+            fake_response(
+                content=ExtractionResult.insufficient(
+                    missing_fields=(CandidateField.TITLE,),
+                    recovery_suggestions=("请补充具体店名。",),
+                ).model_dump_json()
+            ),
+            fake_response(content="not-json"),
+            fake_response(content='{"outcome":"broken"}'),
+        ]
     )
     async with _client(test_settings, provider) as (_api, client):
         session_id = await _demo(client)
@@ -610,7 +606,7 @@ async def test_preflight_rejections_repair_failure_and_strict_message_schema(
     assert results["generic"].json()["extraction"]["outcome"] == "insufficient_information"
     assert all(response.json()["collections"] == [] for response in results.values())
     assert broken.json()["extraction"]["outcome"] == "model_invalid_output"
-    assert len(provider.calls) == 2
+    assert len(provider.calls) == 3
     assert blank.status_code == too_long.status_code == spoofed.status_code == 422
     assert "长" * 100 not in too_long.text
     assert "usr_0123456789abcdef0123456789abcdef" not in spoofed.text
@@ -693,9 +689,17 @@ async def test_date_only_event_api_serializes_modifies_and_clears_calendar_dates
     assert item["event_start_at"] is None
     assert item["event_end_at"] is None
     assert item["status"] == "pending_details"
+    assert {entry["field"] for entry in item["uncertainties"]} >= {
+        "event_start_date",
+        "event_end_date",
+    }
     assert changed.status_code == 200
     assert changed.json()["event_start_date"] == "2026-06-14"
     assert changed.json()["event_end_date"] == "2026-08-01"
+    assert {
+        entry["field"] for entry in changed.json()["uncertainties"]
+    }.isdisjoint({"event_start_date", "event_end_date"})
+    assert changed.json()["status"] == "pending_details"
     assert cleared.status_code == 200
     assert cleared.json()["event_start_date"] is None
     assert cleared.json()["event_end_date"] is None

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
-from datetime import date
+from collections.abc import Iterable, Mapping
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
@@ -38,6 +38,14 @@ class CandidateField(StrEnum):
     TAGS = "tags"
 
 
+EVENT_TEMPORAL_FIELDS = (
+    CandidateField.EVENT_START_DATE,
+    CandidateField.EVENT_END_DATE,
+    CandidateField.EVENT_START_AT,
+    CandidateField.EVENT_END_AT,
+)
+
+
 class Uncertainty(BaseModel):
     """A field whose value or interpretation still needs confirmation."""
 
@@ -53,6 +61,32 @@ class Uncertainty(BaseModel):
             value,
             field_name="uncertainty reason",
         )
+
+
+def event_schedule_is_confirmed(
+    *,
+    event_start_date: date | None,
+    event_end_date: date | None,
+    event_start_at: datetime | None,
+    event_end_at: datetime | None,
+    uncertainties: Iterable[Uncertainty],
+) -> bool:
+    """Require exact session bounds and confirmation of every proposed Event time."""
+
+    if event_start_at is None or event_end_at is None:
+        return False
+    proposed = {
+        field
+        for field, value in (
+            (CandidateField.EVENT_START_DATE, event_start_date),
+            (CandidateField.EVENT_END_DATE, event_end_date),
+            (CandidateField.EVENT_START_AT, event_start_at),
+            (CandidateField.EVENT_END_AT, event_end_at),
+        )
+        if value is not None
+    }
+    uncertain = {entry.field for entry in uncertainties}
+    return proposed.isdisjoint(uncertain)
 
 
 def default_cny_for_known_price(values: Mapping[str, Any]) -> dict[str, Any]:

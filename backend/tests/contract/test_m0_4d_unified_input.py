@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -243,19 +242,10 @@ def _text_event_response(
     quote: str,
     fields: tuple[CandidateField, ...],
 ) -> ModelResponse:
-    payload = json.loads(
-        ExtractionResult.with_candidates((event,)).model_dump_json()
+    del quote, fields
+    return fake_response(
+        content=ExtractionResult.with_candidates((event,)).model_dump_json()
     )
-    payload["source_evidence"] = [
-        {
-            "candidate_index": 0,
-            "field": field.value,
-            "value": payload["candidates"][0][field.value],
-            "quote": quote,
-        }
-        for field in fields
-    ]
-    return fake_response(content=json.dumps(payload, ensure_ascii=False))
 
 
 def _web_success() -> WebPageContent:
@@ -427,7 +417,7 @@ async def test_text_url_and_image_share_one_result_and_collection_mapping(
 
 
 @pytest.mark.asyncio
-async def test_text_and_url_require_year_evidence_while_image_keeps_model_date_clue(
+async def test_text_url_and_image_share_event_time_confirmation_boundary(
     test_settings: Settings,
 ) -> None:
     provider = FakeProvider(
@@ -467,13 +457,16 @@ async def test_text_and_url_require_year_evidence_while_image_keeps_model_date_c
         "URL dates",
         "Image dates",
     ]
-    assert {item["event_start_date"] for item in collections[:2]} == {None}
-    assert {item["event_end_date"] for item in collections[:2]} == {None}
-    assert collections[2]["event_start_date"] == "2026-08-30"
-    assert collections[2]["event_end_date"] == "2026-09-01"
+    assert {item["event_start_date"] for item in collections} == {"2026-08-30"}
+    assert {item["event_end_date"] for item in collections} == {"2026-09-01"}
     assert {item["event_start_at"] for item in collections} == {None}
     assert {item["event_end_at"] for item in collections} == {None}
     assert {item["status"] for item in collections} == {"pending_details"}
+    for item in collections:
+        assert {entry["field"] for entry in item["uncertainties"]} >= {
+            "event_start_date",
+            "event_end_date",
+        }
 
 
 @pytest.mark.asyncio
@@ -847,7 +840,22 @@ async def test_event_import_requires_explicit_poi_choice_before_plan_use(
         assert selected.status_code == 200
         selected_item = selected.json()["items"][0]
         assert selected_item["kind"] == "event"
-        assert selected_item["planning_eligible"] is True
+        assert selected_item["status"] == "pending_details"
+        assert selected_item["planning_eligible"] is False
+        confirmed = await client.patch(
+            f"/api/v1/collections/{item_id}",
+            json={
+                "expected_version": selected_item["version"],
+                "changes": {
+                    "event_start_at": selected_item["event_start_at"],
+                    "event_end_at": selected_item["event_end_at"],
+                },
+            },
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        confirmed_item = confirmed.json()
+        assert confirmed_item["status"] == "active"
+        assert confirmed_item["planning_eligible"] is True
 
         async with api.state.demo_database.session() as session:
             result = await ExistingPlanServicesExecutor(

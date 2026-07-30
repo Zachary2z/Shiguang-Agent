@@ -402,6 +402,7 @@ LEGAL_TRANSITIONS = {
     (RecognitionStatus.RECOGNIZING, CollectionStatus.PENDING_SELECTION),
     (RecognitionStatus.RECOGNIZING, CollectionStatus.PENDING_DETAILS),
     (RecognitionStatus.RECOGNIZING, RecognitionStatus.FAILED),
+    (CollectionStatus.ACTIVE, CollectionStatus.PENDING_DETAILS),
     (CollectionStatus.ACTIVE, CollectionStatus.VISITED),
     (CollectionStatus.ACTIVE, CollectionStatus.ARCHIVED),
     (CollectionStatus.ACTIVE, CollectionStatus.DELETED),

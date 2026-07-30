@@ -22,6 +22,40 @@ API `storage=None` 与 Worker 单独构造的运行分叉，以及截图准备�
 运行记录的旧路径。未新增迁移、Provider、Runner、Registry、Storage、Parser、
 匹配器、收藏 Repository、计划服务、样本白名单或自动外部重试。
 
+### 2026-07-30 语义理解与可信确认边界收敛
+
+本轮生产修复完成，等待主控复验；M1-Gate 未关闭。此前 Event 时间验真同时相信
+模型自报证据并在应用侧维护标题切片、日期/时刻正则和格式解析表，实质上形成了第二
+套脆弱的自然语言理解路径。现已删除 `source_evidence` 的 Schema、Prompt、解析
+分支和全部手写时间证据函数；该临时字段不在领域 DTO、数据库、日志或公开响应中。
+
+正式边界收敛为：
+
+1. 模型在唯一 `ExtractionResult` 中提出 Place/Event 及原有四个 Event 时间字段；
+2. 文字、URL、截图及 initial/repair 全部经过同一个 canonicalization；
+3. 每个非空 Event 时间值原样保留并逐字段标记 uncertainty，不由应用猜测原文语义；
+4. 用户通过既有收藏 PATCH 保存具体字段即完成该字段确认；未触及字段仍待确认，
+   客户端不能只改 metadata 绕过；
+5. 只有准确地点、完整准确场次以及所有已提出时间字段均已确认时，既有状态机才允许
+   `pending_details → active`，并由地点选择、API、结构检索和地图计划事实共同复用
+   `event_schedule_is_confirmed`。
+
+因此模型错误提出的年份或时刻仍可见、可编辑，但在确认前不能成为计划事实；日期范围
+和准确场次保持各自原字段，Event 类型不会因证据失败被改成 Place。没有新增 Parser、
+Candidate、Provider、Runner、Repository、确认服务、迁移或并行抽取流程。
+
+生产语义硬编码审计同时删除 `_GENERIC_INPUTS` 名称词表，“咖啡店、餐厅、展览、
+活动”等泛化输入交由模型判断。空输入、长度限制和 PRD 明确不支持类型的高置信组合
+预检仍作为公开边界硬约束保留；合法标题仅包含菜谱、商品或路线词时已有反例测试保证
+不会被拒绝。高置信组合表达式是本轮保留、供主控复验的有限维护风险。
+
+最终离线结果：`pip check`、Ruff、strict mypy（140 个源文件）均退出码 0；后端
+全量 `1691 passed, 18 skipped`；仓库外插件封锁 DNS/socket 后的语义、图片、统一
+输入、内容导入、收藏 PATCH、计划和 Memory 聚焦集 `340 passed`；Alembic 唯一
+head 为 `20260729_0017`。前端生产代码未变，`lint/typecheck/test/build` 均退出码
+0，Vitest `87 passed`，本轮按门禁未额外运行 Playwright。真实模型、地图、网页和
+付费 API 调用均为 0。
+
 候选 `e3eeb90b1e25aac6d22ad03c7842b3786d5c1f86` 的主控前复验又发现并修复：
 
 1. **P1：Event 关键词规则和跨候选时间污染。** 原因是文字抽取后置边界用有限活动
