@@ -105,14 +105,21 @@ async function mockCollections(page: Page) {
 }
 
 async function mockEventCollections(page: Page) {
+  let patchRequests = 0;
   await page.route("**/api/v1/**", async (route) => {
-    const path = new URL(route.request().url()).pathname;
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
     if (path === "/api/v1/demo/sessions") {
       await route.fulfill({ json: { csrf_token: "e2e-csrf" } });
       return;
     }
     if (path === `/api/v1/collections/${itemId}`) {
-      await route.fulfill({ json: { item: eventItem, sources: [] } });
+      if (request.method() === "PATCH") {
+        patchRequests += 1;
+        await route.fulfill({ json: eventItem });
+      } else {
+        await route.fulfill({ json: { item: eventItem, sources: [] } });
+      }
       return;
     }
     await route.fulfill({
@@ -124,6 +131,7 @@ async function mockEventCollections(page: Page) {
       },
     });
   });
+  return { patchRequests: () => patchRequests };
 }
 
 test("collection URL state survives refresh and browser history", async ({ page }) => {
@@ -224,6 +232,24 @@ for (const width of [320, 390, 768, 1024, 1440]) {
     await expect(endTime).toBeFocused();
   });
 }
+
+test("out-of-range Event session date reaches product validation without PATCH", async ({
+  page,
+}) => {
+  const requests = await mockEventCollections(page);
+  await page.goto("/collections");
+  await page.getByRole("button", { name: new RegExp(eventItem.title) }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("具体场次日期").fill("2026-08-05");
+  await dialog.getByLabel("具体开始时间").fill("15:30");
+  await dialog.getByLabel("具体结束时间").fill("20:00");
+  await dialog.getByRole("button", { name: "确认并保存" }).click();
+
+  await expect(
+    page.getByText(/具体场次不在活动有效日期范围内/),
+  ).toBeVisible();
+  expect(requests.patchRequests()).toBe(0);
+});
 
 test("candidate recovery, deletion, restore, safe text, and keyboard close work", async ({
   page,

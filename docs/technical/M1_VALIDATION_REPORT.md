@@ -14,6 +14,35 @@ Agent 计划入口不可达。M1-Gate 因此重新打开；下方“M1 正式关
 - M2-0：未开始，阻塞于主控复验；
 - M1 未重新关闭。
 
+### 2026-07-30 M1-Gate 修复 3 Event 表单校验阻断返修
+
+M1-Gate 修复 3 表单校验返修完成，等待主控复验；计划闭环与 M2-0 未开始。
+
+主控确认候选 `f85a177fcd76227c9fa9caa06f1df95a186c98fa` 的“具体场次日期”
+保留 `min/max` 后，浏览器原生约束会在越界时拦截表单提交，导致既有
+`confirmEventTime` 中文范围校验不可达。本次只在 Event 时间表单设置
+`noValidate`：日期控件仍为 `date`、时间控件仍为 `time`，场次日期仍保留
+`min/max` 选择提示，但所有提交统一进入原业务校验边界。
+
+Chromium 回归通过真实点击“确认并保存”证明：输入超出有效范围的场次日期后显示
+“具体场次不在活动有效日期范围内”中文反馈，PATCH 请求数为 0。既有组件回归继续
+覆盖有效范围排除原准确场次、原始 UTC 瞬间保真、编辑 `HH:mm` 保留原日期、跨夜
+场次、单日及多日 date-only 流程、清空时间，以及 409、422、超时、取消和网络错误
+保留草稿。
+
+验证结果：
+
+- 前端 lint、typecheck、build：通过；
+- Vitest：`113 passed`；
+- `npx playwright test tests/e2e/collections.spec.ts`：`14 passed`；
+- 后端 `pip check`、Ruff、strict mypy（140 个源文件）：通过；
+- 指定收藏契约、写入单元与结构化检索回归：`72 passed`；
+- 迁移回归：`25 passed`；Alembic 唯一 head：`20260729_0017`。
+
+复杂度检查确认生产代码只增加表单级 `noValidate`，没有 `onInvalid`、第二套校验
+helper 或重复日期规则。本轮无后端、DTO、数据库、迁移、Prompt、地点匹配、计划
+功能或 M2 变更；未读取 `.env`，真实 API 调用为 0；未合并、未推送。
+
 ### 2026-07-30 M1-Gate 修复 3 Event 时间语义 P1 返修
 
 M1-Gate 修复 3 返修完成，等待主控复验；计划闭环与 M2-0 未开始。

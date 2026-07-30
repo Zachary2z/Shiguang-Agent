@@ -1172,7 +1172,11 @@ export function CollectionsExperience() {
                   </fieldset>
                 ) : null}
                 {detail.item.kind === "event" ? (
-                  <form className="event-time-form" onSubmit={confirmEventTime}>
+                  <form
+                    className="event-time-form"
+                    noValidate
+                    onSubmit={confirmEventTime}
+                  >
                     <div className="event-time-heading">
                       <div>
                         <strong>确认活动时间</strong>
