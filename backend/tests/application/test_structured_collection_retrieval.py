@@ -27,6 +27,7 @@ from app.application.memories import MemoryPlanningService, MemoryService
 from app.application.plan_experience import (
     ExistingPlanServicesExecutor,
     PlanGenerationOutcome,
+    plan_failure_code_for_retrieval,
 )
 from app.config import Settings
 from app.domain.collections import (
@@ -75,7 +76,13 @@ from app.domain.places import (
     WeatherResult,
     normalize_brand_name,
 )
-from app.domain.plans import ActivityArea, PlanConstraints, PlanPace, PlanPaceSource
+from app.domain.plans import (
+    ActivityArea,
+    ExternalRecoveryCode,
+    PlanConstraints,
+    PlanPace,
+    PlanPaceSource,
+)
 from app.domain.plans.drafts import (
     DraftCandidateFacts,
     DraftRouteFacts,
@@ -912,6 +919,71 @@ async def test_formal_city_controls_eligibility_and_city_hint_never_substitutes(
     assert repository.items[0].city_hint == "深圳"
     assert repository.items[1].city_hint == "深圳"
     assert repository.items[2].city_hint == "深圳"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("item_kind", "expected_code"),
+    [
+        ("none", "ADD_COLLECTIONS"),
+        ("location", "LOCATION_UNCONFIRMED"),
+        ("event_time", "EVENT_TIME_UNKNOWN"),
+        ("other_city", "CITY_MISMATCH"),
+        ("provider", "ROUTE_PROVIDER_FAILED"),
+    ],
+)
+async def test_plan_failure_preserves_authoritative_retrieval_reason(
+    item_kind: str,
+    expected_code: str,
+) -> None:
+    user_id = generate_user_id()
+    items: list[CollectionItem] = []
+    facts = PlanningFactSnapshot()
+    if item_kind == "location":
+        items.append(_place(user_id, poi=None))
+    elif item_kind == "event_time":
+        items.append(
+            _event(
+                user_id,
+                start_at=None,
+                end_at=None,
+                target=_exact_target(_poi("event_time")),
+            )
+        )
+    elif item_kind == "other_city":
+        poi = _poi("other_city_reason", city_code="guangzhou")
+        items.append(_place(user_id, poi=poi))
+        facts = PlanningFactSnapshot(pois=(_known_poi_facts(poi),))
+    elif item_kind == "provider":
+        poi = _poi("provider_reason")
+        items.append(_place(user_id, poi=poi))
+        facts = PlanningFactSnapshot(
+            pois=(
+                PoiPlanningFacts(
+                    provider=poi.provider,
+                    poi_id=poi.poi_id,
+                    route=RouteAssessment.PROVIDER_FAILED,
+                    weather=WeatherAssessment.COMPATIBLE,
+                    availability=AvailabilityAssessment.AVAILABLE,
+                ),
+            )
+        )
+
+    service, _ = _service(items)
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(),
+        facts=facts,
+        now=NOW,
+    )
+
+    assert (
+        plan_failure_code_for_retrieval(
+            recovery_code=ExternalRecoveryCode.NO_EXECUTABLE_DRAFT,
+            collections=result,
+        )
+        == expected_code
+    )
 
 
 @pytest.mark.asyncio

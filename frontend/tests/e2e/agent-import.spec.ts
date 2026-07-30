@@ -1,5 +1,15 @@
 import { expect, test } from "@playwright/test";
 
+test("Agent plan shortcut reaches the authoritative plans experience", async ({
+  page,
+}) => {
+  await page.goto("/agent");
+  await page.getByRole("link", { name: "帮我安排时间" }).click();
+
+  await expect(page).toHaveURL(/\/plans$/);
+  await expect(page.getByRole("heading", { name: "时间与范围" })).toBeVisible();
+});
+
 test("real FastAPI offline flow saves, edits, undoes, restores, and continues", async ({
   page,
 }) => {

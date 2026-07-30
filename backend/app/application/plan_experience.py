@@ -39,9 +39,11 @@ from app.domain.places import PlaceMatchingPolicy
 from app.domain.plans import (
     ApprovalAction,
     ApprovalStatus,
+    CandidateReasonCode,
     ExternalApprovalDecision,
     ExternalPlaceApprovalDecision,
     ExternalPlaceApprovalRequirement,
+    ExternalRecoveryCode,
     ExternalSupplementOutcome,
     PlanApproval,
     PlanConstraints,
@@ -52,6 +54,7 @@ from app.domain.plans import (
     PlanStatus,
     PlanVersion,
     RequiredPlanGap,
+    StructuredCollectionResult,
 )
 from app.domain.plans.contracts import PlanContract
 from app.domain.runs import AgentRunCreate, AgentRunStatus
@@ -68,6 +71,47 @@ from app.providers.map import MapProvider
 
 PLAN_GENERATION_JOB_TYPE = "plan.generate"
 _APPROVAL_TTL = timedelta(minutes=15)
+_PUBLIC_FAILURE_REASON_PRIORITY = (
+    CandidateReasonCode.EVENT_TIME_UNKNOWN,
+    CandidateReasonCode.LOCATION_UNCONFIRMED,
+    CandidateReasonCode.CITY_UNCONFIRMED,
+    CandidateReasonCode.CITY_MISMATCH,
+    CandidateReasonCode.ROUTE_PROVIDER_FAILED,
+    CandidateReasonCode.WEATHER_PROVIDER_FAILED,
+    CandidateReasonCode.AVAILABILITY_PROVIDER_FAILED,
+    CandidateReasonCode.BRANCH_PROVIDER_FAILED,
+)
+
+
+def plan_failure_code_for_retrieval(
+    *,
+    recovery_code: ExternalRecoveryCode | None,
+    collections: StructuredCollectionResult,
+) -> str:
+    """Preserve an existing retrieval cause when no candidate can be planned."""
+
+    fallback = (
+        "PLAN_GENERATION_FAILED"
+        if recovery_code is None
+        else recovery_code.value
+    )
+    if recovery_code is not ExternalRecoveryCode.NO_EXECUTABLE_DRAFT:
+        return fallback
+    if collections.included:
+        return fallback
+    if not collections.decisions:
+        return ExternalRecoveryCode.ADD_COLLECTIONS.value
+    common_reasons = set(collections.decisions[0].reason_codes)
+    for decision in collections.decisions[1:]:
+        common_reasons.intersection_update(decision.reason_codes)
+    return next(
+        (
+            reason.value
+            for reason in _PUBLIC_FAILURE_REASON_PRIORITY
+            if reason in common_reasons
+        ),
+        fallback,
+    )
 
 
 class PlanGenerationFacts(PlanContract):
@@ -219,10 +263,9 @@ class ExistingPlanServicesExecutor:
             )
         return PlanGenerationResult(
             outcome=PlanGenerationOutcome.FAILED,
-            error_code=(
-                "PLAN_GENERATION_FAILED"
-                if result.recovery_code is None
-                else result.recovery_code.value
+            error_code=plan_failure_code_for_retrieval(
+                recovery_code=result.recovery_code,
+                collections=collections,
             ),
             effective_constraints=effective_constraints,
         )

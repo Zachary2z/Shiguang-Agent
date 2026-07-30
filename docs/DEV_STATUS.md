@@ -4,10 +4,35 @@
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-Gate 稳定化修复 |
-| 状态 | M1-Gate 修复 3 已通过主控验收；当前允许修复 4 计划闭环；M2-0 未开始。 |
-| 当前分支 | main |
+| 状态 | 修复 4 完成，等待主控验收；M1-Gate 继续打开；M2-0 未开始。 |
+| 当前分支 | codex/m1-gate-plan-closure |
 | 最近更新 | 2026-07-30 |
-| 阻塞项 | 计划闭环修复仍未开始；M1-Gate 继续打开；M2-0 未开始且阻塞 |
+| 阻塞项 | 修复 4 等待主控验收；M1-Gate 继续打开；M2-0 未开始且阻塞 |
+
+## 2026-07-30 M1-Gate 修复 4 计划核心闭环稳定化
+
+- 修复 4 完成，等待主控验收；M1-Gate 继续打开，未开始 M2-0。Agent
+  “帮我安排时间”已用真实浏览器回归确认进入唯一 `/plans`
+  `PlansExperience`；连续时间和活动范围仍在生成前由用户明确确认。
+- 计划创建、调整和确认的人工重试现在按输入、计划与版本复用原请求幂等键；响应
+  丢失不会自动重试，只有输入或权威终态改变后才建立新尝试。SSE 中断、超时或用户
+  停止等待后，页面可读取计划权威状态；若任务仍在生成，则重新接入既有 SSE Client，
+  不会永久停在假完成或无监听状态。既有 generation owner 和当前 plan id 继续隔离
+  过期响应，版本切换不会覆盖当前计划或草稿。
+- 继续复用唯一 `PlanExperienceService`、`PlanDraftService`、计划 Repository、
+  Job、SSE Client、DTO 和前端 `PlansExperience`。未新增 Plan Client、状态机、
+  幂等服务或 SSE 管理器。计划应用边界现在保留结构化检索已有的共同主因；页面会
+  按权威错误码显示无可规划收藏、收藏不足、Event 时间未确认、地点未确认、其他
+  城市、地图或 Provider 失败等真实原因，不再显示伪成功。外部地点 Approval 的
+  同意、拒绝和重复决定均有终态契约回归。
+- 前端 lint、typecheck、build 通过；Vitest `123 passed`；
+  `plans.spec.ts` 和 `agent-import.spec.ts` 各 `3 passed`。后端 `pip check`、
+  Ruff、strict mypy（140 个源文件）通过；计划与执行聚焦集 `190 passed`；
+  非真实 Provider/Map 全集 `1713 passed, 16 skipped, 2 deselected`；迁移
+  `25 passed`，Alembic 唯一 head 为 `20260729_0017`。
+- 全集仍出现 2 条既有 `aiosqlite` 线程收尾 warning；对应目标将该 warning
+  升级为错误后独立复跑 `1 passed`，继续作为 P2 监测项。本轮没有读取 `.env`，
+  真实模型、地图和付费 API 调用为 0，未合并、未推送。
 
 ## 2026-07-30 M1-Gate 修复 3 主控复验与集成
 

@@ -585,8 +585,18 @@ async def test_confirmation_is_explicit_idempotent_current_version_only_and_owne
 
 
 @pytest.mark.asyncio
-async def test_worker_approval_resume_and_repeat_decision_use_existing_state(
+@pytest.mark.parametrize(
+    ("decision", "expected_status", "expected_error"),
+    [
+        ("approved", "draft", None),
+        ("rejected", "failed", "ADD_COLLECTIONS"),
+    ],
+)
+async def test_worker_approval_decisions_resume_and_repeat_existing_state(
     test_settings,
+    decision,
+    expected_status,
+    expected_error,
 ) -> None:
     class ApprovalExecutor:
         async def execute(self, *, user_id, constraints, approval):
@@ -597,6 +607,11 @@ async def test_worker_approval_resume_and_repeat_decision_use_existing_state(
                     approval_requirement=ExternalPlaceApprovalRequirement(
                         approval_id="approval_" + "a" * 32
                     ),
+                )
+            if approval.status is ApprovalStatus.REJECTED:
+                return PlanGenerationResult(
+                    outcome=PlanGenerationOutcome.FAILED,
+                    error_code="ADD_COLLECTIONS",
                 )
             assert approval.status is ApprovalStatus.APPROVED
             return PlanGenerationResult(
@@ -626,22 +641,26 @@ async def test_worker_approval_resume_and_repeat_decision_use_existing_state(
         waiting = await client.get(f"/api/v1/plans/{plan_id}")
         assert waiting.json()["status"] == "waiting_approval"
         approval_id = waiting.json()["approval"]["id"]
-        approved = await client.post(
+        decided = await client.post(
             f"/api/v1/approvals/{approval_id}/decision",
-            json={"decision": "approved"},
+            json={"decision": decision},
         )
-        assert approved.status_code == 202
+        assert decided.status_code == 202
         assert await worker.run_once() is not None
 
         ready = await client.get(f"/api/v1/plans/{plan_id}")
-        assert ready.json()["status"] == "draft"
-        assert (
-            ready.json()["draft"]["options"][0]["items"][0]["title"]
-            == "授权后的外部补充方案"
-        )
+        assert ready.json()["status"] == expected_status
+        assert ready.json()["error_code"] == expected_error
+        if decision == "approved":
+            assert (
+                ready.json()["draft"]["options"][0]["items"][0]["title"]
+                == "授权后的外部补充方案"
+            )
+        else:
+            assert ready.json()["draft"] is None
         repeated = await client.post(
             f"/api/v1/approvals/{approval_id}/decision",
-            json={"decision": "approved"},
+            json={"decision": decision},
         )
         assert repeated.status_code == 202
         assert repeated.json()["replayed"] is True

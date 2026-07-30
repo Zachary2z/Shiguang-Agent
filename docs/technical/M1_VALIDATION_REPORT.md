@@ -14,6 +14,51 @@ Agent 计划入口不可达。M1-Gate 因此重新打开；下方“M1 正式关
 - M2-0：未开始，阻塞于主控复验；
 - M1 未重新关闭。
 
+### 2026-07-30 M1-Gate 修复 4 计划核心闭环稳定化
+
+修复 4 完成，等待主控验收；M1-Gate 继续打开，M2-0 未开始。
+
+本轮从真实用户入口复验“Agent → 计划 → 调整 → 确认 → 执行 → 反馈”，只修复
+复现出的状态所有权和恢复断点：
+
+1. Agent “帮我安排时间”经真实 Chromium 点击进入 `/plans`，并显示唯一
+   `PlansExperience` 的时间和范围确认表单。既有计划创建、主方案与最多两个备选、
+   不足收藏外部地点 Approval、不可变版本、当前草案确认、路线、日历下载和完成
+   反馈/更正链路保持原实现。
+2. 创建、调整和确认改为按本次输入、计划及版本保存一个人工尝试幂等键。响应丢失
+   后页面只提供显式重试且复用同一键；没有自动重试。输入改变、切换计划/版本或
+   权威终态到达后才建立新尝试。Approval 继续使用后端既有确定性幂等边界，同意、
+   拒绝和重复决定均可收口。
+3. SSE 重连耗尽、超时、取消或用户停止等待后，页面不再把仍为 `generating` 的
+   权威计划留在无活动订阅的等待态。用户可显式读取权威结果；任务仍在生成时复用
+   原 SSE Client 继续跟踪。刷新和返回继续按 plan id 恢复，generation owner 与
+   当前 plan id 防止过期创建、调整、确认或 SSE 响应覆盖当前计划、版本和草稿。
+4. 计划应用边界复用结构化检索的既有候选原因；没有可规划候选时保留所有收藏共同
+   的单一主因。权威失败码现显示无可规划收藏、收藏不足、Event 时间未确认、地点
+   未确认、其他城市、路线事实缺失、地图超时/限流/不可用、Provider 失败、约束
+   过期、旧版本和任务取消；未知码也明确显示未完成，不生成伪成功结果。
+5. 复杂度复核确认请求尝试和恢复入口只在既有 `PlansExperience` 内维护，失败主因
+   只在既有计划应用边界读取结构化检索结果；继续复用唯一
+   `PlanExperienceService`、`PlanDraftService`、计划 Repository、Job、SSE Client
+   和 DTO，没有新增第二套 Plan Client、状态机、幂等服务、SSE 管理器或业务规则
+   旁路。Event 时间、地点匹配和内容抽取语义未修改。
+
+离线验证结果：
+
+- 前端 lint、typecheck、build：通过；
+- Vitest：`123 passed`；
+- `npx playwright test tests/e2e/plans.spec.ts`：`3 passed`；
+- `npx playwright test tests/e2e/agent-import.spec.ts`：`3 passed`；
+- 后端 `pip check`、Ruff、strict mypy（140 个源文件）：通过；
+- 指定计划草案、结构化检索、调整、约束、计划与执行契约：`190 passed`；
+- 非真实 Provider/Map 全集：`1713 passed, 16 skipped, 2 deselected`；
+- 迁移回归：`25 passed`；Alembic 唯一 head：`20260729_0017`。
+
+全集有 2 条既有 `aiosqlite` 连接线程在事件循环关闭后的收尾 warning；对应目标
+将该 warning 升级为错误后独立复跑 `1 passed`，继续作为 P2 监测项，不构成本轮
+阻塞。未读取 `.env`，真实模型、地图、网页和付费 API 调用为 0；未合并、未推送。
+不得据此自行关闭 M1-Gate，也不允许开始 M2。
+
 ### 2026-07-30 M1-Gate 修复 3 主控复验
 
 主控独立确认最终提交 `b9783e1e7deefc575bbf009df7ff51d0e222069a` 只增加

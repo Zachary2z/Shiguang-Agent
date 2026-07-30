@@ -266,6 +266,53 @@ describe("PlansExperience", () => {
     expect(screen.queryByRole("button", { name: /明确确认/ })).not.toBeInTheDocument();
   });
 
+  it("closes a rejected external supplement decision with the authoritative reason", async () => {
+    const waitingPlan = {
+      ...plan,
+      status: "waiting_approval" as const,
+      draft: null,
+      approval: {
+        id: "apr_0123456789abcdef0123456789abcdef",
+        display_text: "允许一次只读外部地点搜索。",
+        status: "pending" as const,
+        expires_at: "2026-07-29T02:15:00Z",
+      },
+    };
+    const failedPlan = {
+      ...waitingPlan,
+      status: "failed" as const,
+      error_code: "ADD_COLLECTIONS",
+      approval: { ...waitingPlan.approval, status: "rejected" as const },
+    };
+    vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path === "/api/v1/plans" && !options?.method) {
+        return { items: [waitingPlan] } as never;
+      }
+      if (path.endsWith("/decision")) {
+        return {
+          trace_id: null,
+          events_url: null,
+          result_url: waitingPlan.result_url,
+        } as never;
+      }
+      if (path === waitingPlan.result_url) return failedPlan as never;
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<PlansExperience />);
+
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: "不允许，使用现有收藏",
+      }),
+    );
+    expect(
+      await screen.findByText(
+        "当前没有可用于这次规划的收藏，请先补充并确认地点或活动信息。",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("creates a new adjustment version and refreshes from its authoritative result", async () => {
     const callbacks: Array<(event: never) => void> = [];
     vi.spyOn(sseClient, "connect").mockImplementation((options) => {
@@ -650,4 +697,194 @@ describe("PlansExperience", () => {
       submittedBodies[1].idempotency_key,
     );
   });
+
+  it("reuses the same creation key after an uncertain response", async () => {
+    const submittedBodies: Array<{ idempotency_key: string }> = [];
+    vi.spyOn(sseClient, "connect").mockReturnValue({
+      cancel: vi.fn(),
+      closed: new Promise<void>(() => {}),
+    });
+    let submissions = 0;
+    vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path === "/api/v1/plans" && !options?.method) {
+        return { items: [] } as never;
+      }
+      if (path === "/api/v1/plans" && options?.method === "POST") {
+        submittedBodies.push(JSON.parse(String(options.body)));
+        submissions += 1;
+        if (submissions === 1) throw new Error("response lost");
+        return {
+          plan_id: plan.id,
+          trace_id: plan.trace_id,
+          events_url: plan.events_url,
+          result_url: plan.result_url,
+        } as never;
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<PlansExperience />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "检查生成条件" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "确认并生成" }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "重试同一生成请求" }),
+    );
+
+    expect(submittedBodies).toHaveLength(2);
+    expect(submittedBodies[0].idempotency_key).toBe(
+      submittedBodies[1].idempotency_key,
+    );
+  });
+
+  it("uses a new creation key only after the input changes", async () => {
+    const submittedBodies: Array<{ idempotency_key: string }> = [];
+    vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path === "/api/v1/plans" && !options?.method) {
+        return { items: [] } as never;
+      }
+      if (path === "/api/v1/plans" && options?.method === "POST") {
+        submittedBodies.push(JSON.parse(String(options.body)));
+        throw new Error("response lost");
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<PlansExperience />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "检查生成条件" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "确认并生成" }));
+    await screen.findByRole("button", { name: "重试同一生成请求" });
+    await userEvent.click(screen.getByRole("button", { name: "返回修改" }));
+    await userEvent.clear(screen.getByLabelText("活动范围"));
+    await userEvent.type(screen.getByLabelText("活动范围"), "深圳湾");
+    await userEvent.click(screen.getByRole("button", { name: "检查生成条件" }));
+    await userEvent.click(screen.getByRole("button", { name: "确认并生成" }));
+
+    expect(submittedBodies).toHaveLength(2);
+    expect(submittedBodies[0].idempotency_key).not.toBe(
+      submittedBodies[1].idempotency_key,
+    );
+  });
+
+  it("reuses adjustment and confirmation keys after uncertain responses", async () => {
+    const adjustmentBodies: Array<{ idempotency_key: string }> = [];
+    const confirmationBodies: Array<{ idempotency_key: string }> = [];
+    let adjustmentSubmissions = 0;
+    let confirmationSubmissions = 0;
+    vi.spyOn(sseClient, "connect").mockReturnValue({
+      cancel: vi.fn(),
+      closed: new Promise<void>(() => {}),
+    });
+    vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path === "/api/v1/plans" && !options?.method) {
+        return { items: [plan] } as never;
+      }
+      if (path.endsWith("/adjustments")) {
+        adjustmentBodies.push(JSON.parse(String(options?.body)));
+        adjustmentSubmissions += 1;
+        if (adjustmentSubmissions === 1) throw new Error("response lost");
+        return {
+          base_plan_id: plan.id,
+          trace_id: "trc_1123456789abcdef0123456789abcdef",
+          events_url: "/api/v1/agent-runs/adjust/events",
+        } as never;
+      }
+      if (path.endsWith("/confirm")) {
+        confirmationBodies.push(JSON.parse(String(options?.body)));
+        confirmationSubmissions += 1;
+        if (confirmationSubmissions === 1) throw new Error("response lost");
+        return { plan: confirmedPlan } as never;
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<PlansExperience />);
+    await screen.findAllByText("海边咖啡");
+
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "想怎么调整？" }),
+      "节奏轻松一点",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "生成新版本" }));
+    await screen.findByText("计划暂时没有完成，请稍后重试。");
+    await userEvent.click(screen.getByRole("button", { name: "生成新版本" }));
+    expect(adjustmentBodies[0].idempotency_key).toBe(
+      adjustmentBodies[1].idempotency_key,
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "停止等待" }));
+    await userEvent.click(screen.getByRole("button", { name: "明确确认 V1" }));
+    await screen.findByText("计划暂时没有完成，请稍后重试。");
+    await userEvent.click(screen.getByRole("button", { name: "明确确认 V1" }));
+    expect(confirmationBodies[0].idempotency_key).toBe(
+      confirmationBodies[1].idempotency_key,
+    );
+  });
+
+  it("recovers a broken SSE stream from the authoritative plan", async () => {
+    let stateChange: ((state: "error") => void) | undefined;
+    vi.spyOn(sseClient, "connect").mockImplementation((options) => {
+      stateChange = options.onStateChange as (state: "error") => void;
+      return { cancel: vi.fn(), closed: new Promise<void>(() => {}) };
+    });
+    const generating = { ...plan, status: "generating" as const, draft: null };
+    vi.spyOn(apiClient, "request")
+      .mockResolvedValueOnce(session)
+      .mockResolvedValueOnce({ items: [generating] })
+      .mockResolvedValueOnce(generating)
+      .mockResolvedValueOnce(plan);
+    render(<PlansExperience />);
+    await waitFor(() => expect(stateChange).toBeDefined());
+
+    act(() => stateChange?.("error"));
+    expect(
+      await screen.findByRole("button", { name: "刷新权威状态" }),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "刷新权威状态" }));
+    expect((await screen.findAllByText("海边咖啡")).length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    [
+      "EVENT_NOT_SEARCHABLE",
+      "收藏中没有时间与地点均已确认的 Event；MVP 不会外部搜索活动。",
+    ],
+    [
+      "LOCATION_UNCONFIRMED",
+      "现有收藏的具体地点尚未确认，请先完成地点确认。",
+    ],
+    [
+      "EVENT_TIME_UNKNOWN",
+      "现有 Event 的具体开始和结束时间尚未确认，请先补充准确场次。",
+    ],
+    [
+      "CITY_MISMATCH",
+      "现有收藏位于其他城市，当前计划只会使用已确认的深圳收藏。",
+    ],
+    [
+      "PLAN_PROVIDER_NOT_CONFIGURED",
+      "计划 Provider 尚未配置，未生成替代或伪成功结果。",
+    ],
+  ])(
+    "shows the authoritative %s failure reason instead of a generic success-like state",
+    async (errorCode, expectedMessage) => {
+    bootstrap([
+      {
+        ...plan,
+        status: "failed",
+        draft: null,
+        error_code: errorCode,
+      },
+    ]);
+    render(<PlansExperience />);
+
+    expect(await screen.findByText(expectedMessage)).toBeInTheDocument();
+    expect(screen.queryByText("这一版已确认")).not.toBeInTheDocument();
+    },
+  );
 });

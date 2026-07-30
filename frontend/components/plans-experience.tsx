@@ -2,6 +2,7 @@
 
 import {
   type FormEvent,
+  type MutableRefObject,
   useCallback,
   useEffect,
   useMemo,
@@ -140,6 +141,10 @@ type FeedbackAttempt = {
   fingerprint: string;
   key: string;
 };
+type MutationAttempt = {
+  fingerprint: string;
+  key: string;
+};
 type Phase =
   | "recovering"
   | "editing"
@@ -182,6 +187,54 @@ function messageFor(error: unknown) {
     unauthorized: "会话已过期，请刷新页面。",
   };
   return messages[error.code] ?? "计划暂时没有完成，请稍后重试。";
+}
+
+function failureMessage(errorCode: string | null) {
+  if (errorCode === null) return "";
+  const messages: Record<string, string> = {
+    ADD_COLLECTIONS: "当前没有可用于这次规划的收藏，请先补充并确认地点或活动信息。",
+    CITY_UNCONFIRMED: "收藏的城市尚未确认，请先补充并确认城市。",
+    CITY_MISMATCH: "现有收藏位于其他城市，当前计划只会使用已确认的深圳收藏。",
+    LOCATION_UNCONFIRMED: "现有收藏的具体地点尚未确认，请先完成地点确认。",
+    EVENT_TIME_UNKNOWN: "现有 Event 的具体开始和结束时间尚未确认，请先补充准确场次。",
+    NO_INCLUDED_CANDIDATES: "当前没有符合时间、范围和状态要求的可规划收藏。",
+    COLLECTION_ONLY: "当前只允许使用收藏，但现有收藏无法组成可执行计划。",
+    EVENT_NOT_SEARCHABLE: "收藏中没有时间与地点均已确认的 Event；MVP 不会外部搜索活动。",
+    PLACE_NOT_FOUND: "没有找到可靠的外部地点，请补充收藏或收窄地点要求。",
+    PLACE_AMBIGUOUS: "外部地点仍有多个可能结果，请先确认具体地点。",
+    ROUTE_FACTS_MISSING: "当前无法确认可执行路线，因此没有生成计划。",
+    MAP_TIMEOUT: "地图查询超时，未伪造路线或地点；可稍后重试或只使用收藏。",
+    MAP_RATE_LIMITED: "地图服务当前限流，未伪造计划结果；请稍后重试。",
+    MAP_UNAVAILABLE: "地图服务暂时不可用，未伪造计划结果；请稍后重试。",
+    MAP_INVALID_RESPONSE: "地图结果无法通过校验，未把不可靠地点加入计划。",
+    NO_EXECUTABLE_DRAFT: "已知收藏和路线事实无法组成可执行计划，请调整条件。",
+    NO_EXECUTABLE_OPTION: "没有候选能在当前连续时间和活动范围内完成。",
+    POST_GENERATION_VALIDATION_FAILED: "候选方案未通过硬约束复核，因此没有保存伪成功计划。",
+    PLAN_CONSTRAINTS_EXPIRED: "本次计划条件已经过期，请重新确认时间后生成。",
+    PLAN_ADJUSTMENT_NOT_UNDERSTOOD: "没有理解这次调整，请换一种更明确的说法。",
+    PLAN_ADJUSTMENT_UNSUPPORTED: "暂不支持直接调整精确地点，请新建计划修改活动范围。",
+    STALE_VERSION: "计划版本已经更新，旧任务没有覆盖当前版本。",
+    PROVIDER_TIMEOUT: "计划服务等待超时，未保存伪成功结果。",
+    PROVIDER_AUTHENTICATION_FAILED: "计划服务配置不可用，请稍后再试。",
+    PROVIDER_RATE_LIMITED: "计划服务当前限流，请稍后再试。",
+    PLAN_PROVIDER_NOT_CONFIGURED: "计划 Provider 尚未配置，未生成替代或伪成功结果。",
+    ROUTE_PROVIDER_FAILED: "路线 Provider 暂时失败，无法验证可执行路线。",
+    WEATHER_PROVIDER_FAILED: "天气 Provider 暂时失败，无法验证计划条件。",
+    AVAILABILITY_PROVIDER_FAILED: "营业状态 Provider 暂时失败，无法验证地点可用性。",
+    BRANCH_PROVIDER_FAILED: "分店 Provider 暂时失败，无法确认可执行分店。",
+    RUN_CANCELLED: "计划任务已取消，未保存未完成结果。",
+  };
+  return messages[errorCode] ?? `计划未完成（${errorCode}），未保存伪成功结果。`;
+}
+
+function keyForAttempt(
+  attempt: MutableRefObject<MutationAttempt | null>,
+  fingerprint: string,
+) {
+  if (attempt.current?.fingerprint !== fingerprint) {
+    attempt.current = { fingerprint, key: crypto.randomUUID() };
+  }
+  return attempt.current.key;
 }
 
 function clock(value: string) {
@@ -227,10 +280,14 @@ export function PlansExperience() {
   const [executionBusy, setExecutionBusy] = useState(false);
   const [stage, setStage] = useState("正在读取计划");
   const [dirty, setDirty] = useState(false);
+  const [createRetryAvailable, setCreateRetryAvailable] = useState(false);
   const generation = useRef(0);
   const currentPlanId = useRef<string | null>(null);
   const requestController = useRef<AbortController | null>(null);
   const cancelSse = useRef<(() => void) | null>(null);
+  const createAttempt = useRef<MutationAttempt | null>(null);
+  const adjustmentAttempt = useRef<MutationAttempt | null>(null);
+  const confirmationAttempt = useRef<MutationAttempt | null>(null);
   const feedbackAttempt = useRef<FeedbackAttempt | null>(null);
 
   const readPlan = useCallback(async (path: `/${string}`, owner: number) => {
@@ -246,21 +303,28 @@ export function PlansExperience() {
         authoritative.status === "waiting_approval"
           ? "waiting"
           : authoritative.status === "generating"
-            ? "following"
+            ? "failed"
             : authoritative.status === "failed" ||
                 authoritative.status === "cancelled"
               ? "failed"
               : "ready",
       );
+      if (authoritative.status !== "generating") {
+        createAttempt.current = null;
+        adjustmentAttempt.current = null;
+        setCreateRetryAvailable(false);
+      }
       setFeedback(
-        authoritative.error_code
-          ? "这版计划未能生成。你可以修改条件后重新生成。"
-          : "",
+        authoritative.status === "generating"
+          ? "任务仍在后台处理。刷新权威状态可继续追踪，不会自动重复提交。"
+          : failureMessage(authoritative.error_code),
       );
+      return authoritative;
     } catch (error) {
       if (generation.current !== owner) return;
       setPhase("failed");
       setFeedback(messageFor(error));
+      return undefined;
     }
   }, []);
 
@@ -340,6 +404,8 @@ export function PlansExperience() {
             owner,
           );
         } else {
+          createAttempt.current = null;
+          adjustmentAttempt.current = null;
           setPhase(
             latest.status === "waiting_approval"
               ? "waiting"
@@ -348,9 +414,7 @@ export function PlansExperience() {
                 : "ready",
           );
           setFeedback(
-            latest.error_code
-              ? "这版计划未能生成。你可以修改条件后重新生成。"
-              : "",
+            failureMessage(latest.error_code),
           );
         }
       } catch (error) {
@@ -413,19 +477,23 @@ export function PlansExperience() {
     setStage("正在创建计划任务");
     const controller = new AbortController();
     requestController.current = controller;
+    const fingerprint = JSON.stringify(constraints);
+    const idempotencyKey = keyForAttempt(createAttempt, fingerprint);
     try {
       const accepted = await apiClient.request<Accepted>("/api/v1/plans", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idempotency_key: crypto.randomUUID(), ...constraints }),
+        body: JSON.stringify({ idempotency_key: idempotencyKey, ...constraints }),
         csrfToken: session.csrf_token,
         signal: controller.signal,
       });
       if (generation.current !== owner) return;
+      setCreateRetryAvailable(false);
       setDirty(false);
       follow(accepted, owner);
     } catch (error) {
       if (generation.current !== owner) return;
+      setCreateRetryAvailable(true);
       setPhase("failed");
       setFeedback(messageFor(error));
     } finally {
@@ -439,6 +507,9 @@ export function PlansExperience() {
     const owner = ++generation.current;
     setPhase("submitting");
     setStage("正在创建新版本");
+    const instruction = adjustment.trim();
+    const fingerprint = JSON.stringify({ plan_id: plan.id, instruction });
+    const idempotencyKey = keyForAttempt(adjustmentAttempt, fingerprint);
     try {
       const accepted = await apiClient.request<AdjustmentAccepted>(
         `/api/v1/plans/${plan.id}/adjustments`,
@@ -446,8 +517,8 @@ export function PlansExperience() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            idempotency_key: crypto.randomUUID(),
-            instruction: adjustment.trim(),
+            idempotency_key: idempotencyKey,
+            instruction,
           }),
           csrfToken: session.csrf_token,
         },
@@ -479,13 +550,13 @@ export function PlansExperience() {
               generation.current === owner &&
               errorCode === "PLAN_ADJUSTMENT_UNSUPPORTED"
             ) {
+              adjustmentAttempt.current = null;
               setPhase("ready");
-              setFeedback(
-                "暂不支持直接调整精确地点，请新建计划修改活动范围。",
-              );
+              setFeedback(failureMessage(errorCode));
             } else if (generation.current === owner && errorCode) {
+              adjustmentAttempt.current = null;
               setPhase("ready");
-              setFeedback("这次调整未完成，已保留当前版本，请稍后重试。");
+              setFeedback(failureMessage(errorCode));
             }
           })();
         },
@@ -536,18 +607,23 @@ export function PlansExperience() {
     if (!session || !plan) return;
     const owner = ++generation.current;
     setPhase("submitting");
+    const idempotencyKey = keyForAttempt(
+      confirmationAttempt,
+      JSON.stringify({ plan_id: plan.id }),
+    );
     try {
       const result = await apiClient.request<{ plan: Plan }>(
         `/api/v1/plans/${plan.id}/confirm`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ idempotency_key: crypto.randomUUID() }),
+          body: JSON.stringify({ idempotency_key: idempotencyKey }),
           csrfToken: session.csrf_token,
         },
       );
       if (generation.current !== owner) return;
       currentPlanId.current = result.plan.id;
+      confirmationAttempt.current = null;
       setPlan(result.plan);
       setPhase("ready");
       setFeedback("已确认这一版本。只有已确认计划才可进入后续执行。");
@@ -563,6 +639,8 @@ export function PlansExperience() {
     currentPlanId.current = id;
     requestController.current?.abort();
     cancelSse.current?.();
+    confirmationAttempt.current = null;
+    adjustmentAttempt.current = null;
     setExecutionBusy(false);
     setPhase("recovering");
     await readPlan(`/api/v1/plans/${id}`, owner);
@@ -572,7 +650,7 @@ export function PlansExperience() {
     generation.current += 1;
     requestController.current?.abort();
     cancelSse.current?.();
-    setPhase(plan ? "ready" : "editing");
+    setPhase(plan?.status === "generating" ? "failed" : plan ? "ready" : "editing");
     setFeedback("已停止等待；后台权威状态会在下次进入时恢复。");
   }
 
@@ -581,6 +659,9 @@ export function PlansExperience() {
     currentPlanId.current = null;
     requestController.current?.abort();
     cancelSse.current?.();
+    createAttempt.current = null;
+    adjustmentAttempt.current = null;
+    confirmationAttempt.current = null;
     setExecutionBusy(false);
     setPlan(null);
     setExecution(null);
@@ -588,7 +669,32 @@ export function PlansExperience() {
     setAdjustment("");
     setFeedback("");
     setDirty(false);
+    setCreateRetryAvailable(false);
     setPhase("editing");
+  }
+
+  async function refreshAuthoritativeState() {
+    if (!plan) return;
+    const owner = ++generation.current;
+    requestController.current?.abort();
+    cancelSse.current?.();
+    setPhase("recovering");
+    setStage("正在读取后台权威状态");
+    const authoritative = await readPlan(`/api/v1/plans/${plan.id}`, owner);
+    if (
+      generation.current === owner &&
+      authoritative?.status === "generating"
+    ) {
+      follow(
+        {
+          plan_id: authoritative.id,
+          trace_id: authoritative.trace_id,
+          events_url: authoritative.events_url,
+          result_url: authoritative.result_url,
+        },
+        owner,
+      );
+    }
   }
 
   const option = plan?.draft?.options[optionIndex];
@@ -1111,7 +1217,20 @@ export function PlansExperience() {
 
       {feedback && <p className="plan-feedback" role="status">{feedback}</p>}
       {phase === "failed" && !plan?.draft && (
-        <div className="plan-empty"><h2>这一版没有生成结果</h2><p>{plan && plan.versions.length > 1 ? "可以从上方版本索引返回上一份计划，或新建独立计划。" : "修改条件后可以重新生成；不会自动重试或隐式确认。"}</p><button className="primary-button" type="button" onClick={startNewPlan}>新建计划</button></div>
+        <div className="plan-empty">
+          <h2>这一版没有生成结果</h2>
+          <p>{plan?.status === "generating" ? "后台任务可能仍在处理；先读取权威状态，不会自动重复提交。" : plan && plan.versions.length > 1 ? "可以从上方版本索引返回上一份计划，或新建独立计划。" : "修改条件后可以重新生成；不会自动重试或隐式确认。"}</p>
+          {plan?.status === "generating" ? (
+            <button className="primary-button" type="button" onClick={() => void refreshAuthoritativeState()}>刷新权威状态</button>
+          ) : plan === null && createRetryAvailable ? (
+            <div>
+              <button type="button" onClick={() => setPhase("editing")}>返回修改</button>
+              <button className="primary-button" type="button" onClick={() => void generate()}>重试同一生成请求</button>
+            </div>
+          ) : (
+            <button className="primary-button" type="button" onClick={startNewPlan}>新建计划</button>
+          )}
+        </div>
       )}
     </section>
   );
