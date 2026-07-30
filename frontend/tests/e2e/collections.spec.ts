@@ -37,12 +37,10 @@ const eventItem = {
   title: "深圳周末音乐节",
   event_start_date: "2026-08-02",
   event_end_date: "2026-08-04",
-  event_start_at: "2026-08-02T07:30:00Z",
-  event_end_at: "2026-08-04T12:00:00Z",
-  uncertainties: [
-    { field: "event_start_at", reason: "模型建议需要确认" },
-    { field: "event_end_at", reason: "模型建议需要确认" },
-  ],
+  event_start_at: null,
+  event_end_at: null,
+  missing_fields: ["event_start_at", "event_end_at"],
+  uncertainties: [],
   status: "pending_details",
   planning_exclusion_reason: "event_time_unconfirmed",
 };
@@ -191,14 +189,19 @@ for (const width of [320, 390, 768, 1024, 1440]) {
     const dialog = page.getByRole("dialog");
     const startDate = dialog.getByLabel("活动有效开始日期");
     const endDate = dialog.getByLabel("活动有效结束日期");
+    const sessionDate = dialog.getByLabel("具体场次日期");
     const startTime = dialog.getByLabel("具体开始时间");
     const endTime = dialog.getByLabel("具体结束时间");
     await expect(startDate).toHaveAttribute("type", "date");
     await expect(endDate).toHaveAttribute("type", "date");
+    await expect(sessionDate).toHaveAttribute("type", "date");
+    await expect(sessionDate).toHaveAttribute("min", "2026-08-02");
+    await expect(sessionDate).toHaveAttribute("max", "2026-08-04");
     await expect(startTime).toHaveAttribute("type", "time");
     await expect(endTime).toHaveAttribute("type", "time");
-    await expect(startTime).toHaveValue("15:30");
-    await expect(endTime).toHaveValue("20:00");
+    await expect(sessionDate).toHaveValue("");
+    await expect(startTime).toHaveValue("");
+    await expect(endTime).toHaveValue("");
     expect(
       await page.evaluate(
         () =>
@@ -211,6 +214,14 @@ for (const width of [320, 390, 768, 1024, 1440]) {
     ).toBeFocused();
     await page.keyboard.press("Tab");
     await expect(startDate).toBeFocused();
+    await endDate.focus();
+    await expect(endDate).toBeFocused();
+    await sessionDate.focus();
+    await expect(sessionDate).toBeFocused();
+    await startTime.focus();
+    await expect(startTime).toBeFocused();
+    await endTime.focus();
+    await expect(endTime).toBeFocused();
   });
 }
 
