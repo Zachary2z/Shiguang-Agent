@@ -56,12 +56,26 @@ API `storage=None` 与 Worker 单独构造的运行分叉，以及截图准备�
 缺少或冲突时保守清空时间事实并保留 Event 类型。没有第二套 Candidate、Parser、
 Provider、Runner、迁移、标题特例或日期/时间格式列表。
 
+候选 `d60975814a1d4d0ae35d246bb6e6d44e1babb58d` 的进一步信任边界复验确认：
+`candidate_index`、字段 `value` 和 `quote` 均由同一次模型响应自报，原实现只验证
+片段存在、值等于候选字段以及片段不被两个候选同时占用，因此无时间片段、与值不符
+的日期片段或另一候选的真实时间片段仍可能被错误信任。
+
+生产修复已完成，等待主控复验。模型现在最多定位原文片段；唯一结构输出解析边界使用
+一个集中的确定性时间证据验证器，解析片段内的明确日期和钟点，按
+`Asia/Shanghai` 与规范化 Event 字段逐项核对，并把证据限制在当前候选唯一、精确
+标题所在的原文分句。重复标题、改写标题、值/片段不一致、无时间片段及跨候选交换或
+借用均无法通过，时间字段会保守清空并登记 uncertainty，Event 类型不变。initial
+和唯一 repair 都经由同一 `parse_extraction_response` 边界；临时证据仍在领域 DTO
+前删除，不持久化、不记录日志、不进入公开结果。没有扩充 Prompt、活动关键词、
+标题白名单或样本特例，也没有新增 Candidate、Provider、Runner 或并行抽取流程。
+
 离线验证结果：
 
 - 候选的 pip editable 安装已通过；本轮 `pip check`、Ruff、strict mypy
   （140 个源文件）：退出码均 0；
-- 最新指定 Event/统一输入/检索/计划聚焦集：`235 passed`，退出码 0；
-- 后端非真实全量：`1692 passed, 18 skipped`，退出码 0；
+- 最新指定 Event/API/统一输入/检索/计划聚焦集：`257 passed`，退出码 0；
+- 后端非真实全量：`1697 passed, 18 skipped`，退出码 0；
 - 仓库外 pytest 插件封锁 `getaddrinfo/connect/connect_ex/create_connection` 后，
   本轮语义、统一输入和内容导入聚焦集：`136 passed`，退出码 0；
   首次把插件文件路径直接传给 `-p` 时 pytest 插件加载参数格式错误，退出码 1、

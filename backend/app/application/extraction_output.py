@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from copy import deepcopy
-from typing import Final
+from dataclasses import dataclass
+from datetime import date, datetime, time
+from typing import Final, TypeVar
+from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
@@ -35,6 +39,9 @@ _EVENT_TEMPORAL_FIELDS: Final = (
     CandidateField.EVENT_END_DATE,
     CandidateField.EVENT_START_AT,
     CandidateField.EVENT_END_AT,
+)
+_EVENT_TEMPORAL_FIELD_VALUES: Final = frozenset(
+    field.value for field in _EVENT_TEMPORAL_FIELDS
 )
 _SOURCE_EVIDENCE_PROPERTY: Final = "source_evidence"
 _SOURCE_EVIDENCE_SCHEMA: Final[dict[str, object]] = {
@@ -181,6 +188,33 @@ _IMAGE_PRIVATE_EVIDENCE = re.compile(
     r"[a-z]:\\|[\w .-]+\.(?:png|jpe?g|webp)\b|[A-Za-z0-9+/]{256,}={0,2})",
     re.IGNORECASE,
 )
+_SOURCE_CLAUSE = re.compile(r"[^；;。！？!?\n]+")
+_EXPLICIT_DATE = re.compile(
+    r"(?<!\d)"
+    r"(?P<year>\d{4})\s*(?:年|[-./])\s*"
+    r"(?P<month>\d{1,2})\s*(?:月|[-./])\s*"
+    r"(?P<day>\d{1,2})\s*日?"
+)
+_INHERITED_RANGE_END_DATE = re.compile(
+    r"(?:至|到|[-–—~～])\s*"
+    r"(?P<month>\d{1,2})\s*(?:月|[./])\s*"
+    r"(?P<day>\d{1,2})\s*日?"
+)
+_EXPLICIT_CLOCK = re.compile(
+    r"(?P<period>凌晨|早上|上午|中午|下午|晚上)?\s*"
+    r"(?P<hour>\d{1,2})"
+    r"(?::(?P<colon_minute>\d{2})|点(?:(?P<minute>\d{1,2})分?)?)"
+)
+_SHANGHAI: Final = ZoneInfo("Asia/Shanghai")
+_TemporalValue = TypeVar("_TemporalValue", date, time)
+
+
+@dataclass(frozen=True)
+class _TemporalFacts:
+    """Deterministically parsed temporal facts from one exact source span."""
+
+    dates: tuple[date, ...]
+    clocks: tuple[time, ...]
 
 
 def extraction_result_schema(
@@ -336,7 +370,11 @@ def _supported_temporal_fields(
 ) -> set[tuple[int, str]]:
     if not isinstance(raw_evidence, list):
         return set()
-    claims: dict[tuple[int, str], set[str]] = {}
+    candidate_scopes = _candidate_source_scopes(
+        candidates=candidates,
+        source_text=source_text,
+    )
+    supported: set[tuple[int, str]] = set()
     for evidence in raw_evidence[:32]:
         if not isinstance(evidence, dict) or set(evidence) != {
             "candidate_index",
@@ -354,7 +392,7 @@ def _supported_temporal_fields(
             or isinstance(index, bool)
             or not 0 <= index < len(candidates)
             or not isinstance(field, str)
-            or field not in {item.value for item in _EVENT_TEMPORAL_FIELDS}
+            or field not in _EVENT_TEMPORAL_FIELD_VALUES
             or not isinstance(value, str)
             or not isinstance(quote, str)
             or not 0 < len(quote) <= 200
@@ -365,37 +403,206 @@ def _supported_temporal_fields(
             not isinstance(candidate, dict)
             or candidate.get("kind") != CollectionKind.EVENT
             or candidate.get(field) != value
-            or quote not in source_text
         ):
             continue
-        claims.setdefault((index, quote), set()).add(field)
-
-    supported: set[tuple[int, str]] = set()
-    occupied: list[tuple[int, int, int]] = []
-    for (index, quote), fields in sorted(
-        claims.items(),
-        key=lambda item: (len(item[0][1]), item[0][0], item[0][1]),
-    ):
-        for start in _quote_occurrences(source_text, quote):
-            end = start + len(quote)
-            if any(
-                owner != index and start < occupied_end and occupied_start < end
-                for occupied_start, occupied_end, owner in occupied
-            ):
-                continue
-            occupied.append((start, end, index))
-            supported.update((index, field) for field in fields)
-            break
+        candidate_scope = candidate_scopes.get(index)
+        if candidate_scope is None:
+            continue
+        clause_start, clause_end, clause = candidate_scope
+        if not any(
+            clause_start <= start and start + len(quote) <= clause_end
+            for start in _substring_occurrences(source_text, quote)
+        ):
+            continue
+        if _temporal_quote_supports_field(
+            field=field,
+            value=value,
+            quote=quote,
+            candidate_clause=clause,
+        ):
+            supported.add((index, field))
     return supported
 
 
-def _quote_occurrences(source_text: str, quote: str) -> tuple[int, ...]:
+def _candidate_source_scopes(
+    *,
+    candidates: list[object],
+    source_text: str,
+) -> dict[int, tuple[int, int, str]]:
+    """Bind only exact, unique candidate titles to one unambiguous source clause."""
+
+    title_owners: dict[str, list[int]] = {}
+    for index, candidate in enumerate(candidates):
+        if not isinstance(candidate, dict) or candidate.get("kind") != CollectionKind.EVENT:
+            continue
+        title = candidate.get("title")
+        if isinstance(title, str) and title:
+            title_owners.setdefault(title, []).append(index)
+
+    scopes: dict[int, tuple[int, int, str]] = {}
+    clauses = tuple(
+        (match.start(), match.end(), match.group())
+        for match in _SOURCE_CLAUSE.finditer(source_text)
+    )
+    for title, owners in title_owners.items():
+        title_occurrences = _substring_occurrences(source_text, title)
+        if len(owners) != 1 or len(title_occurrences) != 1:
+            continue
+        title_start = title_occurrences[0]
+        matching_clauses = [
+            clause
+            for clause in clauses
+            if clause[0] <= title_start and title_start + len(title) <= clause[1]
+        ]
+        if len(matching_clauses) != 1:
+            continue
+        clause = matching_clauses[0]
+        if any(
+            other_title != title
+            and any(
+                clause[0] <= start and start + len(other_title) <= clause[1]
+                for start in _substring_occurrences(source_text, other_title)
+            )
+            for other_title in title_owners
+        ):
+            continue
+        scopes[owners[0]] = clause
+    return scopes
+
+
+def _substring_occurrences(source_text: str, value: str) -> tuple[int, ...]:
     occurrences: list[int] = []
     offset = 0
-    while (position := source_text.find(quote, offset)) >= 0:
+    while (position := source_text.find(value, offset)) >= 0:
         occurrences.append(position)
         offset = position + 1
     return tuple(occurrences)
+
+
+def _temporal_quote_supports_field(
+    *,
+    field: str,
+    value: str,
+    quote: str,
+    candidate_clause: str,
+) -> bool:
+    """Verify model-located text against one centralized temporal grammar."""
+
+    quote_facts = _parse_temporal_facts(quote)
+    if field in {
+        CandidateField.EVENT_START_DATE.value,
+        CandidateField.EVENT_END_DATE.value,
+    }:
+        try:
+            expected_date = date.fromisoformat(value)
+        except ValueError:
+            return False
+        return expected_date == _field_temporal_value(
+            quote_facts.dates,
+            is_end=field == CandidateField.EVENT_END_DATE.value,
+        )
+
+    try:
+        expected_datetime = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if expected_datetime.tzinfo is None:
+        return False
+    local_expected = expected_datetime.astimezone(_SHANGHAI)
+    is_end = field == CandidateField.EVENT_END_AT.value
+    expected_clock = _field_temporal_value(quote_facts.clocks, is_end=is_end)
+    if local_expected.timetz().replace(tzinfo=None) != expected_clock:
+        return False
+
+    date_facts = quote_facts.dates
+    if not date_facts:
+        date_facts = _parse_temporal_facts(candidate_clause).dates
+    return local_expected.date() == _field_temporal_value(date_facts, is_end=is_end)
+
+
+def _field_temporal_value(
+    values: tuple[_TemporalValue, ...],
+    *,
+    is_end: bool,
+) -> _TemporalValue | None:
+    if not values:
+        return None
+    return values[-1] if is_end else values[0]
+
+
+def _parse_temporal_facts(value: str) -> _TemporalFacts:
+    """Parse the one accepted source-date/clock grammar without model assistance."""
+
+    dated_spans: list[tuple[int, date]] = []
+    for match in _EXPLICIT_DATE.finditer(value):
+        parsed = _safe_date(
+            year=int(match.group("year")),
+            month=int(match.group("month")),
+            day=int(match.group("day")),
+        )
+        if parsed is None:
+            continue
+        dated_spans.append((match.start(), parsed))
+        range_match = _INHERITED_RANGE_END_DATE.match(value, match.end())
+        if range_match is None:
+            continue
+        range_end = _safe_date(
+            year=parsed.year,
+            month=int(range_match.group("month")),
+            day=int(range_match.group("day")),
+        )
+        if range_end is not None:
+            dated_spans.append((range_match.start(), range_end))
+
+    clock_spans: list[tuple[int, time]] = []
+    for match in _EXPLICIT_CLOCK.finditer(value):
+        parsed_clock = _safe_clock(
+            period=match.group("period"),
+            hour=int(match.group("hour")),
+            minute=int(match.group("colon_minute") or match.group("minute") or 0),
+        )
+        if parsed_clock is not None:
+            clock_spans.append((match.start(), parsed_clock))
+    return _TemporalFacts(
+        dates=_ordered_unique(item for _, item in sorted(dated_spans)),
+        clocks=_ordered_unique(item for _, item in sorted(clock_spans)),
+    )
+
+
+def _safe_date(*, year: int, month: int, day: int) -> date | None:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def _safe_clock(*, period: str | None, hour: int, minute: int) -> time | None:
+    if not 0 <= minute <= 59:
+        return None
+    if period is None:
+        if not 0 <= hour <= 23:
+            return None
+    elif period in {"凌晨", "早上", "上午"}:
+        if not 1 <= hour <= 12:
+            return None
+        if hour == 12:
+            hour = 0
+    else:
+        if not 1 <= hour <= 12:
+            return None
+        if hour < 12:
+            hour += 12
+    return time(hour, minute)
+
+
+def _ordered_unique(
+    values: Iterable[_TemporalValue],
+) -> tuple[_TemporalValue, ...]:
+    result: list[_TemporalValue] = []
+    for value in values:
+        if value not in result:
+            result.append(value)
+    return tuple(result)
 
 
 def _clear_unsupported_temporal_fields(

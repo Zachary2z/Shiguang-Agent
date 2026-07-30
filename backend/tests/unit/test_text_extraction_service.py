@@ -27,6 +27,7 @@ from app.application.text_extraction import (
 )
 from app.domain.collections import (
     CandidateField,
+    CollectionKind,
     EventCandidate,
     ExtractionOutcome,
     ExtractionReasonCode,
@@ -180,10 +181,11 @@ def _result_response_with_evidence(
 @pytest.mark.asyncio
 async def test_date_only_text_extraction_preserves_calendar_dates_without_midnight() -> None:
     result_payload = ExtractionResult.with_candidates((_date_only_event(),))
+    source = "夏季展览展期：2026.6.13–7.31"
     response = _result_response_with_evidence(
         result_payload,
-        (0, CandidateField.EVENT_START_DATE, "2026.6.13–7.31"),
-        (0, CandidateField.EVENT_END_DATE, "2026.6.13–7.31"),
+        (0, CandidateField.EVENT_START_DATE, source),
+        (0, CandidateField.EVENT_END_DATE, source),
     )
     provider = FakeProvider(
         [
@@ -193,8 +195,8 @@ async def test_date_only_text_extraction_preserves_calendar_dates_without_midnig
     )
     service = TextExtractionService(provider)
 
-    first = await service.extract("展期：2026.6.13–7.31")
-    second = await service.extract("展期：2026.6.13–7.31")
+    first = await service.extract(source)
+    second = await service.extract(source)
 
     assert first == second
     candidate = first.candidates[0]
@@ -414,12 +416,13 @@ async def test_explicit_year_keeps_date_but_no_time_evidence_clears_exact_timest
 async def test_legitimate_event_identity_does_not_depend_on_keyword_allowlist(
     title: str,
 ) -> None:
+    china = timezone(timedelta(hours=8))
     modeled = EventCandidate(
         **_candidate_fields_for_temporal_test(title=title),
         event_start_date=date(2026, 8, 2),
         event_end_date=date(2026, 8, 2),
-        event_start_at=datetime(2026, 8, 2, 14, 0, tzinfo=UTC),
-        event_end_at=datetime(2026, 8, 2, 17, 0, tzinfo=UTC),
+        event_start_at=datetime(2026, 8, 2, 14, 0, tzinfo=china),
+        event_end_at=datetime(2026, 8, 2, 17, 0, tzinfo=china),
     )
     provider = FakeProvider(
         [
@@ -489,19 +492,20 @@ async def test_one_candidates_year_cannot_authorize_another_candidates_date() ->
 
 @pytest.mark.asyncio
 async def test_multiple_events_bind_their_distinct_dates_and_times() -> None:
+    china = timezone(timedelta(hours=8))
     first = EventCandidate(
         **_candidate_fields_for_temporal_test(title="海边演出"),
         event_start_date=date(2026, 8, 2),
         event_end_date=date(2026, 8, 2),
-        event_start_at=datetime(2026, 8, 2, 14, 0, tzinfo=UTC),
-        event_end_at=datetime(2026, 8, 2, 16, 0, tzinfo=UTC),
+        event_start_at=datetime(2026, 8, 2, 14, 0, tzinfo=china),
+        event_end_at=datetime(2026, 8, 2, 16, 0, tzinfo=china),
     )
     second = EventCandidate(
         **_candidate_fields_for_temporal_test(title="城市聚会"),
         event_start_date=date(2027, 9, 6),
         event_end_date=date(2027, 9, 6),
-        event_start_at=datetime(2027, 9, 6, 10, 30, tzinfo=UTC),
-        event_end_at=datetime(2027, 9, 6, 12, 30, tzinfo=UTC),
+        event_start_at=datetime(2027, 9, 6, 10, 30, tzinfo=china),
+        event_end_at=datetime(2027, 9, 6, 12, 30, tzinfo=china),
     )
     provider = FakeProvider(
         [
@@ -630,7 +634,7 @@ async def test_dates_before_each_event_bind_to_their_own_candidate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_repeated_titles_use_distinct_candidate_evidence_spans() -> None:
+async def test_repeated_titles_are_conservative_when_candidate_ownership_is_ambiguous() -> None:
     first = EventCandidate(
         **_candidate_fields_for_temporal_test(title="城市聚会"),
         event_start_date=date(2026, 8, 2),
@@ -660,11 +664,18 @@ async def test_repeated_titles_use_distinct_candidate_evidence_spans() -> None:
         f"{first_quote}；{second_quote}"
     )
 
-    assert result.candidates == (first, second)
+    for candidate in result.candidates:
+        assert isinstance(candidate, EventCandidate)
+        assert candidate.event_start_date is None
+        assert candidate.event_end_date is None
+        assert {item.field for item in candidate.uncertainties} >= {
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
+        }
 
 
 @pytest.mark.asyncio
-async def test_rewritten_model_title_keeps_exact_field_evidence() -> None:
+async def test_rewritten_model_title_is_conservative_without_reliable_ownership() -> None:
     event = EventCandidate(
         **_candidate_fields_for_temporal_test(title="海边现场演出"),
         event_start_date=date(2026, 8, 2),
@@ -683,7 +694,11 @@ async def test_rewritten_model_title_keeps_exact_field_evidence() -> None:
 
     result = await TextExtractionService(FakeProvider([response])).extract(source)
 
-    assert result.candidates == (event,)
+    candidate = result.candidates[0]
+    assert isinstance(candidate, EventCandidate)
+    assert candidate.event_start_date is None
+    assert candidate.event_end_date is None
+    assert candidate.kind is event.kind
 
 
 @pytest.mark.asyncio
@@ -725,6 +740,174 @@ async def test_other_candidates_evidence_cannot_preserve_unsupported_time_facts(
     assert second.event_start_date == date(2027, 9, 6)
     assert second.event_end_date == date(2027, 9, 6)
     assert first.kind is second.kind
+
+
+@pytest.mark.asyncio
+async def test_non_temporal_quote_cannot_preserve_fabricated_event_schedule() -> None:
+    china = timezone(timedelta(hours=8))
+    fabricated = EventCandidate(
+        **_candidate_fields_for_temporal_test(title="海边演出"),
+        event_start_date=date(2026, 8, 2),
+        event_end_date=date(2026, 8, 2),
+        event_start_at=datetime(2026, 8, 2, 15, 0, tzinfo=china),
+        event_end_at=datetime(2026, 8, 2, 17, 0, tzinfo=china),
+    )
+    response = _result_response_with_evidence(
+        ExtractionResult.with_candidates((fabricated,)),
+        (0, CandidateField.EVENT_START_DATE, "海边演出"),
+        (0, CandidateField.EVENT_END_DATE, "海边演出"),
+        (0, CandidateField.EVENT_START_AT, "海边演出"),
+        (0, CandidateField.EVENT_END_AT, "海边演出"),
+    )
+
+    result = await TextExtractionService(FakeProvider([response])).extract(
+        "收藏海边演出"
+    )
+
+    candidate = result.candidates[0]
+    assert isinstance(candidate, EventCandidate)
+    assert candidate.kind is CollectionKind.EVENT
+    assert candidate.event_start_date is None
+    assert candidate.event_end_date is None
+    assert candidate.event_start_at is None
+    assert candidate.event_end_at is None
+
+
+@pytest.mark.asyncio
+async def test_existing_quote_with_mismatched_date_value_is_rejected() -> None:
+    modeled = EventCandidate(
+        **_candidate_fields_for_temporal_test(title="海边演出"),
+        event_start_date=date(2026, 8, 2),
+        event_end_date=date(2026, 8, 2),
+        missing_fields=(
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
+    )
+    source = "海边演出定于2027年9月6日"
+    response = _result_response_with_evidence(
+        ExtractionResult.with_candidates((modeled,)),
+        (0, CandidateField.EVENT_START_DATE, source),
+        (0, CandidateField.EVENT_END_DATE, source),
+    )
+
+    result = await TextExtractionService(FakeProvider([response])).extract(source)
+
+    candidate = result.candidates[0]
+    assert isinstance(candidate, EventCandidate)
+    assert candidate.event_start_date is None
+    assert candidate.event_end_date is None
+
+
+@pytest.mark.asyncio
+async def test_swapped_candidate_values_and_quotes_fail_source_ownership() -> None:
+    first = EventCandidate(
+        **_candidate_fields_for_temporal_test(title="海边演出"),
+        event_start_date=date(2027, 9, 6),
+        event_end_date=date(2027, 9, 6),
+        missing_fields=(
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
+    )
+    second = EventCandidate(
+        **_candidate_fields_for_temporal_test(title="城市聚会"),
+        event_start_date=date(2026, 8, 2),
+        event_end_date=date(2026, 8, 2),
+        missing_fields=(
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
+    )
+    first_source = "2026年8月2日海边演出"
+    second_source = "2027年9月6日城市聚会"
+    response = _result_response_with_evidence(
+        ExtractionResult.with_candidates((first, second)),
+        (0, CandidateField.EVENT_START_DATE, second_source),
+        (0, CandidateField.EVENT_END_DATE, second_source),
+        (1, CandidateField.EVENT_START_DATE, first_source),
+        (1, CandidateField.EVENT_END_DATE, first_source),
+    )
+
+    result = await TextExtractionService(FakeProvider([response])).extract(
+        f"{first_source}；{second_source}"
+    )
+
+    for candidate in result.candidates:
+        assert isinstance(candidate, EventCandidate)
+        assert candidate.event_start_date is None
+        assert candidate.event_end_date is None
+
+
+@pytest.mark.asyncio
+async def test_one_candidate_cannot_claim_another_candidates_clock_evidence() -> None:
+    china = timezone(timedelta(hours=8))
+    fabricated = EventCandidate(
+        **_candidate_fields_for_temporal_test(title="海边演出"),
+        event_start_date=date(2027, 9, 6),
+        event_end_date=date(2027, 9, 6),
+        event_start_at=datetime(2027, 9, 6, 15, 0, tzinfo=china),
+        event_end_at=datetime(2027, 9, 6, 17, 0, tzinfo=china),
+    )
+    actual = fabricated.model_copy(
+        update={"title": "城市聚会"}
+    )
+    first_source = "海边演出时间待定"
+    second_source = "城市聚会在2027年9月6日下午3点至5点"
+    response = _result_response_with_evidence(
+        ExtractionResult.with_candidates((fabricated, actual)),
+        (0, CandidateField.EVENT_START_DATE, second_source),
+        (0, CandidateField.EVENT_END_DATE, second_source),
+        (0, CandidateField.EVENT_START_AT, second_source),
+        (0, CandidateField.EVENT_END_AT, second_source),
+        (1, CandidateField.EVENT_START_DATE, second_source),
+        (1, CandidateField.EVENT_END_DATE, second_source),
+        (1, CandidateField.EVENT_START_AT, second_source),
+        (1, CandidateField.EVENT_END_AT, second_source),
+    )
+
+    result = await TextExtractionService(FakeProvider([response])).extract(
+        f"{first_source}；{second_source}"
+    )
+
+    first, second = result.candidates
+    assert isinstance(first, EventCandidate)
+    assert first.event_start_date is None
+    assert first.event_start_at is None
+    assert isinstance(second, EventCandidate)
+    assert second.event_start_date == date(2027, 9, 6)
+    assert second.event_start_at == datetime(2027, 9, 6, 7, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_initial_and_single_repair_share_the_same_temporal_trust_boundary() -> None:
+    fabricated = EventCandidate(
+        **_candidate_fields_for_temporal_test(title="海边演出"),
+        event_start_date=date(2026, 8, 2),
+        event_end_date=date(2026, 8, 2),
+        missing_fields=(
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
+    )
+    malicious = _result_response_with_evidence(
+        ExtractionResult.with_candidates((fabricated,)),
+        (0, CandidateField.EVENT_START_DATE, "海边演出"),
+        (0, CandidateField.EVENT_END_DATE, "海边演出"),
+    )
+    initial_provider = FakeProvider([malicious])
+    repair_provider = FakeProvider([fake_response(content="{"), malicious])
+
+    initial = await TextExtractionService(initial_provider).extract("收藏海边演出")
+    repaired = await TextExtractionService(repair_provider).extract("收藏海边演出")
+
+    assert initial == repaired
+    assert len(initial_provider.calls) == 1
+    assert len(repair_provider.calls) == 2
+    candidate = repaired.candidates[0]
+    assert isinstance(candidate, EventCandidate)
+    assert candidate.event_start_date is None
+    assert "source_evidence" not in repaired.model_dump_json()
 
 
 @pytest.mark.asyncio

@@ -139,7 +139,7 @@ def _date_only_text_response():
     payload = json.loads(
         ExtractionResult.with_candidates((_date_only_event(),)).model_dump_json()
     )
-    quote = "展期：2026.6.13–7.31"
+    quote = "夏季展览展期：2026.6.13–7.31"
     payload["source_evidence"] = [
         {
             "candidate_index": 0,
@@ -663,7 +663,7 @@ async def test_date_only_event_api_serializes_modifies_and_clears_calendar_dates
             client,
             session_id,
             key="date-only-api",
-            content="展期：2026.6.13–7.31",
+            content="夏季展览展期：2026.6.13–7.31",
         )
         item = created.json()["collections"][0]
         changed = await client.patch(
