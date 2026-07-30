@@ -130,6 +130,29 @@ M2-0”的结论只保留为历史验收记录，不再代表当前 Gate 状态�
   P2 仍为 npm 开发依赖 audit 和跨浏览器覆盖限制。状态只到“待主控验收”，M1
   未重新关闭。
 
+## 2026-07-30｜M1-Gate 稳定化修复 1｜等待主控验收
+
+- 分支：`codex/m1-gate-provider-runtime-wiring`；提交随本记录创建，完整 SHA 见
+  开发窗口最终交接。
+- 运行配置接线修复完成，等待主控验收。`compose.yaml` 现以逐项白名单方式向 API
+  和 Worker 一致透传既有模型配置、模型价格/结构输出配置、Agent 运行上限及高德
+  配置；未使用宽泛 `env_file`，未新增 Settings、Provider 工厂或配置加载器。
+- 可选配置未设置或留空时不会让空字符串进入 Settings，模型与高德 Provider 保持
+  未配置，API、Worker 和两套 PostgreSQL 均正常启动；提供仓库外非敏感占位配置
+  时，两进程均通过 timeout、structured output、价格、重试和 Provider 构造断言，
+  API 既有计划地图配置门禁可用。启动和健康检查不发送外部请求。
+- `RUN_REAL_MODEL_TESTS` 和 `RUN_REAL_MAP_TESTS` 在 API、Worker 中继续固定为 `0`。
+  本轮真实模型、高德、网页或其他外部 API 调用为 0；未读取本机 `.env`，未打印
+  Compose 展开配置或容器完整环境，未把密钥写入镜像、代码、文档、测试或 Git。
+- 验证：`pip check`、Ruff、strict mypy（140 个源文件）均通过；
+  `tests/test_config.py` 为 `131 passed`；非真实 Provider/Map 全集为
+  `1692 passed, 16 skipped, 2 deselected`。空配置和假配置均使用独立 Compose
+  project、独立端口和临时 volume；四服务 healthy、`/healthz` 为 200、restart
+  count 为 0，随后正常关闭并只清理本任务容器、镜像、网络、volume 和 `/tmp`
+  文件。
+- M1-Gate 继续保持打开，本窗口不宣布 M1 重新关闭；M2-0 继续保持未开始且阻塞。
+  下一项仍为地点确认闭环修复，本窗口未开始地点修复或 M2。
+
 ## 历史验收摘要（不代表当前 Gate 状态）
 
 M0-0A 至 M0-5D、M0-Gate、Event 日期粒度和富输入截止策略均已通过主控验收，M0

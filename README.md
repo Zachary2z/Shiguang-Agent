@@ -264,6 +264,15 @@ curl -i http://127.0.0.1:8000/healthz
 API 等两套 PostgreSQL 健康后分别执行迁移并启动既有 `app.main:app`；Worker 再等
 API 健康后从正式 PostgreSQL 队列领取任务。API 和 Worker 都继承 Dockerfile 的
 非 root 用户。
+
+Compose 只把配置表中的 `MODEL_*`、`AGENT_MAX_TOOL_CALLS`、
+`AGENT_TIMEOUT_SECONDS` 和 `AMAP_*` 逐项白名单透传给 API 与 Worker，不使用宽泛
+的 `env_file`。未设置或留空的可选变量不会以空字符串进入应用配置，两个 Provider
+因而保持未配置；在本机 `.env` 或启动 Compose 的 shell 中设置这些变量后，两服务
+会获得一致配置。
+`RUN_REAL_MODEL_TESTS` 与 `RUN_REAL_MAP_TESTS` 始终由 Compose 固定为 `0`，配置存在
+只允许构造 Provider，不会在启动或健康检查阶段发送外部请求。
+
 如需验证两个 Worker 竞争，可临时扩容：
 
 ```bash

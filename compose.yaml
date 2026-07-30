@@ -41,19 +41,45 @@ services:
       - sh
       - -c
       - >-
+        for variable_name in
+        MODEL_API_BASE MODEL_API_KEY MODEL_NAME MODEL_TIMEOUT_SECONDS
+        MODEL_STRUCTURED_OUTPUT_MODE MODEL_INPUT_PRICE_PER_MILLION_TOKENS
+        MODEL_OUTPUT_PRICE_PER_MILLION_TOKENS MODEL_COST_CURRENCY
+        MODEL_PRICING_SOURCE AGENT_MAX_TOOL_CALLS AGENT_TIMEOUT_SECONDS
+        AMAP_API_KEY AMAP_BASE_URL AMAP_TIMEOUT_SECONDS AMAP_MAX_RETRIES
+        AMAP_RETRY_AFTER_MAX_SECONDS;
+        do
+        if [ -z "$$(printenv "$$variable_name")" ]; then unset "$$variable_name"; fi;
+        done &&
         python -m alembic upgrade head &&
         DATABASE_URL="$$DEMO_DATABASE_URL" python -m alembic upgrade head &&
         exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
-      APP_ENV: development
-      DATABASE_URL: postgresql+asyncpg://shiguang:${POSTGRES_PASSWORD:-shiguang-local-only}@postgres:5432/shiguang
-      DEMO_DATABASE_URL: postgresql+asyncpg://shiguang:${DEMO_POSTGRES_PASSWORD:-shiguang-demo-local-only}@demo-postgres:5432/shiguang_demo
-      DEMO_ENABLED: "1"
-      WEB_SESSION_COOKIE_SECURE: "0"
-      DEMO_STORAGE_PRIVATE_ROOT: /app/data/demo-private
-      LOG_LEVEL: INFO
-      RUN_REAL_MODEL_TESTS: "0"
-      RUN_REAL_MAP_TESTS: "0"
+      - APP_ENV=development
+      - DATABASE_URL=postgresql+asyncpg://shiguang:${POSTGRES_PASSWORD:-shiguang-local-only}@postgres:5432/shiguang
+      - DEMO_DATABASE_URL=postgresql+asyncpg://shiguang:${DEMO_POSTGRES_PASSWORD:-shiguang-demo-local-only}@demo-postgres:5432/shiguang_demo
+      - DEMO_ENABLED=1
+      - WEB_SESSION_COOKIE_SECURE=0
+      - DEMO_STORAGE_PRIVATE_ROOT=/app/data/demo-private
+      - LOG_LEVEL=INFO
+      - MODEL_API_BASE
+      - MODEL_API_KEY
+      - MODEL_NAME
+      - MODEL_TIMEOUT_SECONDS
+      - MODEL_STRUCTURED_OUTPUT_MODE
+      - MODEL_INPUT_PRICE_PER_MILLION_TOKENS
+      - MODEL_OUTPUT_PRICE_PER_MILLION_TOKENS
+      - MODEL_COST_CURRENCY
+      - MODEL_PRICING_SOURCE
+      - AGENT_MAX_TOOL_CALLS
+      - AGENT_TIMEOUT_SECONDS
+      - AMAP_API_KEY
+      - AMAP_BASE_URL
+      - AMAP_TIMEOUT_SECONDS
+      - AMAP_MAX_RETRIES
+      - AMAP_RETRY_AFTER_MAX_SECONDS
+      - RUN_REAL_MODEL_TESTS=0
+      - RUN_REAL_MAP_TESTS=0
     volumes:
       - private-data:/app/data
     depends_on:
@@ -81,16 +107,46 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["python", "-m", "app.worker"]
+    command:
+      - sh
+      - -c
+      - >-
+        for variable_name in
+        MODEL_API_BASE MODEL_API_KEY MODEL_NAME MODEL_TIMEOUT_SECONDS
+        MODEL_STRUCTURED_OUTPUT_MODE MODEL_INPUT_PRICE_PER_MILLION_TOKENS
+        MODEL_OUTPUT_PRICE_PER_MILLION_TOKENS MODEL_COST_CURRENCY
+        MODEL_PRICING_SOURCE AGENT_MAX_TOOL_CALLS AGENT_TIMEOUT_SECONDS
+        AMAP_API_KEY AMAP_BASE_URL AMAP_TIMEOUT_SECONDS AMAP_MAX_RETRIES
+        AMAP_RETRY_AFTER_MAX_SECONDS;
+        do
+        if [ -z "$$(printenv "$$variable_name")" ]; then unset "$$variable_name"; fi;
+        done &&
+        exec python -m app.worker
     environment:
-      APP_ENV: development
-      DATABASE_URL: postgresql+asyncpg://shiguang:${POSTGRES_PASSWORD:-shiguang-local-only}@postgres:5432/shiguang
-      DEMO_DATABASE_URL: postgresql+asyncpg://shiguang:${DEMO_POSTGRES_PASSWORD:-shiguang-demo-local-only}@demo-postgres:5432/shiguang_demo
-      LOG_LEVEL: INFO
-      WORKER_POLL_SECONDS: "1"
-      RUN_REAL_MODEL_TESTS: "0"
-      RUN_REAL_MAP_TESTS: "0"
-      DEMO_STORAGE_PRIVATE_ROOT: /app/data/demo-private
+      - APP_ENV=development
+      - DATABASE_URL=postgresql+asyncpg://shiguang:${POSTGRES_PASSWORD:-shiguang-local-only}@postgres:5432/shiguang
+      - DEMO_DATABASE_URL=postgresql+asyncpg://shiguang:${DEMO_POSTGRES_PASSWORD:-shiguang-demo-local-only}@demo-postgres:5432/shiguang_demo
+      - LOG_LEVEL=INFO
+      - WORKER_POLL_SECONDS=1
+      - DEMO_STORAGE_PRIVATE_ROOT=/app/data/demo-private
+      - MODEL_API_BASE
+      - MODEL_API_KEY
+      - MODEL_NAME
+      - MODEL_TIMEOUT_SECONDS
+      - MODEL_STRUCTURED_OUTPUT_MODE
+      - MODEL_INPUT_PRICE_PER_MILLION_TOKENS
+      - MODEL_OUTPUT_PRICE_PER_MILLION_TOKENS
+      - MODEL_COST_CURRENCY
+      - MODEL_PRICING_SOURCE
+      - AGENT_MAX_TOOL_CALLS
+      - AGENT_TIMEOUT_SECONDS
+      - AMAP_API_KEY
+      - AMAP_BASE_URL
+      - AMAP_TIMEOUT_SECONDS
+      - AMAP_MAX_RETRIES
+      - AMAP_RETRY_AFTER_MAX_SECONDS
+      - RUN_REAL_MODEL_TESTS=0
+      - RUN_REAL_MAP_TESTS=0
     volumes:
       - private-data:/app/data
     depends_on:
