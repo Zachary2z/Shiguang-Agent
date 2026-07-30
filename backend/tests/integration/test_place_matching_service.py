@@ -108,6 +108,66 @@ async def test_service_returns_unique_high_confidence_match() -> None:
 
 
 @pytest.mark.asyncio
+async def test_exact_name_district_and_public_address_meet_default_reliability() -> None:
+    request = _request(
+        title="深圳当代艺术与城市规划馆",
+        city_hint="深圳",
+        district="福田区",
+        address="福中路184号",
+    )
+    provider = _provider_for_request(
+        request,
+        PoiSearchResult(
+            city_code="shenzhen",
+            pois=(
+                poi(
+                    poi_id="exact_public_address",
+                    name="深圳当代艺术与城市规划馆",
+                    district="福田区",
+                    address="福中路184号",
+                    poi_type=PoiType.MUSEUM,
+                ),
+            ),
+        ),
+    )
+
+    result = await _service(provider).match(request)
+
+    assert result.status is MatchStatus.MATCHED
+    assert len(result.candidates) == 1
+    assert result.candidates[0].score >= POLICY.unique_match_score
+
+
+@pytest.mark.asyncio
+async def test_name_and_city_start_search_without_auto_confirming_weak_evidence() -> None:
+    calls: list[object] = []
+
+    async def record_call(request: object) -> None:
+        calls.append(request)
+
+    request = _request(
+        title="深圳莲花山公园",
+        city_hint="深圳",
+    )
+    park = poi(
+        poi_id="lianhuashan",
+        name="深圳莲花山公园",
+        poi_type=PoiType.PARK,
+    )
+    provider = _provider_for_request(
+        request,
+        PoiSearchResult(city_code="shenzhen", pois=(park,)),
+        call_hook=record_call,
+    )
+
+    result = await _service(provider).match(request)
+
+    assert len(calls) == 1
+    assert result.status is MatchStatus.NEEDS_CONTEXT
+    assert tuple(candidate.poi_id for candidate in result.candidates) == ("lianhuashan",)
+
+
+@pytest.mark.asyncio
 async def test_empty_provider_result_becomes_not_found() -> None:
     request = _request(title="地图未收录地点")
 

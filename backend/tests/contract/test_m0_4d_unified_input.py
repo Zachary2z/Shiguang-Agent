@@ -417,6 +417,91 @@ async def test_text_url_and_image_share_one_result_and_collection_mapping(
 
 
 @pytest.mark.asyncio
+async def test_text_url_and_image_first_place_save_use_one_matching_entry(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider([_response(), _response(), _response()])
+    web = StubWebProvider(_web_success())
+    calls: list[SearchPoiRequest] = []
+
+    async def record_call(request: object) -> None:
+        assert isinstance(request, SearchPoiRequest)
+        calls.append(request)
+
+    search = SearchPoiRequest(
+        query="深圳当代艺术与城市规划馆",
+        city=CityScope(city_code="shenzhen"),
+        district="福田区",
+    )
+    poi = Poi(
+        provider=PoiProvider.AMAP,
+        poi_id="first-save-place",
+        name="深圳当代艺术与城市规划馆",
+        city_code="shenzhen",
+        district="福田区",
+        business_area="市民中心",
+        address="福中路184号",
+        coordinate=Coordinate(
+            latitude=22.541,
+            longitude=114.057,
+            coordinate_system=CoordinateSystem.GCJ_02,
+        ),
+        poi_type=PoiType.MUSEUM,
+    )
+    map_provider = StubMapProvider(
+        search_results={
+            search: PoiSearchResult(city_code="shenzhen", pois=(poi,))
+        },
+        call_hook=record_call,
+    )
+
+    async with _client(
+        test_settings,
+        provider,
+        web=web,
+        map_provider=map_provider,
+    ) as (_api, client, _storage):
+        session_id = await _demo(client)
+        path = f"/api/v1/sessions/{session_id}/messages"
+        requests = (
+            {
+                "json": {
+                    "type": "text",
+                    "idempotency_key": "first-save-text",
+                    "text": "收藏一下深圳当代艺术与城市规划馆",
+                }
+            },
+            {
+                "json": {
+                    "type": "url",
+                    "idempotency_key": "first-save-url",
+                    "url": "https://example.com/article?a=1&b=2",
+                }
+            },
+            {
+                "content": PNG_SCREENSHOT,
+                "headers": {
+                    "Content-Type": "image/png",
+                    "Idempotency-Key": "first-save-image",
+                },
+            },
+        )
+        results = [await client.post(path, **request) for request in requests]
+        replays = [await client.post(path, **request) for request in requests]
+
+    assert all(result.status_code == 200 for result in results)
+    statuses = [result.json()["collections"][0]["status"] for result in results]
+    assert statuses == ["active", "active", "active"]
+    assert all(
+        result.json()["collections"][0]["planning_eligible"] is True
+        for result in results
+    )
+    assert all(replay.status_code == 200 for replay in replays)
+    assert all(replay.json()["replayed"] is True for replay in replays)
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
 async def test_text_url_and_image_share_event_time_confirmation_boundary(
     test_settings: Settings,
 ) -> None:

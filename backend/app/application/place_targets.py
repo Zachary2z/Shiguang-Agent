@@ -103,6 +103,17 @@ class PlaceTargetSelectionService:
                         original_item_id=item.id,
                         target_item_id=existing.id,
                     )
+                    write_operation = await self._repository.get_write_operation_for_item(
+                        user_id=owner,
+                        collection_item_id=item.id,
+                    )
+                    if write_operation is not None:
+                        await self._repository.replace_write_operation_item(
+                            user_id=owner,
+                            operation_id=write_operation.id,
+                            original_item_id=item.id,
+                            target_item_id=existing.id,
+                        )
                     await self._repository.delete_collection_item(
                         user_id=owner,
                         collection_item_id=item.id,

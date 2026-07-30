@@ -307,7 +307,7 @@ class ContentImportJobHandler:
         self._storage = storage
         self._storage_config = storage_config
         self._structured_output_mode = structured_output_mode
-        self._event_place_matching = (
+        self._place_matching = (
             None
             if map_provider is None or matching_policy is None
             else PlaceMatchingService(
@@ -343,7 +343,7 @@ class ContentImportJobHandler:
                     storage=self._storage,
                     storage_config=self._storage_config,
                     structured_output_mode=self._structured_output_mode,
-                    event_place_matching=self._event_place_matching,
+                    place_matching=self._place_matching,
                 ).submit_input(
                     user_id=job.user_id,
                     session_id=payload.session_id,

@@ -1,5 +1,44 @@
 # M1-Gate 核心闭环验收报告
 
+## 2026-07-31 M1-Gate 地点确认修复 1
+
+地点确认修复 1 已开发完成，等待主控验收；M1-Gate 继续打开，M2-0 未开始且阻塞。
+本轮没有处理移动端详情遮挡、SSE 或运行配置，也没有开始 M2。
+
+离线回归确认首次收藏链路此前只对 Event 调用地点确认，Place 保存后不会进入地图
+搜索；同时默认可靠阈值保持 75 分，但旧权重让非分店地点的全部持久化地点证据最高
+仍不足 75，因而稳定得到 `needs_context`。修复将首次 Place/Event 统一收敛到唯一
+`CollectionWriteService → PlaceMatchingService → PlaceTargetSelectionService`，
+并在不降低 75 分阈值、12 分差距或 35 分候选阈值的前提下，将权重集中到精确名称、
+行政区和公开地址。精确三项可达到可靠阈值；部分地址、同名跨区、分店冲突、城市冲突
+和模糊候选继续保持安全待确认。
+
+状态语义保持唯一：可靠唯一 Place 自动建立 exact Amap/GCJ-02 `PlaceTarget` 并进入
+`active`；多个可靠候选进入 `pending_selection`，最多 3 个；无结果、超时、取消或
+安全 Provider 失败不产生伪目标。无城市线索只使用深圳搜索范围，不写入伪正式城市。
+Event 共用同一入口但仍禁止自动 exact，必须由用户选择；准确时间确认规则未变。
+`price/tags` 不阻塞地点确认或计划资格。首次保存最多一次搜索，幂等回放和等价值
+PATCH 为 0，地点身份实际变化只重匹配一次。自动匹配合并已有正式 POI 后，写操作
+关联同步迁移到权威收藏，回放不再暴露已删除中间项。
+
+验证结果：
+
+- `pip check`、Ruff、strict mypy（140 个源文件）：通过；
+- 用户指定后端聚焦集：`190 passed`；
+- 非真实 Provider/Map 全集：`1720 passed, 16 skipped, 2 deselected`；
+- 仓库外 pytest 插件封锁 `getaddrinfo`、`connect`、`connect_ex`、
+  `create_connection` 后，聚焦集 `190 passed`，全集
+  `1720 passed, 16 skipped, 2 deselected`；
+- 封网全集出现 2 条既有 aiosqlite 线程收尾 warning；对应测试把该 warning
+  升级为错误后复跑 `1 passed`；
+- 前端 lint、typecheck 通过，指定组件 `80 passed`，完整 Vitest `123 passed`；
+- Alembic 唯一 head：`20260729_0017`，无迁移。
+
+架构复核仍只有一套 MapProvider、地点匹配服务、目标选择服务、CollectionItem、
+收藏 Repository 和候选 DTO；没有样本/店名/地址白名单、第一名直选、自动重试、
+阈值降低、第二套状态机或 M2 实现。未读取 `.env`，真实模型、地图、网页和付费 API
+调用为 0；未合并、未推送。
+
 ## 2026-07-30 稳定化纠正
 
 真实运行复验在下方 2026-07-29 历史验收之后确认了截图导入 500、收藏补充 422、

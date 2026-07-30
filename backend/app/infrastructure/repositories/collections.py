@@ -1098,6 +1098,34 @@ class SqlAlchemyCollectionRepository:
             created_at=created_at,
         )
 
+    async def replace_write_operation_item(
+        self,
+        *,
+        user_id: str,
+        operation_id: str,
+        original_item_id: str,
+        target_item_id: str,
+    ) -> None:
+        owner = validate_user_id(user_id)
+        operation_identifier = validate_collection_write_operation_id(operation_id)
+        original_identifier = validate_collection_item_id(original_item_id)
+        target_identifier = validate_collection_item_id(target_item_id)
+        await self._require_collection_item(owner, target_identifier)
+        rowcount = await execute_dml_rowcount(
+            self._session,
+            update(CollectionWriteOperationItemModel)
+            .where(
+                CollectionWriteOperationItemModel.operation_id
+                == operation_identifier,
+                CollectionWriteOperationItemModel.collection_item_id
+                == original_identifier,
+                CollectionWriteOperationItemModel.user_id == owner,
+            )
+            .values(collection_item_id=target_identifier),
+        )
+        if rowcount != 1:
+            raise ResourceNotFoundError
+
     async def _require_user(self, user_id: str) -> UserModel:
         row = await self._session.scalar(select(UserModel).where(UserModel.id == user_id))
         if row is None:

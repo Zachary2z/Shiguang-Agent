@@ -52,7 +52,6 @@ from app.domain.time import utc_now
 from app.domain.web import WebFetchFailure, WebPageContent
 from app.domain.web.security import UrlPolicyError, validate_web_url
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
-from app.providers.map import MapProviderError
 from app.providers.storage import PrivateFileMetadata, StorageProvider, StorageProviderError
 from app.providers.web import WebContentProvider
 from nanobot_core.providers import ModelProvider, ProviderError, StructuredOutputMode
@@ -262,7 +261,7 @@ class TextCollectionWorkflow:
         storage: StorageProvider | None = None,
         storage_config: StorageProviderSettings | None = None,
         structured_output_mode: StructuredOutputMode | None = None,
-        event_place_matching: PlaceMatchingService | None = None,
+        place_matching: PlaceMatchingService | None = None,
         now: Callable[[], datetime] = utc_now,
     ) -> None:
         self._session = session
@@ -274,7 +273,7 @@ class TextCollectionWorkflow:
         self._storage = storage
         self._storage_config = storage_config
         self._structured_output_mode = structured_output_mode
-        self._event_place_matching = event_place_matching
+        self._place_matching = place_matching
         self._now = now
         self._repository = SqlAlchemyCollectionRepository(session)
 
@@ -981,37 +980,9 @@ class TextCollectionWorkflow:
             idempotency_key=idempotency_key,
             source=source,
             extraction_result=extraction,
-        )
-        await self._record_event_location_candidates(
-            user_id=user_id,
-            saved=saved,
-            write_service=write_service,
+            place_matching=self._place_matching,
         )
         return saved
-
-    async def _record_event_location_candidates(
-        self,
-        *,
-        user_id: str,
-        saved: AutoSaveResult,
-        write_service: CollectionWriteService,
-    ) -> None:
-        if self._event_place_matching is None or saved.replayed:
-            return
-        await self._session.rollback()
-        for item in saved.items:
-            if item.kind is not CollectionKind.EVENT or item.place_target is not None:
-                continue
-            try:
-                await write_service.continue_location_confirmation(
-                    owner=user_id,
-                    item=item,
-                    place_matching=self._event_place_matching,
-                )
-            except asyncio.CancelledError:
-                raise
-            except MapProviderError:
-                continue
 
     async def _persist_source(self, source: Source) -> Source:
         existing = await self._repository.get_source(

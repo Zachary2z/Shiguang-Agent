@@ -52,11 +52,13 @@ from app.domain.places import (
 )
 from app.domain.time import require_aware_utc, utc_now
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
+from app.providers.map import MapProviderError
 
 DEFAULT_UNDO_TTL = timedelta(minutes=10)
 MAX_UNDO_TTL = timedelta(hours=24)
 LOCATION_CLUE_FIELDS = frozenset(
     {
+        "title",
         "city_hint",
         "district",
         "address",
@@ -93,6 +95,7 @@ class CollectionWriteService:
         idempotency_key: str,
         source: Source,
         extraction_result: ExtractionResult,
+        place_matching: PlaceMatchingService | None = None,
     ) -> AutoSaveResult:
         owner = validate_user_id(user_id)
         if source.user_id != owner:
@@ -103,7 +106,7 @@ class CollectionWriteService:
 
         fingerprint = self._request_fingerprint(source, extraction_result)
         try:
-            return await self._create_or_replay(
+            saved = await self._create_or_replay(
                 owner=owner,
                 idempotency_key=idempotency_key,
                 source=source,
@@ -118,9 +121,27 @@ class CollectionWriteService:
                 source_id=source.id,
                 fingerprint=fingerprint,
             )
-            if replay is not None:
-                return replay
-            raise exc
+            if replay is None:
+                raise exc
+            saved = replay
+        if place_matching is None or saved.replayed:
+            return saved
+        await self._session.rollback()
+        resolved_items = []
+        for item in saved.items:
+            try:
+                resolved_items.append(
+                    await self.continue_location_confirmation(
+                        owner=owner,
+                        item=item,
+                        place_matching=place_matching,
+                    )
+                )
+            except asyncio.CancelledError:
+                raise
+            except MapProviderError:
+                resolved_items.append(item)
+        return saved.model_copy(update={"items": tuple(resolved_items)})
 
     async def patch(
         self,
@@ -309,10 +330,13 @@ class CollectionWriteService:
 
     @staticmethod
     def _place_candidate_from_item(item: CollectionItem) -> PlaceCandidate:
+        candidate_address = (
+            None if item.kind is CollectionKind.EVENT else item.address
+        )
         present = {
             CandidateField.CITY_HINT: item.city_hint is not None,
             CandidateField.DISTRICT: item.district is not None,
-            CandidateField.ADDRESS: item.address is not None,
+            CandidateField.ADDRESS: candidate_address is not None,
             CandidateField.BUSINESS_DISTRICT: item.business_district is not None,
             CandidateField.LANDMARK: item.landmark is not None,
             CandidateField.METRO_STATION: item.metro_station is not None,
@@ -333,7 +357,9 @@ class CollectionWriteService:
             ),
             city_hint=item.city_hint,
             district=item.district,
-            address=item.address,
+            # Event.address is the existing venue-name slot used to start the POI
+            # query; it is not reliable evidence of the provider's street address.
+            address=candidate_address,
             business_district=item.business_district,
             landmark=item.landmark,
             metro_station=item.metro_station,

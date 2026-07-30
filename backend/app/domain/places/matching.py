@@ -117,16 +117,16 @@ class MatchEvidence(PlaceMatchingContract):
 class EvidenceWeights(PlaceMatchingContract):
     """The single ordered weight set used by the scoring function."""
 
-    name: float = Field(default=30.0, gt=0, le=100)
-    branch_name: float = Field(default=10.0, gt=0, le=100)
-    district: float = Field(default=10.0, gt=0, le=100)
-    business_area: float = Field(default=7.0, gt=0, le=100)
-    address: float = Field(default=10.0, gt=0, le=100)
-    landmark: float = Field(default=6.0, gt=0, le=100)
-    metro_station: float = Field(default=6.0, gt=0, le=100)
-    phone: float = Field(default=8.0, gt=0, le=100)
-    poi_type: float = Field(default=5.0, gt=0, le=100)
-    source_context: float = Field(default=3.0, gt=0, le=100)
+    name: float = Field(default=35.0, gt=0, le=100)
+    branch_name: float = Field(default=5.0, gt=0, le=100)
+    district: float = Field(default=15.0, gt=0, le=100)
+    business_area: float = Field(default=2.0, gt=0, le=100)
+    address: float = Field(default=25.0, gt=0, le=100)
+    landmark: float = Field(default=2.0, gt=0, le=100)
+    metro_station: float = Field(default=2.0, gt=0, le=100)
+    phone: float = Field(default=3.0, gt=0, le=100)
+    poi_type: float = Field(default=3.0, gt=0, le=100)
+    source_context: float = Field(default=2.0, gt=0, le=100)
 
     @model_validator(mode="after")
     def validate_total_weight(self) -> Self:

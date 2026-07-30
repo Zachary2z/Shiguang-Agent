@@ -134,6 +134,14 @@ const requiredEventTimeFields = new Set([
   "event_start_at",
   "event_end_at",
 ]);
+const locationClueFields = new Set([
+  "city_hint",
+  "district",
+  "address",
+  "business_district",
+  "landmark",
+  "metro_station",
+]);
 
 function needsEventTimeConfirmation(item: CollectionItem): boolean {
   return (
@@ -660,8 +668,23 @@ export function AgentExperience() {
                     {(item.missing_fields.length > 0 ||
                       item.uncertainties.length > 0) && (
                       <div className="result-notes">
-                        {item.missing_fields.length > 0 && (
-                          <p><strong>待补充：</strong>{item.missing_fields.join("、")}</p>
+                        {item.missing_fields.some((field) =>
+                          item.kind === "event"
+                            ? eventTemporalFields.has(field) ||
+                              locationClueFields.has(field)
+                            : locationClueFields.has(field),
+                        ) && (
+                          <p>
+                            <strong>待补充：</strong>
+                            {item.missing_fields
+                              .filter((field) =>
+                                item.kind === "event"
+                                  ? eventTemporalFields.has(field) ||
+                                    locationClueFields.has(field)
+                                  : locationClueFields.has(field),
+                              )
+                              .join("、")}
+                          </p>
                         )}
                         {item.uncertainties.length > 0 && (
                           <p><strong>待确认：</strong>{item.uncertainties.map((entry) => entry.field).join("、")}</p>

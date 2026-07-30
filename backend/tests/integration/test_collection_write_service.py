@@ -21,6 +21,7 @@ from app.application import (
     PlaceMatchingService,
     PlaceTargetSelectionService,
 )
+from app.config import Settings
 from app.domain.collections import (
     CandidateField,
     CollectionItem,
@@ -57,12 +58,13 @@ from app.domain.places import (
 )
 from app.infrastructure.db import Database
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
-from app.providers import MapProviderError, StubMapProvider
+from app.providers import MapProviderError, MapProviderErrorCode, StubMapProvider
 from app.schemas.api import CollectionItemResponse
 from tests.fixtures.maps import (
     GUANGZHOU_MUSEUM,
     SHENZHEN_CHAIN_CAFE_ONE,
     SHENZHEN_CHAIN_CAFE_TWO,
+    SHENZHEN_MUSEUM,
     make_stub_map_provider,
 )
 
@@ -306,6 +308,206 @@ async def test_auto_save_place_preserves_all_candidate_metadata_and_one_time_tok
         assert operation[1] == hashlib.sha256(TOKEN_ONE.encode()).hexdigest()
         dump = "\n".join(connection.iterdump())
     assert TOKEN_ONE not in dump
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_first_place_save_matches_once_and_replay_does_not_search(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    source = _source(user.id)
+    calls: list[SearchPoiRequest] = []
+
+    async def record_call(request: object) -> None:
+        assert isinstance(request, SearchPoiRequest)
+        calls.append(request)
+
+    search = SearchPoiRequest(
+        query="深圳当代艺术与城市规划馆",
+        city=CityScope(city_code="shenzhen"),
+        district="福田区",
+    )
+    matching = PlaceMatchingService(
+        map_provider=StubMapProvider(
+            search_results={
+                search: PoiSearchResult(
+                    city_code="shenzhen",
+                    pois=(SHENZHEN_MUSEUM,),
+                )
+            },
+            call_hook=record_call,
+        ),
+        policy=Settings(_env_file=None, app_env="test").place_matching_policy(),
+    )
+    candidate = PlaceCandidate(
+        title="深圳当代艺术与城市规划馆",
+        city_hint="深圳",
+        district="福田区",
+        address="福中路184号",
+        missing_fields=(
+            CandidateField.BUSINESS_DISTRICT,
+            CandidateField.LANDMARK,
+            CandidateField.METRO_STATION,
+            CandidateField.PRICE,
+            CandidateField.TAGS,
+        ),
+    )
+
+    async with database.session() as session:
+        service = _service(session)
+        first = await service.auto_save(
+            user_id=user.id,
+            idempotency_key="first-place-match",
+            source=source,
+            extraction_result=ExtractionResult.with_candidates((candidate,)),
+            place_matching=matching,
+        )
+        replay = await service.auto_save(
+            user_id=user.id,
+            idempotency_key="first-place-match",
+            source=source,
+            extraction_result=ExtractionResult.with_candidates((candidate,)),
+            place_matching=matching,
+        )
+
+    assert len(calls) == 1
+    assert first.items[0].status is CollectionStatus.ACTIVE
+    assert first.items[0].place_target is not None
+    assert first.items[0].place_target.poi.poi_id == SHENZHEN_MUSEUM.poi_id
+    assert replay.replayed is True
+    assert replay.items[0] == first.items[0]
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_first_place_save_records_multiple_candidates_without_auto_selection(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    calls: list[SearchPoiRequest] = []
+
+    async def record_call(request: object) -> None:
+        assert isinstance(request, SearchPoiRequest)
+        calls.append(request)
+
+    matching = PlaceMatchingService(
+        map_provider=StubMapProvider(
+            search_results={
+                SearchPoiRequest(
+                    query="未名咖啡",
+                    city=CityScope(city_code="shenzhen"),
+                ): PoiSearchResult(
+                    city_code="shenzhen",
+                    pois=(SHENZHEN_CHAIN_CAFE_ONE, SHENZHEN_CHAIN_CAFE_TWO),
+                )
+            },
+            call_hook=record_call,
+        ),
+        policy=Settings(_env_file=None, app_env="test").place_matching_policy(),
+    )
+    candidate = PlaceCandidate(
+        title="未名咖啡",
+        city_hint="深圳",
+        missing_fields=(
+            CandidateField.DISTRICT,
+            CandidateField.ADDRESS,
+            CandidateField.BUSINESS_DISTRICT,
+            CandidateField.LANDMARK,
+            CandidateField.METRO_STATION,
+            CandidateField.PRICE,
+            CandidateField.TAGS,
+        ),
+    )
+
+    async with database.session() as session:
+        saved = await _service(session).auto_save(
+            user_id=user.id,
+            idempotency_key="first-place-ambiguous",
+            source=_source(user.id),
+            extraction_result=ExtractionResult.with_candidates((candidate,)),
+            place_matching=matching,
+        )
+
+    pending = saved.items[0]
+    assert len(calls) == 1
+    assert pending.status is CollectionStatus.PENDING_SELECTION
+    assert pending.place_target is None
+    assert pending.place_candidate_snapshot is not None
+    assert len(pending.place_candidate_snapshot.candidates) == 2
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_first_place_save_no_result_or_provider_failure_keeps_saved_item_safe(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    candidate = PlaceCandidate(
+        title="虾一跳",
+        missing_fields=(
+            CandidateField.CITY_HINT,
+            CandidateField.DISTRICT,
+            CandidateField.ADDRESS,
+            CandidateField.BUSINESS_DISTRICT,
+            CandidateField.LANDMARK,
+            CandidateField.METRO_STATION,
+            CandidateField.PRICE,
+            CandidateField.TAGS,
+        ),
+    )
+    calls: list[object] = []
+
+    async def record_call(request: object) -> None:
+        calls.append(request)
+
+    policy = Settings(_env_file=None, app_env="test").place_matching_policy()
+    no_result_matching = PlaceMatchingService(
+        map_provider=StubMapProvider(call_hook=record_call),
+        policy=policy,
+    )
+
+    async def fail(_: object) -> None:
+        raise MapProviderError(code=MapProviderErrorCode.UNAVAILABLE)
+
+    failed_matching = PlaceMatchingService(
+        map_provider=StubMapProvider(call_hook=fail),
+        policy=policy,
+    )
+
+    async with database.session() as session:
+        no_result = await _service(session).auto_save(
+            user_id=user.id,
+            idempotency_key="first-place-not-found",
+            source=_source(user.id),
+            extraction_result=ExtractionResult.with_candidates((candidate,)),
+            place_matching=no_result_matching,
+        )
+        failed = await _service(session, token=TOKEN_TWO).auto_save(
+            user_id=user.id,
+            idempotency_key="first-place-provider-failed",
+            source=_source(user.id),
+            extraction_result=ExtractionResult.with_candidates((candidate,)),
+            place_matching=failed_matching,
+        )
+
+    assert len(calls) == 1
+    assert no_result.items[0].status is CollectionStatus.PENDING_DETAILS
+    assert no_result.items[0].place_target is None
+    assert no_result.items[0].place_candidate_snapshot is not None
+    assert no_result.items[0].place_candidate_snapshot.candidates == ()
+    assert failed.items[0].status is CollectionStatus.PENDING_DETAILS
+    assert failed.items[0].place_target is None
+    assert failed.items[0].place_candidate_snapshot is None
     await database.close()
 
 
@@ -1590,6 +1792,57 @@ async def test_confirmed_place_edit_invalidates_old_target_but_equivalent_city_i
     response = CollectionItemResponse.from_domain(changed)
     assert response.planning_eligible is False
     assert response.planning_exclusion_reason == "location_unconfirmed"
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_place_title_identity_change_invalidates_and_rematches_once(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    calls: list[SearchPoiRequest] = []
+
+    async def record_call(request: object) -> None:
+        assert isinstance(request, SearchPoiRequest)
+        calls.append(request)
+
+    async with database.session() as session:
+        service, active = await _confirmed_shenzhen_place(
+            session=session,
+            user_id=user.id,
+            source=_source(user.id),
+            idempotency_key="confirmed-place-title-edit",
+        )
+        equivalent = await service.patch(
+            user_id=user.id,
+            collection_item_id=active.id,
+            expected_version=active.version,
+            patch=CollectionItemPatch(title=" 深圳当代艺术与城市规划馆 "),
+            place_matching=_matching_service(
+                StubMapProvider(call_hook=record_call)
+            ),
+        )
+        changed = await service.patch(
+            user_id=user.id,
+            collection_item_id=equivalent.id,
+            expected_version=equivalent.version,
+            patch=CollectionItemPatch(title="深圳音乐厅"),
+            place_matching=_matching_service(
+                StubMapProvider(call_hook=record_call)
+            ),
+        )
+
+    assert equivalent.version == active.version
+    assert equivalent.place_target == active.place_target
+    assert len(calls) == 1
+    assert calls[0].query == "深圳音乐厅"
+    assert changed.title == "深圳音乐厅"
+    assert changed.status is CollectionStatus.PENDING_DETAILS
+    assert changed.place_target is None
+    assert changed.place_candidate_snapshot is not None
     await database.close()
 
 
