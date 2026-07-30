@@ -21,6 +21,28 @@ M2-0”的结论只保留为历史验收记录，不再代表当前 Gate 状态�
 
 ## 2026-07-30 稳定化候选
 
+- “M1 语义确认闭环”生产修复已完成，等待主控复验。收藏详情页现作为唯一 Event
+  时间确认入口：仅 Event 展示有效开始/结束日期与准确开始/结束时间，预填服务端
+  返回的模型建议，并通过既有 `PATCH /collections/{item_id}` 显式提交当前字段；
+  前端不提交 `uncertainties` 或 `missing_fields`，也没有新增 API Client、Event
+  DTO、确认服务或第二套编辑流程。
+- `datetime-local` 展示和提交固定使用 `Asia/Shanghai` 语义：服务端时间按 UTC
+  瞬间转换为上海本地控件值，提交时显式生成 `+08:00` ISO 8601，不读取浏览器所在
+  时区。前端拒绝倒置日期和结束不晚于开始的准确时段；409、422、超时或取消保留
+  用户草稿，不显示伪成功。
+- 用户不修改建议直接点击“确认并保存”也会提交所有当前非空时间字段。服务端响应
+  始终替换本地 item 和 version；部分确认、缺少完整准确时段或准确 POI 未确认时
+  继续显示不可规划，只有服务端返回 `planning_eligible=true` 才显示可参与计划。
+  Agent 结果卡不复制表单，只为待确认 Event 链接到
+  `/collections?item=<collection_item_id>`。
+- 后端补充回归证明清空 metadata 不能绕过时间确认、单字段 PATCH 只确认对应字段、
+  完整确认清除相应 uncertainty、无准确 POI 时仍保持 `pending_details`、重复确认
+  稳定且旧 version 冲突继续拒绝。指定后端聚焦集 `127 passed`；非真实 Provider/
+  Map marker 全集 `1692 passed, 16 skipped, 2 deselected`；Alembic 唯一 head
+  仍为 `20260729_0017`。前端 `lint/typecheck/test/build` 均通过，Vitest
+  `97 passed`。
+- 状态继续保持“M1-Gate 稳定化修复待主控验收”；本窗口不关闭 M1，不允许开始
+  M2，未新增迁移，也未进行真实模型、地图或网页调用。
 - 本轮“语义理解与可信确认边界收敛”生产修复完成，等待主控复验。此前文字抽取的
   `source_evidence`、候选标题切片、中文日期/钟点正则和格式解析表已从正式
   Schema、Prompt、解析及 canonicalization 全部删除；模型不再用自报

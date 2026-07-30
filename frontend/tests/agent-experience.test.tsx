@@ -54,18 +54,19 @@ function collection(
   id: string,
   title: string,
   status: "active" | "pending_details" | "deleted" = "active",
+  kind: "place" | "event" = "place",
 ) {
   return {
     id,
     title,
-    kind: "place",
+    kind,
     city_hint: "深圳",
     city_pending: false,
     district: "南山区",
     address: null,
     tags: [],
-    missing_fields: [],
-    uncertainties: [],
+    missing_fields: [] as string[],
+    uncertainties: [] as Array<{ field: string; reason: string }>,
     status,
     version: 1,
   };
@@ -543,6 +544,40 @@ describe("Agent experience", () => {
     expect(mainInput).toHaveAttribute("autocomplete", "off");
     await user.click(screen.getByRole("button", { name: "继续添加" }));
     await waitFor(() => expect(mainInput).toHaveFocus());
+  });
+
+  it("links a pending Event to the single collection time confirmation entry", async () => {
+    const event = {
+      ...collection(
+        "col_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "深圳音乐节",
+        "pending_details",
+        "event",
+      ),
+      uncertainties: [
+        { field: "event_start_at", reason: "模型建议需要确认" },
+      ],
+    };
+    queueCompletedImport([
+      event,
+      collection(
+        "col_ffffffffffffffffffffffffffffffff",
+        "深圳天文台",
+      ),
+    ]);
+    await submitAndShowCollections();
+
+    const card = screen.getByText(event.title).closest("article");
+    expect(card).not.toBeNull();
+    expect(
+      within(card!).getByRole("link", { name: "确认活动时间" }),
+    ).toHaveAttribute(
+      "href",
+      `/collections?item=${event.id}`,
+    );
+    expect(
+      within(card!).queryByLabelText("准确开始时间"),
+    ).toBeNull();
   });
 
   it.each([

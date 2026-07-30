@@ -946,6 +946,107 @@ async def test_patch_all_allowed_fields_version_conflict_noop_and_domain_validat
 
 
 @pytest.mark.asyncio
+async def test_event_patch_confirms_only_explicit_temporal_fields_and_cannot_bypass_metadata(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    start_date = date(2026, 8, 2)
+    end_date = date(2026, 8, 4)
+    start_at = datetime(2026, 8, 2, 7, 30, tzinfo=UTC)
+    end_at = datetime(2026, 8, 2, 12, 0, tzinfo=UTC)
+    temporal_fields = (
+        CandidateField.EVENT_START_DATE,
+        CandidateField.EVENT_END_DATE,
+        CandidateField.EVENT_START_AT,
+        CandidateField.EVENT_END_AT,
+    )
+    candidate = EventCandidate(
+        **_candidate_fields(title="深圳音乐节"),
+        event_start_date=start_date,
+        event_end_date=end_date,
+        event_start_at=start_at,
+        event_end_at=end_at,
+        uncertainties=tuple(
+            Uncertainty(field=field, reason="模型建议需要用户确认")
+            for field in temporal_fields
+        ),
+    )
+
+    async with database.session() as session:
+        service = _service(session)
+        saved = await service.auto_save(
+            user_id=user.id,
+            idempotency_key="event-time-confirmation",
+            source=_source(user.id),
+            extraction_result=ExtractionResult.with_candidates((candidate,)),
+        )
+        item = saved.items[0]
+        bypass = await service.patch(
+            user_id=user.id,
+            collection_item_id=item.id,
+            expected_version=item.version,
+            patch=CollectionItemPatch(uncertainties=()),
+        )
+        assert {entry.field for entry in bypass.uncertainties} == set(temporal_fields)
+
+        partial = await service.patch(
+            user_id=user.id,
+            collection_item_id=item.id,
+            expected_version=bypass.version,
+            patch=CollectionItemPatch(event_start_date=start_date),
+        )
+        assert CandidateField.EVENT_START_DATE not in {
+            entry.field for entry in partial.uncertainties
+        }
+        assert {entry.field for entry in partial.uncertainties} == set(
+            temporal_fields[1:]
+        )
+        assert partial.status is CollectionStatus.PENDING_DETAILS
+
+        confirmed = await service.patch(
+            user_id=user.id,
+            collection_item_id=item.id,
+            expected_version=partial.version,
+            patch=CollectionItemPatch(
+                event_end_date=end_date,
+                event_start_at=start_at,
+                event_end_at=end_at,
+            ),
+        )
+        assert {
+            entry.field
+            for entry in confirmed.uncertainties
+            if entry.field in temporal_fields
+        } == set()
+        assert confirmed.status is CollectionStatus.PENDING_DETAILS
+
+        repeated = await service.patch(
+            user_id=user.id,
+            collection_item_id=item.id,
+            expected_version=confirmed.version,
+            patch=CollectionItemPatch(
+                event_start_date=start_date,
+                event_end_date=end_date,
+                event_start_at=start_at,
+                event_end_at=end_at,
+            ),
+        )
+        assert repeated.status is CollectionStatus.PENDING_DETAILS
+        assert repeated.version == confirmed.version
+        with pytest.raises(VersionConflictError):
+            await service.patch(
+                user_id=user.id,
+                collection_item_id=item.id,
+                expected_version=item.version,
+                patch=CollectionItemPatch(event_start_at=start_at),
+            )
+    await database.close()
+
+
+@pytest.mark.asyncio
 async def test_patch_resolves_missing_metadata_then_requires_ambiguous_place_selection(
     write_database: tuple[str, Path],
 ) -> None:

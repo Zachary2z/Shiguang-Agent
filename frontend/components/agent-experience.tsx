@@ -124,6 +124,27 @@ const toolLabels: Readonly<Record<string, string>> = {
 
 const acceptedImageTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 const maxImageBytes = 10_000_000;
+const eventTemporalFields = new Set([
+  "event_start_date",
+  "event_end_date",
+  "event_start_at",
+  "event_end_at",
+]);
+const requiredEventTimeFields = new Set([
+  "event_start_at",
+  "event_end_at",
+]);
+
+function needsEventTimeConfirmation(item: CollectionItem): boolean {
+  return (
+    item.kind === "event" &&
+    item.status === "pending_details" &&
+    (item.missing_fields.some((field) => requiredEventTimeFields.has(field)) ||
+      item.uncertainties.some((entry) =>
+        eventTemporalFields.has(entry.field),
+      ))
+  );
+}
 
 function resultState(result: ImportResult): AgentState {
   if (result.run_status === "failed" || result.run_status === "cancelled") {
@@ -655,6 +676,11 @@ export function AgentExperience() {
                     <div className="result-actions">
                       {item.status !== "deleted" ? (
                         <>
+                          {needsEventTimeConfirmation(item) ? (
+                            <a href={`/collections?item=${item.id}`}>
+                              确认活动时间
+                            </a>
+                          ) : null}
                           <button type="button" onClick={() => beginEdit(item)}>
                             修改
                           </button>

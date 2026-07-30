@@ -111,6 +111,66 @@ const exclusionLabels: Record<string, string> = {
   city_or_location_unconfirmed: "城市或位置待确认，暂不参与计划",
 };
 
+const eventTemporalLabels: Readonly<Record<string, string>> = {
+  event_start_date: "活动有效开始日期",
+  event_end_date: "活动有效结束日期",
+  event_start_at: "准确开始时间",
+  event_end_at: "准确结束时间",
+};
+
+const eventTemporalFields = Object.keys(eventTemporalLabels);
+const requiredEventTimeFields = new Set([
+  "event_start_at",
+  "event_end_at",
+]);
+
+function eventTimeNeedsAttention(item: CollectionItem): boolean {
+  return (
+    item.missing_fields.some((field) => requiredEventTimeFields.has(field)) ||
+    item.uncertainties.some((entry) =>
+      eventTemporalFields.includes(entry.field),
+    )
+  );
+}
+
+function planningExclusionLabel(item: CollectionItem): string {
+  if (
+    item.kind === "event" &&
+    item.planning_exclusion_reason === "pending_confirmation" &&
+    eventTimeNeedsAttention(item)
+  ) {
+    return "确认活动时间和准确地点后才能参与深圳计划";
+  }
+  return (
+    exclusionLabels[item.planning_exclusion_reason ?? ""] ??
+    "暂不参与当前计划"
+  );
+}
+
+function isoToShanghaiLocal(value: string | null): string {
+  if (!value) return "";
+  const instant = new Date(value);
+  if (Number.isNaN(instant.getTime())) return "";
+  const shanghai = new Date(instant.getTime() + 8 * 60 * 60 * 1000);
+  const pad = (part: number) => String(part).padStart(2, "0");
+  return [
+    shanghai.getUTCFullYear(),
+    "-",
+    pad(shanghai.getUTCMonth() + 1),
+    "-",
+    pad(shanghai.getUTCDate()),
+    "T",
+    pad(shanghai.getUTCHours()),
+    ":",
+    pad(shanghai.getUTCMinutes()),
+  ].join("");
+}
+
+function shanghaiLocalToIso(value: string): string {
+  const withSeconds = value.length === 16 ? `${value}:00` : value;
+  return `${withSeconds}+08:00`;
+}
+
 function errorCopy(error: unknown): string {
   if (!(error instanceof ApiError)) return "收藏库暂时没有加载完成。";
   if (error.code === "conflict") return "这条收藏刚刚被更新，请刷新后继续。";
@@ -200,6 +260,10 @@ export function CollectionsExperience() {
   const [draftDistrict, setDraftDistrict] = useState("");
   const [draftAddress, setDraftAddress] = useState("");
   const [draftTags, setDraftTags] = useState("");
+  const [draftEventStartDate, setDraftEventStartDate] = useState("");
+  const [draftEventEndDate, setDraftEventEndDate] = useState("");
+  const [draftEventStartAt, setDraftEventStartAt] = useState("");
+  const [draftEventEndAt, setDraftEventEndAt] = useState("");
   const listGeneration = useRef(0);
   const detailGeneration = useRef(0);
   const activeDetailId = useRef<string | null>(selectedId);
@@ -215,6 +279,10 @@ export function CollectionsExperience() {
     setDraftDistrict(item.district ?? "");
     setDraftAddress(item.address ?? "");
     setDraftTags(item.tags.join("、"));
+    setDraftEventStartDate(item.event_start_date ?? "");
+    setDraftEventEndDate(item.event_end_date ?? "");
+    setDraftEventStartAt(isoToShanghaiLocal(item.event_start_at));
+    setDraftEventEndAt(isoToShanghaiLocal(item.event_end_at));
   }
   useLayoutEffect(() => {
     if (activeDetailId.current === selectedId) return;
@@ -459,6 +527,81 @@ export function CollectionsExperience() {
     );
   }
 
+  async function confirmEventTime(event: FormEvent) {
+    event.preventDefault();
+    if (!detail || !csrf || detail.item.kind !== "event") return;
+    if (
+      draftEventStartDate &&
+      draftEventEndDate &&
+      draftEventEndDate < draftEventStartDate
+    ) {
+      setFeedback("活动有效结束日期不能早于开始日期。");
+      return;
+    }
+    const startAt = draftEventStartAt
+      ? shanghaiLocalToIso(draftEventStartAt)
+      : null;
+    const endAt = draftEventEndAt
+      ? shanghaiLocalToIso(draftEventEndAt)
+      : null;
+    if (
+      startAt &&
+      endAt &&
+      Date.parse(endAt) <= Date.parse(startAt)
+    ) {
+      setFeedback("准确结束时间必须晚于准确开始时间。");
+      return;
+    }
+
+    const changes: Record<string, string | null> = {};
+    for (const [field, draft, current] of [
+      ["event_start_date", draftEventStartDate, detail.item.event_start_date],
+      ["event_end_date", draftEventEndDate, detail.item.event_end_date],
+      ["event_start_at", startAt, detail.item.event_start_at],
+      ["event_end_at", endAt, detail.item.event_end_at],
+    ] as const) {
+      if (draft || current) changes[field] = draft || null;
+    }
+
+    const collectionId = detail.item.id;
+    await runDetailOperation(
+      collectionId,
+      () =>
+        apiClient.request<CollectionItem>(
+          `/api/v1/collections/${collectionId}`,
+          {
+            method: "PATCH",
+            csrfToken: csrf,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              expected_version: detail.item.version,
+              changes,
+            }),
+          },
+        ),
+      (item) => {
+        setDetail((current) => (current ? { ...current, item } : current));
+        restoreDrafts(item);
+        const uncertain = new Set(
+          item.uncertainties.map((entry) => entry.field),
+        );
+        const exactTimeConfirmed = Boolean(
+          item.event_start_at &&
+            item.event_end_at &&
+            !uncertain.has("event_start_at") &&
+            !uncertain.has("event_end_at"),
+        );
+        if (item.planning_eligible) {
+          setFeedback("活动时间已确认，可参与当前计划。");
+        } else if (!exactTimeConfirmed) {
+          setFeedback("已保存当前活动时间，准确时段待补充。");
+        } else {
+          setFeedback("活动时间已确认，准确地点确认后才可参与计划。");
+        }
+      },
+    );
+  }
+
   async function deleteCollection() {
     if (!detail || !csrf) return;
     const previous = detail.item;
@@ -698,8 +841,7 @@ export function CollectionsExperience() {
                 <span className={item.planning_eligible ? "eligible" : "excluded"}>
                   {item.planning_eligible
                     ? "可参与当前深圳计划"
-                    : exclusionLabels[item.planning_exclusion_reason ?? ""] ??
-                      "暂不参与当前计划"}
+                    : planningExclusionLabel(item)}
                 </span>
                 <span className="collection-tag-row">
                   {item.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}
@@ -795,6 +937,107 @@ export function CollectionsExperience() {
                       <span>保留原始收藏，并转为待补充状态</span>
                     </button>
                   </fieldset>
+                ) : null}
+                {detail.item.kind === "event" ? (
+                  <form className="event-time-form" onSubmit={confirmEventTime}>
+                    <div className="event-time-heading">
+                      <div>
+                        <strong>确认活动时间</strong>
+                        <p>
+                          {eventTimeNeedsAttention(detail.item)
+                            ? "以下是模型建议。即使内容正确，也需要你明确确认后才能用于计划。"
+                            : "以下是已保存的活动时间；修改后需要再次明确保存。"}
+                        </p>
+                      </div>
+                      <span>
+                        {detail.item.planning_eligible
+                          ? "可参与计划"
+                          : eventTimeNeedsAttention(detail.item)
+                            ? "活动时间待确认"
+                            : "准确地点待确认"}
+                      </span>
+                    </div>
+                    <div className="event-time-fields">
+                      <label>
+                        活动有效开始日期
+                        <input
+                          name="event_start_date"
+                          type="date"
+                          value={draftEventStartDate}
+                          onChange={(event) =>
+                            setDraftEventStartDate(event.target.value)
+                          }
+                        />
+                      </label>
+                      <label>
+                        活动有效结束日期
+                        <input
+                          name="event_end_date"
+                          type="date"
+                          min={draftEventStartDate || undefined}
+                          value={draftEventEndDate}
+                          onChange={(event) =>
+                            setDraftEventEndDate(event.target.value)
+                          }
+                        />
+                      </label>
+                      <label>
+                        准确开始时间
+                        <input
+                          name="event_start_at"
+                          type="datetime-local"
+                          value={draftEventStartAt}
+                          onChange={(event) =>
+                            setDraftEventStartAt(event.target.value)
+                          }
+                        />
+                      </label>
+                      <label>
+                        准确结束时间
+                        <input
+                          name="event_end_at"
+                          type="datetime-local"
+                          min={draftEventStartAt || undefined}
+                          value={draftEventEndAt}
+                          onChange={(event) =>
+                            setDraftEventEndAt(event.target.value)
+                          }
+                        />
+                      </label>
+                    </div>
+                    <div className="event-time-state">
+                      <p>
+                        <strong>待补充：</strong>
+                        {detail.item.missing_fields
+                          .filter((field) => eventTemporalFields.includes(field))
+                          .map((field) => eventTemporalLabels[field] ?? field)
+                          .join("、") || "无"}
+                      </p>
+                      <p>
+                        <strong>待确认：</strong>
+                        {detail.item.uncertainties
+                          .filter((entry) =>
+                            eventTemporalFields.includes(entry.field),
+                          )
+                          .map(
+                            (entry) =>
+                              eventTemporalLabels[entry.field] ?? entry.field,
+                          )
+                          .join("、") || "无"}
+                      </p>
+                      {!detail.item.event_start_at ||
+                      !detail.item.event_end_at ? (
+                        <p>准确时段待补充；仅确认日期仍不能参与计划。</p>
+                      ) : null}
+                    </div>
+                    <button
+                      className="primary-button"
+                      type="submit"
+                      disabled={saving}
+                    >
+                      {saving ? "正在确认…" : "确认并保存"}
+                    </button>
+                  </form>
                 ) : null}
                 <form className="collection-edit-form" onSubmit={saveDetail}>
                   <label>名称<input name="title" required maxLength={200} value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} /></label>

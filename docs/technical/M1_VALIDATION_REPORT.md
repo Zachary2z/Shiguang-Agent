@@ -56,6 +56,33 @@ head 为 `20260729_0017`。前端生产代码未变，`lint/typecheck/test/build
 0，Vitest `87 passed`，本轮按门禁未额外运行 Playwright。真实模型、地图、网页和
 付费 API 调用均为 0。
 
+### 2026-07-30 Event 时间确认 Web/H5 闭环
+
+候选 `b5e34ff34c93d39f164e6a033d148b68f2ba6cbe` 已建立“模型建议、用户确认、
+确认后才进入计划”的后端边界，但此前 Web/H5 没有提交这四个字段的正式入口。本轮
+生产修复在既有收藏详情组件内补齐唯一确认表单，没有新增确认 API、API Client、
+Event DTO、Repository 或业务状态机。
+
+- 表单仅对 Event 展示，预填 `event_start_date/event_end_date/event_start_at/
+  event_end_at`，同时列出当前时间 missing 与 uncertainty；
+- 用户即使不修改建议，点击确认也通过既有收藏 PATCH 显式提交所有当前非空字段；
+  清空原有建议则显式提交 null，不能通过直接提交 metadata 绕过确认；
+- 日期使用原生 date，准确时刻使用 datetime-local。服务端 ISO 瞬间确定性转换为
+  上海本地控件值，提交固定携带 `+08:00`，不依赖浏览器时区；
+- 倒置日期和结束不晚于开始的时段在请求前拒绝；409、422、超时和取消保留输入；
+  成功后只采用服务端返回的 item、version、status 与 planning eligibility；
+- 只确认日期、缺少完整准确时段、仍有时间 uncertainty 或准确 POI 未确认时均继续
+  不可规划；Agent 卡片只深链到 `/collections?item=<id>`，不复制时间表单。
+
+后端新增回归覆盖 metadata 绕过、单字段部分确认、完整字段确认、重复确认和 version
+冲突；此前准确 POI、完整时段及计划准入测试继续作为同一正式链路证据。验证结果：
+`pip check`、Ruff、strict mypy 均退出码 0；指定聚焦集 `127 passed`；非真实
+Provider/Map marker 全集 `1692 passed, 16 skipped, 2 deselected`；Alembic 唯一
+head `20260729_0017`。前端 lint、typecheck、build 均通过，Vitest
+`97 passed`。未新增迁移；真实模型、地图、网页和付费 API 调用为 0。
+
+本轮状态只到“生产修复完成，等待主控复验”；M1-Gate 未关闭，M2-0 继续阻塞。
+
 候选 `e3eeb90b1e25aac6d22ad03c7842b3786d5c1f86` 的主控前复验又发现并修复：
 
 1. **P1：Event 关键词规则和跨候选时间污染。** 原因是文字抽取后置边界用有限活动
