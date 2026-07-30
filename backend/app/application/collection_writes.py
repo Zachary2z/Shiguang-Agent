@@ -9,6 +9,7 @@ import secrets
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import cast
+from unicodedata import normalize
 
 from pydantic import SecretStr
 from sqlalchemy.exc import IntegrityError
@@ -140,21 +141,48 @@ class CollectionWriteService:
             )
             if current is None:
                 raise ResourceNotFoundError
+            location_identity_changed = self._location_identity_changed(
+                current=current,
+                patch=patch,
+            )
             values = current.model_dump(mode="python")
             values.update(patch.updates())
+            self._preserve_equivalent_location_clues(
+                current=current,
+                values=values,
+                patch=patch,
+            )
             self._recalculate_candidate_metadata(values, patch=patch)
             self._preserve_unconfirmed_event_time_metadata(
                 current=current,
                 values=values,
                 patch=patch,
             )
+            invalidate_resolution = location_identity_changed and (
+                current.place_target is not None
+                or current.place_candidate_snapshot is not None
+                or current.status is not CollectionStatus.PENDING_DETAILS
+            )
+            if location_identity_changed:
+                values.update(
+                    status=CollectionStatus.PENDING_DETAILS,
+                    place_target=None,
+                    place_candidate_snapshot=None,
+                )
             values["updated_at"] = now
             desired = CollectionItem.model_validate(values)
-            updated = await self._repository.update_collection_item(
-                user_id=owner,
-                item=desired,
-                expected_version=expected_version,
-            )
+            if invalidate_resolution:
+                updated = await self._repository.apply_place_resolution(
+                    user_id=owner,
+                    item=desired,
+                    expected_version=expected_version,
+                )
+            else:
+                updated = await self._repository.update_collection_item(
+                    user_id=owner,
+                    item=desired,
+                    expected_version=expected_version,
+                )
             target_status = self._event_status_after_confirmation(updated)
             if target_status is not updated.status:
                 updated = await self._repository.transition_collection_status(
@@ -163,7 +191,7 @@ class CollectionWriteService:
                     target=target_status,
                     updated_at=now,
                 )
-        if not LOCATION_CLUE_FIELDS.intersection(patch.model_fields_set):
+        if not location_identity_changed:
             return updated
         return await self.continue_location_confirmation(
             owner=owner,
@@ -189,7 +217,7 @@ class CollectionWriteService:
         ):
             return item
         has_city_hint, city_code = resolve_city_hint(item.city_hint)
-        if has_city_hint and city_code != PlanCity.SHENZHEN.value:
+        if has_city_hint and city_code is None:
             return item
         if place_matching is None:
             return item
@@ -204,7 +232,9 @@ class CollectionWriteService:
             match_result = await place_matching.match(
                 PlaceMatchRequest(
                     candidate=candidate,
-                    city=CityScope(city_code=PlanCity.SHENZHEN.value),
+                    city=CityScope(
+                        city_code=city_code or PlanCity.SHENZHEN.value,
+                    ),
                     search_district=item.district,
                 )
             )
@@ -223,6 +253,59 @@ class CollectionWriteService:
             queried_at=self._now(),
             expected_version=item.version,
         )
+
+    @classmethod
+    def _location_identity_changed(
+        cls,
+        *,
+        current: CollectionItem,
+        patch: CollectionItemPatch,
+    ) -> bool:
+        updates = patch.updates()
+        return any(
+            not cls._equivalent_location_clue(
+                field=field,
+                current=getattr(current, field),
+                updated=updates[field],
+            )
+            for field in LOCATION_CLUE_FIELDS.intersection(patch.model_fields_set)
+        )
+
+    @classmethod
+    def _preserve_equivalent_location_clues(
+        cls,
+        *,
+        current: CollectionItem,
+        values: dict[str, object],
+        patch: CollectionItemPatch,
+    ) -> None:
+        for field in LOCATION_CLUE_FIELDS.intersection(patch.model_fields_set):
+            if cls._equivalent_location_clue(
+                field=field,
+                current=getattr(current, field),
+                updated=values[field],
+            ):
+                values[field] = getattr(current, field)
+
+    @staticmethod
+    def _equivalent_location_clue(
+        *,
+        field: str,
+        current: object,
+        updated: object,
+    ) -> bool:
+        if current is None or updated is None:
+            return current is updated
+        if not isinstance(current, str) or not isinstance(updated, str):
+            return current == updated
+        if field == "city_hint":
+            _, current_city = resolve_city_hint(current)
+            _, updated_city = resolve_city_hint(updated)
+            if current_city is not None and updated_city is not None:
+                return current_city == updated_city
+        normalized_current = " ".join(normalize("NFKC", current).casefold().split())
+        normalized_updated = " ".join(normalize("NFKC", updated).casefold().split())
+        return normalized_current == normalized_updated
 
     @staticmethod
     def _place_candidate_from_item(item: CollectionItem) -> PlaceCandidate:

@@ -14,6 +14,43 @@ Agent 计划入口不可达。M1-Gate 因此重新打开；下方“M1 正式关
 - M2-0：未开始，阻塞于主控复验；
 - M1 未重新关闭。
 
+### 2026-07-30 M1-Gate 修复 2 生产返修
+
+M1-Gate 修复 2 生产返修完成，等待主控复验；M1-Gate 仍打开，M2-0 未开始且阻塞。
+
+主控 QA 的两个 P1 共用同一根因边界：收藏 PATCH 只按地点字段是否出现决定是否继续
+匹配，却不允许已有正式目标随地点身份变化失效；继续确认方法又把非深圳城市提前返回，
+并把全部正式请求固定成深圳范围。
+
+本次只收敛既有唯一正式链路：
+
+1. `CollectionWriteService` 在 CAS 写入前比较六个既有地点身份字段。实质变化会原子
+   保存编辑、清除旧 `exact/any_branch place_target` 和候选快照，并转回
+   `pending_details`，提交后再调用唯一
+   `PlaceMatchingService → PlaceTargetSelectionService`。无结果、Provider 异常或
+   `CancelledError` 均保留编辑和失效结果，旧正式 POI 不会恢复。
+2. 等价判断对城市复用唯一 `resolve_city_hint`，对其他文本只做 NFKC、大小写和空白
+   规范化。“深圳”“深圳市”“shenzhen”及其他相同规范化值保持原正式目标，地图
+   请求为 0、版本不增加、状态不抖动。
+3. 删除非深圳早退和硬编码深圳请求。广州通过既有解析入口进入 `guangzhou`
+   `CityScope`；无城市线索仅以深圳作为默认搜索上下文；不支持城市不调用地图且不
+   回退深圳。匹配确认的广州 POI 保留 provider、poi_id、正式 city_code 和 GCJ-02，
+   但服务端规划资格继续以 `other_city` 排除深圳计划。
+4. Place/Event 共用上述路径，Event 的日期、准确时间、确认语义和前端控件未修改。
+   既有集中规划阻塞规则、expected_version、选择幂等、并发 CAS 与跨用户所有权边界
+   未复制或放宽。
+
+离线证据：`pip check`、Ruff、strict mypy（140 个源文件）通过；地点匹配、收藏
+写入、Place/Event、规划资格与 API 错误映射聚焦集 `289 passed`；非真实
+Provider/Map 全集 `1707 passed, 16 skipped, 2 deselected`；仓库外 pytest 插件
+封锁 `getaddrinfo`、`connect`、`connect_ex`、`create_connection` 后聚焦集
+`204 passed`；迁移 `25 passed`，Alembic 唯一 head 为 `20260729_0017`。前端未
+改动且不受影响。
+
+本轮没有新增迁移、MapProvider、地点服务、Repository、候选 DTO、城市解析器、
+状态机、样本白名单、阈值调整、自动重试或隐藏 fallback。真实模型、高德、网页和
+付费 API 调用为 0，`.env` 未读取。Event 时间交互和计划闭环仍留给后续独立修复。
+
 ### 2026-07-30 地点确认完整闭环生产修复
 
 地点确认生产修复完成，等待主控验收；M1-Gate 仍打开，M2-0 未开始且阻塞。

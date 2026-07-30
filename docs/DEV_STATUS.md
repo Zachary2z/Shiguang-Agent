@@ -4,10 +4,41 @@
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-Gate 稳定化修复 |
-| 状态 | 待主控验收 |
+| 状态 | M1-Gate 修复 2 生产返修完成，等待主控复验 |
 | 当前分支 | codex/m1-gate-location-confirmation |
 | 最近更新 | 2026-07-30 |
-| 阻塞项 | 地点确认生产修复完成，等待主控验收；M1-Gate 仍打开；Event 时间交互与计划闭环仍待后续分项修复；M2-0 未开始且阻塞 |
+| 阻塞项 | M1-Gate 修复 2 生产返修完成，等待主控复验；M1-Gate 仍打开；Event 时间交互与计划闭环仍待后续分项修复；M2-0 未开始且阻塞 |
+
+## 2026-07-30 M1-Gate 修复 2 生产返修
+
+- M1-Gate 修复 2 生产返修完成，等待主控复验。已有 `exact` 或
+  `any_branch` 正式地点的 Place/Event 在城市线索、行政区、公开地址、商圈、
+  地标或地铁站发生实质变化时，唯一 `CollectionWriteService` 会在同一 CAS 写入中
+  清除旧 `place_target` 和旧候选快照、保存用户编辑并回到安全待确认状态，随后复用
+  唯一 `PlaceMatchingService → PlaceTargetSelectionService` 重新匹配。无结果、
+  Provider 异常或取消都不会恢复旧正式 POI。
+- 地点身份比较复用既有 `resolve_city_hint`，并对其他地点文本只做 NFKC、大小写与
+  空白规范化比较。“深圳”“深圳市”“shenzhen”等同范围或其他相同规范化值不会
+  清除有效目标、发出地图请求、增加版本或产生状态抖动；实质地址变化只发起一次
+  匹配。旧 version 继续返回 409，已有选择幂等与所有权边界保持不变。
+- 删除了收藏匹配只允许深圳的早退条件和硬编码请求范围。明确支持的广州线索现在
+  通过既有城市解析入口传给同一 `guangzhou` `CityScope`；缺少城市线索仍仅使用
+  深圳默认搜索上下文，不把线索升级为正式城市；无法解析的城市安全停留待确认，
+  不会静默回退深圳。正式广州 POI 可保留在收藏库，但服务端统一规划阻塞项明确以
+  `other_city` 将其排除在深圳计划外。
+- 回归覆盖 Place/Event、`exact/any_branch`、等价值零请求、单次重新匹配、无结果、
+  Provider 异常、`CancelledError`、广州/默认/不支持城市范围、正式广州收藏规划
+  隔离，以及既有 expected_version、幂等、并发和跨用户测试。未修改 Event 时间
+  确认、计划生成/调整/确认、Compose、前端或 M2。
+- 离线验证：`pip check`、Ruff、strict mypy（140 个源文件）通过；地点、收藏写入、
+  Place/Event、规划资格和 API 错误映射聚焦集 `289 passed`；非真实 Provider/Map
+  全集 `1707 passed, 16 skipped, 2 deselected`；仓库外 pytest 插件封锁
+  `getaddrinfo`、`connect`、`connect_ex` 和 `create_connection` 后聚焦集
+  `204 passed`；迁移回归 `25 passed`，Alembic 唯一 head
+  `20260729_0017`。前端未改动且不受影响。
+- 本轮真实模型、高德、网页和付费 API 调用为 0，未读取 `.env`，未新增迁移、
+  Provider、服务、Repository、DTO、城市解析器、白名单、自动重试或隐藏 fallback。
+  M1-Gate 仍打开；M2-0 未开始且阻塞。
 
 ## 2026-07-30 地点确认生产修复候选
 
