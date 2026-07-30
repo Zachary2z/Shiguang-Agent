@@ -278,7 +278,7 @@ describe("CollectionsExperience", () => {
     expect(await screen.findByText("收藏已恢复到删除前的准确状态。")).toBeInTheDocument();
   });
 
-  it("prefills and confirms every current Event time suggestion through the existing PATCH", async () => {
+  it("keeps date controls and shows existing Shanghai times in time-only controls", async () => {
     currentQuery = `item=${eventItem.id}`;
     const bodies: Array<{
       expected_version: number;
@@ -316,12 +316,16 @@ describe("CollectionsExperience", () => {
     expect(
       within(dialog).getByLabelText("活动有效结束日期"),
     ).toHaveValue("2026-08-04");
-    expect(within(dialog).getByLabelText("准确开始时间")).toHaveValue(
-      "2026-08-02T15:30",
-    );
-    expect(within(dialog).getByLabelText("准确结束时间")).toHaveValue(
-      "2026-08-02T20:00",
-    );
+    const startDate = within(dialog).getByLabelText("活动有效开始日期");
+    const endDate = within(dialog).getByLabelText("活动有效结束日期");
+    const startTime = within(dialog).getByLabelText("具体开始时间");
+    const endTime = within(dialog).getByLabelText("具体结束时间");
+    expect(startDate).toHaveAttribute("type", "date");
+    expect(endDate).toHaveAttribute("type", "date");
+    expect(startTime).toHaveAttribute("type", "time");
+    expect(endTime).toHaveAttribute("type", "time");
+    expect(startTime).toHaveValue("15:30");
+    expect(endTime).toHaveValue("20:00");
     expect(within(dialog).getByText(/以下是模型建议/)).toBeInTheDocument();
 
     await userEvent.click(
@@ -335,7 +339,7 @@ describe("CollectionsExperience", () => {
           event_start_date: "2026-08-02",
           event_end_date: "2026-08-04",
           event_start_at: "2026-08-02T15:30:00+08:00",
-          event_end_at: "2026-08-02T20:00:00+08:00",
+          event_end_at: "2026-08-04T20:00:00+08:00",
         },
       },
     ]);
@@ -343,6 +347,68 @@ describe("CollectionsExperience", () => {
     expect(bodies[0].changes).not.toHaveProperty("missing_fields");
     expect(within(dialog).getByText("版本 2")).toBeInTheDocument();
     expect(within(dialog).getByText("可参与计划")).toBeInTheDocument();
+  });
+
+  it("combines a one-day Event with the same start and end date", async () => {
+    const oneDay = {
+      ...eventItem,
+      event_end_date: "2026-08-02",
+    };
+    currentQuery = `item=${oneDay.id}`;
+    const bodies: Array<{ changes: Record<string, unknown> }> = [];
+    vi.spyOn(apiClient, "request").mockImplementation(
+      async (path, options) => {
+        if (path === "/api/v1/demo/sessions") return session as never;
+        if (path.startsWith("/api/v1/collections?")) {
+          return { ...filledPage, items: [oneDay] } as never;
+        }
+        if (options?.method === "PATCH") {
+          bodies.push(JSON.parse(String(options.body)));
+          return { ...oneDay, uncertainties: [], version: 2 } as never;
+        }
+        return { item: oneDay, sources: [] } as never;
+      },
+    );
+
+    render(<CollectionsExperience />);
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByLabelText("具体开始时间");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "确认并保存" }),
+    );
+    expect(bodies[0].changes).toMatchObject({
+      event_start_at: "2026-08-02T15:30:00+08:00",
+      event_end_at: "2026-08-02T20:00:00+08:00",
+    });
+  });
+
+  it("recovers missing date drafts from exact Shanghai instants without using today", async () => {
+    const exactOnly = {
+      ...eventItem,
+      event_start_date: null,
+      event_end_date: null,
+      event_start_at: "2031-03-14T16:30:00Z",
+      event_end_at: "2031-03-15T01:15:00Z",
+    };
+    currentQuery = `item=${exactOnly.id}`;
+    vi.spyOn(apiClient, "request").mockImplementation(async (path) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path.startsWith("/api/v1/collections?")) {
+        return { ...filledPage, items: [exactOnly] } as never;
+      }
+      return { item: exactOnly, sources: [] } as never;
+    });
+
+    render(<CollectionsExperience />);
+    const dialog = await screen.findByRole("dialog");
+    expect(
+      await within(dialog).findByLabelText("活动有效开始日期"),
+    ).toHaveValue("2031-03-15");
+    expect(within(dialog).getByLabelText("活动有效结束日期")).toHaveValue(
+      "2031-03-15",
+    );
+    expect(within(dialog).getByLabelText("具体开始时间")).toHaveValue("00:30");
+    expect(within(dialog).getByLabelText("具体结束时间")).toHaveValue("09:15");
   });
 
   it("keeps a date-only Event pending after confirming its current fields", async () => {
@@ -377,13 +443,13 @@ describe("CollectionsExperience", () => {
     render(<CollectionsExperience />);
     const dialog = await screen.findByRole("dialog");
     expect(
-      await within(dialog).findByText(/准确时段待补充/),
+      await within(dialog).findByText(/具体时段待补充/),
     ).toBeInTheDocument();
     await userEvent.click(
       within(dialog).getByRole("button", { name: "确认并保存" }),
     );
     expect(
-      await screen.findByText("已保存当前活动时间，准确时段待补充。"),
+      await screen.findByText("已保存当前活动时间，具体时段待补充。"),
     ).toBeInTheDocument();
     expect(bodies[0].changes).toEqual({
       event_start_date: "2026-08-02",
@@ -393,13 +459,21 @@ describe("CollectionsExperience", () => {
     expect(within(dialog).getByText("活动时间待确认")).toBeInTheDocument();
   });
 
-  it("rejects invalid Event bounds without sending a PATCH", async () => {
+  it("submits null when an existing specific time is cleared", async () => {
     currentQuery = `item=${eventItem.id}`;
-    const request = vi.spyOn(apiClient, "request").mockImplementation(
-      async (path) => {
+    const bodies: Array<{ changes: Record<string, unknown> }> = [];
+    vi.spyOn(apiClient, "request").mockImplementation(
+      async (path, options) => {
         if (path === "/api/v1/demo/sessions") return session as never;
-        if (path.startsWith("/api/v1/collections?")) {
-          return { ...filledPage, items: [eventItem] } as never;
+        if (path.startsWith("/api/v1/collections?")) return filledPage as never;
+        if (options?.method === "PATCH") {
+          bodies.push(JSON.parse(String(options.body)));
+          return {
+            ...eventItem,
+            event_start_at: null,
+            event_end_at: null,
+            version: 2,
+          } as never;
         }
         return { item: eventItem, sources: [] } as never;
       },
@@ -407,17 +481,143 @@ describe("CollectionsExperience", () => {
 
     render(<CollectionsExperience />);
     const dialog = await screen.findByRole("dialog");
-    const end = await within(dialog).findByLabelText("准确结束时间");
-    fireEvent.change(end, { target: { value: "2026-08-02T15:30" } });
+    await userEvent.clear(await within(dialog).findByLabelText("具体开始时间"));
+    await userEvent.clear(within(dialog).getByLabelText("具体结束时间"));
     await userEvent.click(
       within(dialog).getByRole("button", { name: "确认并保存" }),
     );
-    expect(
-      await screen.findByText("准确结束时间必须晚于准确开始时间。"),
-    ).toBeInTheDocument();
+    expect(bodies[0].changes).toMatchObject({
+      event_start_at: null,
+      event_end_at: null,
+    });
+  });
+
+  it.each([
+    {
+      name: "reversed dates",
+      item: eventItem,
+      edit: async (dialog: HTMLElement) => {
+        fireEvent.change(
+          await within(dialog).findByLabelText("活动有效结束日期"),
+          { target: { value: "2026-08-01" } },
+        );
+      },
+      message: "活动有效结束日期不能早于开始日期。",
+    },
+    {
+      name: "an earlier same-day end time",
+      item: { ...eventItem, event_end_date: "2026-08-02" },
+      edit: async (dialog: HTMLElement) => {
+        fireEvent.change(
+          await within(dialog).findByLabelText("具体结束时间"),
+          { target: { value: "15:00" } },
+        );
+      },
+      message: "具体结束时间必须晚于具体开始时间。",
+    },
+    {
+      name: "a start time without its date",
+      item: {
+        ...eventItem,
+        event_start_date: null,
+        event_end_date: null,
+        event_start_at: null,
+        event_end_at: null,
+      },
+      edit: async (dialog: HTMLElement) => {
+        fireEvent.change(
+          await within(dialog).findByLabelText("具体开始时间"),
+          { target: { value: "15:30" } },
+        );
+      },
+      message: "填写具体开始时间时，必须先填写活动有效开始日期。",
+    },
+    {
+      name: "an end time without its date",
+      item: {
+        ...eventItem,
+        event_start_date: null,
+        event_end_date: null,
+        event_start_at: null,
+        event_end_at: null,
+      },
+      edit: async (dialog: HTMLElement) => {
+        fireEvent.change(
+          await within(dialog).findByLabelText("具体结束时间"),
+          { target: { value: "20:00" } },
+        );
+      },
+      message: "填写具体结束时间时，必须先填写活动有效结束日期。",
+    },
+  ])("rejects $name without sending a PATCH", async ({ item, edit, message }) => {
+    currentQuery = `item=${item.id}`;
+    const request = vi.spyOn(apiClient, "request").mockImplementation(
+      async (path) => {
+        if (path === "/api/v1/demo/sessions") return session as never;
+        if (path.startsWith("/api/v1/collections?")) {
+          return { ...filledPage, items: [item] } as never;
+        }
+        return { item, sources: [] } as never;
+      },
+    );
+
+    render(<CollectionsExperience />);
+    const dialog = await screen.findByRole("dialog");
+    await edit(dialog);
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "确认并保存" }),
+    );
+    expect(await screen.findByText(message)).toBeInTheDocument();
     expect(
       request.mock.calls.filter(([, options]) => options?.method === "PATCH"),
     ).toHaveLength(0);
+  });
+
+  it("saves one specific time but clearly keeps the Event pending", async () => {
+    const dateOnly = {
+      ...eventItem,
+      event_start_at: null,
+      event_end_at: null,
+      missing_fields: ["event_start_at", "event_end_at"],
+    };
+    const saved = {
+      ...dateOnly,
+      event_start_at: "2026-08-02T07:30:00Z",
+      missing_fields: ["event_end_at"],
+      uncertainties: [],
+      version: 2,
+      planning_eligible: false,
+      planning_exclusion_reason: "event_time_unconfirmed",
+    };
+    currentQuery = `item=${dateOnly.id}`;
+    const bodies: Array<{ changes: Record<string, unknown> }> = [];
+    vi.spyOn(apiClient, "request").mockImplementation(
+      async (path, options) => {
+        if (path === "/api/v1/demo/sessions") return session as never;
+        if (path.startsWith("/api/v1/collections?")) return filledPage as never;
+        if (options?.method === "PATCH") {
+          bodies.push(JSON.parse(String(options.body)));
+          return saved as never;
+        }
+        return { item: dateOnly, sources: [] } as never;
+      },
+    );
+
+    render(<CollectionsExperience />);
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(await within(dialog).findByLabelText("具体开始时间"), {
+      target: { value: "15:30" },
+    });
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "确认并保存" }),
+    );
+    expect(bodies[0].changes).toMatchObject({
+      event_start_at: "2026-08-02T15:30:00+08:00",
+    });
+    expect(
+      await screen.findByText("已保存当前活动时间，具体时段待补充。"),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText("活动时间待确认")).toBeInTheDocument();
   });
 
   it.each([
@@ -425,6 +625,7 @@ describe("CollectionsExperience", () => {
     ["422", new ApiError("request_failed", 422, "request-id")],
     ["timeout", new ApiError("timeout", null, null)],
     ["cancel", new ApiError("aborted", null, null)],
+    ["network", new ApiError("network_error", null, null)],
   ])("keeps Event time edits after a %s response", async (_label, error) => {
     currentQuery = `item=${eventItem.id}`;
     vi.spyOn(apiClient, "request").mockImplementation(
@@ -438,12 +639,17 @@ describe("CollectionsExperience", () => {
 
     render(<CollectionsExperience />);
     const dialog = await screen.findByRole("dialog");
-    const start = await within(dialog).findByLabelText("准确开始时间");
-    fireEvent.change(start, { target: { value: "2026-08-02T16:00" } });
+    const startDate = await within(dialog).findByLabelText(
+      "活动有效开始日期",
+    );
+    const start = within(dialog).getByLabelText("具体开始时间");
+    fireEvent.change(startDate, { target: { value: "2026-08-03" } });
+    fireEvent.change(start, { target: { value: "16:00" } });
     await userEvent.click(
       within(dialog).getByRole("button", { name: "确认并保存" }),
     );
-    await waitFor(() => expect(start).toHaveValue("2026-08-02T16:00"));
+    await waitFor(() => expect(startDate).toHaveValue("2026-08-03"));
+    expect(start).toHaveValue("16:00");
     expect(screen.queryByText("活动时间已确认，可参与当前计划。")).toBeNull();
   });
 
@@ -469,7 +675,7 @@ describe("CollectionsExperience", () => {
 
     render(<CollectionsExperience />);
     const dialog = await screen.findByRole("dialog");
-    await within(dialog).findByLabelText("准确开始时间");
+    await within(dialog).findByLabelText("具体开始时间");
     await userEvent.click(
       within(dialog).getByRole("button", { name: "确认并保存" }),
     );
@@ -496,7 +702,7 @@ describe("CollectionsExperience", () => {
     expect(
       within(dialog).queryByRole("button", { name: "确认并保存" }),
     ).toBeNull();
-    expect(within(dialog).queryByLabelText("准确开始时间")).toBeNull();
+    expect(within(dialog).queryByLabelText("具体开始时间")).toBeNull();
   });
 
   it("shows differentiating candidate fields and supports none of the above", async () => {

@@ -115,8 +115,8 @@ const exclusionLabels: Record<string, string> = {
 const eventTemporalLabels: Readonly<Record<string, string>> = {
   event_start_date: "活动有效开始日期",
   event_end_date: "活动有效结束日期",
-  event_start_at: "准确开始时间",
-  event_end_at: "准确结束时间",
+  event_start_at: "具体开始时间",
+  event_end_at: "具体结束时间",
 };
 
 const eventTemporalFields = Object.keys(eventTemporalLabels);
@@ -150,28 +150,32 @@ function planningExclusionLabel(item: CollectionItem): string {
   );
 }
 
-function isoToShanghaiLocal(value: string | null): string {
-  if (!value) return "";
+function isoToShanghaiParts(
+  value: string | null,
+): { date: string; time: string } | null {
+  if (!value) return null;
   const instant = new Date(value);
-  if (Number.isNaN(instant.getTime())) return "";
+  if (Number.isNaN(instant.getTime())) return null;
   const shanghai = new Date(instant.getTime() + 8 * 60 * 60 * 1000);
   const pad = (part: number) => String(part).padStart(2, "0");
-  return [
-    shanghai.getUTCFullYear(),
-    "-",
-    pad(shanghai.getUTCMonth() + 1),
-    "-",
-    pad(shanghai.getUTCDate()),
-    "T",
-    pad(shanghai.getUTCHours()),
-    ":",
-    pad(shanghai.getUTCMinutes()),
-  ].join("");
+  return {
+    date: [
+      shanghai.getUTCFullYear(),
+      "-",
+      pad(shanghai.getUTCMonth() + 1),
+      "-",
+      pad(shanghai.getUTCDate()),
+    ].join(""),
+    time: [
+      pad(shanghai.getUTCHours()),
+      ":",
+      pad(shanghai.getUTCMinutes()),
+    ].join(""),
+  };
 }
 
-function shanghaiLocalToIso(value: string): string {
-  const withSeconds = value.length === 16 ? `${value}:00` : value;
-  return `${withSeconds}+08:00`;
+function shanghaiDateAndTimeToIso(date: string, time: string): string {
+  return `${date}T${time}:00+08:00`;
 }
 
 function errorCopy(error: unknown): string {
@@ -222,12 +226,18 @@ function priceLabel(item: CollectionItem): string {
 function eventLabel(item: CollectionItem): string | null {
   if (item.kind !== "event") return null;
   if (item.event_start_at && item.event_end_at) {
-    return `${new Date(item.event_start_at).toLocaleString("zh-CN")} – ${new Date(
-      item.event_end_at,
-    ).toLocaleTimeString("zh-CN")}`;
+    const startAt = isoToShanghaiParts(item.event_start_at);
+    const endAt = isoToShanghaiParts(item.event_end_at);
+    if (startAt && endAt) {
+      return `${startAt.date} ${startAt.time} – ${
+        endAt.date === startAt.date
+          ? endAt.time
+          : `${endAt.date} ${endAt.time}`
+      }`;
+    }
   }
   if (item.event_start_date && item.event_end_date) {
-    return `${item.event_start_date} – ${item.event_end_date} · 准确时段待确认`;
+    return `${item.event_start_date} – ${item.event_end_date} · 具体时段待补充`;
   }
   return item.event_start_clue ?? "活动时间待确认";
 }
@@ -304,6 +314,8 @@ export function CollectionsExperience() {
   } | null>(null);
 
   function restoreDrafts(item: CollectionItem) {
+    const startAt = isoToShanghaiParts(item.event_start_at);
+    const endAt = isoToShanghaiParts(item.event_end_at);
     setDraftTitle(item.title);
     setDraftCity(item.city_hint ?? "");
     setDraftDistrict(item.district ?? "");
@@ -312,10 +324,10 @@ export function CollectionsExperience() {
     setDraftLandmark(item.landmark ?? "");
     setDraftMetroStation(item.metro_station ?? "");
     setDraftTags(item.tags.join("、"));
-    setDraftEventStartDate(item.event_start_date ?? "");
-    setDraftEventEndDate(item.event_end_date ?? "");
-    setDraftEventStartAt(isoToShanghaiLocal(item.event_start_at));
-    setDraftEventEndAt(isoToShanghaiLocal(item.event_end_at));
+    setDraftEventStartDate(item.event_start_date ?? startAt?.date ?? "");
+    setDraftEventEndDate(item.event_end_date ?? endAt?.date ?? "");
+    setDraftEventStartAt(startAt?.time ?? "");
+    setDraftEventEndAt(endAt?.time ?? "");
   }
   useLayoutEffect(() => {
     if (activeDetailId.current === selectedId) return;
@@ -629,18 +641,31 @@ export function CollectionsExperience() {
       setFeedback("活动有效结束日期不能早于开始日期。");
       return;
     }
-    const startAt = draftEventStartAt
-      ? shanghaiLocalToIso(draftEventStartAt)
-      : null;
-    const endAt = draftEventEndAt
-      ? shanghaiLocalToIso(draftEventEndAt)
-      : null;
+    if (draftEventStartAt && !draftEventStartDate) {
+      setFeedback("填写具体开始时间时，必须先填写活动有效开始日期。");
+      return;
+    }
+    if (draftEventEndAt && !draftEventEndDate) {
+      setFeedback("填写具体结束时间时，必须先填写活动有效结束日期。");
+      return;
+    }
+    const startAt =
+      draftEventStartAt && draftEventStartDate
+        ? shanghaiDateAndTimeToIso(
+            draftEventStartDate,
+            draftEventStartAt,
+          )
+        : null;
+    const endAt =
+      draftEventEndAt && draftEventEndDate
+        ? shanghaiDateAndTimeToIso(draftEventEndDate, draftEventEndAt)
+        : null;
     if (
       startAt &&
       endAt &&
       Date.parse(endAt) <= Date.parse(startAt)
     ) {
-      setFeedback("准确结束时间必须晚于准确开始时间。");
+      setFeedback("具体结束时间必须晚于具体开始时间。");
       return;
     }
 
@@ -685,7 +710,7 @@ export function CollectionsExperience() {
         if (item.planning_eligible) {
           setFeedback("活动时间已确认，可参与当前计划。");
         } else if (!exactTimeConfirmed) {
-          setFeedback("已保存当前活动时间，准确时段待补充。");
+          setFeedback("已保存当前活动时间，具体时段待补充。");
         } else {
           setFeedback("活动时间已确认，准确地点确认后才可参与计划。");
         }
@@ -1123,7 +1148,6 @@ export function CollectionsExperience() {
                         <input
                           name="event_end_date"
                           type="date"
-                          min={draftEventStartDate || undefined}
                           value={draftEventEndDate}
                           onChange={(event) =>
                             setDraftEventEndDate(event.target.value)
@@ -1131,10 +1155,10 @@ export function CollectionsExperience() {
                         />
                       </label>
                       <label>
-                        准确开始时间
+                        具体开始时间
                         <input
                           name="event_start_at"
-                          type="datetime-local"
+                          type="time"
                           value={draftEventStartAt}
                           onChange={(event) =>
                             setDraftEventStartAt(event.target.value)
@@ -1142,11 +1166,10 @@ export function CollectionsExperience() {
                         />
                       </label>
                       <label>
-                        准确结束时间
+                        具体结束时间
                         <input
                           name="event_end_at"
-                          type="datetime-local"
-                          min={draftEventStartAt || undefined}
+                          type="time"
                           value={draftEventEndAt}
                           onChange={(event) =>
                             setDraftEventEndAt(event.target.value)
@@ -1176,7 +1199,7 @@ export function CollectionsExperience() {
                       </p>
                       {!detail.item.event_start_at ||
                       !detail.item.event_end_at ? (
-                        <p>准确时段待补充；仅确认日期仍不能参与计划。</p>
+                        <p>具体时段待补充；仅确认日期仍不能参与计划。</p>
                       ) : null}
                     </div>
                     <button

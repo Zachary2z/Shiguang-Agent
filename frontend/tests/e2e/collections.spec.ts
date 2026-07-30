@@ -31,6 +31,22 @@ const baseItem = {
   planning_exclusion_reason: "location_unconfirmed",
 };
 
+const eventItem = {
+  ...baseItem,
+  kind: "event",
+  title: "深圳周末音乐节",
+  event_start_date: "2026-08-02",
+  event_end_date: "2026-08-04",
+  event_start_at: "2026-08-02T07:30:00Z",
+  event_end_at: "2026-08-04T12:00:00Z",
+  uncertainties: [
+    { field: "event_start_at", reason: "模型建议需要确认" },
+    { field: "event_end_at", reason: "模型建议需要确认" },
+  ],
+  status: "pending_details",
+  planning_exclusion_reason: "event_time_unconfirmed",
+};
+
 async function mockCollections(page: Page) {
   let item = { ...baseItem };
   await page.route("**/api/v1/**", async (route) => {
@@ -90,6 +106,28 @@ async function mockCollections(page: Page) {
   });
 }
 
+async function mockEventCollections(page: Page) {
+  await page.route("**/api/v1/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/demo/sessions") {
+      await route.fulfill({ json: { csrf_token: "e2e-csrf" } });
+      return;
+    }
+    if (path === `/api/v1/collections/${itemId}`) {
+      await route.fulfill({ json: { item: eventItem, sources: [] } });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        items: [eventItem],
+        page: 1,
+        page_size: 8,
+        total: 1,
+      },
+    });
+  });
+}
+
 test("collection URL state survives refresh and browser history", async ({ page }) => {
   await mockCollections(page);
   await page.goto("/collections");
@@ -139,6 +177,40 @@ for (const width of [320, 390, 768, 1024, 1440]) {
       expect(control.width).toBeGreaterThanOrEqual(44);
       expect(control.height).toBeGreaterThanOrEqual(44);
     }
+  });
+}
+
+for (const width of [320, 390, 768, 1024, 1440]) {
+  test(`Event date and time form is accessible without horizontal overflow at ${width}px`, async ({
+    page,
+  }) => {
+    await mockEventCollections(page);
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto("/collections");
+    await page.getByRole("button", { name: new RegExp(eventItem.title) }).click();
+    const dialog = page.getByRole("dialog");
+    const startDate = dialog.getByLabel("活动有效开始日期");
+    const endDate = dialog.getByLabel("活动有效结束日期");
+    const startTime = dialog.getByLabel("具体开始时间");
+    const endTime = dialog.getByLabel("具体结束时间");
+    await expect(startDate).toHaveAttribute("type", "date");
+    await expect(endDate).toHaveAttribute("type", "date");
+    await expect(startTime).toHaveAttribute("type", "time");
+    await expect(endTime).toHaveAttribute("type", "time");
+    await expect(startTime).toHaveValue("15:30");
+    await expect(endTime).toHaveValue("20:00");
+    expect(
+      await page.evaluate(
+        () =>
+          document.documentElement.scrollWidth -
+          document.documentElement.clientWidth,
+      ),
+    ).toBeLessThanOrEqual(0);
+    await expect(
+      dialog.getByRole("button", { name: "关闭收藏详情" }),
+    ).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(startDate).toBeFocused();
   });
 }
 
