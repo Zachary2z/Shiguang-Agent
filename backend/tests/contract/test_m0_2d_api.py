@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import sqlite3
@@ -132,6 +133,26 @@ def _response(*candidates: PlaceCandidate | EventCandidate):
     return fake_response(
         content=ExtractionResult.with_candidates(candidates).model_dump_json(),
     )
+
+
+def _date_only_text_response():
+    payload = json.loads(
+        ExtractionResult.with_candidates((_date_only_event(),)).model_dump_json()
+    )
+    quote = "展期：2026.6.13–7.31"
+    payload["source_evidence"] = [
+        {
+            "candidate_index": 0,
+            "field": field.value,
+            "value": payload["candidates"][0][field.value],
+            "quote": quote,
+        }
+        for field in (
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
+        )
+    ]
+    return fake_response(content=json.dumps(payload, ensure_ascii=False))
 
 
 def _migrate(settings: Settings) -> None:
@@ -635,7 +656,7 @@ async def test_patch_reuses_domain_validation_and_noop_keeps_version(
 async def test_date_only_event_api_serializes_modifies_and_clears_calendar_dates(
     test_settings: Settings,
 ) -> None:
-    provider = FakeProvider([_response(_date_only_event())])
+    provider = FakeProvider([_date_only_text_response()])
     async with _client(test_settings, provider) as (_api, client):
         session_id = await _demo(client)
         created = await _submit(

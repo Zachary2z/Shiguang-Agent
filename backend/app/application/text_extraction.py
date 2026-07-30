@@ -5,9 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from copy import deepcopy
-from datetime import date, datetime
 from typing import Final
-from zoneinfo import ZoneInfo
 
 from app.application.extraction_output import (
     EXTRACTION_SEMANTIC_RULES,
@@ -21,12 +19,8 @@ from app.application.extraction_output import (
 )
 from app.domain.collections import (
     CandidateField,
-    EventCandidate,
-    ExtractionOutcome,
     ExtractionReasonCode,
     ExtractionResult,
-    PlaceCandidate,
-    Uncertainty,
     UnsupportedReason,
 )
 from nanobot_core.providers import (
@@ -37,7 +31,6 @@ from nanobot_core.providers import (
 )
 
 MAX_TEXT_INPUT_CHARS: Final = 20_000
-_PRODUCT_TIMEZONE: Final = ZoneInfo("Asia/Shanghai")
 _GENERIC_INPUTS = frozenset(
     {
         "一个地方",
@@ -77,12 +70,10 @@ _COMPLEX_ROUTE_EVIDENCE = re.compile(
     re.IGNORECASE,
 )
 _ROUTE_REQUEST = re.compile(r"给我|帮我|规划|制定|生成|导航|下载|怎么走")
-_MONTH_DAY_CLUE = re.compile(r"(?<!\d)\d{1,2}\s*月\s*\d{1,2}\s*日")
-
 _SYSTEM_PROMPT = (
     "You extract structured collection candidates for Shiguang.\n"
     "Return exactly one JSON object matching this JSON Schema, without Markdown or "
-    f"commentary:\n{extraction_result_schema_json()}\n\n"
+    f"commentary:\n{extraction_result_schema_json(include_source_evidence=True)}\n\n"
     "Rules:\n"
     f"{EXTRACTION_SEMANTIC_RULES}"
     "- Produce one candidate object per distinct Place or user-supplied Event; never "
@@ -114,7 +105,10 @@ class TextExtractionService:
         response_observer: Callable[[ModelResponse], None] | None = None,
     ) -> None:
         self._provider = provider
-        self._response_format = extraction_response_format(structured_output_mode)
+        self._response_format = extraction_response_format(
+            structured_output_mode,
+            include_source_evidence=True,
+        )
         self._response_observer = response_observer
 
     async def extract(self, text: str) -> ExtractionResult:
@@ -135,16 +129,16 @@ class TextExtractionService:
             response_format=self._response_format,
         )
         self._observe(first_response)
-        first_result, issues = parse_extraction_response(first_response)
+        first_result, issues = parse_extraction_response(
+            first_response,
+            source_text=text,
+        )
         if first_result is not None:
-            return _enforce_text_semantic_evidence(
-                canonicalize_extraction_result(
+            return canonicalize_extraction_result(
                 first_result,
                 insufficient_recovery_suggestions=(
                     "请补充具体店名、活动名、区域、商圈或地标。",
                 ),
-                ),
-                text,
             )
 
         repair_messages = build_repair_messages(
@@ -159,16 +153,16 @@ class TextExtractionService:
             response_format=self._response_format,
         )
         self._observe(repaired_response)
-        repaired_result, _repaired_issues = parse_extraction_response(repaired_response)
+        repaired_result, _repaired_issues = parse_extraction_response(
+            repaired_response,
+            source_text=text,
+        )
         if repaired_result is not None:
-            return _enforce_text_semantic_evidence(
-                canonicalize_extraction_result(
+            return canonicalize_extraction_result(
                 repaired_result,
                 insufficient_recovery_suggestions=(
                     "请补充具体店名、活动名、区域、商圈或地标。",
                 ),
-                ),
-                text,
             )
         return ExtractionResult.model_invalid()
 
@@ -225,177 +219,6 @@ def _explicit_unsupported_reason(text: str) -> UnsupportedReason | None:
     ):
         return UnsupportedReason.COMPLEX_OUTDOOR_ROUTE
     return None
-
-
-def _enforce_text_semantic_evidence(
-    result: ExtractionResult,
-    source_text: str,
-) -> ExtractionResult:
-    """Keep each Event's temporal facts behind evidence bound to that candidate."""
-
-    if result.outcome is not ExtractionOutcome.CANDIDATES:
-        return result
-    normalized: list[PlaceCandidate | EventCandidate] = []
-    for candidate in result.candidates:
-        if not isinstance(candidate, EventCandidate):
-            normalized.append(candidate)
-            continue
-        evidence = _candidate_evidence_scope(
-            source_text,
-            candidate=candidate,
-            candidates=result.candidates,
-        )
-        payload = candidate.model_dump(mode="python")
-        start_date_supported = _date_is_evidenced(evidence, candidate.event_start_date)
-        end_date_supported = _date_is_evidenced(evidence, candidate.event_end_date)
-        start_at_supported = _datetime_is_evidenced(
-            evidence, candidate.event_start_at
-        )
-        end_at_supported = _datetime_is_evidenced(evidence, candidate.event_end_at)
-        removed_dates = (
-            candidate.event_start_date is not None and not start_date_supported
-        ) or (candidate.event_end_date is not None and not end_date_supported)
-        removed_times = (
-            candidate.event_start_at is not None and not start_at_supported
-        ) or (candidate.event_end_at is not None and not end_at_supported)
-        if not removed_dates and not removed_times:
-            normalized.append(candidate)
-            continue
-        if not start_date_supported:
-            payload["event_start_date"] = None
-        if not end_date_supported:
-            payload["event_end_date"] = None
-        if not start_at_supported:
-            payload["event_start_at"] = None
-        if not end_at_supported:
-            payload["event_end_at"] = None
-        clue_match = _MONTH_DAY_CLUE.search(evidence)
-        clue = None if clue_match is None else clue_match.group(0)
-        if clue is not None and payload.get("event_start_clue") is None:
-            payload["event_start_clue"] = clue
-        missing = [
-            field
-            for field in candidate.missing_fields
-            if field
-            not in {
-                CandidateField.EVENT_START_DATE,
-                CandidateField.EVENT_END_DATE,
-                CandidateField.EVENT_START_AT,
-                CandidateField.EVENT_END_AT,
-            }
-        ]
-        uncertainties = [
-            item
-            for item in candidate.uncertainties
-            if item.field
-            not in {
-                CandidateField.EVENT_START_DATE,
-                CandidateField.EVENT_END_DATE,
-                CandidateField.EVENT_START_AT,
-                CandidateField.EVENT_END_AT,
-            }
-        ]
-        date_fields = (
-            (CandidateField.EVENT_START_DATE, payload["event_start_date"]),
-            (CandidateField.EVENT_END_DATE, payload["event_end_date"]),
-        )
-        for field, value in date_fields:
-            if value is None:
-                if clue is None:
-                    missing.append(field)
-                else:
-                    uncertainties.append(
-                        Uncertainty(
-                            field=field,
-                            reason="原文提供了日期线索，但没有提供可确认的年份。",
-                        )
-                    )
-        time_fields = (
-            (CandidateField.EVENT_START_AT, payload["event_start_at"]),
-            (CandidateField.EVENT_END_AT, payload["event_end_at"]),
-        )
-        missing.extend(field for field, value in time_fields if value is None)
-        payload["missing_fields"] = tuple(missing)
-        payload["uncertainties"] = tuple(uncertainties)
-        normalized.append(EventCandidate.model_validate(payload))
-    return ExtractionResult.with_candidates(tuple(normalized))
-
-
-def _candidate_evidence_scope(
-    source_text: str,
-    *,
-    candidate: EventCandidate,
-    candidates: tuple[PlaceCandidate | EventCandidate, ...],
-) -> str:
-    """Bind evidence by the model candidate's title without interpreting its meaning."""
-
-    if len(candidates) == 1:
-        return source_text
-    title_start = source_text.find(candidate.title)
-    if title_start < 0:
-        return ""
-    next_starts = tuple(
-        position
-        for other in candidates
-        if other is not candidate
-        and (position := source_text.find(other.title, title_start + len(candidate.title))) >= 0
-    )
-    title_end = min(next_starts, default=len(source_text))
-    return source_text[title_start:title_end]
-
-
-def _date_is_evidenced(source: str, value: date | None) -> bool:
-    if value is None:
-        return True
-    year = value.year
-    month = value.month
-    day = value.day
-    compact = re.sub(r"\s+", "", source)
-    year_evidence = re.search(rf"(?<!\d){year}(?:年|[-/.])", compact) is not None
-    month_day_evidence = any(
-        clue in compact
-        for clue in (
-            f"{month}月{day}日",
-            f"{month:02d}月{day:02d}日",
-            f"{month}.{day}",
-            f"{month:02d}.{day:02d}",
-            f"{month}/{day}",
-            f"{month:02d}/{day:02d}",
-            f"{month}-{day}",
-            f"{month:02d}-{day:02d}",
-        )
-    )
-    return year_evidence and month_day_evidence
-
-
-def _time_is_evidenced(source: str, value: datetime | None) -> bool:
-    if value is None:
-        return True
-    compact = re.sub(r"\s+", "", source)
-    representations = (value, value.astimezone(_PRODUCT_TIMEZONE))
-    return any(
-        clue in compact
-        for represented in representations
-        for clue in (
-            f"{represented.hour}:{represented.minute:02d}",
-            f"{represented.hour:02d}:{represented.minute:02d}",
-            f"{represented.hour}点{represented.minute:02d}",
-            f"{represented.hour}时{represented.minute:02d}",
-            f"{represented.hour}点" if represented.minute == 0 else "",
-            f"{represented.hour}时" if represented.minute == 0 else "",
-        )
-        if clue
-    )
-
-
-def _datetime_is_evidenced(source: str, value: datetime | None) -> bool:
-    if value is None:
-        return True
-    local_value = value.astimezone(_PRODUCT_TIMEZONE)
-    return (
-        _date_is_evidenced(source, value.date())
-        or _date_is_evidenced(source, local_value.date())
-    ) and _time_is_evidenced(source, value)
 
 
 __all__ = [

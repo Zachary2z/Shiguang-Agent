@@ -30,6 +30,31 @@ from nanobot_core.providers import (
 MAX_MODEL_OUTPUT_CHARS: Final = 50_000
 _EXTRACTION_SCHEMA_NAME: Final = "shiguang_extraction_result"
 _EXTRACTION_RESULT_SCHEMA: Final = ExtractionResult.model_json_schema()
+_EVENT_TEMPORAL_FIELDS: Final = (
+    CandidateField.EVENT_START_DATE,
+    CandidateField.EVENT_END_DATE,
+    CandidateField.EVENT_START_AT,
+    CandidateField.EVENT_END_AT,
+)
+_SOURCE_EVIDENCE_PROPERTY: Final = "source_evidence"
+_SOURCE_EVIDENCE_SCHEMA: Final[dict[str, object]] = {
+    "type": "array",
+    "maxItems": 32,
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "candidate_index": {"type": "integer", "minimum": 0},
+            "field": {
+                "type": "string",
+                "enum": [field.value for field in _EVENT_TEMPORAL_FIELDS],
+            },
+            "value": {"type": "string", "minLength": 1, "maxLength": 80},
+            "quote": {"type": "string", "minLength": 1, "maxLength": 200},
+        },
+        "required": ["candidate_index", "field", "value", "quote"],
+    },
+}
 _CANDIDATE_FIELD_VALUES: Final = frozenset(field.value for field in CandidateField)
 _CANDIDATE_MODELS_BY_KIND: Final[
     dict[str, type[PlaceCandidate] | type[EventCandidate]]
@@ -80,6 +105,12 @@ EXTRACTION_SEMANTIC_RULES: Final = (
     "start. Keep absent exact times null. Use event_start_clue/event_end_clue only for "
     "time expressions that cannot be reliably structured, and classify the corresponding "
     "fact uncertain.\n"
+    "- For text input only, source_evidence is transient provenance, not candidate data. "
+    "For every non-null Event date or exact-time field, emit one evidence item with the "
+    "candidate's zero-based index, that exact field name, the exact JSON field value, and "
+    "one contiguous verbatim source quote that fully supports the value. The same quote "
+    "may support multiple fields of one candidate, but evidence must never be shared or "
+    "swapped across candidates. Do not infer evidence from a title or paraphrase it.\n"
     "- Shiguang currently uses renminbi only; users do not choose a currency.\n"
     "- When a local price is clear but no currency is written, emit price_amount and "
     'price_currency "CNY" together. This includes an explicit free price as amount 0.\n'
@@ -152,17 +183,32 @@ _IMAGE_PRIVATE_EVIDENCE = re.compile(
 )
 
 
-def extraction_result_schema() -> dict[str, object]:
+def extraction_result_schema(
+    *,
+    include_source_evidence: bool = False,
+) -> dict[str, object]:
     """Return the one generated ExtractionResult schema as an isolated snapshot."""
 
-    return deepcopy(_EXTRACTION_RESULT_SCHEMA)
+    schema = deepcopy(_EXTRACTION_RESULT_SCHEMA)
+    if not include_source_evidence:
+        return schema
+    properties = schema.get("properties")
+    required = schema.get("required")
+    assert isinstance(properties, dict)
+    assert isinstance(required, list)
+    properties[_SOURCE_EVIDENCE_PROPERTY] = deepcopy(_SOURCE_EVIDENCE_SCHEMA)
+    required.append(_SOURCE_EVIDENCE_PROPERTY)
+    return schema
 
 
-def extraction_result_schema_json() -> str:
+def extraction_result_schema_json(
+    *,
+    include_source_evidence: bool = False,
+) -> str:
     """Serialize the same generated schema used by optional structured output."""
 
     return json.dumps(
-        extraction_result_schema(),
+        extraction_result_schema(include_source_evidence=include_source_evidence),
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
@@ -171,13 +217,17 @@ def extraction_result_schema_json() -> str:
 
 def extraction_response_format(
     mode: StructuredOutputMode | None,
+    *,
+    include_source_evidence: bool = False,
 ) -> StructuredOutput | None:
     """Build the explicit extraction request for a verified provider capability."""
 
     return structured_response_format(
         mode,
         schema_name=_EXTRACTION_SCHEMA_NAME,
-        json_schema=extraction_result_schema(),
+        json_schema=extraction_result_schema(
+            include_source_evidence=include_source_evidence
+        ),
     )
 
 
@@ -203,6 +253,8 @@ def structured_response_format(
 
 def parse_extraction_response(
     response: ModelResponse | None,
+    *,
+    source_text: str | None = None,
 ) -> tuple[ExtractionResult | None, tuple[dict[str, str], ...]]:
     """Validate one model response without retaining inputs or validation values."""
 
@@ -222,6 +274,21 @@ def parse_extraction_response(
         return None, ({"path": "$", "type": "json_invalid"},)
 
     try:
+        if source_text is not None:
+            structural_result = deepcopy(raw_result)
+            if isinstance(structural_result, dict):
+                structural_result.pop(_SOURCE_EVIDENCE_PROPERTY, None)
+            ExtractionResult.model_validate_json(
+                json.dumps(
+                    _normalize_model_extraction_output(structural_result),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+            raw_result = _apply_text_source_evidence(
+                raw_result,
+                source_text=source_text,
+            )
         normalized_json = json.dumps(
             _normalize_model_extraction_output(raw_result),
             ensure_ascii=False,
@@ -234,6 +301,140 @@ def parse_extraction_response(
     if parsed.outcome is ExtractionOutcome.MODEL_INVALID_OUTPUT:
         return None, ({"path": "outcome", "type": "model_invalid_self_declared"},)
     return parsed, ()
+
+
+def _apply_text_source_evidence(raw_result: object, *, source_text: str) -> object:
+    """Consume candidate-field provenance before the strict domain DTO boundary."""
+
+    normalized = deepcopy(raw_result)
+    if not isinstance(normalized, dict):
+        return normalized
+    raw_evidence = normalized.pop(_SOURCE_EVIDENCE_PROPERTY, None)
+    candidates = normalized.get("candidates")
+    if not isinstance(candidates, list):
+        return normalized
+    supported = _supported_temporal_fields(
+        candidates=candidates,
+        raw_evidence=raw_evidence,
+        source_text=source_text,
+    )
+    for index, candidate in enumerate(candidates):
+        if isinstance(candidate, dict) and candidate.get("kind") == CollectionKind.EVENT:
+            _clear_unsupported_temporal_fields(
+                candidate,
+                candidate_index=index,
+                supported=supported,
+            )
+    return normalized
+
+
+def _supported_temporal_fields(
+    *,
+    candidates: list[object],
+    raw_evidence: object,
+    source_text: str,
+) -> set[tuple[int, str]]:
+    if not isinstance(raw_evidence, list):
+        return set()
+    claims: dict[tuple[int, str], set[str]] = {}
+    for evidence in raw_evidence[:32]:
+        if not isinstance(evidence, dict) or set(evidence) != {
+            "candidate_index",
+            "field",
+            "value",
+            "quote",
+        }:
+            continue
+        index = evidence.get("candidate_index")
+        field = evidence.get("field")
+        value = evidence.get("value")
+        quote = evidence.get("quote")
+        if (
+            not isinstance(index, int)
+            or isinstance(index, bool)
+            or not 0 <= index < len(candidates)
+            or not isinstance(field, str)
+            or field not in {item.value for item in _EVENT_TEMPORAL_FIELDS}
+            or not isinstance(value, str)
+            or not isinstance(quote, str)
+            or not 0 < len(quote) <= 200
+        ):
+            continue
+        candidate = candidates[index]
+        if (
+            not isinstance(candidate, dict)
+            or candidate.get("kind") != CollectionKind.EVENT
+            or candidate.get(field) != value
+            or quote not in source_text
+        ):
+            continue
+        claims.setdefault((index, quote), set()).add(field)
+
+    supported: set[tuple[int, str]] = set()
+    occupied: list[tuple[int, int, int]] = []
+    for (index, quote), fields in sorted(
+        claims.items(),
+        key=lambda item: (len(item[0][1]), item[0][0], item[0][1]),
+    ):
+        for start in _quote_occurrences(source_text, quote):
+            end = start + len(quote)
+            if any(
+                owner != index and start < occupied_end and occupied_start < end
+                for occupied_start, occupied_end, owner in occupied
+            ):
+                continue
+            occupied.append((start, end, index))
+            supported.update((index, field) for field in fields)
+            break
+    return supported
+
+
+def _quote_occurrences(source_text: str, quote: str) -> tuple[int, ...]:
+    occurrences: list[int] = []
+    offset = 0
+    while (position := source_text.find(quote, offset)) >= 0:
+        occurrences.append(position)
+        offset = position + 1
+    return tuple(occurrences)
+
+
+def _clear_unsupported_temporal_fields(
+    candidate: dict[str, object],
+    *,
+    candidate_index: int,
+    supported: set[tuple[int, str]],
+) -> None:
+    cleared: list[CandidateField] = []
+    for field in _EVENT_TEMPORAL_FIELDS:
+        if (
+            candidate.get(field.value) is not None
+            and (candidate_index, field.value) not in supported
+        ):
+            candidate[field.value] = None
+            cleared.append(field)
+    if not cleared:
+        return
+
+    raw_missing = candidate.get("missing_fields")
+    raw_uncertainties = candidate.get("uncertainties")
+    missing = list(raw_missing) if isinstance(raw_missing, list) else []
+    uncertainties = list(raw_uncertainties) if isinstance(raw_uncertainties, list) else []
+    cleared_values = {field.value for field in cleared}
+    missing = [field for field in missing if field not in cleared_values]
+    uncertainties = [
+        item
+        for item in uncertainties
+        if not isinstance(item, dict) or item.get("field") not in cleared_values
+    ]
+    uncertainties.extend(
+        {
+            "field": field.value,
+            "reason": "时间事实缺少可绑定的原文证据。",
+        }
+        for field in cleared
+    )
+    candidate["missing_fields"] = missing
+    candidate["uncertainties"] = uncertainties
 
 
 def _normalize_model_extraction_output(raw_result: object) -> object:

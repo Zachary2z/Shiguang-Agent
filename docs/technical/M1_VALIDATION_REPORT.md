@@ -42,11 +42,26 @@ API `storage=None` 与 Worker 单独构造的运行分叉，以及截图准备�
    响应只含固定 error code、消息和恢复动作，不暴露文件名、路径、内容、异常链或
    存储实现。
 
+候选 `8c7cd71924012b46f8f0573bc24c5f00b2774ef7` 随后的 Event 时间证据复验确认：
+标题位置切片和手写年月日/钟点格式仍会误清中文上午/下午时刻，并在日期位于标题前
+的多 Event 输入中跨候选吸收证据。生产修复已完成，等待主控复验，本报告不提前宣布
+该 P1 关闭。
+
+修复删除 `_candidate_evidence_scope`、`_date_is_evidenced`、
+`_time_is_evidenced`、`_datetime_is_evidenced` 和对应日期/时区格式规则。文字模型
+仍在唯一结构输出中返回原有候选，同时附带临时 `source_evidence`；证据逐条绑定
+候选序号、Event 时间字段、原始结构值与原文逐字片段。统一解析边界先执行原有严格
+领域结构校验，再核对临时字段值、原文片段及跨候选片段占用，最后在构造
+`ExtractionResult/EventCandidate` 前删除证据。证据不持久化、不进入公开 DTO；
+缺少或冲突时保守清空时间事实并保留 Event 类型。没有第二套 Candidate、Parser、
+Provider、Runner、迁移、标题特例或日期/时间格式列表。
+
 离线验证结果：
 
 - 候选的 pip editable 安装已通过；本轮 `pip check`、Ruff、strict mypy
   （140 个源文件）：退出码均 0；
-- 后端非真实全量：`1684 passed, 18 skipped`，退出码 0；
+- 最新指定 Event/统一输入/检索/计划聚焦集：`235 passed`，退出码 0；
+- 后端非真实全量：`1692 passed, 18 skipped`，退出码 0；
 - 仓库外 pytest 插件封锁 `getaddrinfo/connect/connect_ex/create_connection` 后，
   本轮语义、统一输入和内容导入聚焦集：`136 passed`，退出码 0；
   首次把插件文件路径直接传给 `-p` 时 pytest 插件加载参数格式错误，退出码 1、
@@ -65,8 +80,8 @@ API `storage=None` 与 Worker 单独构造的运行分叉，以及截图准备�
   计划草案 → 自然语言调整 → 明确确认。
 
 真实模型、高德、网页、对象存储或付费 API 调用均为 0；`.env` 未读取；未合并、
-未推送、未开始 M2。当前未发现本次修复产生的 P0/P1；既有 P2 为 npm 开发依赖
-audit 和跨浏览器覆盖限制，保留给主控评估。
+未推送、未开始 M2。Event 时间证据 P1 的生产修复完成，等待主控复验，不在本窗口
+宣布关闭；既有 P2 为 npm 开发依赖 audit 和跨浏览器覆盖限制，保留给主控评估。
 
 ## 1. 2026-07-29 历史结论
 

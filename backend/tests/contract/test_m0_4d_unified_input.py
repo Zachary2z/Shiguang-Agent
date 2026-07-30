@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -236,6 +237,27 @@ def _exact_time_event() -> EventCandidate:
     )
 
 
+def _text_event_response(
+    event: EventCandidate,
+    *,
+    quote: str,
+    fields: tuple[CandidateField, ...],
+) -> ModelResponse:
+    payload = json.loads(
+        ExtractionResult.with_candidates((event,)).model_dump_json()
+    )
+    payload["source_evidence"] = [
+        {
+            "candidate_index": 0,
+            "field": field.value,
+            "value": payload["candidates"][0][field.value],
+            "quote": quote,
+        }
+        for field in fields
+    ]
+    return fake_response(content=json.dumps(payload, ensure_ascii=False))
+
+
 def _web_success() -> WebPageContent:
     return WebPageContent(
         normalized_url="https://example.com/article?a=1&b=2",
@@ -459,15 +481,34 @@ async def test_public_text_replay_preserves_event_dates_and_existing_candidate_b
     test_settings: Settings,
 ) -> None:
     candidates = (_replay_date_event(), _exact_time_event(), _place("Replay place"))
+    date_quote = "夏季展览，2026年6月13日至2026年7月31日"
+    time_quote = "准确场次，2026年7月31日14:00至17:00"
     provider = FakeProvider(
         [
-            fake_response(content=ExtractionResult.with_candidates((candidate,)).model_dump_json())
-            for candidate in candidates
+            _text_event_response(
+                candidates[0],
+                quote=date_quote,
+                fields=(
+                    CandidateField.EVENT_START_DATE,
+                    CandidateField.EVENT_END_DATE,
+                ),
+            ),
+            _text_event_response(
+                candidates[1],
+                quote=time_quote,
+                fields=(
+                    CandidateField.EVENT_START_AT,
+                    CandidateField.EVENT_END_AT,
+                ),
+            ),
+            fake_response(
+                content=ExtractionResult.with_candidates((candidates[2],)).model_dump_json()
+            ),
         ]
     )
     source_texts = (
-        "夏季展览，2026年6月13日至2026年7月31日",
-        "准确场次，2026年7月31日14:00至17:00",
+        date_quote,
+        time_quote,
         "Replay place",
     )
     payloads = [
@@ -691,8 +732,22 @@ async def test_event_import_requires_explicit_poi_choice_before_plan_use(
     event = _exact_time_event()
     provider = FakeProvider(
         [
-            fake_response(
-                content=ExtractionResult.with_candidates((event,)).model_dump_json()
+            (
+                _text_event_response(
+                    event,
+                    quote=(
+                        "准确场次，2026年7月31日14:00至17:00，"
+                        "海上世界文化艺术中心"
+                    ),
+                    fields=(
+                        CandidateField.EVENT_START_AT,
+                        CandidateField.EVENT_END_AT,
+                    ),
+                )
+                if input_kind == "text"
+                else fake_response(
+                    content=ExtractionResult.with_candidates((event,)).model_dump_json()
+                )
             )
         ]
     )
@@ -876,10 +931,16 @@ async def test_event_none_of_above_clears_snapshot_replays_and_conflicts_safely(
     test_settings: Settings,
 ) -> None:
     event = _exact_time_event()
+    source_text = "2026年7月31日14:00至17:00的准确场次，但候选地点都不对"
     provider = FakeProvider(
         [
-            fake_response(
-                content=ExtractionResult.with_candidates((event,)).model_dump_json()
+            _text_event_response(
+                event,
+                quote=source_text,
+                fields=(
+                    CandidateField.EVENT_START_AT,
+                    CandidateField.EVENT_END_AT,
+                ),
             )
         ]
     )
@@ -922,7 +983,7 @@ async def test_event_none_of_above_clears_snapshot_replays_and_conflicts_safely(
             json={
                 "type": "text",
                 "idempotency_key": "event-none-import",
-                "text": "2026年7月31日14:00至17:00的准确场次，但候选地点都不对",
+                    "text": source_text,
             },
         )
         original = imported.json()["collections"][0]
