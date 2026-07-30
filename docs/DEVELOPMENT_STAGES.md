@@ -8,7 +8,7 @@
 | 日期 | 2026-07-28 |
 | 状态 | 后续开发执行基线 |
 | 仓库 | /Users/zhangzihao/Documents/Shiguang_Nanobot |
-| 当前阶段 | M1-Gate 稳定化修复待主控验收；M2-0 未开始且阻塞于主控复验 |
+| 当前阶段 | M1-Gate 修复 2 已通过并集成；当前允许修复 3 Event 时间交互；M2-0 未开始且阻塞 |
 
 ---
 

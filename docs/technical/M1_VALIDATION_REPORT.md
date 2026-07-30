@@ -14,6 +14,25 @@ Agent 计划入口不可达。M1-Gate 因此重新打开；下方“M1 正式关
 - M2-0：未开始，阻塞于主控复验；
 - M1 未重新关闭。
 
+### 2026-07-30 修复 2 主控复验与集成
+
+主控对最终提交 `c10d1237a27632dc74ab9b1cfe0ea0bd6d2dde11` 完成独立复验，并
+将阶段分支以 `--ff-only` 集成到 `main`。地点身份变化后保留旧正式 POI、以及已支持
+的广州线索无法进入唯一地图匹配链路两个 P1 均已关闭；广州正式 POI 仍由服务端统一
+规划资格规则以 `other_city` 排除在深圳计划之外。
+
+复验证据包括：Ruff、strict mypy（140 个源文件）、聚焦集 `201 passed`、非真实
+全集 `1707 passed, 16 skipped, 2 deselected`、仓库外独立缺陷回归 `2 passed`、
+封网聚焦 `201 passed`、迁移 `25 passed` 和唯一 Alembic head
+`20260729_0017`。前端 lint、typecheck、build 通过，Vitest `98 passed`，收藏
+Chromium E2E `8 passed`；纯快进后最小后端聚焦仍为 `201 passed`。
+
+全集一次出现既有 `aiosqlite` 线程收尾 warning；对应目标将该 warning 升级为错误
+后独立复跑 `1 passed`，未连续复现，继续按既有 P2 监测。复验未读取 `.env`，真实
+模型、地图、网页和付费 API 调用为 0；未发现重复核心、样本特例、隐藏 fallback、
+额外重试或下一阶段实现。修复 2 当前无未关闭 P0/P1；M1-Gate 仍因 Event 时间交互
+和计划闭环后续分项保持打开，当前允许开始修复 3。
+
 ### 2026-07-30 M1-Gate 修复 2 生产返修
 
 M1-Gate 修复 2 生产返修完成，等待主控复验；M1-Gate 仍打开，M2-0 未开始且阻塞。

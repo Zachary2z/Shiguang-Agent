@@ -4,10 +4,30 @@
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-Gate 稳定化修复 |
-| 状态 | M1-Gate 修复 2 生产返修完成，等待主控复验 |
-| 当前分支 | codex/m1-gate-location-confirmation |
+| 状态 | M1-Gate 修复 2 已通过主控复验并集成；当前允许修复 3 |
+| 当前分支 | main |
 | 最近更新 | 2026-07-30 |
-| 阻塞项 | M1-Gate 修复 2 生产返修完成，等待主控复验；M1-Gate 仍打开；Event 时间交互与计划闭环仍待后续分项修复；M2-0 未开始且阻塞 |
+| 阻塞项 | Event 时间交互与计划闭环仍待后续分项修复；M1-Gate 继续打开；M2-0 未开始且阻塞 |
+
+## 2026-07-30 M1-Gate 修复 2 主控复验与集成
+
+- 主控确认提交 `c10d1237a27632dc74ab9b1cfe0ea0bd6d2dde11` 直接基于已审查候选，
+  并将 `codex/m1-gate-location-confirmation` 纯快进集成到 `main`。两个 P1 均已
+  关闭：地点身份变化不再保留冲突旧 POI；广州等已支持的其他城市复用同一正式地点
+  匹配链路，并继续由统一规划资格规则排除在深圳计划之外。
+- 主控独立仓库外回归 `2 passed`，重现并证明上次的“广州线索保留旧深圳 POI”和
+  “广州不进入 MapProvider”问题均已消失；封网聚焦集 `201 passed`。普通聚焦集
+  `201 passed`，非真实全集 `1707 passed, 16 skipped, 2 deselected`。
+- 全集出现一次既有 `aiosqlite` 线程收尾 warning；将对应目标用
+  `PytestUnhandledThreadExceptionWarning` 升级为错误后独立复跑 `1 passed`，
+  未连续复现，继续作为既有 P2 监测项，不构成本次阻塞。
+- `pip check`、Ruff、strict mypy（140 个源文件）、迁移 `25 passed` 和唯一
+  Alembic head `20260729_0017` 均通过。前端 lint、typecheck、build 通过，
+  Vitest `98 passed`，收藏 Chromium E2E `8 passed`；纯快进后的后端聚焦集仍为
+  `201 passed`。
+- 未读取 `.env`，真实模型、地图、网页和付费 API 调用为 0；未发现第二套
+  Provider、地点服务、候选 DTO、城市规则、样本特例或下一阶段实现。M1-Gate
+  继续打开，当前允许开始修复 3：Event 日期与准确时间交互收敛；M2-0 仍阻塞。
 
 ## 2026-07-30 M1-Gate 修复 2 生产返修
 
