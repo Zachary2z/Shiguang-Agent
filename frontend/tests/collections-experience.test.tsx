@@ -130,6 +130,76 @@ afterEach(() => {
 });
 
 describe("CollectionsExperience", () => {
+  it("opens from a card and traps focus until Escape closes the detail", async () => {
+    vi.spyOn(apiClient, "request").mockImplementation(
+      async (path) => {
+        if (path === "/api/v1/demo/sessions") return session as never;
+        if (path.startsWith("/api/v1/collections?")) return filledPage as never;
+        return { item: baseItem, sources: [] } as never;
+      },
+    );
+    const view = render(<CollectionsExperience />);
+    const openingCard = await screen.findByRole("button", {
+      name: /深圳湾公园/,
+    });
+    await userEvent.click(openingCard);
+    expect(push).toHaveBeenCalledWith(
+      `/collections?item=${baseItem.id}`,
+      { scroll: false },
+    );
+
+    currentQuery = `item=${baseItem.id}`;
+    view.rerender(<CollectionsExperience />);
+
+    const dialog = await screen.findByRole("dialog");
+    const close = within(dialog).getByRole("button", {
+      name: "关闭收藏详情",
+    });
+    await within(dialog).findByRole("textbox", { name: "名称" });
+    await waitFor(() => expect(close).toHaveFocus());
+    const lastAction = within(dialog).getByRole("button", {
+      name: "保存修改",
+    });
+    lastAction.focus();
+    await userEvent.tab();
+    expect(close).toHaveFocus();
+
+    await userEvent.keyboard("{Escape}");
+    expect(push).toHaveBeenLastCalledWith("/collections", { scroll: false });
+    currentQuery = "";
+    view.rerender(<CollectionsExperience />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await waitFor(() => expect(openingCard).toHaveFocus());
+  });
+
+  it("keeps one Event confirmation form and one collection action set", async () => {
+    currentQuery = `item=${eventItem.id}`;
+    vi.spyOn(apiClient, "request").mockImplementation(
+      async (path) => {
+        if (path === "/api/v1/demo/sessions") return session as never;
+        if (path.startsWith("/api/v1/collections?")) {
+          return { ...filledPage, items: [eventItem] } as never;
+        }
+        return { item: eventItem, sources: [] } as never;
+      },
+    );
+
+    render(<CollectionsExperience />);
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByRole("button", { name: "确认并保存" });
+    expect(
+      within(dialog).getAllByRole("button", { name: "确认并保存" }),
+    ).toHaveLength(1);
+    expect(
+      within(dialog).getAllByRole("button", { name: "保存修改" }),
+    ).toHaveLength(1);
+    expect(
+      within(dialog).getAllByRole("button", { name: "删除收藏" }),
+    ).toHaveLength(1);
+    expect(dialog.querySelectorAll(".event-time-form")).toHaveLength(1);
+    expect(dialog.querySelectorAll(".collection-edit-form")).toHaveLength(1);
+  });
+
   it("shows loading, empty state, and a useful recovery action", async () => {
     mockBootstrap(emptyPage);
     render(<CollectionsExperience />);
@@ -1437,6 +1507,7 @@ describe("CollectionsExperience", () => {
     );
     expect(replace).toHaveBeenCalledWith(
       `/collections?search=%E8%8A%B1%E5%9B%AD&city_group=pending&page=2&item=${merged.id}`,
+      { scroll: false },
     );
 
     currentQuery = `search=%E8%8A%B1%E5%9B%AD&city_group=pending&page=2&item=${merged.id}`;

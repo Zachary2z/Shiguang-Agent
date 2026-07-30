@@ -310,7 +310,11 @@ export function CollectionsExperience() {
   const listGeneration = useRef(0);
   const detailGeneration = useRef(0);
   const activeDetailId = useRef<string | null>(selectedId);
+  const detailDialog = useRef<HTMLElement>(null);
   const detailCloseButton = useRef<HTMLButtonElement>(null);
+  const detailReturnFocus = useRef<HTMLButtonElement | null>(null);
+  const detailReturnFocusId = useRef<string | null>(null);
+  const detailWasOpen = useRef(Boolean(selectedId));
   const selectionAttempt = useRef<{
     identity: string;
     idempotencyKey: string;
@@ -344,15 +348,25 @@ export function CollectionsExperience() {
   }, [selectedId]);
 
   const replaceQuery = useCallback(
-    (changes: Record<string, string | null>, replace = false) => {
+    (
+      changes: Record<string, string | null>,
+      replace = false,
+      preserveScroll = false,
+    ) => {
       const next = new URLSearchParams(searchParams.toString());
       for (const [key, value] of Object.entries(changes)) {
         if (value) next.set(key, value);
         else next.delete(key);
       }
       const target = `${pathname}${next.size ? `?${next}` : ""}`;
-      if (replace) router.replace(target);
-      else router.push(target);
+      if (replace) {
+        if (preserveScroll) router.replace(target, { scroll: false });
+        else router.replace(target);
+      } else if (preserveScroll) {
+        router.push(target, { scroll: false });
+      } else {
+        router.push(target);
+      }
     },
     [pathname, router, searchParams],
   );
@@ -365,10 +379,14 @@ export function CollectionsExperience() {
       setSaving(false);
       setSaveRecoveryNeeded(false);
       setCandidateLoadState("idle");
-      replaceQuery({ item: collectionId }, replace);
+      replaceQuery({ item: collectionId }, replace, true);
     },
     [replaceQuery],
   );
+
+  const closeDetail = useCallback(() => {
+    navigateDetail(null);
+  }, [navigateDetail]);
 
   function detailOperation(collectionId: string): DetailOperationOwnership {
     return {
@@ -520,13 +538,82 @@ export function CollectionsExperience() {
   }, [detailState, selectedId]);
 
   useEffect(() => {
+    if (selectedId) {
+      detailWasOpen.current = true;
+      return;
+    }
+    if (!detailWasOpen.current) return;
+    detailWasOpen.current = false;
+    const trigger = detailReturnFocus.current;
+    const triggerId = detailReturnFocusId.current;
+    detailReturnFocus.current = null;
+    detailReturnFocusId.current = null;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (document.querySelector(".collection-detail")) return;
+        const restoredTrigger =
+          trigger?.isConnected
+            ? trigger
+            : Array.from(
+                document.querySelectorAll<HTMLButtonElement>(
+                  ".collection-card[data-collection-id]",
+                ),
+              ).find((card) => card.dataset.collectionId === triggerId);
+        restoredTrigger?.focus();
+      });
+    });
+  }, [selectedId]);
+
+  useEffect(() => {
     if (!selectedId) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") navigateDetail(null);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
     };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [navigateDetail, selectedId]);
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const keepFocusInDetail = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeDetail();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const dialog = detailDialog.current;
+      if (!dialog) return;
+      const focusable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter(
+        (element) =>
+          !element.closest('[hidden], [aria-hidden="true"]'),
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const activeElement = document.activeElement;
+      if (event.shiftKey && (activeElement === first || !dialog.contains(activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (
+        !event.shiftKey &&
+        (activeElement === last || !dialog.contains(activeElement))
+      ) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", keepFocusInDetail);
+    return () => window.removeEventListener("keydown", keepFocusInDetail);
+  }, [closeDetail, selectedId]);
 
   async function runDetailOperation(
     collectionId: string,
@@ -998,8 +1085,13 @@ export function CollectionsExperience() {
             <button
               type="button"
               className="collection-card"
+              data-collection-id={item.id}
               key={item.id}
-              onClick={() => navigateDetail(item.id)}
+              onClick={(event) => {
+                detailReturnFocus.current = event.currentTarget;
+                detailReturnFocusId.current = item.id;
+                navigateDetail(item.id);
+              }}
             >
               <span className={`collection-kind ${item.kind}`}>{item.kind === "place" ? "P" : "E"}</span>
               <span className="collection-card-copy">
@@ -1051,10 +1143,12 @@ export function CollectionsExperience() {
       {selectedId ? (
         <div className="detail-backdrop" role="presentation">
           <section
+            ref={detailDialog}
             className="collection-detail"
             role="dialog"
             aria-modal="true"
             aria-labelledby="collection-detail-title"
+            tabIndex={-1}
           >
             <header>
               <div>
@@ -1065,14 +1159,14 @@ export function CollectionsExperience() {
                 ref={detailCloseButton}
                 type="button"
                 aria-label="关闭收藏详情"
-                onClick={() => navigateDetail(null)}
+                onClick={closeDetail}
               >
                 关闭
               </button>
             </header>
             {detailState === "loading" ? <p role="status">正在读取详情…</p> : null}
             {detailState === "error" ? (
-              <div role="alert"><p>{feedback}</p><button type="button" onClick={() => navigateDetail(null)}>返回列表</button></div>
+              <div role="alert"><p>{feedback}</p><button type="button" onClick={closeDetail}>返回列表</button></div>
             ) : null}
             {detailState === "ready" && detail ? (
               <>

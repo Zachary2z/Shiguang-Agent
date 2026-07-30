@@ -1,5 +1,9 @@
 @import "../styles/tokens.css";
 
+:root {
+  --z-modal: 40;
+}
+
 *,
 *::before,
 *::after {
@@ -306,11 +310,12 @@ a {
 
 .detail-backdrop {
   position: fixed;
-  z-index: var(--z-sticky);
+  z-index: var(--z-modal);
   inset: 0;
   display: grid;
   align-items: end;
   padding-top: 4rem;
+  overscroll-behavior: contain;
   background: rgb(24 32 29 / 38%);
 }
 
@@ -318,11 +323,14 @@ a {
   width: min(100%, 46rem);
   max-height: calc(100dvh - 4rem);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
   justify-self: center;
   padding: var(--space-5);
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   background: var(--color-paper);
   box-shadow: var(--shadow-nav);
+  -webkit-overflow-scrolling: touch;
 }
 
 .collection-detail > header {
@@ -512,6 +520,20 @@ a {
 }
 
 @media (width < 48rem) {
+  .collection-detail {
+    padding-bottom: calc(
+      var(--space-5) + env(safe-area-inset-bottom)
+    );
+  }
+
+  .collection-detail > header {
+    position: sticky;
+    z-index: 1;
+    top: 0;
+    padding-block: var(--space-2);
+    background: var(--color-paper);
+  }
+
   .collections-heading {
     align-items: start;
   }
@@ -1549,6 +1571,10 @@ a {
   right: var(--space-3);
   bottom: max(var(--space-3), env(safe-area-inset-bottom));
   left: var(--space-3);
+}
+
+.app-shell:has(.detail-backdrop) .mobile-nav-wrap {
+  display: none;
 }
 
 .mobile-nav {
