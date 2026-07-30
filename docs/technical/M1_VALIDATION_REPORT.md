@@ -14,6 +14,23 @@ Agent 计划入口不可达。M1-Gate 因此重新打开；下方“M1 正式关
 - M2-0：未开始，阻塞于主控复验；
 - M1 未重新关闭。
 
+### 2026-07-30 M1-Gate 修复 3 主控复验
+
+主控独立确认最终提交 `b9783e1e7deefc575bbf009df7ff51d0e222069a` 只增加
+Event 时间表单级 `noValidate`，继续由既有 `confirmEventTime` 负责唯一业务校验。
+越界具体场次日期在真实 Chromium 表单提交中显示稳定中文反馈且 PATCH 为 0；没有
+增加 `onInvalid`、第二套日期规则或校验 helper。
+
+前端 lint、typecheck、build、Vitest `113 passed` 与收藏 Chromium E2E
+`14 passed` 全部通过。后端未改动，`pip check`、Ruff、strict mypy（140 个源文件）、
+收藏聚焦回归 `72 passed`、迁移 `25 passed` 和唯一 Alembic head
+`20260729_0017` 均通过。有效日期与准确场次独立、原准确瞬间保真、编辑时分、
+跨夜、单日/多日、清空和失败保留草稿均已覆盖。
+
+本轮未读取 `.env`，真实 API 调用为 0；未发现重复 DTO、Client、服务、状态机、
+Repository 或时间规则。修复 3 无未关闭 P0/P1，允许继续修复 4 计划闭环；M1-Gate
+仍保持打开，M2-0 未开始。
+
 ### 2026-07-30 M1-Gate 修复 3 Event 表单校验阻断返修
 
 M1-Gate 修复 3 表单校验返修完成，等待主控复验；计划闭环与 M2-0 未开始。
