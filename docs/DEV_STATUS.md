@@ -5,9 +5,9 @@
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-Gate 稳定化修复 |
 | 状态 | 待主控验收 |
-| 当前分支 | codex/m1-stabilization-core-loop |
+| 当前分支 | main |
 | 最近更新 | 2026-07-30 |
-| 阻塞项 | M1-Gate 稳定化修复待主控复验；M2-0 未开始且阻塞 |
+| 阻塞项 | M1-Gate 地点确认、Event 时间交互与计划闭环仍待分项修复；M2-0 未开始且阻塞 |
 
 ## 2026-07-30 阶段状态纠正
 
@@ -152,6 +152,28 @@ M2-0”的结论只保留为历史验收记录，不再代表当前 Gate 状态�
   文件。
 - M1-Gate 继续保持打开，本窗口不宣布 M1 重新关闭；M2-0 继续保持未开始且阻塞。
   下一项仍为地点确认闭环修复，本窗口未开始地点修复或 M2。
+
+## 2026-07-30｜M1-Gate 稳定化修复 1｜主控验收通过
+
+- 主控确认 `codex/m1-gate-provider-runtime-wiring` 的候选提交
+  `7debcd01a5cf03c826546317bf1431c198bd4585` 直接基于
+  `cf0b1a481a0b972c330e912cfd7382667a913a1a`，且只修改
+  `compose.yaml`、`.env.example`、`README.md` 和本状态文档；未修改生产业务
+  Python、前端、迁移或 M2 范围。该候选已通过 `--ff-only` 集成到 `main`。
+- `pip check`、Ruff、strict mypy（140 个源文件）和 `tests/test_config.py`
+  （`131 passed`）通过；非真实 Provider/Map 全集为
+  `1692 passed, 16 skipped, 2 deselected`。
+- 主控另以两个独立 Compose project 验收空配置与仓库外假配置：API、Worker 和
+  两套 PostgreSQL 均 healthy、restart count 为 0，`/healthz` 返回 200；空配置
+  不把可选 Provider 变量留在运行进程，假配置在 API 与 Worker 中得到一致的模型、
+  价格、Agent 上限和高德 Settings，并能构造既有唯一 Provider。两套运行均固定
+  `RUN_REAL_MODEL_TESTS=0`、`RUN_REAL_MAP_TESTS=0`，启动期间外部 HTTP 连接为 0。
+- 本轮未读取本机 `.env`，真实模型、高德、网页和付费 API 调用均为 0；未发现密钥、
+  完整响应、缓存、数据库或临时 QA 资源进入 Git。Compose QA 只清理本轮创建的
+  project、镜像、容器、网络和 volume。
+- 本项没有未关闭 P0/P1，配置接线修复已完成。M1-Gate 仍保持打开，下一项必须从
+  最新 `main` 修复地点确认完整闭环；Event 时间控件和计划闭环继续留给后续独立
+  修复，M2-0 仍未开始且阻塞。
 
 ## 历史验收摘要（不代表当前 Gate 状态）
 
