@@ -296,18 +296,9 @@ async def test_clear_save_intent_preserves_named_place_for_details_flow() -> Non
 
 @pytest.mark.asyncio
 async def test_weekend_visit_preference_cannot_turn_a_place_into_event() -> None:
-    modeled_as_event = EventCandidate(
-        **_candidate_fields_for_temporal_test(title="深圳天文台"),
-        event_start_clue="周末",
-        missing_fields=(
-            CandidateField.EVENT_START_DATE,
-            CandidateField.EVENT_END_DATE,
-            CandidateField.EVENT_START_AT,
-            CandidateField.EVENT_END_AT,
-        ),
-    )
+    modeled_as_place = _full_place(title="深圳天文台")
     provider = FakeProvider(
-        [_result_response(ExtractionResult.with_candidates((modeled_as_event,)))]
+        [_result_response(ExtractionResult.with_candidates((modeled_as_place,)))]
     )
 
     result = await TextExtractionService(provider).extract("周末想去深圳天文台")
@@ -315,7 +306,6 @@ async def test_weekend_visit_preference_cannot_turn_a_place_into_event() -> None
     candidate = result.candidates[0]
     assert isinstance(candidate, PlaceCandidate)
     assert candidate.title == "深圳天文台"
-    assert all(not field.value.startswith("event_") for field in candidate.missing_fields)
     system_prompt = provider.calls[0].messages[0]["content"]
     assert "visit preference" in system_prompt
     assert "visit preference alone is not an Event fact" in system_prompt
@@ -387,6 +377,98 @@ async def test_explicit_year_keeps_date_but_no_time_evidence_clears_exact_timest
     assert candidate.event_end_at is None
     assert CandidateField.EVENT_START_AT in candidate.missing_fields
     assert CandidateField.EVENT_END_AT in candidate.missing_fields
+
+
+@pytest.mark.parametrize("title", ["深圳音乐节", "南山马拉松", "创意工作坊", "新品发布会"])
+@pytest.mark.asyncio
+async def test_legitimate_event_identity_does_not_depend_on_keyword_allowlist(
+    title: str,
+) -> None:
+    modeled = EventCandidate(
+        **_candidate_fields_for_temporal_test(title=title),
+        event_start_date=date(2026, 8, 2),
+        event_end_date=date(2026, 8, 2),
+        event_start_at=datetime(2026, 8, 2, 14, 0, tzinfo=UTC),
+        event_end_at=datetime(2026, 8, 2, 17, 0, tzinfo=UTC),
+    )
+    provider = FakeProvider(
+        [_result_response(ExtractionResult.with_candidates((modeled,)))]
+    )
+
+    result = await TextExtractionService(provider).extract(
+        f"{title}，2026年8月2日14:00开始，17:00结束"
+    )
+
+    assert result.candidates == (modeled,)
+    assert isinstance(result.candidates[0], EventCandidate)
+
+
+@pytest.mark.asyncio
+async def test_one_candidates_year_cannot_authorize_another_candidates_date() -> None:
+    confirmed = EventCandidate(
+        **_candidate_fields_for_temporal_test(title="海边演出"),
+        event_start_date=date(2026, 8, 2),
+        event_end_date=date(2026, 8, 2),
+        missing_fields=(
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
+    )
+    unconfirmed = EventCandidate(
+        **_candidate_fields_for_temporal_test(title="城市聚会"),
+        event_start_date=date(2026, 9, 6),
+        event_end_date=date(2026, 9, 6),
+        missing_fields=(
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+        ),
+    )
+    provider = FakeProvider(
+        [_result_response(ExtractionResult.with_candidates((confirmed, unconfirmed)))]
+    )
+
+    result = await TextExtractionService(provider).extract(
+        "海边演出，2026年8月2日；城市聚会，9月6日，年份待定"
+    )
+
+    first, second = result.candidates
+    assert isinstance(first, EventCandidate)
+    assert first.event_start_date == date(2026, 8, 2)
+    assert isinstance(second, EventCandidate)
+    assert second.event_start_date is None
+    assert second.event_end_date is None
+    assert {item.field for item in second.uncertainties} >= {
+        CandidateField.EVENT_START_DATE,
+        CandidateField.EVENT_END_DATE,
+    }
+
+
+@pytest.mark.asyncio
+async def test_multiple_events_bind_their_distinct_dates_and_times() -> None:
+    first = EventCandidate(
+        **_candidate_fields_for_temporal_test(title="海边演出"),
+        event_start_date=date(2026, 8, 2),
+        event_end_date=date(2026, 8, 2),
+        event_start_at=datetime(2026, 8, 2, 14, 0, tzinfo=UTC),
+        event_end_at=datetime(2026, 8, 2, 16, 0, tzinfo=UTC),
+    )
+    second = EventCandidate(
+        **_candidate_fields_for_temporal_test(title="城市聚会"),
+        event_start_date=date(2027, 9, 6),
+        event_end_date=date(2027, 9, 6),
+        event_start_at=datetime(2027, 9, 6, 10, 30, tzinfo=UTC),
+        event_end_at=datetime(2027, 9, 6, 12, 30, tzinfo=UTC),
+    )
+    provider = FakeProvider(
+        [_result_response(ExtractionResult.with_candidates((first, second)))]
+    )
+
+    result = await TextExtractionService(provider).extract(
+        "海边演出，2026年8月2日14:00至16:00；"
+        "城市聚会，2027年9月6日10:30至12:30"
+    )
+
+    assert result.candidates == (first, second)
 
 
 @pytest.mark.asyncio

@@ -110,11 +110,23 @@ async def _storage_provider_error(request: Request, exc: Exception) -> JSONRespo
         StorageProviderErrorCode.FILE_EMPTY: "IMAGE_FILE_EMPTY",
         StorageProviderErrorCode.FILE_TOO_LARGE: "IMAGE_FILE_TOO_LARGE",
     }
+    client_statuses = {
+        StorageProviderErrorCode.INVALID_REQUEST: 400,
+        StorageProviderErrorCode.CONTENT_TYPE_NOT_ALLOWED: 415,
+        StorageProviderErrorCode.CONTENT_SIGNATURE_MISMATCH: 422,
+        StorageProviderErrorCode.FILE_EMPTY: 400,
+        StorageProviderErrorCode.FILE_TOO_LARGE: 413,
+    }
+    status_code = client_statuses.get(exc.code, 500)
     return _error(
-        500,
+        status_code,
         image_codes.get(exc.code, exc.code.value),
         "The screenshot could not be prepared.",
-        recovery_actions=("reupload_image", "supply_text"),
+        recovery_actions=(
+            ("reupload_image", "supply_text")
+            if status_code < 500
+            else ("retry_later", "supply_text")
+        ),
     )
 
 

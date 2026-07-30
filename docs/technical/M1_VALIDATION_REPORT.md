@@ -22,20 +22,42 @@ API `storage=None` 与 Worker 单独构造的运行分叉，以及截图准备�
 运行记录的旧路径。未新增迁移、Provider、Runner、Registry、Storage、Parser、
 匹配器、收藏 Repository、计划服务、样本白名单或自动外部重试。
 
+候选 `e3eeb90b1e25aac6d22ad03c7842b3786d5c1f86` 的主控前复验又发现并修复：
+
+1. **P1：Event 关键词规则和跨候选时间污染。** 原因是文字抽取后置边界用有限活动
+   关键词决定是否把 Event 改成 Place，并用整段输入共享的年份、时刻布尔值处理
+   所有候选。修复已删除活动关键词白名单和 Event → Place 改型；Place/Event 继续
+   由唯一模型语义契约决定，日期和时刻只在当前候选标题绑定的原文证据范围内核验。
+   无法证明的时间事实被清除并进入 missing/uncertainty，但候选类型保持不变。
+   音乐节、马拉松、工作坊和发布会均不依赖生产关键词；多 Event 的年份和时刻互不
+   授权；周末访问偏好由模型契约保持 Place。
+2. **P1：不确定网络失败失去幂等身份。** 原因是 Agent 前端每次点击提交或 Retry
+   都生成随机键。修复后，未修改的文字/截图组合输入保存稳定 submission key；
+   网络断开、超时和取消后的主动 Retry 复用同一键，权威终态识别失败后的主动
+   Retry 才使用新键。文字或截图选择、删除、替换、编辑及“继续添加”会失效旧键。
+   没有自动重试或第二套幂等服务；服务端响应丢失重放保持相同 message/trace，
+   Message、AgentRun、Job、Source 各一条且模型最多调用一次。
+3. **P2：图片输入错误错误地统一返回 500。** 类型不允许、签名不符、空文件和文件
+   过大现分别返回 415/422/400/413；写入失败、损坏对象和内部故障保持 5xx。公开
+   响应只含固定 error code、消息和恢复动作，不暴露文件名、路径、内容、异常链或
+   存储实现。
+
 离线验证结果：
 
-- pip editable 安装、`pip check`、Ruff、strict mypy（140 个源文件）：退出码均 0；
-- 后端非真实全量：`1672 passed, 18 skipped`，退出码 0；
+- 候选的 pip editable 安装已通过；本轮 `pip check`、Ruff、strict mypy
+  （140 个源文件）：退出码均 0；
+- 后端非真实全量：`1684 passed, 18 skipped`，退出码 0；
 - 仓库外 pytest 插件封锁 `getaddrinfo/connect/connect_ex/create_connection` 后，
-  统一输入、截图补偿、收藏状态机、地点选择、语义和计划闭环：
-  `194 passed`，退出码 0；
+  本轮语义、统一输入和内容导入聚焦集：`136 passed`，退出码 0；
+  首次把插件文件路径直接传给 `-p` 时 pytest 插件加载参数格式错误，退出码 1、
+  未收集或执行测试；改用仓库外目录 `PYTHONPATH` 和模块名后即得到上述通过结果；
 - Alembic：唯一 head `20260729_0017`；仓库外临时 SQLite
   `upgrade head/current/check` 均退出码 0；迁移集成 `25 passed`；
 - 默认本地数据库只读 `alembic check` 退出码 1，原因是该本地库未升级。为避免修改
   真实用户数据，本任务没有升级它；该结果不是迁移差异，临时干净库显示
   `No new upgrade operations detected`；
-- 前端 `npm ci/lint/typecheck/test/build` 均退出码 0，单测 `84 passed`；
-  `npm ci` 报告既有开发依赖 9 个 high vulnerability；
+- 候选的 `npm ci` 已通过并报告既有开发依赖 9 个 high vulnerability；本轮
+  `lint/typecheck/test/build` 均退出码 0，最新单测 `87 passed`；
 - Playwright E2E `29 passed`，退出码 0；覆盖 320、390、768、1024、1440，
   输出 4 条 `NO_COLOR`/`FORCE_COLOR` 环境 warning；
 - 新增完全离线闭环：

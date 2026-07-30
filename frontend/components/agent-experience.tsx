@@ -173,6 +173,13 @@ function errorMessage(error: unknown): string {
   return messages[error.code] ?? "暂时没有完成，请重新试一次。";
 }
 
+function hasUncertainDelivery(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    ["network_error", "timeout", "aborted"].includes(error.code)
+  );
+}
+
 export function AgentExperience() {
   const [session, setSession] = useState<DemoSession | null>(null);
   const [state, setState] = useState<AgentState>("recovering");
@@ -189,6 +196,7 @@ export function AgentExperience() {
   const sseCancel = useRef<(() => void) | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const mainInput = useRef<HTMLTextAreaElement | null>(null);
+  const preparedSubmissionKey = useRef<string | null>(null);
   const operationGeneration = useRef(0);
 
   const readAuthoritativeResult = useCallback(
@@ -198,6 +206,12 @@ export function AgentExperience() {
         if (operationGeneration.current !== generation) return;
         setResult(authoritative);
         setState(resultState(authoritative));
+        if (
+          authoritative.run_status === "failed" ||
+          authoritative.run_status === "cancelled"
+        ) {
+          preparedSubmissionKey.current = null;
+        }
         setFeedback(
           authoritative.error_code
             ? "识别没有完成，你可以补充文字、改发截图或重试。"
@@ -322,7 +336,8 @@ export function AgentExperience() {
     setResult(null);
     const controller = new AbortController();
     submitController.current = controller;
-    const key = crypto.randomUUID();
+    const key = preparedSubmissionKey.current ?? crypto.randomUUID();
+    preparedSubmissionKey.current = key;
     const path = `/api/v1/sessions/${session.session_id}/messages` as const;
     try {
       const requestHeaders = file
@@ -361,6 +376,7 @@ export function AgentExperience() {
       followRun(accepted, generation);
     } catch (error) {
       if (operationGeneration.current !== generation) return;
+      if (!hasUncertainDelivery(error)) preparedSubmissionKey.current = null;
       setState("failed");
       setFeedback(errorMessage(error));
     } finally {
@@ -382,6 +398,7 @@ export function AgentExperience() {
       return;
     }
     setFile(selected);
+    preparedSubmissionKey.current = null;
     setFeedback("");
   }
 
@@ -496,6 +513,7 @@ export function AgentExperience() {
   function continueAdding() {
     operationGeneration.current += 1;
     sseCancel.current?.();
+    preparedSubmissionKey.current = null;
     setText("");
     setFile(null);
     setResult(null);
@@ -711,6 +729,7 @@ export function AgentExperience() {
             disabled={busy}
             onChange={(event) => {
               setText(event.target.value);
+              preparedSubmissionKey.current = null;
               setFeedback("");
             }}
           />
@@ -739,6 +758,7 @@ export function AgentExperience() {
                 disabled={busy}
                 onClick={() => {
                   setFile(null);
+                  preparedSubmissionKey.current = null;
                   if (fileInput.current) fileInput.current.value = "";
                 }}
               >

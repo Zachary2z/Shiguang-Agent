@@ -189,35 +189,42 @@ async def test_text_import_is_queued_streamed_and_read_from_authoritative_result
 
 
 @pytest.mark.asyncio
-async def test_same_key_reuses_message_job_source_and_collection(
+async def test_response_loss_replay_reuses_message_run_job_source_and_model_call(
     test_settings: Settings,
 ) -> None:
     provider = FakeProvider([_response("海上世界文化艺术中心")])
     async with _runtime(test_settings, provider) as (_api, client, worker, _storage):
         session = await _session(client)
         path = f"/api/v1/sessions/{session['session_id']}/messages"
-        payload = {
-            "type": "text",
-            "idempotency_key": "m1-replay",
-            "text": "海上世界文化艺术中心",
-        }
+        async def submit(content: bytes = PNG_SCREENSHOT) -> httpx.Response:
+            return await client.post(
+                path,
+                data={
+                    "idempotency_key": "m1-replay",
+                    "text": "海上世界文化艺术中心",
+                },
+                files={"image": ("screenshot.png", content, "image/png")},
+            )
+
         first, replay = await asyncio.gather(
-            client.post(path, json=payload),
-            client.post(path, json=payload),
+            submit(),
+            submit(),
         )
         assert first.status_code == replay.status_code == 202
         assert first.json()["message_id"] == replay.json()["message_id"]
         assert first.json()["trace_id"] == replay.json()["trace_id"]
+        async with _api.state.demo_database.session() as database_session:
+            assert await _row_counts(database_session) == (1, 1, 1, 1)
         await worker.run_once()
         result = await client.get(first.json()["result_url"])
-        second_replay = await client.post(path, json=payload)
-        conflict = await client.post(
-            path,
-            json={**payload, "text": "不同正文"},
-        )
+        second_replay = await submit()
+        conflict = await submit(PNG_SCREENSHOT + b"different")
         assert len(result.json()["collections"]) == 1
         assert second_replay.json()["trace_id"] == first.json()["trace_id"]
         assert conflict.status_code == 409
+        assert len(provider.calls) == 1
+        async with _api.state.demo_database.session() as database_session:
+            assert await _row_counts(database_session) == (1, 1, 1, 1)
 
 
 @pytest.mark.asyncio

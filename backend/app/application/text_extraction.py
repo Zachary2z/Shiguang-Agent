@@ -5,7 +5,9 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from copy import deepcopy
+from datetime import date, datetime
 from typing import Final
+from zoneinfo import ZoneInfo
 
 from app.application.extraction_output import (
     EXTRACTION_SEMANTIC_RULES,
@@ -35,6 +37,7 @@ from nanobot_core.providers import (
 )
 
 MAX_TEXT_INPUT_CHARS: Final = 20_000
+_PRODUCT_TIMEZONE: Final = ZoneInfo("Asia/Shanghai")
 _GENERIC_INPUTS = frozenset(
     {
         "一个地方",
@@ -74,10 +77,7 @@ _COMPLEX_ROUTE_EVIDENCE = re.compile(
     re.IGNORECASE,
 )
 _ROUTE_REQUEST = re.compile(r"给我|帮我|规划|制定|生成|导航|下载|怎么走")
-_EXPLICIT_YEAR = re.compile(r"(?<!\d)(?:19|20)\d{2}\s*(?:年|[-/.])")
 _MONTH_DAY_CLUE = re.compile(r"(?<!\d)\d{1,2}\s*月\s*\d{1,2}\s*日")
-_EXPLICIT_TIME = re.compile(r"(?<!\d)(?:[01]?\d|2[0-3])\s*(?::|点|时)")
-_EXPLICIT_EVENT_FACT = re.compile(r"展期|展览?|演出|活动|场次|市集|讲座|赛事")
 
 _SYSTEM_PROMPT = (
     "You extract structured collection candidates for Shiguang.\n"
@@ -231,71 +231,46 @@ def _enforce_text_semantic_evidence(
     result: ExtractionResult,
     source_text: str,
 ) -> ExtractionResult:
-    """Keep Event identity and complete time facts behind source-text evidence."""
+    """Keep each Event's temporal facts behind evidence bound to that candidate."""
 
     if result.outcome is not ExtractionOutcome.CANDIDATES:
         return result
-    has_year = _EXPLICIT_YEAR.search(source_text) is not None
-    has_time = _EXPLICIT_TIME.search(source_text) is not None
-    has_event_fact = _EXPLICIT_EVENT_FACT.search(source_text) is not None
-    clue_match = _MONTH_DAY_CLUE.search(source_text)
-    clue = None if clue_match is None else clue_match.group(0)
     normalized: list[PlaceCandidate | EventCandidate] = []
     for candidate in result.candidates:
         if not isinstance(candidate, EventCandidate):
             normalized.append(candidate)
             continue
+        evidence = _candidate_evidence_scope(
+            source_text,
+            candidate=candidate,
+            candidates=result.candidates,
+        )
         payload = candidate.model_dump(mode="python")
-        if not has_event_fact:
-            event_fields = {
-                CandidateField.EVENT_START_DATE,
-                CandidateField.EVENT_END_DATE,
-                CandidateField.EVENT_START_AT,
-                CandidateField.EVENT_END_AT,
-            }
-            payload["missing_fields"] = tuple(
-                field for field in candidate.missing_fields if field not in event_fields
-            )
-            payload["uncertainties"] = tuple(
-                item for item in candidate.uncertainties if item.field not in event_fields
-            )
-            normalized.append(
-                PlaceCandidate.model_validate(
-                    {
-                        key: value
-                        for key, value in payload.items()
-                        if key
-                        not in {
-                            "kind",
-                            "event_start_date",
-                            "event_end_date",
-                            "event_start_at",
-                            "event_end_at",
-                            "event_start_clue",
-                            "event_end_clue",
-                        }
-                    }
-                )
-            )
-            continue
-        removed_dates = not has_year and (
-            candidate.event_start_date is not None
-            or candidate.event_end_date is not None
-            or candidate.event_start_at is not None
-            or candidate.event_end_at is not None
+        start_date_supported = _date_is_evidenced(evidence, candidate.event_start_date)
+        end_date_supported = _date_is_evidenced(evidence, candidate.event_end_date)
+        start_at_supported = _datetime_is_evidenced(
+            evidence, candidate.event_start_at
         )
-        removed_times = (not has_year or not has_time) and (
-            candidate.event_start_at is not None or candidate.event_end_at is not None
-        )
+        end_at_supported = _datetime_is_evidenced(evidence, candidate.event_end_at)
+        removed_dates = (
+            candidate.event_start_date is not None and not start_date_supported
+        ) or (candidate.event_end_date is not None and not end_date_supported)
+        removed_times = (
+            candidate.event_start_at is not None and not start_at_supported
+        ) or (candidate.event_end_at is not None and not end_at_supported)
         if not removed_dates and not removed_times:
             normalized.append(candidate)
             continue
-        if not has_year:
+        if not start_date_supported:
             payload["event_start_date"] = None
+        if not end_date_supported:
             payload["event_end_date"] = None
-        if not has_year or not has_time:
+        if not start_at_supported:
             payload["event_start_at"] = None
+        if not end_at_supported:
             payload["event_end_at"] = None
+        clue_match = _MONTH_DAY_CLUE.search(evidence)
+        clue = None if clue_match is None else clue_match.group(0)
         if clue is not None and payload.get("event_start_clue") is None:
             payload["event_start_clue"] = clue
         missing = [
@@ -320,8 +295,12 @@ def _enforce_text_semantic_evidence(
                 CandidateField.EVENT_END_AT,
             }
         ]
-        if not has_year:
-            for field in (CandidateField.EVENT_START_DATE, CandidateField.EVENT_END_DATE):
+        date_fields = (
+            (CandidateField.EVENT_START_DATE, payload["event_start_date"]),
+            (CandidateField.EVENT_END_DATE, payload["event_end_date"]),
+        )
+        for field, value in date_fields:
+            if value is None:
                 if clue is None:
                     missing.append(field)
                 else:
@@ -331,14 +310,92 @@ def _enforce_text_semantic_evidence(
                             reason="原文提供了日期线索，但没有提供可确认的年份。",
                         )
                     )
-        if not has_year or not has_time:
-            missing.extend(
-                (CandidateField.EVENT_START_AT, CandidateField.EVENT_END_AT)
-            )
+        time_fields = (
+            (CandidateField.EVENT_START_AT, payload["event_start_at"]),
+            (CandidateField.EVENT_END_AT, payload["event_end_at"]),
+        )
+        missing.extend(field for field, value in time_fields if value is None)
         payload["missing_fields"] = tuple(missing)
         payload["uncertainties"] = tuple(uncertainties)
         normalized.append(EventCandidate.model_validate(payload))
     return ExtractionResult.with_candidates(tuple(normalized))
+
+
+def _candidate_evidence_scope(
+    source_text: str,
+    *,
+    candidate: EventCandidate,
+    candidates: tuple[PlaceCandidate | EventCandidate, ...],
+) -> str:
+    """Bind evidence by the model candidate's title without interpreting its meaning."""
+
+    if len(candidates) == 1:
+        return source_text
+    title_start = source_text.find(candidate.title)
+    if title_start < 0:
+        return ""
+    next_starts = tuple(
+        position
+        for other in candidates
+        if other is not candidate
+        and (position := source_text.find(other.title, title_start + len(candidate.title))) >= 0
+    )
+    title_end = min(next_starts, default=len(source_text))
+    return source_text[title_start:title_end]
+
+
+def _date_is_evidenced(source: str, value: date | None) -> bool:
+    if value is None:
+        return True
+    year = value.year
+    month = value.month
+    day = value.day
+    compact = re.sub(r"\s+", "", source)
+    year_evidence = re.search(rf"(?<!\d){year}(?:年|[-/.])", compact) is not None
+    month_day_evidence = any(
+        clue in compact
+        for clue in (
+            f"{month}月{day}日",
+            f"{month:02d}月{day:02d}日",
+            f"{month}.{day}",
+            f"{month:02d}.{day:02d}",
+            f"{month}/{day}",
+            f"{month:02d}/{day:02d}",
+            f"{month}-{day}",
+            f"{month:02d}-{day:02d}",
+        )
+    )
+    return year_evidence and month_day_evidence
+
+
+def _time_is_evidenced(source: str, value: datetime | None) -> bool:
+    if value is None:
+        return True
+    compact = re.sub(r"\s+", "", source)
+    representations = (value, value.astimezone(_PRODUCT_TIMEZONE))
+    return any(
+        clue in compact
+        for represented in representations
+        for clue in (
+            f"{represented.hour}:{represented.minute:02d}",
+            f"{represented.hour:02d}:{represented.minute:02d}",
+            f"{represented.hour}点{represented.minute:02d}",
+            f"{represented.hour}时{represented.minute:02d}",
+            f"{represented.hour}点" if represented.minute == 0 else "",
+            f"{represented.hour}时" if represented.minute == 0 else "",
+        )
+        if clue
+    )
+
+
+def _datetime_is_evidenced(source: str, value: datetime | None) -> bool:
+    if value is None:
+        return True
+    local_value = value.astimezone(_PRODUCT_TIMEZONE)
+    return (
+        _date_is_evidenced(source, value.date())
+        or _date_is_evidenced(source, local_value.date())
+    ) and _time_is_evidenced(source, value)
 
 
 __all__ = [

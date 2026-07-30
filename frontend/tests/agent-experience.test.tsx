@@ -235,7 +235,7 @@ describe("Agent experience", () => {
     expect(container.querySelector("img")).toBeNull();
   });
 
-  it("actively retries the same prepared input once with a new idempotency key", async () => {
+  it("reuses the prepared input key after uncertain network delivery", async () => {
     const user = userEvent.setup();
     request
       .mockRejectedValueOnce(new ApiError("network_error", null, null))
@@ -257,6 +257,51 @@ describe("Agent experience", () => {
     const first = JSON.parse(String(submissions[0][1]?.body));
     const second = JSON.parse(String(submissions[1][1]?.body));
     expect(second.text).toBe(first.text);
+    expect(second.idempotency_key).toBe(first.idempotency_key);
+  });
+
+  it("uses a new key when retrying an authoritative terminal failure", async () => {
+    const user = userEvent.setup();
+    const failedResult = {
+      ...completedResult([]),
+      run_status: "failed",
+      error_code: "MODEL_INVALID_RESPONSE",
+      recovery_actions: ["retry_later"],
+    };
+    request
+      .mockResolvedValueOnce(accepted)
+      .mockResolvedValueOnce(failedResult)
+      .mockResolvedValueOnce(accepted);
+    connect.mockImplementationOnce((options: {
+      onEvent: (event: unknown) => void;
+    }) => {
+      window.setTimeout(
+        () =>
+          options.onEvent({
+            id: "4",
+            event: "run.failed",
+            sequence: 4,
+            data: { summary: { status: "failed" } },
+          }),
+        0,
+      );
+      return { cancel: vi.fn(), closed: new Promise<void>(() => {}) };
+    });
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+
+    await user.type(screen.getByRole("textbox", { name: "收藏内容" }), "深圳天文台");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByText("识别没有完成，你可以补充文字、改发截图或重试。");
+    await user.click(screen.getByRole("button", { name: "重试" }));
+
+    const submissions = request.mock.calls.filter(
+      ([path, options]) =>
+        String(path).endsWith("/messages") && options?.method === "POST",
+    );
+    expect(submissions).toHaveLength(2);
+    const first = JSON.parse(String(submissions[0][1]?.body));
+    const second = JSON.parse(String(submissions[1][1]?.body));
     expect(second.idempotency_key).not.toBe(first.idempotency_key);
   });
 
@@ -286,6 +331,53 @@ describe("Agent experience", () => {
     expect((body as FormData).get("image")).toBe(image);
   });
 
+  it("keeps a combined-input key across uncertainty and replaces it after image change", async () => {
+    const user = userEvent.setup();
+    request
+      .mockRejectedValueOnce(new ApiError("network_error", null, null))
+      .mockRejectedValueOnce(new ApiError("timeout", null, null))
+      .mockResolvedValueOnce({ ...accepted, input_type: "image" });
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+
+    const input = screen.getByRole("textbox", { name: "收藏内容" });
+    const firstImage = new File(["jpeg-one"], "first.jpg", { type: "image/jpeg" });
+    await user.type(input, "同一份图片补充");
+    await user.upload(screen.getByLabelText("添加截图"), firstImage);
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByText("网络连接中断，请重试。");
+    await user.click(screen.getByRole("button", { name: "重试" }));
+    await screen.findByText("上传等待超时，请检查网络后重试。");
+
+    await user.click(screen.getByRole("button", { name: "补充文字" }));
+    const replacement = new File(["jpeg-two"], "replacement.jpg", {
+      type: "image/jpeg",
+    });
+    await user.upload(screen.getByLabelText("添加截图"), replacement);
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    const submissions = request.mock.calls
+      .filter(
+        ([path, options]) =>
+          String(path).endsWith("/messages") && options?.method === "POST",
+      )
+      .map((call) => call[1]?.body as FormData);
+    expect(submissions).toHaveLength(3);
+    expect(submissions[1].get("idempotency_key")).toBe(
+      submissions[0].get("idempotency_key"),
+    );
+    expect(submissions[2].get("idempotency_key")).not.toBe(
+      submissions[0].get("idempotency_key"),
+    );
+    expect(submissions.map((body) => body.get("text"))).toEqual([
+      "同一份图片补充",
+      "同一份图片补充",
+      "同一份图片补充",
+    ]);
+    expect(submissions[0].get("image")).toBe(firstImage);
+    expect(submissions[2].get("image")).toBe(replacement);
+  });
+
   it("removes a selected screenshot without clearing typed text", async () => {
     const user = userEvent.setup();
     render(<AgentExperience />);
@@ -303,6 +395,35 @@ describe("Agent experience", () => {
       "href",
       "/plans",
     );
+  });
+
+  it("uses a new key after deleting a screenshot from a failed prepared input", async () => {
+    const user = userEvent.setup();
+    request
+      .mockRejectedValueOnce(new ApiError("network_error", null, null))
+      .mockResolvedValueOnce(accepted);
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+
+    await user.type(screen.getByRole("textbox", { name: "收藏内容" }), "保留文字");
+    await user.upload(
+      screen.getByLabelText("添加截图"),
+      new File(["jpeg"], "place.jpg", { type: "image/jpeg" }),
+    );
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByText("网络连接中断，请重试。");
+    await user.click(screen.getByRole("button", { name: "补充文字" }));
+    await user.click(screen.getByRole("button", { name: "删除截图" }));
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    const submissions = request.mock.calls.filter(
+      ([path, options]) =>
+        String(path).endsWith("/messages") && options?.method === "POST",
+    );
+    const firstKey = (submissions[0][1]?.body as FormData).get("idempotency_key");
+    const second = JSON.parse(String(submissions[1][1]?.body));
+    expect(second.text).toBe("保留文字");
+    expect(second.idempotency_key).not.toBe(firstKey);
   });
 
   it("creates a new submission identity only after the input changes", async () => {

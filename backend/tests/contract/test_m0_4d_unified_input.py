@@ -1075,7 +1075,7 @@ async def test_invalid_and_different_image_payloads_never_duplicate_or_leak_file
             )
         )
     )
-    assert invalid.status_code == 500
+    assert invalid.status_code == 422
     assert invalid.json()["error_code"] == "IMAGE_CONTENT_SIGNATURE_MISMATCH"
     assert invalid.json()["recovery_actions"] == ["reupload_image", "supply_text"]
     assert "trace_id" not in invalid.json()
@@ -1105,7 +1105,7 @@ async def test_image_idempotency_identity_includes_normalized_media_type(
         async with api.state.demo_database.session() as session:
             message_content = await session.scalar(text("SELECT content FROM messages LIMIT 1"))
 
-    assert declared_jpeg.status_code == 500
+    assert declared_jpeg.status_code == 422
     assert declared_jpeg.json()["error_code"] == "IMAGE_CONTENT_SIGNATURE_MISMATCH"
     assert declared_png.status_code == 200
     assert len(provider.calls) == 1
