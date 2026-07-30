@@ -28,7 +28,7 @@ const baseItem = {
   status: "pending_selection",
   version: 1,
   planning_eligible: false,
-  planning_exclusion_reason: "pending_confirmation",
+  planning_exclusion_reason: "location_unconfirmed",
 };
 
 async function mockCollections(page: Page) {

@@ -579,7 +579,7 @@ async def test_pending_and_other_city_items_are_explicitly_ineligible_for_shenzh
     pending_item = by_title[pending.json()["collections"][0]["title"]]
     other_item = by_title["一尺花园（海珠店）"]
     assert pending_item["planning_eligible"] is False
-    assert pending_item["planning_exclusion_reason"] == "pending_confirmation"
+    assert pending_item["planning_exclusion_reason"] == "location_unconfirmed"
     assert other_item["formal_city_code"] == "guangzhou"
     assert other_item["planning_eligible"] is False
     assert other_item["planning_exclusion_reason"] == "other_city"

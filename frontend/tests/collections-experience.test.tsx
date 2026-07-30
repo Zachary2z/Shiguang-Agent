@@ -71,7 +71,7 @@ const eventItem = {
   status: "pending_details",
   version: 1,
   planning_eligible: false,
-  planning_exclusion_reason: "pending_confirmation",
+  planning_exclusion_reason: "event_time_unconfirmed",
 };
 
 const emptyPage = { items: [], page: 1, page_size: 8, total: 0 };
@@ -253,6 +253,9 @@ describe("CollectionsExperience", () => {
         city_hint: "深圳",
         district: "南山区",
         address: "滨海大道",
+        business_district: "后海",
+        landmark: "深圳湾",
+        metro_station: "深圳湾公园站",
         tags: ["公园", "散步"],
       },
     });
@@ -451,7 +454,7 @@ describe("CollectionsExperience", () => {
       uncertainties: [],
       version: 2,
       planning_eligible: false,
-      planning_exclusion_reason: "city_or_location_unconfirmed",
+      planning_exclusion_reason: "location_unconfirmed",
     };
     vi.spyOn(apiClient, "request").mockImplementation(
       async (path, options) => {
@@ -473,7 +476,9 @@ describe("CollectionsExperience", () => {
     expect(
       await screen.findByText("活动时间已确认，准确地点确认后才可参与计划。"),
     ).toBeInTheDocument();
-    expect(within(dialog).getByText("准确地点待确认")).toBeInTheDocument();
+    expect(
+      within(dialog).getByText("确认准确地点后才能参与深圳计划"),
+    ).toBeInTheDocument();
   });
 
   it("does not show Event confirmation controls for a Place detail", async () => {
@@ -501,7 +506,7 @@ describe("CollectionsExperience", () => {
       title: "一尺花园",
       status: "pending_selection",
       planning_eligible: false,
-      planning_exclusion_reason: "pending_confirmation",
+      planning_exclusion_reason: "location_unconfirmed",
     };
     const candidatePage = {
       collection_item_id: pending.id,
@@ -566,7 +571,7 @@ describe("CollectionsExperience", () => {
     await userEvent.click(
       await within(dialog).findByRole("button", { name: "保存修改" }),
     );
-    expect(await screen.findByText(/刚刚被更新，请刷新后继续/)).toBeInTheDocument();
+    expect(await screen.findByText(/刚刚被更新.*草稿已保留/)).toBeInTheDocument();
   });
 
   it("does not report success when the API rejects a patch with 422", async () => {
@@ -591,9 +596,11 @@ describe("CollectionsExperience", () => {
       await within(dialog).findByRole("button", { name: "保存修改" }),
     );
     expect(
-      await screen.findByText("补充信息没有保存，请检查后重试。"),
+      await screen.findByText(
+        "补充信息未完成处理。你的草稿已保留，请检查后重试。",
+      ),
     ).toBeInTheDocument();
-    expect(title).toHaveValue(baseItem.title);
+    expect(title).toHaveValue("未保存草稿");
     expect(
       screen.queryByText(/Agent 与收藏库会读取同一条数据/),
     ).toBeNull();
@@ -604,7 +611,7 @@ describe("CollectionsExperience", () => {
       ...baseItem,
       status: "pending_details",
       planning_eligible: false,
-      planning_exclusion_reason: "pending_confirmation",
+      planning_exclusion_reason: "location_unconfirmed",
     };
     currentQuery = `item=${pendingDetails.id}`;
     const pendingSelection = {
@@ -657,6 +664,68 @@ describe("CollectionsExperience", () => {
     );
     expect(await screen.findByText("准确地点已保存。")).toBeInTheDocument();
     expect(within(dialog).getByText("想去")).toBeInTheDocument();
+  });
+
+  it("keeps a saved detail open and retries candidates without losing drafts", async () => {
+    const pendingDetails = {
+      ...baseItem,
+      status: "pending_details",
+      planning_eligible: false,
+      planning_exclusion_reason: "location_unconfirmed",
+    };
+    const pendingSelection = {
+      ...pendingDetails,
+      landmark: "市民中心",
+      status: "pending_selection",
+      version: 2,
+    };
+    currentQuery = `item=${pendingDetails.id}`;
+    let candidateLoads = 0;
+    vi.spyOn(apiClient, "request").mockImplementation(
+      async (path, options) => {
+        if (path === "/api/v1/demo/sessions") return session as never;
+        if (path.startsWith("/api/v1/collections?")) {
+          return { ...filledPage, items: [pendingSelection] } as never;
+        }
+        if (options?.method === "PATCH") return pendingSelection as never;
+        if (path.endsWith("/poi-candidates")) {
+          candidateLoads += 1;
+          if (candidateLoads === 1) {
+            throw new ApiError("timeout", null, null);
+          }
+          return {
+            ...candidatePage(pendingSelection.id),
+            expected_version: 2,
+          } as never;
+        }
+        return { item: pendingDetails, sources: [] } as never;
+      },
+    );
+
+    render(<CollectionsExperience />);
+    const dialog = await screen.findByRole("dialog");
+    const landmark = await within(dialog).findByRole("textbox", {
+      name: "地标",
+    });
+    await userEvent.clear(landmark);
+    await userEvent.type(landmark, "市民中心");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "保存修改" }),
+    );
+
+    expect(
+      await screen.findByText(/地点候选暂时没有加载完成/),
+    ).toBeInTheDocument();
+    expect(landmark).toHaveValue("市民中心");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: "重新加载候选" }),
+    );
+    expect(
+      await within(dialog).findByRole("button", {
+        name: /一尺花园 · 海上世界店/,
+      }),
+    ).toBeInTheDocument();
+    expect(candidateLoads).toBe(2);
   });
 
   it("reuses the candidate idempotency key after an uncertain failure", async () => {

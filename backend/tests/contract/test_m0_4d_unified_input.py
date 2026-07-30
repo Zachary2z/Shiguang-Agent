@@ -881,10 +881,14 @@ async def test_event_import_requires_explicit_poi_choice_before_plan_use(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("city_hint", ["广州", None])
-async def test_event_import_outside_confirmed_shenzhen_scope_skips_map_search(
+@pytest.mark.parametrize(
+    ("city_hint", "expected_map_calls"),
+    (("广州", 0), (None, 1)),
+)
+async def test_event_import_uses_only_the_product_city_search_scope(
     test_settings: Settings,
     city_hint: str | None,
+    expected_map_calls: int,
 ) -> None:
     event = _exact_time_event().model_copy(
         update={
@@ -931,7 +935,7 @@ async def test_event_import_outside_confirmed_shenzhen_scope_skips_map_search(
     assert item["kind"] == "event"
     assert item["status"] == "pending_details"
     assert item["planning_eligible"] is False
-    assert map_calls == []
+    assert len(map_calls) == expected_map_calls
 
 
 @pytest.mark.asyncio

@@ -5,9 +5,48 @@
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-Gate 稳定化修复 |
 | 状态 | 待主控验收 |
-| 当前分支 | main |
+| 当前分支 | codex/m1-gate-location-confirmation |
 | 最近更新 | 2026-07-30 |
-| 阻塞项 | M1-Gate 地点确认、Event 时间交互与计划闭环仍待分项修复；M2-0 未开始且阻塞 |
+| 阻塞项 | 地点确认生产修复完成，等待主控验收；M1-Gate 仍打开；Event 时间交互与计划闭环仍待后续分项修复；M2-0 未开始且阻塞 |
+
+## 2026-07-30 地点确认生产修复候选
+
+- 地点确认生产修复完成，等待主控验收。既有收藏
+  `PATCH /collections/{item_id}` 在补充城市线索、行政区、公开地址、商圈、地标
+  或地铁站后，由唯一 `CollectionWriteService` 重新计算候选 metadata，并复用
+  唯一 `PlaceMatchingService → PlaceTargetSelectionService` 继续正式地点确认；
+  Place 与 Event 共用同一入口、候选快照、选择契约和正式 `PlaceTarget`。
+- 删除了文字导入工作流内 Event 专用的候选组装、城市判断、匹配和候选写入旁路。
+  Event 初次导入与收藏补充现在都调用收藏写服务的同一继续确认方法。修复了无城市
+  线索且地图无结果时错误清除 `city_hint` missing metadata 的旧路径；只有建立正式
+  地点目标后才清除正式城市相关待确认项。
+- 城市搜索继续只使用既有 `resolve_city_hint` 和产品深圳搜索范围；“深圳”“深圳市”
+  与 `shenzhen` 使用同一解析入口。城市线索不等于正式城市，行政区仍写入
+  `district`。没有新增城市目录、别名表、MapProvider、候选 DTO、状态机、地点
+  Repository 或样本白名单，也没有降低评分/候选阈值或自动采用供应商第一名。
+- API 规划资格和结构化检索集中复用同一组事实阻塞项：正式地点、正式城市、其他
+  城市、Event 准确时间和非活动状态。价格、标签、商圈、地标或地铁站缺失不会被
+  伪装成地点阻塞；Event 已确认正式 POI 但时间未确认时，公开原因仅为
+  `event_time_unconfirmed`。
+- 收藏详情现可编辑全部既有地点线索；保存后自动读取权威 item 和候选。候选加载
+  失败可原地重载，409、422、超时、取消和网络不确定结果保留草稿，并提供“刷新
+  状态后重试”。候选卡展示名称、分店、行政区、商圈、公开地址和匹配线索；选择、
+  “以上都不是”及关闭重开继续使用服务端快照。Agent 只链接既有收藏详情，没有
+  复制地点表单或规划规则。
+- 地图超时、限流、鉴权、不可用、非法请求/响应和未找到均映射为固定、无供应商
+  载荷的可恢复错误；补充字段可以已提交，但失败或取消不会创建正式 POI。PATCH
+  旧 version 继续返回 409；候选选择继续复用既有幂等操作，响应丢失重放不产生
+  重复收藏、地点目标或选择操作；没有自动重试或隐藏 fallback。
+- 离线验证：`pip check`、Ruff、strict mypy（140 个源文件）通过；用户指定后端
+  聚焦集 `264 passed`；非真实 Provider/Map 全集
+  `1702 passed, 16 skipped, 2 deselected`；仓库外 pytest 插件封锁 DNS、
+  `connect`、`connect_ex` 和 `create_connection` 后地点/收藏/内容导入聚焦集
+  `205 passed`。前端 lint、typecheck、build 通过，Vitest `98 passed`，指定
+  Chromium E2E `10 passed`。迁移回归 `25 passed`，Alembic 唯一 head 仍为
+  `20260729_0017`。
+- 本轮真实模型、高德、网页和付费 API 调用为 0，未读取 `.env`，未新增迁移，
+  未修改 Compose、Event 时间字段/控件、计划生成/调整/确认或 M2。M1-Gate 仍
+  打开；M2-0 未开始且阻塞。剩余 Event 时间交互和计划闭环问题留给后续独立修复。
 
 ## 2026-07-30 阶段状态纠正
 

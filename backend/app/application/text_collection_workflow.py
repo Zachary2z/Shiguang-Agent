@@ -19,7 +19,6 @@ from app.application.image_recognition import (
 )
 from app.application.input_contracts import CollectionInput, ImageInput, TextInput, UrlInput
 from app.application.place_matching import PlaceMatchingService
-from app.application.place_targets import PlaceTargetSelectionService
 from app.application.pricing import PricingPolicy
 from app.application.run_tracking import (
     AgentRunService,
@@ -32,8 +31,6 @@ from app.application.text_extraction import MAX_TEXT_INPUT_CHARS, TextExtraction
 from app.config import StorageProviderSettings
 from app.domain.collections import (
     AutoSaveResult,
-    CandidateField,
-    CollectionItem,
     CollectionKind,
     EventCandidate,
     ExtractionOutcome,
@@ -43,7 +40,6 @@ from app.domain.collections import (
     MessageContentType,
     MessageRole,
     PlaceCandidate,
-    PlanCity,
     ResourceNotFoundError,
     Source,
     SourceMetadata,
@@ -51,7 +47,6 @@ from app.domain.collections import (
     SourceType,
 )
 from app.domain.collections.writes import validate_idempotency_key
-from app.domain.places import CityScope, PlaceMatchRequest, resolve_city_hint
 from app.domain.runs import AgentRunCreate, AgentRunStatus
 from app.domain.time import utc_now
 from app.domain.web import WebFetchFailure, WebPageContent
@@ -977,10 +972,11 @@ class TextCollectionWorkflow:
         if extraction.outcome is not ExtractionOutcome.CANDIDATES:
             await self._persist_source(source)
             return AutoSaveResult(source_id=source.id)
-        saved = await CollectionWriteService(
+        write_service = CollectionWriteService(
             session=self._session,
             now=self._now,
-        ).auto_save(
+        )
+        saved = await write_service.auto_save(
             user_id=user_id,
             idempotency_key=idempotency_key,
             source=source,
@@ -988,8 +984,8 @@ class TextCollectionWorkflow:
         )
         await self._record_event_location_candidates(
             user_id=user_id,
-            source_id=source.id,
             saved=saved,
+            write_service=write_service,
         )
         return saved
 
@@ -997,8 +993,8 @@ class TextCollectionWorkflow:
         self,
         *,
         user_id: str,
-        source_id: str,
         saved: AutoSaveResult,
+        write_service: CollectionWriteService,
     ) -> None:
         if self._event_place_matching is None or saved.replayed:
             return
@@ -1006,57 +1002,16 @@ class TextCollectionWorkflow:
         for item in saved.items:
             if item.kind is not CollectionKind.EVENT or item.place_target is not None:
                 continue
-            has_city_hint, city_code = resolve_city_hint(item.city_hint)
-            if not has_city_hint or city_code != PlanCity.SHENZHEN.value:
-                continue
-            candidate = self._event_location_candidate(item)
             try:
-                result = await self._event_place_matching.match(
-                    PlaceMatchRequest(
-                        candidate=candidate,
-                        city=CityScope(city_code=PlanCity.SHENZHEN.value),
-                    )
+                await write_service.continue_location_confirmation(
+                    owner=user_id,
+                    item=item,
+                    place_matching=self._event_place_matching,
                 )
             except asyncio.CancelledError:
                 raise
             except MapProviderError:
                 continue
-            await PlaceTargetSelectionService(session=self._session).record_candidates(
-                user_id=user_id,
-                collection_item_id=item.id,
-                source_id=source_id,
-                match_result=result,
-                queried_at=self._now(),
-                expected_version=item.version,
-            )
-
-    @staticmethod
-    def _event_location_candidate(item: CollectionItem) -> PlaceCandidate:
-        values: dict[CandidateField, object | None] = {
-            CandidateField.CITY_HINT: item.city_hint,
-            CandidateField.DISTRICT: item.district,
-            CandidateField.ADDRESS: item.address,
-            CandidateField.BUSINESS_DISTRICT: item.business_district,
-            CandidateField.LANDMARK: item.landmark,
-            CandidateField.METRO_STATION: item.metro_station,
-            CandidateField.PRICE: item.price_amount,
-            CandidateField.TAGS: item.tags or None,
-        }
-        return PlaceCandidate(
-            title=item.address or item.landmark or item.title,
-            city_hint=item.city_hint,
-            district=item.district,
-            address=item.address,
-            business_district=item.business_district,
-            landmark=item.landmark,
-            metro_station=item.metro_station,
-            price_amount=item.price_amount,
-            price_currency=item.price_currency,
-            tags=item.tags,
-            missing_fields=tuple(
-                field for field, value in values.items() if value is None
-            ),
-        )
 
     async def _persist_source(self, source: Source) -> Source:
         existing = await self._repository.get_source(

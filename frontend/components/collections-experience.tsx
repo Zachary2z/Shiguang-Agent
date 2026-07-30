@@ -105,10 +105,11 @@ const statusLabels: Record<CollectionStatus, string> = {
 };
 
 const exclusionLabels: Record<string, string> = {
-  pending_confirmation: "确认地点后才能参与深圳计划",
+  location_unconfirmed: "确认准确地点后才能参与深圳计划",
+  city_unconfirmed: "确认正式城市后才能参与深圳计划",
+  event_time_unconfirmed: "确认活动时间后才能参与深圳计划",
   other_city: "属于其他城市，当前深圳计划不会使用",
   inactive: "当前状态不会参与计划",
-  city_or_location_unconfirmed: "城市或位置待确认，暂不参与计划",
 };
 
 const eventTemporalLabels: Readonly<Record<string, string>> = {
@@ -119,6 +120,15 @@ const eventTemporalLabels: Readonly<Record<string, string>> = {
 };
 
 const eventTemporalFields = Object.keys(eventTemporalLabels);
+const locationClueLabels: Readonly<Record<string, string>> = {
+  city_hint: "城市线索",
+  district: "行政区",
+  address: "公开地址",
+  business_district: "商圈",
+  landmark: "地标",
+  metro_station: "地铁站",
+};
+const locationClueFields = Object.keys(locationClueLabels);
 const requiredEventTimeFields = new Set([
   "event_start_at",
   "event_end_at",
@@ -134,13 +144,6 @@ function eventTimeNeedsAttention(item: CollectionItem): boolean {
 }
 
 function planningExclusionLabel(item: CollectionItem): string {
-  if (
-    item.kind === "event" &&
-    item.planning_exclusion_reason === "pending_confirmation" &&
-    eventTimeNeedsAttention(item)
-  ) {
-    return "确认活动时间和准确地点后才能参与深圳计划";
-  }
   return (
     exclusionLabels[item.planning_exclusion_reason ?? ""] ??
     "暂不参与当前计划"
@@ -173,14 +176,35 @@ function shanghaiLocalToIso(value: string): string {
 
 function errorCopy(error: unknown): string {
   if (!(error instanceof ApiError)) return "收藏库暂时没有加载完成。";
-  if (error.code === "conflict") return "这条收藏刚刚被更新，请刷新后继续。";
+  if (error.code === "conflict") {
+    return "这条收藏刚刚被更新。你的草稿已保留，请刷新服务端状态后重试。";
+  }
   if (error.code === "forbidden") return "会话校验已失效，请刷新页面。";
   if (error.code === "not_found") return "这条收藏不存在，或你没有查看权限。";
-  if (error.code === "timeout") return "请求等待超时，请重试。";
+  if (error.code === "timeout") {
+    return "请求等待超时。你的草稿已保留，请刷新服务端状态后重试。";
+  }
+  if (error.code === "aborted") return "操作已取消，你的草稿仍然保留。";
   if (error.status === 422 || error.code === "request_failed") {
-    return "补充信息没有保存，请检查后重试。";
+    return "补充信息未完成处理。你的草稿已保留，请检查后重试。";
   }
   return "收藏库暂时没有加载完成。";
+}
+
+function locationSaveErrorCopy(error: unknown): string {
+  if (
+    error instanceof ApiError &&
+    [
+      "rate_limited",
+      "network_error",
+      "server_error",
+      "timeout",
+      "aborted",
+    ].includes(error.code)
+  ) {
+    return "地点信息可能已保存，但匹配没有完成。你的草稿已保留，请刷新服务端状态后重试。";
+  }
+  return errorCopy(error);
 }
 
 function cityLabel(item: CollectionItem): string {
@@ -253,12 +277,18 @@ export function CollectionsExperience() {
   const [deletedItem, setDeletedItem] = useState<CollectionItem | null>(null);
   const [detail, setDetail] = useState<CollectionDetail | null>(null);
   const [candidates, setCandidates] = useState<CandidatePage | null>(null);
+  const [candidateLoadState, setCandidateLoadState] =
+    useState<"idle" | "loading" | "ready" | "error">("idle");
   const [detailState, setDetailState] = useState<LoadState>("ready");
   const [saving, setSaving] = useState(false);
+  const [saveRecoveryNeeded, setSaveRecoveryNeeded] = useState(false);
   const [draftTitle, setDraftTitle] = useState("");
   const [draftCity, setDraftCity] = useState("");
   const [draftDistrict, setDraftDistrict] = useState("");
   const [draftAddress, setDraftAddress] = useState("");
+  const [draftBusinessDistrict, setDraftBusinessDistrict] = useState("");
+  const [draftLandmark, setDraftLandmark] = useState("");
+  const [draftMetroStation, setDraftMetroStation] = useState("");
   const [draftTags, setDraftTags] = useState("");
   const [draftEventStartDate, setDraftEventStartDate] = useState("");
   const [draftEventEndDate, setDraftEventEndDate] = useState("");
@@ -278,6 +308,9 @@ export function CollectionsExperience() {
     setDraftCity(item.city_hint ?? "");
     setDraftDistrict(item.district ?? "");
     setDraftAddress(item.address ?? "");
+    setDraftBusinessDistrict(item.business_district ?? "");
+    setDraftLandmark(item.landmark ?? "");
+    setDraftMetroStation(item.metro_station ?? "");
     setDraftTags(item.tags.join("、"));
     setDraftEventStartDate(item.event_start_date ?? "");
     setDraftEventEndDate(item.event_end_date ?? "");
@@ -312,6 +345,8 @@ export function CollectionsExperience() {
       detailGeneration.current += 1;
       selectionAttempt.current = null;
       setSaving(false);
+      setSaveRecoveryNeeded(false);
+      setCandidateLoadState("idle");
       replaceQuery({ item: collectionId }, replace);
     },
     [replaceQuery],
@@ -360,6 +395,44 @@ export function CollectionsExperience() {
     }
   }, [queryString]);
 
+  const loadCandidates = useCallback(async (
+    collectionId: string,
+    signal?: AbortSignal,
+  ) => {
+    const generation = detailGeneration.current;
+    setCandidateLoadState("loading");
+    try {
+      const choices = await apiClient.request<CandidatePage>(
+        `/api/v1/collections/${collectionId}/poi-candidates`,
+        { signal },
+      );
+      if (
+        detailGeneration.current !== generation ||
+        activeDetailId.current !== collectionId
+      ) {
+        return false;
+      }
+      setCandidates(choices);
+      setCandidateLoadState("ready");
+      return true;
+    } catch (error) {
+      if (
+        detailGeneration.current !== generation ||
+        activeDetailId.current !== collectionId
+      ) {
+        return false;
+      }
+      setCandidates(null);
+      setCandidateLoadState("error");
+      if (!(error instanceof ApiError && error.code === "aborted")) {
+        setFeedback(
+          "地点候选暂时没有加载完成。已保存的信息不会丢失，请重新加载候选。",
+        );
+      }
+      return false;
+    }
+  }, []);
+
   useEffect(() => {
     let active = true;
     void apiClient
@@ -405,17 +478,13 @@ export function CollectionsExperience() {
         if (detailGeneration.current !== generation) return;
         setDetail(loaded);
         restoreDrafts(loaded.item);
+        setDetailState("ready");
         if (loaded.item.status === "pending_selection") {
-          const choices = await apiClient.request<CandidatePage>(
-            `/api/v1/collections/${selectedId}/poi-candidates`,
-            { signal: controller.signal },
-          );
-          if (detailGeneration.current !== generation) return;
-          setCandidates(choices);
+          await loadCandidates(selectedId, controller.signal);
         } else {
           setCandidates(null);
+          setCandidateLoadState("idle");
         }
-        setDetailState("ready");
       } catch (error) {
         if (detailGeneration.current !== generation) return;
         if (error instanceof ApiError && error.code === "aborted") return;
@@ -424,7 +493,7 @@ export function CollectionsExperience() {
       }
     })();
     return () => controller.abort();
-  }, [csrf, selectedId]);
+  }, [csrf, loadCandidates, selectedId]);
 
   useEffect(() => {
     if (selectedId && detailState === "ready") {
@@ -445,7 +514,7 @@ export function CollectionsExperience() {
     collectionId: string,
     request: () => Promise<CollectionItem>,
     onSuccess: (result: CollectionItem) => void | Promise<void>,
-    onFailure?: () => void,
+    onFailure?: (error: unknown) => string | void,
   ) {
     if (!csrf) return;
     const operation = detailOperation(collectionId);
@@ -460,8 +529,8 @@ export function CollectionsExperience() {
       await loadList();
     } catch (error) {
       if (!ownsDetailOperation(operation)) return;
-      onFailure?.();
-      setFeedback(errorCopy(error));
+      const failureCopy = onFailure?.(error);
+      setFeedback(failureCopy ?? errorCopy(error));
     } finally {
       if (ownsDetailOperation(operation)) setSaving(false);
     }
@@ -487,6 +556,9 @@ export function CollectionsExperience() {
                 city_hint: draftCity.trim() || null,
                 district: draftDistrict.trim() || null,
                 address: draftAddress.trim() || null,
+                business_district: draftBusinessDistrict.trim() || null,
+                landmark: draftLandmark.trim() || null,
+                metro_station: draftMetroStation.trim() || null,
                 tags: draftTags
                   .split(/[、,]/)
                   .map((tag) => tag.trim())
@@ -498,33 +570,52 @@ export function CollectionsExperience() {
       async (item) => {
         setDetail((current) => (current ? { ...current, item } : current));
         restoreDrafts(item);
+        setSaveRecoveryNeeded(false);
         if (item.status === "pending_selection") {
-          const candidateGeneration = detailGeneration.current;
-          let choices: CandidatePage;
-          try {
-            choices = await apiClient.request<CandidatePage>(
-              `/api/v1/collections/${collectionId}/poi-candidates`,
-            );
-          } catch {
-            setCandidates(null);
-            setFeedback("修改已保存，但地点候选暂时没有加载完成，请重新打开详情。");
-            return;
-          }
-          if (
-            detailGeneration.current !== candidateGeneration ||
-            activeDetailId.current !== collectionId
-          ) {
-            return;
-          }
-          setCandidates(choices);
-          setFeedback("修改已保存，请选择准确地点。");
+          const loaded = await loadCandidates(collectionId);
+          if (loaded) setFeedback("修改已保存，请选择准确地点。");
         } else {
           setCandidates(null);
+          setCandidateLoadState("idle");
           setFeedback("修改已保存，Agent 与收藏库会读取同一条数据。");
         }
       },
-      () => restoreDrafts(detail.item),
+      (error) => {
+        setSaveRecoveryNeeded(true);
+        return locationSaveErrorCopy(error);
+      },
     );
+  }
+
+  async function refreshAuthoritativeDetail() {
+    if (!detail) return;
+    const collectionId = detail.item.id;
+    const operation = detailOperation(collectionId);
+    setSaving(true);
+    try {
+      const loaded = await apiClient.request<CollectionDetail>(
+        `/api/v1/collections/${collectionId}`,
+      );
+      if (!ownsDetailOperation(operation)) return;
+      setDetail(loaded);
+      setSaveRecoveryNeeded(false);
+      if (loaded.item.status === "pending_selection") {
+        const choicesLoaded = await loadCandidates(collectionId);
+        if (choicesLoaded) {
+          setFeedback("已刷新服务端状态，请继续选择地点或重试保存。");
+        }
+      } else {
+        setCandidates(null);
+        setCandidateLoadState("idle");
+        setFeedback("已刷新服务端状态。你的编辑草稿仍然保留。");
+      }
+      await loadList();
+    } catch (error) {
+      if (!ownsDetailOperation(operation)) return;
+      setFeedback(errorCopy(error));
+    } finally {
+      if (ownsDetailOperation(operation)) setSaving(false);
+    }
   }
 
   async function confirmEventTime(event: FormEvent) {
@@ -906,6 +997,58 @@ export function CollectionsExperience() {
                   <span>{statusLabels[detail.item.status]}</span>
                   <span>版本 {detail.item.version}</span>
                 </div>
+                {saveRecoveryNeeded ? (
+                  <div className="collection-state" role="alert">
+                    <p>先读取最新服务端状态，再用当前草稿重试，不会覆盖较新的数据。</p>
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => void refreshAuthoritativeDetail()}
+                    >
+                      刷新状态后重试
+                    </button>
+                  </div>
+                ) : null}
+                {detail.item.status === "pending_selection" &&
+                !candidates ? (
+                  <div
+                    className="collection-state"
+                    role={candidateLoadState === "error" ? "alert" : "status"}
+                  >
+                    <p>
+                      {candidateLoadState === "loading"
+                        ? "正在加载地点候选…"
+                        : "地点候选尚未加载完成，已保存的信息不会丢失。"}
+                    </p>
+                    {candidateLoadState !== "loading" ? (
+                      <button
+                        type="button"
+                        disabled={saving}
+                        onClick={() => void loadCandidates(detail.item.id)}
+                      >
+                        重新加载候选
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                {detail.item.status === "pending_details" &&
+                detail.item.formal_city_code === null ? (
+                  <div className="collection-state" role="status">
+                    <strong>准确地点仍待补充</strong>
+                    <p>
+                      {detail.item.missing_fields.some((field) =>
+                        locationClueFields.includes(field),
+                      )
+                        ? `可补充：${detail.item.missing_fields
+                            .filter((field) =>
+                              locationClueFields.includes(field),
+                            )
+                            .map((field) => locationClueLabels[field] ?? field)
+                            .join("、")}。`
+                        : "请核对名称，或补充更精确的行政区、公开地址、商圈、地标或地铁站。"}
+                    </p>
+                  </div>
+                ) : null}
                 {candidates ? (
                   <fieldset className="candidate-list" disabled={saving}>
                     <legend>请选择准确地点</legend>
@@ -925,7 +1068,12 @@ export function CollectionsExperience() {
                             .filter(Boolean)
                             .join(" · ")}
                         </span>
-                        <small>{candidate.poi_type} · 高德候选</small>
+                        <small>
+                          {[candidate.poi_type, ...candidate.matching_clues]
+                            .filter(Boolean)
+                            .join(" · ")}{" "}
+                          · 高德候选
+                        </small>
                       </button>
                     ))}
                     <button
@@ -952,9 +1100,10 @@ export function CollectionsExperience() {
                       <span>
                         {detail.item.planning_eligible
                           ? "可参与计划"
-                          : eventTimeNeedsAttention(detail.item)
+                          : detail.item.planning_exclusion_reason ===
+                              "event_time_unconfirmed"
                             ? "活动时间待确认"
-                            : "准确地点待确认"}
+                            : planningExclusionLabel(detail.item)}
                       </span>
                     </div>
                     <div className="event-time-fields">
@@ -1044,6 +1193,9 @@ export function CollectionsExperience() {
                   <label>城市线索<input name="city_hint" maxLength={100} value={draftCity} onChange={(event) => setDraftCity(event.target.value)} placeholder="线索不等于正式城市" /></label>
                   <label>行政区<input name="district" maxLength={100} value={draftDistrict} onChange={(event) => setDraftDistrict(event.target.value)} /></label>
                   <label>公开地址<input name="address" maxLength={500} value={draftAddress} onChange={(event) => setDraftAddress(event.target.value)} /></label>
+                  <label>商圈<input name="business_district" maxLength={100} value={draftBusinessDistrict} onChange={(event) => setDraftBusinessDistrict(event.target.value)} /></label>
+                  <label>地标<input name="landmark" maxLength={200} value={draftLandmark} onChange={(event) => setDraftLandmark(event.target.value)} /></label>
+                  <label>地铁站<input name="metro_station" maxLength={100} value={draftMetroStation} onChange={(event) => setDraftMetroStation(event.target.value)} /></label>
                   <label>标签<input name="tags" value={draftTags} onChange={(event) => setDraftTags(event.target.value)} placeholder="用逗号分隔" /></label>
                   <div className="detail-sources">
                     <strong>来源</strong>

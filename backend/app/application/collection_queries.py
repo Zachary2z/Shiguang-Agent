@@ -13,6 +13,7 @@ from app.domain.collections import (
     CollectionStatus,
     ResourceNotFoundError,
     Source,
+    event_schedule_is_confirmed,
 )
 from app.domain.identifiers import validate_collection_item_id, validate_user_id
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
@@ -29,6 +30,16 @@ class CollectionCityGroup(StrEnum):
     SHENZHEN = "shenzhen"
     OTHER = "other"
     PENDING = "pending"
+
+
+class CollectionPlanningBlocker(StrEnum):
+    """Authoritative facts that can keep a collection out of planning."""
+
+    INACTIVE = "inactive"
+    LOCATION_UNCONFIRMED = "location_unconfirmed"
+    CITY_UNCONFIRMED = "city_unconfirmed"
+    OTHER_CITY = "other_city"
+    EVENT_TIME_UNCONFIRMED = "event_time_unconfirmed"
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -72,6 +83,46 @@ def collection_formal_city_code(item: CollectionItem) -> str | None:
     if target.poi is not None:
         return str(target.poi.city_code)
     return None
+
+
+def collection_planning_blockers(
+    item: CollectionItem,
+    *,
+    plan_city_code: str,
+    formal_city_code: str | None,
+    location_confirmed: bool,
+    flexible_brand_target: bool = False,
+) -> tuple[CollectionPlanningBlocker, ...]:
+    """Return the single application-level set of planning blockers."""
+
+    blockers: list[CollectionPlanningBlocker] = []
+    if item.status not in {
+        CollectionStatus.ACTIVE,
+        CollectionStatus.PENDING_SELECTION,
+        CollectionStatus.PENDING_DETAILS,
+    }:
+        blockers.append(CollectionPlanningBlocker.INACTIVE)
+    if not location_confirmed:
+        blockers.append(CollectionPlanningBlocker.LOCATION_UNCONFIRMED)
+    if not flexible_brand_target:
+        if formal_city_code is None:
+            blockers.append(CollectionPlanningBlocker.CITY_UNCONFIRMED)
+        elif formal_city_code != plan_city_code:
+            blockers.append(CollectionPlanningBlocker.OTHER_CITY)
+    if item.kind is CollectionKind.EVENT and not event_schedule_is_confirmed(
+        event_start_date=item.event_start_date,
+        event_end_date=item.event_end_date,
+        event_start_at=item.event_start_at,
+        event_end_at=item.event_end_at,
+        uncertainties=item.uncertainties,
+    ):
+        blockers.append(CollectionPlanningBlocker.EVENT_TIME_UNCONFIRMED)
+    if (
+        item.status is not CollectionStatus.ACTIVE
+        and CollectionPlanningBlocker.INACTIVE not in blockers
+    ):
+        blockers.append(CollectionPlanningBlocker.INACTIVE)
+    return tuple(blockers)
 
 
 class CollectionQueryService:

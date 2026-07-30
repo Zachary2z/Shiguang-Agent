@@ -8,7 +8,10 @@ from typing import Annotated, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
-from app.application.collection_queries import collection_formal_city_code
+from app.application.collection_queries import (
+    collection_formal_city_code,
+    collection_planning_blockers,
+)
 from app.domain.collections import (
     CandidateField,
     CollectionItem,
@@ -25,7 +28,6 @@ from app.domain.collections import (
     Uncertainty,
     UndoOutcome,
     UnsupportedReason,
-    event_schedule_is_confirmed,
 )
 from app.domain.memories import (
     Memory,
@@ -38,7 +40,6 @@ from app.domain.places import (
     Coordinate,
     EvidenceOutcome,
     PlaceMatchCandidate,
-    PlaceScope,
     PlaceSelectionKind,
     PoiProvider,
     PoiType,
@@ -647,40 +648,25 @@ class CollectionItemResponse(ApiModel):
     @classmethod
     def from_domain(cls, item: CollectionItem) -> CollectionItemResponse:
         formal_city_code = collection_formal_city_code(item)
-        planning_eligible = bool(
-            item.status is CollectionStatus.ACTIVE
-            and item.place_target is not None
-            and (
-                formal_city_code == "shenzhen"
-                or item.place_target.brand_identity is not None
-            )
-            and (
-                item.kind is CollectionKind.PLACE
-                or (
-                    item.place_target.scope is PlaceScope.EXACT
-                    and event_schedule_is_confirmed(
-                        event_start_date=item.event_start_date,
-                        event_end_date=item.event_end_date,
-                        event_start_at=item.event_start_at,
-                        event_end_at=item.event_end_at,
-                        uncertainties=item.uncertainties,
-                    )
-                )
-            )
+        target = item.place_target
+        flexible_brand_target = bool(
+            target is not None and target.brand_identity is not None
         )
-        exclusion_reason: str | None = None
-        if not planning_eligible:
-            if item.status in {
-                CollectionStatus.PENDING_SELECTION,
-                CollectionStatus.PENDING_DETAILS,
-            }:
-                exclusion_reason = "pending_confirmation"
-            elif formal_city_code is not None and formal_city_code != "shenzhen":
-                exclusion_reason = "other_city"
-            elif item.status is not CollectionStatus.ACTIVE:
-                exclusion_reason = "inactive"
-            else:
-                exclusion_reason = "city_or_location_unconfirmed"
+        blockers = collection_planning_blockers(
+            item,
+            plan_city_code="shenzhen",
+            formal_city_code=formal_city_code,
+            location_confirmed=bool(
+                target is not None
+                and (
+                    target.poi is not None
+                    or flexible_brand_target
+                )
+            ),
+            flexible_brand_target=flexible_brand_target,
+        )
+        planning_eligible = not blockers
+        exclusion_reason = blockers[0].value if blockers else None
         return cls(
             id=item.id,
             kind=item.kind,

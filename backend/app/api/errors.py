@@ -38,6 +38,7 @@ from app.domain.plans import (
     PlanNotReadyError,
     PlanVersionConflictError,
 )
+from app.providers.map import MapProviderError, MapProviderErrorCode
 from app.providers.storage import StorageProviderError, StorageProviderErrorCode
 
 
@@ -81,6 +82,7 @@ def install_error_handlers(api: FastAPI) -> None:
     api.add_exception_handler(AuthenticationRequiredError, _authentication_required)
     api.add_exception_handler(CsrfRejectedError, _csrf_rejected)
     api.add_exception_handler(DemoNotAvailableError, _demo_not_available)
+    api.add_exception_handler(MapProviderError, _map_provider_error)
     api.add_exception_handler(StorageProviderError, _storage_provider_error)
 
 
@@ -97,6 +99,26 @@ async def _csrf_rejected(request: Request, exc: Exception) -> JSONResponse:
 async def _demo_not_available(request: Request, exc: Exception) -> JSONResponse:
     del request, exc
     return _error(503, "DEMO_NOT_AVAILABLE", "Demo is not available.")
+
+
+async def _map_provider_error(request: Request, exc: Exception) -> JSONResponse:
+    del request
+    assert isinstance(exc, MapProviderError)
+    statuses = {
+        MapProviderErrorCode.TIMEOUT: 504,
+        MapProviderErrorCode.RATE_LIMITED: 429,
+        MapProviderErrorCode.AUTHENTICATION_FAILED: 503,
+        MapProviderErrorCode.UNAVAILABLE: 503,
+        MapProviderErrorCode.INVALID_REQUEST: 422,
+        MapProviderErrorCode.POI_NOT_FOUND: 502,
+        MapProviderErrorCode.INVALID_RESPONSE: 502,
+    }
+    return _error(
+        statuses[exc.code],
+        exc.code.value,
+        "Location details may have been saved, but matching did not complete.",
+        recovery_actions=("reload_collection", "retry_location_match"),
+    )
 
 
 async def _storage_provider_error(request: Request, exc: Exception) -> JSONResponse:

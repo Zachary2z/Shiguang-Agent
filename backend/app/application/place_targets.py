@@ -785,6 +785,7 @@ class PlaceTargetSelectionService:
                 values[field] = value
         PlaceTargetSelectionService._clear_resolved_candidate_metadata(
             values,
+            city_confirmed=target is not None,
             district=district,
             address=address,
             business_district=business_district,
@@ -816,6 +817,7 @@ class PlaceTargetSelectionService:
         )
         cls._clear_resolved_candidate_metadata(
             values,
+            city_confirmed=True,
             district=candidate.district,
             address=candidate.address,
             business_district=candidate.business_area,
@@ -826,11 +828,16 @@ class PlaceTargetSelectionService:
     def _clear_resolved_candidate_metadata(
         values: dict[str, Any],
         *,
+        city_confirmed: bool,
         district: str | None,
         address: str | None,
         business_district: str | None,
     ) -> None:
-        resolved = {CandidateField.CITY_HINT}
+        resolved = (
+            {CandidateField.CITY_HINT}
+            if city_confirmed
+            else set()
+        )
         resolved.update(
             {
             field

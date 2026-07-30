@@ -14,6 +14,56 @@ Agent 计划入口不可达。M1-Gate 因此重新打开；下方“M1 正式关
 - M2-0：未开始，阻塞于主控复验；
 - M1 未重新关闭。
 
+### 2026-07-30 地点确认完整闭环生产修复
+
+地点确认生产修复完成，等待主控验收；M1-Gate 仍打开，M2-0 未开始且阻塞。
+
+缺陷根因和收敛结果：
+
+1. 收藏 PATCH 仅允许 `Place + pending_details` 进入匹配，Event 和
+   `pending_selection` 无法在补充地点线索后继续；现由唯一
+   `CollectionWriteService` 对六类既有地点线索统一触发继续确认。
+2. 文字导入为 Event 维护了独立的城市判断、`PlaceCandidate` 组装、匹配和候选
+   写入旁路；该路径已删除，初次导入和后续 PATCH 均复用收藏写服务、
+   `PlaceMatchingService` 和 `PlaceTargetSelectionService`。
+3. 地图错误在补充 PATCH 后被吞掉，前端会看到保存成功却没有候选；现改为固定、
+   可恢复且不含供应商载荷的 HTTP 错误。前端保留草稿，可刷新服务端 version 后
+   重试；候选读取单独失败时可原地重载。
+4. API 将地点和 Event 时间合并成 `pending_confirmation`，前端又复制 metadata
+   推断规划资格；现集中定义地点、城市、其他城市、Event 时间及非活动五类事实
+   阻塞，并由 API 与结构化检索共用。前端只展示服务端
+   `planning_eligible/planning_exclusion_reason`。
+5. 候选记录路径曾在没有正式目标时也清除城市 missing metadata，令无城市线索+
+   地图无结果的 Event 违反领域契约；现只有正式目标建立后才清除正式城市相关项。
+
+闭环证据覆盖 Place/Event 补充后自动匹配、无结果待补充、多分店候选、最多三个
+候选、不采用供应商第一名、选择具体 POI、“以上都不是”、正式 Amap POI/城市代码/
+GCJ-02 坐标写入、Event 地点完成但时间仍阻塞、可选价格/标签/商圈不阻塞、PATCH
+旧版本冲突、选择幂等重放、跨用户隔离、地图错误与取消不留错误正式 POI，以及
+关闭重开恢复权威候选状态。生产代码未加入“虾一跳”“深圳天文台”或其他店名、标题、
+地址、行政区和城市样本特例。
+
+架构与安全复核确认只有一个 `CollectionWriteService`、`PlaceMatchingService`、
+`PlaceTargetSelectionService`、`MapProvider`、收藏 Repository、城市解析器和
+候选 API 契约。没有新增迁移、自动重试、隐藏 fallback、候选白名单、阈值放宽或
+第二套地点状态机。公开错误不记录 API Key、Authorization、Cookie、私人原文、
+精确位置日志或完整供应商响应。
+
+离线结果：
+
+- `pip check`、Ruff、strict mypy（140 个源文件）：通过；
+- 用户指定地点/收藏/内容导入/检索聚焦集：`264 passed`；
+- 非真实 Provider/Map 全集：`1702 passed, 16 skipped, 2 deselected`；
+- 仓库外插件封锁 `getaddrinfo`、`connect`、`connect_ex`、
+  `create_connection` 后聚焦集：`205 passed`；
+- 前端 lint、typecheck、build：通过；Vitest `98 passed`；
+- 指定 Agent/收藏 Chromium E2E：`10 passed`；
+- 迁移测试：`25 passed`；Alembic 唯一 head：`20260729_0017`。
+
+真实模型、高德、网页和付费 API 调用为 0；`.env` 未读取。未修改 Event 时间
+字段/控件、计划生成/调整/确认、Compose 或 M2。剩余 Event 时间交互和计划闭环
+问题继续作为后续独立修复，不能据此关闭 M1-Gate 或开始 M2-0。
+
 本次收敛复用唯一正式入口：API 与 Worker 共用运行时 Storage 构造；统一输入提交
 负责截图、Message、AgentRun、Source、Job 的补偿；收藏补充继续使用唯一
 `CollectionWriteService → PlaceMatchingService → PlaceTargetSelectionService`；

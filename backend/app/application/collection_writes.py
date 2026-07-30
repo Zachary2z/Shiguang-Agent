@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import secrets
@@ -50,10 +51,19 @@ from app.domain.places import (
 )
 from app.domain.time import require_aware_utc, utc_now
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
-from app.providers.map import MapProviderError
 
 DEFAULT_UNDO_TTL = timedelta(minutes=10)
 MAX_UNDO_TTL = timedelta(hours=24)
+LOCATION_CLUE_FIELDS = frozenset(
+    {
+        "city_hint",
+        "district",
+        "address",
+        "business_district",
+        "landmark",
+        "metro_station",
+    }
+)
 
 
 class CollectionWriteService:
@@ -153,27 +163,35 @@ class CollectionWriteService:
                     target=target_status,
                     updated_at=now,
                 )
-        if (
-            place_matching is None
-            or updated.kind is not CollectionKind.PLACE
-            or updated.status is not CollectionStatus.PENDING_DETAILS
-        ):
+        if not LOCATION_CLUE_FIELDS.intersection(patch.model_fields_set):
             return updated
-        return await self._match_updated_place(
+        return await self.continue_location_confirmation(
             owner=owner,
             item=updated,
             place_matching=place_matching,
         )
 
-    async def _match_updated_place(
+    async def continue_location_confirmation(
         self,
         *,
         owner: str,
         item: CollectionItem,
-        place_matching: PlaceMatchingService,
+        place_matching: PlaceMatchingService | None,
     ) -> CollectionItem:
+        if (
+            item.kind not in {CollectionKind.PLACE, CollectionKind.EVENT}
+            or item.place_target is not None
+            or item.status
+            not in {
+                CollectionStatus.PENDING_DETAILS,
+                CollectionStatus.PENDING_SELECTION,
+            }
+        ):
+            return item
         has_city_hint, city_code = resolve_city_hint(item.city_hint)
         if has_city_hint and city_code != PlanCity.SHENZHEN.value:
+            return item
+        if place_matching is None:
             return item
         links = await self._repository.list_collection_sources(
             user_id=owner,
@@ -190,9 +208,12 @@ class CollectionWriteService:
                     search_district=item.district,
                 )
             )
-        except MapProviderError:
+        except asyncio.CancelledError:
+            await asyncio.shield(self._session.rollback())
+            raise
+        except Exception:
             await self._session.rollback()
-            return item
+            raise
         await self._session.rollback()
         return await PlaceTargetSelectionService(session=self._session).record_candidates(
             user_id=owner,
@@ -222,7 +243,11 @@ class CollectionWriteService:
             if not is_present and field not in uncertain_fields
         )
         return PlaceCandidate(
-            title=item.title,
+            title=(
+                item.address or item.landmark or item.title
+                if item.kind is CollectionKind.EVENT
+                else item.title
+            ),
             city_hint=item.city_hint,
             district=item.district,
             address=item.address,

@@ -8,12 +8,15 @@ from datetime import datetime, timedelta
 from typing import ClassVar
 from unicodedata import normalize
 
+from app.application.collection_queries import (
+    CollectionPlanningBlocker,
+    collection_planning_blockers,
+)
 from app.domain.collections import (
     CandidateField,
     CollectionItem,
     CollectionKind,
     CollectionRepository,
-    CollectionStatus,
     PlaceCandidate,
     event_schedule_is_confirmed,
 )
@@ -174,25 +177,36 @@ def assess_collection_candidate(
     memories: tuple[Memory, ...] = (),
 ) -> CollectionCandidateDecision:
     reasons = set(additional_reasons)
-    if item.status is not CollectionStatus.ACTIVE:
-        reasons.add(CandidateReasonCode.STATUS_NOT_ACTIVE)
-    if not location_confirmed:
-        reasons.add(CandidateReasonCode.LOCATION_UNCONFIRMED)
-    if formal_city_code is None:
-        reasons.add(CandidateReasonCode.CITY_UNCONFIRMED)
-    elif formal_city_code != constraints.city_code.value:
-        reasons.add(CandidateReasonCode.CITY_MISMATCH)
+    blocker_reasons = {
+        CollectionPlanningBlocker.INACTIVE: CandidateReasonCode.STATUS_NOT_ACTIVE,
+        CollectionPlanningBlocker.LOCATION_UNCONFIRMED: (
+            CandidateReasonCode.LOCATION_UNCONFIRMED
+        ),
+        CollectionPlanningBlocker.CITY_UNCONFIRMED: CandidateReasonCode.CITY_UNCONFIRMED,
+        CollectionPlanningBlocker.OTHER_CITY: CandidateReasonCode.CITY_MISMATCH,
+        CollectionPlanningBlocker.EVENT_TIME_UNCONFIRMED: (
+            CandidateReasonCode.EVENT_TIME_UNKNOWN
+        ),
+    }
+    reasons.update(
+        blocker_reasons[blocker]
+        for blocker in collection_planning_blockers(
+            item,
+            plan_city_code=constraints.city_code.value,
+            formal_city_code=formal_city_code,
+            location_confirmed=location_confirmed,
+            flexible_brand_target=resolved_from_any_branch,
+        )
+    )
 
     if item.kind is CollectionKind.EVENT:
-        if not event_schedule_is_confirmed(
+        if event_schedule_is_confirmed(
             event_start_date=item.event_start_date,
             event_end_date=item.event_end_date,
             event_start_at=item.event_start_at,
             event_end_at=item.event_end_at,
             uncertainties=item.uncertainties,
         ):
-            reasons.add(CandidateReasonCode.EVENT_TIME_UNKNOWN)
-        else:
             assert item.event_start_at is not None
             assert item.event_end_at is not None
             if item.event_end_at <= constraints.start_at:
