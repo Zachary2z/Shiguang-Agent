@@ -1,5 +1,31 @@
 # M1-Gate 核心闭环验收报告
 
+## 2026-07-31 M1-Gate 修复 2 主控复验
+
+主控确认候选 `7a5da03a2de1ccfe8a1c85ce36619dac06d45e21` 直接基于
+`c5608a694c3585ed40d2c8f6079eb4497836e150`，改动仅限既有收藏详情、移动导航、
+样式、前端测试及交接文档。分支已以 `--ff-only` 集成到 `main`，没有冲突、
+merge commit、后端、迁移或 M2 变化。
+
+独立审查确认详情、导航、Event 表单、通用编辑表单和 URL 状态仍各只有一个正式
+实现；层级、安全区、内部滚动、sticky 标题、焦点陷阱、Escape 和焦点恢复均在现有
+详情边界内完成，没有复制保存、删除、恢复或候选选择路径。对照当前 Web 界面规范
+复核语义 dialog、键盘焦点、触摸目标、滚动隔离和 reduced motion，未发现阻断项。
+
+主控验证结果：
+
+- lint、typecheck、Next.js production build：通过；
+- 完整 Vitest：`126 passed`；
+- 收藏专项 Playwright：`21 passed`；
+- 完整 Playwright：`43 passed`；
+- 纯快进后收藏组件：`44 passed`；
+- 纯快进后收藏专项 Playwright：`21 passed`；
+- Alembic 唯一 head：`20260729_0017`。
+
+当前无未关闭 P0/P1。未读取 `.env`，真实模型、高德、网页和其他外部 API 调用为
+0。M1-Gate 继续打开，当前只允许开始修复 3“Agent 异步提交 SSE/权威终态恢复”；
+运行配置修复和 M2-0 继续阻塞。
+
 ## 2026-07-31 M1-Gate 修复 2：移动端收藏详情操作可达性
 
 修复 2 完成，等待主控验收；M1-Gate 继续打开。SSE 和运行配置修复未开始，
