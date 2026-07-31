@@ -18,6 +18,7 @@ type AgentState =
   | "submitting"
   | "queued"
   | "processing"
+  | "background"
   | "saved"
   | "pending_selection"
   | "pending_details"
@@ -111,6 +112,12 @@ type Conversation = {
   }>;
 };
 
+type ActiveRun = {
+  accepted: AcceptedImport;
+  generation: number;
+  lastSequence: number;
+};
+
 const stageLabels: Readonly<Record<string, string>> = {
   content_receiving: "内容接收",
   place_recognition: "地点识别",
@@ -142,6 +149,7 @@ const locationClueFields = new Set([
   "landmark",
   "metro_station",
 ]);
+const automaticRecoveryDelaysMs = [1_000, 2_000] as const;
 
 function needsEventTimeConfirmation(item: CollectionItem): boolean {
   return (
@@ -223,16 +231,67 @@ export function AgentExperience() {
   const [showTools, setShowTools] = useState(false);
   const submitController = useRef<AbortController | null>(null);
   const sseCancel = useRef<(() => void) | null>(null);
+  const recoveryTimer = useRef<number | null>(null);
+  const observationToken = useRef(0);
+  const activeRun = useRef<ActiveRun | null>(null);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const mainInput = useRef<HTMLTextAreaElement | null>(null);
   const preparedSubmissionKey = useRef<string | null>(null);
   const operationGeneration = useRef(0);
 
+  const cancelObservation = useCallback(() => {
+    observationToken.current += 1;
+    if (recoveryTimer.current !== null) {
+      window.clearTimeout(recoveryTimer.current);
+      recoveryTimer.current = null;
+    }
+    sseCancel.current?.();
+    sseCancel.current = null;
+  }, []);
+
   const readAuthoritativeResult = useCallback(
     async (path: `/${string}`, generation: number) => {
-      try {
-        const authoritative = await apiClient.request<ImportResult>(path);
-        if (operationGeneration.current !== generation) return;
+      const authoritative = await apiClient.request<ImportResult>(path);
+      return operationGeneration.current === generation
+        ? authoritative
+        : null;
+    },
+    [],
+  );
+
+  const followRun = useCallback(
+    (
+      accepted: AcceptedImport,
+      generation: number,
+      options: { readFirst?: boolean; lastSequence?: number } = {},
+    ) => {
+      const previousRun = activeRun.current;
+      cancelObservation();
+      const token = observationToken.current;
+      let lastSequence =
+        options.lastSequence ??
+        (previousRun?.generation === generation &&
+        previousRun.accepted.trace_id === accepted.trace_id
+          ? previousRun.lastSequence
+          : 0);
+      activeRun.current = { accepted, generation, lastSequence };
+      let automaticRecoveries = 0;
+
+      const isCurrent = () =>
+        operationGeneration.current === generation &&
+        observationToken.current === token;
+
+      const showBackgroundState = (message?: string) => {
+        if (!isCurrent()) return;
+        setState("background");
+        setFeedback(
+          message ??
+            "任务仍在后台处理。你可以稍后刷新结果，或继续等待同一个任务。",
+        );
+      };
+
+      const applyAuthoritativeResult = (authoritative: ImportResult) => {
+        if (!isCurrent()) return;
         setResult(authoritative);
         setState(resultState(authoritative));
         if (
@@ -246,53 +305,129 @@ export function AgentExperience() {
             ? "识别没有完成，你可以补充文字、改发截图或重试。"
             : "",
         );
-      } catch (error) {
-        if (operationGeneration.current !== generation) return;
-        setState("failed");
-        setFeedback(errorMessage(error));
+      };
+
+      const scheduleObservation = () => {
+        if (!isCurrent()) return;
+        const delay = automaticRecoveryDelaysMs[automaticRecoveries];
+        if (delay === undefined) {
+          showBackgroundState();
+          return;
+        }
+        automaticRecoveries += 1;
+        setFeedback("任务仍在后台处理，正在继续等待同一个任务。");
+        recoveryTimer.current = window.setTimeout(() => {
+          recoveryTimer.current = null;
+          startConnection();
+        }, delay);
+      };
+
+      const coordinateAuthoritativeResult = async () => {
+        if (!isCurrent()) return;
+        try {
+          const authoritative = await readAuthoritativeResult(
+            accepted.result_url,
+            generation,
+          );
+          if (!authoritative || !isCurrent()) return;
+          if (
+            authoritative.run_status === "queued" ||
+            authoritative.run_status === "running"
+          ) {
+            setResult(authoritative);
+            setState(
+              authoritative.run_status === "queued" ? "queued" : "processing",
+            );
+            scheduleObservation();
+            return;
+          }
+          applyAuthoritativeResult(authoritative);
+        } catch (error) {
+          if (!isCurrent()) return;
+          const delay = automaticRecoveryDelaysMs[automaticRecoveries];
+          if (delay === undefined) {
+            showBackgroundState(errorMessage(error));
+            return;
+          }
+          scheduleObservation();
+        }
+      };
+
+      function startConnection() {
+        if (!isCurrent()) return;
+        let finished = false;
+        let connection:
+          | ReturnType<typeof sseClient.connect<RunEventData>>
+          | null = null;
+        const finishConnection = () => {
+          if (finished) return;
+          finished = true;
+          if (connection && sseCancel.current === connection.cancel) {
+            sseCancel.current = null;
+          }
+          void coordinateAuthoritativeResult();
+        };
+        connection = sseClient.connect<RunEventData>({
+          path: accepted.events_url,
+          lastEventId: lastSequence,
+          maxReconnectAttempts: 2,
+          onEvent: (event: SseEvent<RunEventData>) => {
+            if (!isCurrent() || event.sequence <= lastSequence) return;
+            lastSequence = event.sequence;
+            if (activeRun.current?.generation === generation) {
+              activeRun.current.lastSequence = lastSequence;
+            }
+            const nextStage = event.data.summary?.stage;
+            if (nextStage) setStage(stageLabels[nextStage] ?? "正在处理");
+            if (event.event === "run.started") setState("processing");
+            if (
+              event.event === "run.completed" ||
+              event.event === "run.failed"
+            ) {
+              connection?.cancel();
+              finishConnection();
+            }
+          },
+          onStateChange: (connectionState) => {
+            if (!isCurrent()) return;
+            if (connectionState === "disconnected") {
+              setFeedback("连接短暂中断，正在从上次进度恢复。");
+            }
+            if (connectionState === "error") {
+              setFeedback("进度连接已断开，正在读取权威结果。");
+            }
+          },
+        });
+        if (!finished) {
+          sseCancel.current = connection.cancel;
+        }
+        void connection.closed.then(finishConnection, finishConnection);
+      }
+
+      if (options.readFirst) {
+        void coordinateAuthoritativeResult();
+      } else {
+        startConnection();
       }
     },
-    [],
+    [cancelObservation, readAuthoritativeResult],
   );
 
-  const followRun = useCallback(
-    (accepted: AcceptedImport, generation: number) => {
-      sseCancel.current?.();
-      let lastSequence = 0;
-      const connection = sseClient.connect<RunEventData>({
-        path: accepted.events_url,
-        maxReconnectAttempts: 2,
-        onEvent: (event: SseEvent<RunEventData>) => {
-          if (operationGeneration.current !== generation) return;
-          if (event.sequence <= lastSequence) return;
-          lastSequence = event.sequence;
-          const nextStage = event.data.summary?.stage;
-          if (nextStage) setStage(stageLabels[nextStage] ?? "正在处理");
-          if (event.event === "run.started") setState("processing");
-          if (event.event === "run.completed" || event.event === "run.failed") {
-            void readAuthoritativeResult(accepted.result_url, generation);
-          }
-        },
-        onStateChange: (connectionState) => {
-          if (operationGeneration.current !== generation) return;
-          if (connectionState === "disconnected") {
-            setFeedback("连接短暂中断，正在从上次进度恢复。");
-          }
-          if (connectionState === "error") {
-            setFeedback("进度连接已断开，正在读取最终结果。");
-            void readAuthoritativeResult(accepted.result_url, generation);
-          }
-        },
-      });
-      sseCancel.current = connection.cancel;
-      void connection.closed.catch(() => {
-        if (operationGeneration.current === generation) {
-          void readAuthoritativeResult(accepted.result_url, generation);
-        }
-      });
-    },
-    [readAuthoritativeResult],
-  );
+  const refreshCurrentRun = useCallback(() => {
+    const current = activeRun.current;
+    if (
+      !current ||
+      operationGeneration.current !== current.generation
+    ) {
+      return;
+    }
+    setState("processing");
+    setFeedback("正在刷新同一个任务的权威结果。");
+    followRun(current.accepted, current.generation, {
+      readFirst: true,
+      lastSequence: current.lastSequence,
+    });
+  }, [followRun]);
 
   useEffect(() => {
     const generation = operationGeneration.current + 1;
@@ -327,7 +462,11 @@ export function AgentExperience() {
             );
             return;
           }
-          await readAuthoritativeResult(latest.result_url, generation);
+          followRun(
+            { ...latest, run_status: "queued", replayed: true },
+            generation,
+            { readFirst: true },
+          );
         } catch (error) {
           if (operationGeneration.current !== generation) return;
           setState("failed");
@@ -339,9 +478,10 @@ export function AgentExperience() {
       window.clearTimeout(bootstrap);
       operationGeneration.current += 1;
       submitController.current?.abort();
-      sseCancel.current?.();
+      activeRun.current = null;
+      cancelObservation();
     };
-  }, [followRun, readAuthoritativeResult]);
+  }, [cancelObservation, followRun]);
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
@@ -358,7 +498,8 @@ export function AgentExperience() {
 
     const generation = operationGeneration.current + 1;
     operationGeneration.current = generation;
-    sseCancel.current?.();
+    activeRun.current = null;
+    cancelObservation();
     setState("submitting");
     setFeedback("");
     setStage("内容接收");
@@ -409,7 +550,9 @@ export function AgentExperience() {
       setState("failed");
       setFeedback(errorMessage(error));
     } finally {
-      submitController.current = null;
+      if (submitController.current === controller) {
+        submitController.current = null;
+      }
     }
   }
 
@@ -541,7 +684,8 @@ export function AgentExperience() {
 
   function continueAdding() {
     operationGeneration.current += 1;
-    sseCancel.current?.();
+    activeRun.current = null;
+    cancelObservation();
     preparedSubmissionKey.current = null;
     setText("");
     setFile(null);
@@ -561,6 +705,7 @@ export function AgentExperience() {
     state,
   );
   const displayState =
+    state !== "background" &&
     result &&
     result.run_status !== "failed" &&
     result.run_status !== "cancelled"
@@ -602,6 +747,20 @@ export function AgentExperience() {
               <h2>{stage}</h2>
               <p>结果确认前不会提前收藏，也不会显示虚假进度。</p>
             </div>
+          </article>
+        )}
+
+        {displayState === "background" && (
+          <article className="failure-card" role="status" aria-live="polite">
+            <p className="process-kicker">任务仍在后台处理</p>
+            <h2>这次等待已暂停</h2>
+            <p>
+              {feedback ||
+                "任务没有丢失，也不会重新提交。你可以刷新结果并继续等待。"}
+            </p>
+            <button type="button" onClick={refreshCurrentRun}>
+              刷新结果/继续等待
+            </button>
           </article>
         )}
 

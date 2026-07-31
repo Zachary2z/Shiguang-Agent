@@ -15,7 +15,7 @@ import uvicorn
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.application.content_import_jobs import (
     CONTENT_IMPORT_JOB_TYPE,
@@ -60,7 +60,14 @@ from app.domain.places import (
     WeatherRequest,
     WeatherResult,
 )
-from app.infrastructure.db.models import UserModel
+from app.infrastructure.db.models import (
+    AgentRunModel,
+    CollectionSourceModel,
+    MessageModel,
+    ScheduledJobModel,
+    SourceModel,
+    UserModel,
+)
 from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.infrastructure.storage import LocalPrivateStorageProvider
@@ -251,6 +258,55 @@ def build_app() -> FastAPI:
         map_provider=map_provider,
         demo_storage_provider=storage,
     )
+
+    @api.get("/__e2e/run-stats/{trace_id}")
+    async def run_stats(trace_id: str) -> dict[str, int]:
+        async with api.state.demo_database.session_factory() as session:
+            job = await session.scalar(
+                select(ScheduledJobModel).where(
+                    ScheduledJobModel.trace_id == trace_id
+                )
+            )
+            if job is None:
+                return {
+                    "agent_runs": 0,
+                    "jobs": 0,
+                    "messages": 0,
+                    "sources": 0,
+                    "business_writes": 0,
+                }
+            message_id = str(job.payload_json["message_id"])
+            source_id = str(job.payload_json["source_id"])
+
+            async def count(model: type[object], predicate: object) -> int:
+                value = await session.scalar(
+                    select(func.count()).select_from(model).where(predicate)
+                )
+                return int(value or 0)
+
+            return {
+                "agent_runs": await count(
+                    AgentRunModel,
+                    AgentRunModel.trace_id == trace_id,
+                ),
+                "jobs": await count(
+                    ScheduledJobModel,
+                    ScheduledJobModel.trace_id == trace_id,
+                ),
+                "messages": await count(
+                    MessageModel,
+                    MessageModel.id == message_id,
+                ),
+                "sources": await count(
+                    SourceModel,
+                    SourceModel.id == source_id,
+                ),
+                "business_writes": await count(
+                    CollectionSourceModel,
+                    CollectionSourceModel.source_id == source_id,
+                ),
+            }
+
     original_lifespan = api.router.lifespan_context
 
     @asynccontextmanager

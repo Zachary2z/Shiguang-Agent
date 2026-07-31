@@ -104,6 +104,30 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
+type MockSseOptions = {
+  lastEventId?: number;
+  onEvent: (event: {
+    id: string;
+    event: string;
+    sequence: number;
+    data: { summary?: { stage?: string; status?: string } };
+  }) => void;
+  onStateChange?: (state: string) => void;
+};
+
+function terminalEvent(
+  options: MockSseOptions,
+  sequence: number,
+  event: "run.completed" | "run.failed" = "run.completed",
+) {
+  options.onEvent({
+    id: String(sequence),
+    event,
+    sequence,
+    data: { summary: { status: event === "run.failed" ? "failed" : "succeeded" } },
+  });
+}
+
 function queueCompletedImport(
   collections: ReturnType<typeof collection>[],
   mutationResponses: Promise<ReturnType<typeof collection>>[] = [],
@@ -142,7 +166,10 @@ async function submitAndShowCollections() {
 }
 
 describe("Agent experience", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
 
   beforeEach(() => {
     request.mockReset();
@@ -252,7 +279,13 @@ describe("Agent experience", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
     await screen.findByText("网络连接中断，请重试。");
     await user.click(screen.getByRole("button", { name: "重试" }));
-    await waitFor(() => expect(request).toHaveBeenCalledTimes(4));
+    await waitFor(() => {
+      const submissions = request.mock.calls.filter(
+        ([path, options]) =>
+          String(path).endsWith("/messages") && options?.method === "POST",
+      );
+      expect(submissions).toHaveLength(2);
+    });
 
     const submissions = request.mock.calls.filter(
       ([path, options]) =>
@@ -782,5 +815,359 @@ describe("Agent experience", () => {
     await user.type(input, "第二项");
     await user.click(screen.getByRole("button", { name: "发送" }));
     expect(firstCancel).toHaveBeenCalled();
+  });
+
+  it("reads a terminal event authoritatively and resumes from the last sequence when it is still running", async () => {
+    const user = userEvent.setup();
+    const running = {
+      ...completedResult([]),
+      run_status: "running",
+      extraction: null,
+    };
+    const finalItem = collection(
+      "col_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+      "恢复后的收藏",
+    );
+    request
+      .mockResolvedValueOnce(accepted)
+      .mockResolvedValueOnce(running)
+      .mockResolvedValueOnce(completedResult([finalItem]));
+    const observers: MockSseOptions[] = [];
+    let activeConnections = 0;
+    let maximumActiveConnections = 0;
+    connect.mockImplementation((options: MockSseOptions) => {
+      observers.push(options);
+      activeConnections += 1;
+      maximumActiveConnections = Math.max(
+        maximumActiveConnections,
+        activeConnections,
+      );
+      let cancelled = false;
+      return {
+        cancel: vi.fn(() => {
+          if (cancelled) return;
+          cancelled = true;
+          activeConnections -= 1;
+        }),
+        closed: new Promise<void>(() => {}),
+      };
+    });
+
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    await user.type(screen.getByRole("textbox", { name: "收藏内容" }), "慢任务");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(observers).toHaveLength(1));
+    act(() => terminalEvent(observers[0], 4));
+    await waitFor(() => expect(observers).toHaveLength(2), { timeout: 2_000 });
+    expect(observers[1].lastEventId).toBe(4);
+
+    act(() => {
+      observers[1].onEvent({
+        id: "4",
+        event: "stage.changed",
+        sequence: 4,
+        data: { summary: { stage: "should_not_replay" } },
+      });
+      terminalEvent(observers[1], 5);
+    });
+
+    expect(
+      await screen.findByRole("heading", { name: finalItem.title }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("should_not_replay")).not.toBeInTheDocument();
+    expect(maximumActiveConnections).toBe(1);
+  });
+
+  it("recovers a terminal authoritative result after the SSE client exhausts reconnects", async () => {
+    const user = userEvent.setup();
+    const item = collection(
+      "col_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbc",
+      "断线后收藏",
+    );
+    request
+      .mockResolvedValueOnce(accepted)
+      .mockResolvedValueOnce(completedResult([item]));
+    connect.mockReturnValueOnce({
+      cancel: vi.fn(),
+      closed: Promise.resolve(),
+    });
+
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    await user.type(screen.getByRole("textbox", { name: "收藏内容" }), "断线任务");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(
+      await screen.findByRole("heading", { name: item.title }),
+    ).toBeInTheDocument();
+    expect(connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds automatic re-observation and lets the user refresh the same run without another POST", async () => {
+    const user = userEvent.setup();
+    const running = {
+      ...completedResult([]),
+      run_status: "running",
+      extraction: null,
+    };
+    const item = collection(
+      "col_cccccccccccccccccccccccccccccccd",
+      "人工恢复结果",
+    );
+    request
+      .mockResolvedValueOnce(accepted)
+      .mockResolvedValueOnce(running)
+      .mockResolvedValueOnce(running)
+      .mockResolvedValueOnce(running)
+      .mockResolvedValueOnce(running)
+      .mockResolvedValueOnce(completedResult([item]));
+    const observers: MockSseOptions[] = [];
+    connect.mockImplementation((options: MockSseOptions) => {
+      observers.push(options);
+      if (observers.length === 1) {
+        options.onEvent({
+          id: "2",
+          event: "stage.changed",
+          sequence: 2,
+          data: { summary: { stage: "place_recognition" } },
+        });
+      }
+      return {
+        cancel: vi.fn(),
+        closed: Promise.resolve(),
+      };
+    });
+
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    await user.type(screen.getByRole("textbox", { name: "收藏内容" }), "后台任务");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    const refresh = await screen.findByRole(
+      "button",
+      { name: "刷新结果/继续等待" },
+      { timeout: 4_500 },
+    );
+    expect(connect).toHaveBeenCalledTimes(3);
+    expect(
+      request.mock.calls.filter(([path]) => path === accepted.result_url),
+    ).toHaveLength(3);
+
+    await user.click(refresh);
+    expect(
+      await screen.findByRole(
+        "heading",
+        { name: item.title },
+        { timeout: 2_000 },
+      ),
+    ).toBeInTheDocument();
+    const submissions = request.mock.calls.filter(
+      ([path, options]) =>
+        String(path).endsWith("/messages") && options?.method === "POST",
+    );
+    expect(submissions).toHaveLength(1);
+    expect(connect).toHaveBeenCalledTimes(4);
+    expect(observers.slice(1).map((observer) => observer.lastEventId)).toEqual([
+      2, 2, 2,
+    ]);
+  });
+
+  it("uses the same recovery coordinator for a running run restored on page load", async () => {
+    const latest = {
+      ...accepted,
+      run_status: "running",
+    };
+    const item = collection(
+      "col_ddddddddddddddddddddddddddddddde",
+      "刷新页面恢复结果",
+    );
+    request.mockReset();
+    request
+      .mockResolvedValueOnce(session)
+      .mockResolvedValueOnce({ messages: [latest] })
+      .mockResolvedValueOnce(completedResult([item]));
+    let observer: MockSseOptions | undefined;
+    connect.mockImplementationOnce((options: MockSseOptions) => {
+      observer = options;
+      return { cancel: vi.fn(), closed: new Promise<void>(() => {}) };
+    });
+
+    render(<AgentExperience />);
+    await waitFor(() => expect(observer).toBeDefined());
+    act(() => terminalEvent(observer!, 8));
+
+    expect(
+      await screen.findByRole("heading", { name: item.title }),
+    ).toBeInTheDocument();
+    expect(observer?.lastEventId).toBe(0);
+  });
+
+  it.each([
+    ["failed", "run.failed"],
+    ["cancelled", "run.failed"],
+  ] as const)(
+    "renders the authoritative %s terminal state",
+    async (runStatus, eventName) => {
+      const user = userEvent.setup();
+      request
+        .mockResolvedValueOnce(accepted)
+        .mockResolvedValueOnce({
+          ...completedResult([]),
+          run_status: runStatus,
+          error_code:
+            runStatus === "failed" ? "MODEL_INVALID_RESPONSE" : "RUN_CANCELLED",
+        });
+      connect.mockImplementationOnce((options: MockSseOptions) => {
+        window.setTimeout(
+          () => terminalEvent(options, 4, eventName),
+          0,
+        );
+        return { cancel: vi.fn(), closed: new Promise<void>(() => {}) };
+      });
+
+      render(<AgentExperience />);
+      await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+      await user.type(
+        screen.getByRole("textbox", { name: "收藏内容" }),
+        `${runStatus} task`,
+      );
+      await user.click(screen.getByRole("button", { name: "发送" }));
+
+      expect(await screen.findByText("这次没有认出来")).toBeInTheDocument();
+      expect(
+        screen.getByText("识别没有完成，你可以补充文字、改发截图或重试。"),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("renders partially_succeeded through the authoritative collection statuses", async () => {
+    const user = userEvent.setup();
+    const pending = collection(
+      "col_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeef",
+      "部分成功收藏",
+      "pending_details",
+    );
+    request
+      .mockResolvedValueOnce(accepted)
+      .mockResolvedValueOnce({
+        ...completedResult([pending]),
+        run_status: "partially_succeeded",
+        error_code: "PARTIAL_IMPORT",
+      });
+    connect.mockImplementationOnce((options: MockSseOptions) => {
+      window.setTimeout(() => terminalEvent(options, 4), 0);
+      return { cancel: vi.fn(), closed: new Promise<void>(() => {}) };
+    });
+
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    await user.type(screen.getByRole("textbox", { name: "收藏内容" }), "部分成功");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    const card = (await screen.findByText(pending.title)).closest("article");
+    expect(card).not.toBeNull();
+    expect(within(card!).getByText("待补充")).toBeInTheDocument();
+  });
+
+  it("ignores a late authoritative result after continuing and starting a new run", async () => {
+    const user = userEvent.setup();
+    const partial = collection(
+      "col_ffffffffffffffffffffffffffffff10",
+      "旧任务的临时结果",
+      "pending_details",
+    );
+    const runningWithCollection = {
+      ...completedResult([partial]),
+      run_status: "running",
+      extraction: null,
+    };
+    const oldResult = deferred<ReturnType<typeof completedResult>>();
+    const newAccepted = {
+      ...accepted,
+      message_id: "msg_11111111111111111111111111111111",
+      trace_id: "trc_11111111111111111111111111111111",
+      events_url:
+        "/api/v1/agent-runs/trc_11111111111111111111111111111111/events",
+      result_url:
+        "/api/v1/agent-runs/trc_11111111111111111111111111111111/result",
+    };
+    request
+      .mockResolvedValueOnce(accepted)
+      .mockResolvedValueOnce(runningWithCollection)
+      .mockReturnValueOnce(oldResult.promise)
+      .mockResolvedValueOnce(newAccepted);
+    const observers: MockSseOptions[] = [];
+    const cancels: ReturnType<typeof vi.fn>[] = [];
+    connect.mockImplementation((options: MockSseOptions) => {
+      observers.push(options);
+      const cancel = vi.fn();
+      cancels.push(cancel);
+      return { cancel, closed: new Promise<void>(() => {}) };
+    });
+
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    const input = screen.getByRole("textbox", { name: "收藏内容" });
+    await user.type(input, "旧任务");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(observers).toHaveLength(1));
+    act(() => terminalEvent(observers[0], 3));
+    await screen.findByText(partial.title);
+    await waitFor(() => expect(observers).toHaveLength(2), { timeout: 2_000 });
+    act(() => terminalEvent(observers[1], 4));
+
+    await user.click(screen.getByRole("button", { name: "继续添加" }));
+    await user.type(input, "新任务");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(observers).toHaveLength(3));
+    await act(async () =>
+      oldResult.resolve(
+        completedResult([
+          collection(
+            "col_12121212121212121212121212121212",
+            "不应覆盖的新结果",
+          ),
+        ]),
+      ),
+    );
+    act(() => {
+      observers[1].onStateChange?.("error");
+      terminalEvent(observers[1], 5);
+    });
+
+    expect(
+      screen.getByRole("heading", { name: "正在识别" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("不应覆盖的新结果")).not.toBeInTheDocument();
+    expect(cancels[1]).toHaveBeenCalled();
+  });
+
+  it("cancels a scheduled recovery when the component unmounts", async () => {
+    const running = {
+      ...completedResult([]),
+      run_status: "running",
+      extraction: null,
+    };
+    request
+      .mockResolvedValueOnce(accepted)
+      .mockResolvedValueOnce(running);
+    connect.mockReturnValue({
+      cancel: vi.fn(),
+      closed: Promise.resolve(),
+    });
+    const user = userEvent.setup();
+    const view = render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    await user.type(screen.getByRole("textbox", { name: "收藏内容" }), "卸载任务");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() =>
+      expect(
+        request.mock.calls.filter(([path]) => path === accepted.result_url),
+      ).toHaveLength(1),
+    );
+    view.unmount();
+    await new Promise((resolve) => window.setTimeout(resolve, 5));
+    expect(connect).toHaveBeenCalledTimes(1);
   });
 });

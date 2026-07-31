@@ -1,5 +1,61 @@
 # M1-Gate 核心闭环验收报告
 
+## 2026-07-31 M1-Gate 修复 3：Agent SSE/权威终态恢复
+
+M1-Gate 修复 3：完成，等待主控验收；M1-Gate：继续打开；运行配置修复：
+未开始；M2-0：未开始且阻塞。本轮没有修改后端生产代码、数据库、迁移、模型超时、
+地点匹配、收藏规则、计划流程或 M2。
+
+根因是 `AgentExperience` 在终态 SSE、SSE 断开、reader 异常或内部重连耗尽后只做
+一次权威 result GET。当持久化事件先于权威结果可见、该次响应仍为 queued/running
+时，页面继续显示 processing，但唯一 SSE 已关闭，后续终态只能靠整页刷新恢复。
+最后 sequence 也只保存在单次连接局部状态，不能跨重新观察续接。
+
+修复保持一个正式入口：
+
+1. `readAuthoritativeResult` 只读取并返回权威 DTO，不在多个回调中复制状态判断。
+2. 现有 `followRun` 作为唯一观察协调路径，统一处理终态事件、连接正常/异常结束、
+   页面恢复和人工恢复；权威终态负责展示，queued/running 负责续接原
+   `SseClient`、原 `events_url` 与最后 sequence。
+3. 首次观察后最多自动重新观察 2 轮，延迟为 1 秒、2 秒；每轮仍使用原
+   `SseClient` 的 2 次内部重连。最坏为 3 轮、每轮最多 3 次 SSE HTTP 请求，
+   不存在无限重连或紧密轮询。
+4. 自动恢复耗尽后显示“任务仍在后台处理”和“刷新结果/继续等待”。用户操作只 GET
+   原 result；仍运行时才开始一组新的有界观察，不 POST 原输入、不创建 Job、不
+   调用模型。
+5. 统一取消入口关闭旧 SSE 和恢复 timer；operation generation 加观察 token
+   拒绝旧 Run 的事件、result、异常和 finally。新提交、继续添加和卸载均清理旧
+   观察，同一时刻最多一个 SSE 连接。
+
+权威结果覆盖 succeeded、partially_succeeded、failed、cancelled，并按既有收藏
+状态展示 saved、pending_selection、pending_details。网络交付不确定时的主动重试
+仍复用原幂等键；权威失败后的新提交才换键。截图加文字、替换/删除截图和页面刷新
+恢复的既有行为保持不变。
+
+验证结果：
+
+- lint、typecheck、Next.js production build：通过；
+- AgentExperience + SseClient：`35 passed`；
+- 完整 Vitest：`135 passed`；
+- Agent 离线 Chromium E2E：`6 passed`；
+- 完整 Playwright：`46 passed`；
+- 后端内容导入契约与 RunEvent：`25 passed`；
+- Alembic 唯一 head：`20260729_0017`。
+
+新增浏览器 E2E 在 320×740、390×844 和 1280×900 三种视口分别让首个 SSE
+连接周期三次断开，并让断开后的第一次权威读取保持 running。随后页面无需刷新即可
+自动接入同一 run 并显示最终收藏。每例 messages POST=1、result GET=2、SSE
+HTTP GET=4；数据库中 Message、AgentRun、Job、Source 和业务关联各 1，恢复期间
+第二次 POST=0。
+
+净复杂度审查确认：生产代码仍只有一个 `AgentExperience`、一个 `SseClient`、一个
+API Client、一份 operation generation 和一份提交幂等边界；新增的是现有组件内
+一条有界观察协调路径，没有轮询服务、全局状态库、第二套 SSE 管理器、第二套 Agent
+状态机、重复终态映射、样本特例或生产测试旁路。当前无未关闭 P0/P1。
+
+未读取 `.env`，真实模型、高德、网页、图片、对象存储和其他外部/付费 API 调用为
+0；未合并、未推送、未发布、未部署，未开始 M2。
+
 ## 2026-07-31 M1-Gate 修复 2 主控复验
 
 主控确认候选 `7a5da03a2de1ccfe8a1c85ce36619dac06d45e21` 直接基于

@@ -4,10 +4,51 @@
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-Gate 修复 3：Agent 异步提交 SSE/权威终态恢复 |
-| 状态 | 修复 2 已通过主控验收并纯快进集成；当前只允许开始修复 3；运行配置修复及 M2-0 未开始。 |
-| 当前分支 | main |
+| 状态 | M1-Gate 修复 3：完成，等待主控验收；M1-Gate：继续打开；运行配置修复：未开始；M2-0：未开始且阻塞。 |
+| 当前分支 | codex/m1-gate-agent-terminal-recovery |
 | 最近更新 | 2026-07-31 |
 | 阻塞项 | M1-Gate 尚未最终关闭；M2-0 未开始且阻塞 |
+
+## 2026-07-31 M1-Gate 修复 3：Agent 异步提交终态恢复
+
+- M1-Gate 修复 3：完成，等待主控验收；M1-Gate：继续打开；运行配置修复：
+  未开始；M2-0：未开始且阻塞。本轮只修改既有 `AgentExperience` 的前端观察协调、
+  对应组件/E2E 测试及离线浏览器测试服务，没有修改后端生产代码、数据库、迁移、
+  Provider、模型超时、地点、收藏、计划或 M2 功能。
+- 根因是旧页面在收到 `run.completed/run.failed` 或唯一 `SseClient` 重连耗尽后，
+  只读取一次 `GET /agent-runs/{trace_id}/result`。若事件先于权威结果提交、该次
+  读取仍为 `queued/running`，页面会保留 processing，却不再拥有 SSE 观察者；
+  同时最后 sequence 只存在于单次 `followRun` 局部连接，无法跨重新观察续接。
+- `readAuthoritativeResult` 现在只返回权威结果；唯一 `followRun` 观察协调路径统一
+  决定终态展示、按原 `events_url`/最后 sequence 继续 SSE，或进入人工恢复状态。
+  终态事件、正常关闭、重连耗尽、reader/transport 异常、页面刷新恢复和人工继续
+  等待均走这一条路径。继续复用原 `SseClient`、result API、operation generation、
+  幂等键和任务状态，没有新增 SSE Client、轮询服务、全局状态库或第二套业务状态机。
+- 自动观察上限为首次观察加最多 2 轮自动重新观察，轮间延迟依次为 1 秒和 2 秒；
+  每轮仍沿用 `SseClient` 的 2 次内部重连上限。三轮后权威状态仍为
+  queued/running 或权威读取持续失败时，页面明确显示“任务仍在后台处理”和
+  “刷新结果/继续等待”。用户操作先 GET 原 result；若仍在运行，再从原 sequence
+  开始一组同样有界的 SSE 观察，不 POST messages、不创建新 Job、不调用模型。
+- 每次替换观察者前统一取消旧 SSE 和恢复计时器；观察 token 与 operation
+  generation 共同拒绝旧 Run 的迟到事件、result、异常和 finally。组件卸载、
+  继续添加和新提交均使用同一清理入口；同一时刻最多一个 SSE 连接。提交 finally
+  只清理自己创建的 controller，不会清空新 Run 的 controller。
+- 权威状态回归覆盖 succeeded、partially_succeeded、failed、cancelled，以及收藏
+  saved、pending_selection、pending_details；sequence 重放不会重复处理。原网络
+  结果不确定重试继续复用同一幂等键，权威失败后新提交才换键；截图加文字、截图
+  替换/删除与继续添加的既有语义保持不变。
+- 前端 lint、typecheck、production build 通过；组件与 SSE 聚焦
+  `35 passed`，完整 Vitest `135 passed`。Agent Chromium E2E `6 passed`，完整
+  Playwright `46 passed`。新增离线链路在 320、390 和 1280 宽度分别强制首个
+  SSE 周期断开，并令第一次权威读取仍为 running；无需整页刷新即可显示最终收藏。
+  每例 messages POST 为 1、权威 result GET 为 2、SSE HTTP 观察为 4，数据库中
+  Message、AgentRun、Job、Source 和业务关联各 1，恢复期间第二次 POST 为 0。
+- 后端指定契约与 RunEvent 测试 `25 passed`；Alembic 唯一 head 仍为
+  `20260729_0017`。复杂度检查确认生产改动只在现有 `AgentExperience` 内增加一条
+  有界观察协调路径，`SseClient`、API Client、Agent 状态所有权和幂等边界仍各一份，
+  没有样本特例、紧密轮询、无限重连或被复制的终态判断。当前无未关闭 P0/P1。
+- 未读取 `.env`；真实模型、高德、网页、图片、对象存储及其他外部/付费 API 调用
+  均为 0。未合并、未推送、未发布、未部署，未开始 M2。
 
 ## 2026-07-31 M1-Gate 修复 2 主控复验与集成
 
