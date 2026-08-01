@@ -1,5 +1,42 @@
 name: shiguang
 
+x-runtime-environment: &runtime-environment
+  - APP_ENV=development
+  - APP_TIMEZONE=${APP_TIMEZONE:-Asia/Shanghai}
+  - DATABASE_URL=postgresql+asyncpg://shiguang:${POSTGRES_PASSWORD:-shiguang-local-only}@postgres:5432/shiguang
+  - DEMO_DATABASE_URL=postgresql+asyncpg://shiguang:${DEMO_POSTGRES_PASSWORD:-shiguang-demo-local-only}@demo-postgres:5432/shiguang_demo
+  - DEMO_ENABLED=1
+  - WEB_SESSION_COOKIE_SECURE=0
+  - REAL_WEB_SESSION_TTL_SECONDS=${REAL_WEB_SESSION_TTL_SECONDS:-2592000}
+  - DEMO_WEB_SESSION_TTL_SECONDS=${DEMO_WEB_SESSION_TTL_SECONDS:-7200}
+  - LOG_LEVEL=${LOG_LEVEL:-INFO}
+  - MODEL_API_BASE
+  - MODEL_API_KEY
+  - MODEL_NAME
+  - MODEL_TIMEOUT_SECONDS=${MODEL_TIMEOUT_SECONDS:-75}
+  - MODEL_STRUCTURED_OUTPUT_MODE=${MODEL_STRUCTURED_OUTPUT_MODE:-json_object}
+  - MODEL_INPUT_PRICE_PER_MILLION_TOKENS
+  - MODEL_OUTPUT_PRICE_PER_MILLION_TOKENS
+  - MODEL_COST_CURRENCY=${MODEL_COST_CURRENCY:-CNY}
+  - MODEL_PRICING_SOURCE=${MODEL_PRICING_SOURCE:-configured_model_rates}
+  - AGENT_MAX_TOOL_CALLS=${AGENT_MAX_TOOL_CALLS:-8}
+  - AGENT_TIMEOUT_SECONDS=${AGENT_TIMEOUT_SECONDS:-60}
+  - WORKER_POLL_SECONDS=${WORKER_POLL_SECONDS:-1}
+  - AMAP_API_KEY
+  - AMAP_BASE_URL=${AMAP_BASE_URL:-https://restapi.amap.com}
+  - AMAP_TIMEOUT_SECONDS=${AMAP_TIMEOUT_SECONDS:-5}
+  - AMAP_MAX_RETRIES=${AMAP_MAX_RETRIES:-1}
+  - AMAP_RETRY_AFTER_MAX_SECONDS=${AMAP_RETRY_AFTER_MAX_SECONDS:-1}
+  - PLACE_MATCH_UNIQUE_SCORE=${PLACE_MATCH_UNIQUE_SCORE:-75}
+  - PLACE_MATCH_MINIMUM_SCORE_GAP=${PLACE_MATCH_MINIMUM_SCORE_GAP:-12}
+  - PLACE_MATCH_CANDIDATE_SCORE=${PLACE_MATCH_CANDIDATE_SCORE:-35}
+  - STORAGE_PRIVATE_ROOT=/app/data/private
+  - DEMO_STORAGE_PRIVATE_ROOT=/app/data/demo-private
+  - STORAGE_MAX_FILE_SIZE_BYTES=${STORAGE_MAX_FILE_SIZE_BYTES:-10000000}
+  - STORAGE_ALLOWED_CONTENT_TYPES=${STORAGE_ALLOWED_CONTENT_TYPES:-image/jpeg,image/png,image/webp}
+  - RUN_REAL_MODEL_TESTS=0
+  - RUN_REAL_MAP_TESTS=0
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -54,32 +91,7 @@ services:
         python -m alembic upgrade head &&
         DATABASE_URL="$$DEMO_DATABASE_URL" python -m alembic upgrade head &&
         exec python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-    environment:
-      - APP_ENV=development
-      - DATABASE_URL=postgresql+asyncpg://shiguang:${POSTGRES_PASSWORD:-shiguang-local-only}@postgres:5432/shiguang
-      - DEMO_DATABASE_URL=postgresql+asyncpg://shiguang:${DEMO_POSTGRES_PASSWORD:-shiguang-demo-local-only}@demo-postgres:5432/shiguang_demo
-      - DEMO_ENABLED=1
-      - WEB_SESSION_COOKIE_SECURE=0
-      - DEMO_STORAGE_PRIVATE_ROOT=/app/data/demo-private
-      - LOG_LEVEL=INFO
-      - MODEL_API_BASE
-      - MODEL_API_KEY
-      - MODEL_NAME
-      - MODEL_TIMEOUT_SECONDS
-      - MODEL_STRUCTURED_OUTPUT_MODE
-      - MODEL_INPUT_PRICE_PER_MILLION_TOKENS
-      - MODEL_OUTPUT_PRICE_PER_MILLION_TOKENS
-      - MODEL_COST_CURRENCY
-      - MODEL_PRICING_SOURCE
-      - AGENT_MAX_TOOL_CALLS
-      - AGENT_TIMEOUT_SECONDS
-      - AMAP_API_KEY
-      - AMAP_BASE_URL
-      - AMAP_TIMEOUT_SECONDS
-      - AMAP_MAX_RETRIES
-      - AMAP_RETRY_AFTER_MAX_SECONDS
-      - RUN_REAL_MODEL_TESTS=0
-      - RUN_REAL_MAP_TESTS=0
+    environment: *runtime-environment
     volumes:
       - private-data:/app/data
     depends_on:
@@ -122,31 +134,7 @@ services:
         if [ -z "$$(printenv "$$variable_name")" ]; then unset "$$variable_name"; fi;
         done &&
         exec python -m app.worker
-    environment:
-      - APP_ENV=development
-      - DATABASE_URL=postgresql+asyncpg://shiguang:${POSTGRES_PASSWORD:-shiguang-local-only}@postgres:5432/shiguang
-      - DEMO_DATABASE_URL=postgresql+asyncpg://shiguang:${DEMO_POSTGRES_PASSWORD:-shiguang-demo-local-only}@demo-postgres:5432/shiguang_demo
-      - LOG_LEVEL=INFO
-      - WORKER_POLL_SECONDS=1
-      - DEMO_STORAGE_PRIVATE_ROOT=/app/data/demo-private
-      - MODEL_API_BASE
-      - MODEL_API_KEY
-      - MODEL_NAME
-      - MODEL_TIMEOUT_SECONDS
-      - MODEL_STRUCTURED_OUTPUT_MODE
-      - MODEL_INPUT_PRICE_PER_MILLION_TOKENS
-      - MODEL_OUTPUT_PRICE_PER_MILLION_TOKENS
-      - MODEL_COST_CURRENCY
-      - MODEL_PRICING_SOURCE
-      - AGENT_MAX_TOOL_CALLS
-      - AGENT_TIMEOUT_SECONDS
-      - AMAP_API_KEY
-      - AMAP_BASE_URL
-      - AMAP_TIMEOUT_SECONDS
-      - AMAP_MAX_RETRIES
-      - AMAP_RETRY_AFTER_MAX_SECONDS
-      - RUN_REAL_MODEL_TESTS=0
-      - RUN_REAL_MAP_TESTS=0
+    environment: *runtime-environment
     volumes:
       - private-data:/app/data
     depends_on:

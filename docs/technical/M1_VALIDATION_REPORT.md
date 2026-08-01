@@ -1,5 +1,59 @@
 # M1-Gate 核心闭环验收报告
 
+## 2026-08-01 M1-Gate 修复 4：运行配置与本地完整启动一致性
+
+修复 4 完成，等待主控验收；M1-Gate 继续打开，M2-0 未开始且阻塞。旧 README
+把宿主 Uvicorn、Compose 数据库、单独前端和 `127.0.0.1:3000` 混合推荐，无法保证
+用户同时启动 Worker，也容易把容器 DNS 地址用于宿主进程或混用浏览器 origin。
+Compose 的 API/Worker 环境清单重复，虽已有 Provider 接线，但地点阈值、真实存储根
+和存储限制依赖各自默认，长期存在配置漂移风险。
+
+本轮最小修复：
+
+- README 只保留一条推荐完整启动：Compose 启动两套 PostgreSQL、API、Worker；
+  Next.js 以 `SHIGUANG_API_PROXY=http://127.0.0.1:8000` 和
+  `--hostname localhost` 单独启动；浏览器统一使用 `http://localhost:3000` 和同源
+  `/api`，不再把 `127.0.0.1:3000` 作为入口；
+- Compose 通过一份 YAML anchor 向 API 与 Worker 注入完全相同的数据库、模型、
+  高德、Agent、地点阈值、真实/Demo 存储和限制；可选空配置仍不进入 Settings，
+  有默认值的运行参数可被 `docker compose exec` 安全加载；
+- `.env.example` 标明只用于服务端，模型与高德密钥不得使用 `NEXT_PUBLIC_*`；两个
+  `RUN_REAL_*` 变量仅是 pytest 授权开关，Compose 固定为 0，不决定正常 Provider
+  可用性；
+- 增加 Worker、Provider、数据库/端口、host 混用和前端代理的短故障排查说明。
+
+自动化门禁：
+
+- 后端 `pip check`、Ruff、strict mypy（140 个源文件）：通过；
+- 后端非真实 Provider/Map 全集：
+  `1724 passed, 16 skipped, 2 deselected, 2 warnings`；两条均为既有 aiosqlite
+  事件循环关闭后的线程收尾 P2，不涉及本轮配置路径；
+- 前端 `npm ci`、lint、typecheck：通过；Vitest `135 passed`；Next.js production
+  build：通过，7 个路由生成；
+- Alembic 唯一 head：`20260729_0017`；
+- 仓库外空 env 文件执行 `docker compose config --quiet`：通过。
+
+完整启动使用独立 Compose project `shiguang_m1gate_20260801_01`、宿主 API 端口
+18080、前端隔离端口 13000 和仓库外空 env。正式 PostgreSQL、Demo PostgreSQL、
+API、Worker 均 healthy，restart count 为 0；API/Worker 均以 uid 10001 运行且共享
+运行配置摘要完全一致。两库 `alembic current --check-heads` 都返回
+`20260729_0017 (head)`。
+
+前端 `localhost` 同源 `/api` 创建 Demo Session 成功。无 Provider 的文本任务先返回
+202/queued，Worker attempt 1 消费后 Job 安全完成、权威 Run 进入
+`failed / MODEL_PROVIDER_NOT_CONFIGURED`，没有永久停在 queued/running。按 README
+默认命令另在 `http://localhost:3000` 验证根页面 200、同源 Demo Session API 201。
+日志对 Authorization、Cookie 和外部 Provider URL 的匹配均为 0；真实模型、高德、
+网页、图片和其他外部/付费 API 调用为 0。
+
+本轮未修改 Python/TypeScript 生产业务代码、迁移或 `frontend/next.config.ts`；既有
+Next rewrite、唯一 API Client/SSE Client、Provider/存储构造和 Worker 失败终态均已
+正确，重复实现没有产品价值。没有新脚本、配置加载器、Provider、Runner、Worker、
+API Client 或编排方式，净复杂度因删除两份 Compose 环境清单而下降。未读取、打印
+或修改本机 `.env`。验收后已清理本轮前端进程、容器、镜像、网络、卷、端口和临时
+env；当前无未关闭 P0/P1。修复 4 等待主控复测，不据此自行关闭 M1-Gate，M2 仍未
+开始。
+
 ## 2026-08-01 M1-Gate 修复 3 主控复验
 
 主控确认候选 `abcdb548912e3e20278f63a9000aed542c8f9a8d` 直接基于

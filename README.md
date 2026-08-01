@@ -46,39 +46,87 @@ Shiguang_Nanobot/
 └── README.md
 ```
 
-## 正式前端本地开发
+## 唯一推荐的本地完整启动
 
-需要 Node.js 20.9 或更高版本。前端只使用 npm，并提交唯一
-`frontend/package-lock.json`：
+完整产品的本地开发只推荐这一条路径：从仓库根目录用 Docker Compose 启动正式
+PostgreSQL、Demo PostgreSQL、API 和 Worker，再单独启动 Next.js。不要把宿主机
+Uvicorn 与 Compose 数据库混搭；只启动 API 而漏掉 Worker 会让后台任务无法消费。
+
+需要 Docker（含 Compose）、Node.js 20.9 或更高版本和 npm。首次启动可复制服务端
+配置模板：
+
+```bash
+cp .env.example .env
+```
+
+`.env` 只供 Compose、API 和 Worker 使用。需要实际执行内容识别或地点/路线能力时，
+在其中取消注释并填写完整的 `MODEL_API_BASE`、`MODEL_API_KEY`、`MODEL_NAME` 和
+`AMAP_API_KEY`；未配置时服务仍能安全启动，相应任务会进入明确失败状态。任何模型、
+高德、数据库或其他密钥都不得写成 `NEXT_PUBLIC_*`，也不得放入 `frontend/` 的环境
+文件。若只检查启动与健康状态，可以不创建 `.env`，且不会产生外部 API 请求。
+
+先从仓库根目录启动完整后端栈：
+
+```bash
+docker compose config --quiet
+docker compose up --build -d
+docker compose ps
+curl --fail http://127.0.0.1:8000/healthz
+docker compose exec -T api python -m alembic current --check-heads
+docker compose exec -T api sh -c \
+  'DATABASE_URL="$DEMO_DATABASE_URL" python -m alembic current --check-heads'
+```
+
+`postgres`、`demo-postgres`、`api` 和 `worker` 应全部显示 healthy；两次 Alembic
+检查都应指向唯一 head `20260729_0017`。API 等两套数据库 healthy 后自动迁移，
+Worker 等 API healthy 后启动并同时消费正式库和 Demo 库的任务。API 与 Worker
+通过 Compose 中唯一的共享运行环境使用相同的数据库 URL、模型、高德、地点阈值、
+私有存储目录和存储限制。
+
+然后在另一个终端启动前端：
 
 ```bash
 cd frontend
 npm ci
-npm run dev
+SHIGUANG_API_PROXY=http://127.0.0.1:8000 npm run dev -- --hostname localhost
 ```
 
-打开 <http://127.0.0.1:3000/>。质量检查与离线测试：
+浏览器统一打开 <http://localhost:3000/>；根路径会进入 Agent 页面。浏览器始终通过
+同源 `/api` 访问 Next.js rewrite，再由服务端开发代理转发到 Compose API。不要把
+`http://127.0.0.1:3000` 作为入口，也不要在同一会话中混用 `localhost` 与
+`127.0.0.1`，以免 Cookie Session、HMR 或 hydration 状态不一致。修改
+`SHIGUANG_API_PROXY` 后必须重启 Next.js 开发服务。
+
+正常产品运行由 `MODEL_*` 和 `AMAP_*` 是否完整决定 Provider 可用性；
+`RUN_REAL_MODEL_TESTS` 与 `RUN_REAL_MAP_TESTS` 仅是 pytest 的真实集成测试授权开关，
+不控制正常产品运行。Compose 固定把两项测试开关设为 `0`；启动、迁移、健康检查和
+前端页面加载都不会调用模型、高德或网页 API，只有用户发起需要 Provider 的业务
+操作才可能调用已配置的服务。
+
+停止服务并清理本地 Compose 数据：
 
 ```bash
-npm run lint
-npm run typecheck
-npm test
-npm run build
-npm run test:e2e
+docker compose down --volumes
 ```
 
-Agent 输入区允许同一次提交选择一张截图并保留可选补充文字，也可以在提交前显式
-删除截图；网络断开、超时或取消后的“重试”会复用同一份已准备输入及幂等身份，
-权威终态识别失败后的主动重试才建立新身份。收藏补充成功后会直接进入既有地点候选
-选择，保存失败则恢复服务端权威数据；“帮我安排时间”进入既有计划页。
+### 常见故障排查
 
-API 默认同源；仅在本地前后端使用不同 origin 时设置公开的
-`NEXT_PUBLIC_API_BASE_URL`，不得在该变量或任何前端配置中放入密钥或凭据。更完整
-说明见 `frontend/README.md`。
+- 任务一直显示处理中：运行 `docker compose ps worker` 和
+  `docker compose logs --tail=100 worker`，确认 Worker healthy 且未反复重启。
+- `MODEL_PROVIDER_NOT_CONFIGURED`：在仓库根 `.env` 中完整配置三项 `MODEL_*`，然后
+  运行 `docker compose up -d --force-recreate api worker`；不要改测试开关。
+- `PLAN_PROVIDER_NOT_CONFIGURED`：配置服务端 `AMAP_API_KEY` 后重建 API 与 Worker；
+  不要把 Key 传给浏览器。
+- 数据库或端口不可用：用 `docker compose ps` 检查两套 PostgreSQL 的 health，确认
+  宿主 8000 端口未被占用；需要隔离端口时可在 shell 临时设置 `API_PORT`。
+- Session、HMR 或 hydration 异常：关闭 `127.0.0.1:3000` 页面，清理该 origin 的
+  旧站点数据，只使用 `http://localhost:3000`。
+- 前端请求 404/502 或无法连接：确认前端启动命令中的
+  `SHIGUANG_API_PROXY=http://127.0.0.1:8000` 与 `API_PORT` 一致，并重启前端。
 
-## 后端本地开发
+## 开发环境与质量检查
 
-需要 Python 3.11 或更高版本。以下创建环境和安装命令从仓库根目录运行：
+后端测试需要 Python 3.11 或更高版本。以下创建环境和安装命令从仓库根目录运行：
 
 ```bash
 python3 -m venv .venv
@@ -91,7 +139,7 @@ cd backend
 
 Windows PowerShell 激活命令为 `.venv\Scripts\Activate.ps1`，之后同样进入 `backend` 目录运行后续命令。
 
-### 代码质量与测试
+### 后端代码质量与测试
 
 以下命令均从 `backend` 目录运行：
 
@@ -111,6 +159,17 @@ python -m pytest -q tests/contract/test_m0_4d_unified_input.py
 python -m pytest -q tests/unit/test_plan_constraints.py
 python -m pytest -q tests/application/test_structured_collection_retrieval.py
 python -m pytest -q tests/application/test_plan_drafts.py
+```
+
+前端质量检查与离线测试从 `frontend` 运行：
+
+```bash
+npm ci
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npm run test:e2e
 ```
 
 测试进程显式使用 `APP_ENV=test` 并禁止读取开发者真实 `.env`；普通测试使用临时
@@ -228,65 +287,12 @@ python -m alembic downgrade base
 python -m alembic upgrade head
 ```
 
-当前唯一 HEAD revision 是 `20260727_0010`。`0008` 增加持久化
-`scheduled_jobs`，`0009` 增加现有 AgentRun 的 `run_events` 子记录，`0010` 增加
-只保存凭据哈希的 `web_sessions`。正式运行使用 `postgresql+asyncpg`；SQLite 继续
-用于适合的测试。应用导入和普通启动不使用 `create_all()`；Compose 的 API 启动
-命令会分别将真实与 Demo 数据库升级到 head。
-
-### 启动 API
-
-从 `backend` 目录运行：
-
-```bash
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
-```
-
-在另一个终端验证健康检查与 Request ID：
-
-```bash
-curl -i http://127.0.0.1:8000/healthz
-curl -i -H 'X-Request-ID: local-check-001' http://127.0.0.1:8000/healthz
-```
-
-响应 JSON 固定为 `{"status":"ok"}`，响应头包含 `X-Request-ID`。请求日志只记录 request ID、方法、路径、状态码和耗时，不记录正文、查询字符串、Authorization 或 Cookie。
-
-### 最小容器运行
-
-以下命令从仓库根目录执行。Compose 不复制 `.env`，镜像内不保存模型、高德或其他密钥：
-
-```bash
-docker compose up --build -d
-docker compose ps
-curl -i http://127.0.0.1:8000/healthz
-```
-
-API 等两套 PostgreSQL 健康后分别执行迁移并启动既有 `app.main:app`；Worker 再等
-API 健康后从正式 PostgreSQL 队列领取任务。API 和 Worker 都继承 Dockerfile 的
-非 root 用户。
-
-Compose 只把配置表中的 `MODEL_*`、`AGENT_MAX_TOOL_CALLS`、
-`AGENT_TIMEOUT_SECONDS` 和 `AMAP_*` 逐项白名单透传给 API 与 Worker，不使用宽泛
-的 `env_file`。未设置或留空的可选变量不会以空字符串进入应用配置，两个 Provider
-因而保持未配置；在本机 `.env` 或启动 Compose 的 shell 中设置这些变量后，两服务
-会获得一致配置。
-`RUN_REAL_MODEL_TESTS` 与 `RUN_REAL_MAP_TESTS` 始终由 Compose 固定为 `0`，配置存在
-只允许构造 Provider，不会在启动或健康检查阶段发送外部请求。
-
-如需验证两个 Worker 竞争，可临时扩容：
-
-```bash
-docker compose up -d --scale worker=2
-```
-
-停止并清除本地 Compose 数据：
-
-```bash
-docker compose down --volumes
-```
-
-Compose 中的数据库口令是仅供本机开发的默认值，可通过 shell 环境变量
-`POSTGRES_PASSWORD` 覆盖；不要把生产口令写入 Compose、`.env.example` 或 Git。
+当前唯一 HEAD revision 是 `20260729_0017`。正式运行使用
+`postgresql+asyncpg`；SQLite 继续用于适合的测试。应用导入和普通启动不使用
+`create_all()`；唯一推荐的 Compose 启动流程会分别将真实与 Demo 数据库升级到
+head。`/healthz` 只检查应用存活，不构造或调用外部 Provider；请求日志只记录
+request ID、方法、路径、状态码和耗时，不记录正文、查询字符串、Authorization 或
+Cookie。
 
 ## 配置
 

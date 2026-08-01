@@ -4,10 +4,55 @@
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-Gate 修复 4：运行配置与本地完整启动一致性 |
-| 状态 | 修复 3 已通过主控验收并纯快进集成；当前只允许开始修复 4；M1-Gate 继续打开，M2-0 未开始。 |
-| 当前分支 | main |
+| 状态 | 修复 4 已完成并等待主控验收；M1-Gate 继续打开，M2-0 未开始。 |
+| 当前分支 | codex/m1-gate-local-runtime-consistency |
 | 最近更新 | 2026-08-01 |
 | 阻塞项 | M1-Gate 尚未最终关闭；M2-0 未开始且阻塞 |
+
+## 2026-08-01 M1-Gate 修复 4：运行配置与本地完整启动一致性
+
+- 修复 4 已完成，等待主控验收；M1-Gate 继续打开，M2-0 未开始且阻塞。根因是
+  README 同时推荐单独宿主 Uvicorn、Compose 数据库和独立前端，浏览器入口又使用
+  `127.0.0.1:3000`，用户容易遗漏 Worker、使用容器内数据库地址启动宿主 API，或
+  混用 host 导致 Session/HMR/hydration 不一致。Compose 中 API 与 Worker 的两份
+  环境白名单也重复维护，且没有显式共享地点阈值、真实存储根与存储限制。
+- README 现只推荐一条完整路径：仓库根目录用 Compose 启动正式 PostgreSQL、Demo
+  PostgreSQL、API 和 Worker；前端使用
+  `SHIGUANG_API_PROXY=http://127.0.0.1:8000 npm run dev -- --hostname localhost`，
+  浏览器只打开 `http://localhost:3000` 并通过同源 `/api` 访问 API。宿主 Uvicorn
+  不再作为完整产品启动入口，故障排查覆盖 Worker、Provider、数据库/端口、host
+  混用和代理错误。
+- `compose.yaml` 以一个 YAML anchor 维护 API/Worker 完全相同的运行环境白名单，
+  统一两套数据库 URL、模型、高德、Agent、地点阈值、真实/Demo 私有存储与限制；
+  未设置的可选 Provider/价格变量继续不注入，带默认值的数值配置显式提供安全默认。
+  两进程仍复用既有 Settings、Provider 工厂、存储构造和 Worker，没有第二套配置
+  系统、Provider、Runner、API Client、Worker 或服务编排。
+- `.env.example` 明确仅供服务端，不得把密钥改成 `NEXT_PUBLIC_*` 或放入前端环境；
+  `RUN_REAL_MODEL_TESTS`、`RUN_REAL_MAP_TESTS` 只控制真实 pytest marker，不控制正常
+  产品运行。Compose 固定两项为 0，启动、迁移、健康检查与页面加载不会调用真实
+  模型、高德或网页 API。
+- 开始与最终门禁：`HEAD`、`main`、`origin/main` 初始均为指定基线
+  `36bd980dc0b994c617c3fd23886d68a76dcec4e2`，工作区干净；Alembic 唯一 head
+  `20260729_0017`。`pip check`、Ruff、strict mypy（140 个源文件）通过；非真实
+  Provider/Map 全集 `1724 passed, 16 skipped, 2 deselected, 2 warnings`；两条均为
+  既有 aiosqlite 事件循环关闭后的线程收尾 P2。前端 `npm ci`、
+  lint、typecheck、Vitest `135 passed` 和 production build 通过；
+  `docker compose config --quiet` 使用仓库外空 env 文件通过。
+- 完整启动使用仓库外空 env、独立 project `shiguang_m1gate_20260801_01`、隔离 API
+  端口 18080 和前端端口 13000 验证。两套 PostgreSQL、API、Worker 全部 healthy，
+  restart count 均为 0，API/Worker uid 均为 10001，运行配置摘要一致；两库
+  `alembic current --check-heads` 均为 `20260729_0017 (head)`。
+- 前端经 `localhost` 同源 `/api` 成功创建 Demo Session；无 Provider 文本任务先
+  返回 202/queued，Worker 在 attempt 1 消费后把权威 Run 置为
+  `failed / MODEL_PROVIDER_NOT_CONFIGURED`，不会永久 queued/running。随后按 README
+  精确默认端口启动，`http://localhost:3000/` 为 200、同源 Demo Session API 为
+  201。日志中 Authorization、Cookie 和外部 Provider URL 匹配均为 0。
+- 未修改 Python/TypeScript 生产业务代码、迁移或 `frontend/next.config.ts`，因为
+  既有 rewrite、API/Worker 构造和失败终态已经正确；最小修复仅收敛 README、服务端
+  配置示例和 Compose 环境。未读取、打印或修改本机 `.env`；真实模型、高德、网页、
+  图片及其他外部/付费 API 调用为 0。隔离前端、容器、镜像、网络、卷、端口和临时
+  env 已全部清理。净复杂度下降，当前无未关闭 P0/P1；等待主控复测，不关闭 M1，
+  不开始 M2。
 
 ## 2026-08-01 M1-Gate 修复 3 主控复验与集成
 
