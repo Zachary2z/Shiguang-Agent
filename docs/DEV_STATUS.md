@@ -3,11 +3,35 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
-| 当前子阶段 | M1-Gate 修复 3：Agent 异步提交 SSE/权威终态恢复 |
-| 状态 | M1-Gate 修复 3：完成，等待主控验收；M1-Gate：继续打开；运行配置修复：未开始；M2-0：未开始且阻塞。 |
-| 当前分支 | codex/m1-gate-agent-terminal-recovery |
-| 最近更新 | 2026-07-31 |
+| 当前子阶段 | M1-Gate 修复 4：运行配置与本地完整启动一致性 |
+| 状态 | 修复 3 已通过主控验收并纯快进集成；当前只允许开始修复 4；M1-Gate 继续打开，M2-0 未开始。 |
+| 当前分支 | main |
+| 最近更新 | 2026-08-01 |
 | 阻塞项 | M1-Gate 尚未最终关闭；M2-0 未开始且阻塞 |
+
+## 2026-08-01 M1-Gate 修复 3 主控复验与集成
+
+- 主控确认候选 `abcdb548912e3e20278f63a9000aed542c8f9a8d` 直接基于
+  `a76ce8d7e82307c27a0085de3c445ebdb13047f5`，工作区和提交链干净；最终以
+  `--ff-only` 集成到 `main`，没有冲突、merge commit 或额外代码变化。
+- 独立审查确认生产改动只位于既有 `AgentExperience`：继续复用唯一
+  `SseClient`、result API、operation generation 和提交幂等键。终态事件、连接
+  结束、权威结果仍为 queued/running、页面恢复和人工继续等待统一经过一条观察
+  协调路径；没有新增轮询服务、全局状态库、第二套 Agent 状态机或自动业务重试。
+- 自动重新观察最多两轮，延迟为 1 秒和 2 秒；耗尽后进入明确的后台状态，人工
+  “刷新结果/继续等待”只读取原 Run 并续接原 sequence，不重新 POST 输入或创建
+  Job。观察 token 与 generation 隔离旧 Run 的迟到事件、结果和清理动作，同一时刻
+  最多一个活动 SSE。
+- 主控验证通过：pip check、Ruff、前端 lint/typecheck、production build；恢复
+  聚焦 `35 passed`、完整 Vitest `135 passed`、完整 Playwright `46 passed`、
+  后端内容导入与 RunEvent `25 passed`。纯快进后的聚焦复跑仍为前端
+  `35 passed`、Agent E2E `6 passed`、后端 `25 passed`。
+- 320×740、390×844 和 1280×900 的真实离线浏览器链路均在首轮 SSE 三次断开、
+  首次 result 仍为 running 后，无整页刷新显示最终收藏；每例 messages POST、
+  Message、AgentRun、Job、Source 和业务关联各一份，恢复期间第二次 POST 为 0。
+- Alembic 唯一 head 保持 `20260729_0017`。当前无未关闭 P0/P1；未读取 `.env`，
+  真实模型、高德、网页、图片和其他外部 API 调用为 0。M1-Gate 继续打开，当前只
+  允许修复 4“运行配置与本地完整启动一致性”，M2-0 继续阻塞。
 
 ## 2026-07-31 M1-Gate 修复 3：Agent 异步提交终态恢复
 

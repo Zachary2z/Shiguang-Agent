@@ -1,5 +1,36 @@
 # M1-Gate 核心闭环验收报告
 
+## 2026-08-01 M1-Gate 修复 3 主控复验
+
+主控确认候选 `abcdb548912e3e20278f63a9000aed542c8f9a8d` 直接基于
+`a76ce8d7e82307c27a0085de3c445ebdb13047f5`，范围仅包含既有 Agent 前端观察
+协调、离线 E2E 测试服务、测试及交接文档。候选已以 `--ff-only` 集成到 `main`，
+没有冲突、merge commit、生产后端、数据库、迁移或 M2 变化。
+
+独立审查确认 `readAuthoritativeResult` 只读取权威 DTO，唯一 `followRun` 负责
+终态展示、原 SSE/sequence 续接和有界人工恢复。仍只有一个 `SseClient`、API
+Client、AgentExperience、operation generation 和提交幂等边界；没有轮询服务、
+全局状态库、第二套状态机、自动重新提交、样本特例或无限重连。
+
+主控验证结果：
+
+- pip check、Ruff、前端 lint/typecheck、Next.js production build：通过；
+- AgentExperience + SseClient：`35 passed`；
+- 完整 Vitest：`135 passed`；
+- 完整 Playwright：`46 passed`；
+- 后端内容导入与 RunEvent：`25 passed`；
+- 纯快进后聚焦：前端 `35 passed`、Agent E2E `6 passed`、后端 `25 passed`；
+- Alembic 唯一 head：`20260729_0017`。
+
+三种视口的离线浏览器测试证明首轮 SSE 重连耗尽且第一次权威 result 仍为 running
+时，页面会续接同一 Run 并在无需整页刷新的情况下显示最终收藏；每例业务提交、
+Message、AgentRun、Job、Source 和业务关联均各一份。自动恢复耗尽后，人工恢复只
+读取原 result 并续接原 sequence，不重新 POST 或创建 Job。
+
+当前无未关闭 P0/P1。未读取 `.env`，真实模型、高德、网页、图片和其他外部 API
+调用为 0。M1-Gate 继续打开，当前只允许修复 4“运行配置与本地完整启动一致性”；
+M2-0 继续阻塞。
+
 ## 2026-07-31 M1-Gate 修复 3：Agent SSE/权威终态恢复
 
 M1-Gate 修复 3：完成，等待主控验收；M1-Gate：继续打开；运行配置修复：
