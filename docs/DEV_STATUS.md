@@ -4,14 +4,31 @@
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-Gate 修复 4：运行配置与本地完整启动一致性 |
-| 状态 | 修复 4 已完成并等待主控验收；M1-Gate 继续打开，M2-0 未开始。 |
+| 状态 | 修复 4 已完成定点返修并等待主控复验；M1-Gate 继续打开，M2-0 未开始。 |
 | 当前分支 | codex/m1-gate-local-runtime-consistency |
 | 最近更新 | 2026-08-01 |
 | 阻塞项 | M1-Gate 尚未最终关闭；M2-0 未开始且阻塞 |
 
 ## 2026-08-01 M1-Gate 修复 4：运行配置与本地完整启动一致性
 
-- 修复 4 已完成，等待主控验收；M1-Gate 继续打开，M2-0 未开始且阻塞。根因是
+- 主控在候选 `288f0c6a43053dc1e8ca5d42d36bb5bf889f816b` 发现 P1：README
+  推荐复制 `.env.example`，但该文件显式设置
+  `MODEL_STRUCTURED_OUTPUT_MODE=none`，会覆盖 Settings 与 Compose 的
+  `json_object` 默认值，使 API 和 Worker 同时关闭已验真的正式结构化输出。
+  定点返修将示例有效值改为 `json_object`，并增加只显式读取仓库
+  `.env.example` 的最小 Settings 契约测试，验证原字段值及既有
+  `StructuredOutputMode.JSON_OBJECT` 映射；没有修改 Provider、Parser、Extraction
+  Workflow 或其他生产代码，也没有增加探测、fallback、重试或第二套配置逻辑。
+- 修复 1–3 已通过主控验收；修复 4 已完成定点返修并等待主控复验。M1-Gate
+  继续打开，M2-0 未开始且阻塞；不得根据本次开发窗口自行宣布通过。
+- 定点复测通过：`pip check`、Ruff、strict mypy（140 个源文件）；配置契约
+  `132 passed`；非真实 Provider/Map 全集
+  `1725 passed, 16 skipped, 2 deselected`；
+  `docker compose --env-file .env.example config --quiet` 通过。安全解析确认 API 与
+  Worker 的 `MODEL_STRUCTURED_OUTPUT_MODE` 均为 `json_object` 且一致。未读取
+  `.env`，真实模型、高德、网页和付费 API 调用为 0。
+- 修复 4 初始候选完成后等待主控验收；M1-Gate 继续打开，M2-0 未开始且阻塞。其
+  运行一致性根因是
   README 同时推荐单独宿主 Uvicorn、Compose 数据库和独立前端，浏览器入口又使用
   `127.0.0.1:3000`，用户容易遗漏 Worker、使用容器内数据库地址启动宿主 API，或
   混用 host 导致 Session/HMR/hydration 不一致。Compose 中 API 与 Worker 的两份

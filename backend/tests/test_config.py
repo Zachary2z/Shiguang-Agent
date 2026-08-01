@@ -79,6 +79,20 @@ def test_structured_output_capability_defaults_to_verified_json_object() -> None
     )
 
 
+def test_env_example_keeps_verified_json_object_structured_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MODEL_STRUCTURED_OUTPUT_MODE", raising=False)
+
+    settings = Settings(_env_file=config_module.REPOSITORY_ROOT / ".env.example")
+
+    assert settings.model_structured_output_mode == "json_object"
+    assert (
+        settings.extraction_structured_output_mode()
+        is StructuredOutputMode.JSON_OBJECT
+    )
+
+
 def test_test_environment_skips_configured_dotenv(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
