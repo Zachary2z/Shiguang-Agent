@@ -2,12 +2,38 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 当前总阶段 | M1 Web/H5 核心闭环 |
-| 当前子阶段 | M1-Gate 最终复验与收口 |
-| 状态 | 图片截止测试稳定性修复完成，等待主控复验；M1-Gate 仍打开；M2-0 未开始且阻塞。 |
-| 当前分支 | codex/m1-gate-image-deadline-test-stability |
+| 当前总阶段 | M2 微信 ClawBot 完整 MVP |
+| 当前子阶段 | M2-0 ClawBot 技术 Spike |
+| 状态 | M1-Gate 已完成；M1 正式关闭；M2-0 当前允许开始但尚未开始。 |
+| 当前分支 | main |
 | 最近更新 | 2026-08-01 |
-| 阻塞项 | M1-Gate 尚未最终关闭；M2-0 未开始且阻塞 |
+| 阻塞项 | 无 P0/P1；M2-0 尚未开始 |
+
+## 2026-08-01 M1-Gate 最终主控复验与收口
+
+- 最终代码候选为 `102673db799257a63a2f161cc95060c5731ae178`，直接线性基于
+  `a9d54f260a8af688ebcf7f705db6de0deda5ed18`。最终修复只调整图片截止测试的
+  同步边界和验收文档，没有生产代码、配置、迁移、前端或 M2 变化；唯一 Provider、
+  AgentRunner、ToolRegistry、图片服务、统一输入工作流和取消清理路径保持不变。
+- 全新 Python 3.14 快照中 pip check、Ruff、strict mypy（140 个源文件）通过；目标
+  取消测试在 20 个独立进程中 `20/20`，统一输入合同 `32 passed`。非真实
+  Provider/Map 全集连续三轮均为 `1726 passed, 16 skipped, 2 deselected`，封网全集
+  `1726 passed, 18 deselected`；本轮没有 warning，指定 aiosqlite 目标在
+  `PytestUnhandledThreadExceptionWarning` 升级为错误后通过。
+- Alembic 唯一 head 为 `20260729_0017`，SQLite upgrade/check/downgrade/upgrade
+  往返和 `25 passed` 迁移合同通过；PostgreSQL 16 专项为
+  `16 passed, 1728 deselected`。
+- 全新前端依赖下 lint、typecheck、production build 通过，Vitest `135 passed`，
+  Playwright `46 passed`。隔离 Compose 项目中正式 PostgreSQL、Demo PostgreSQL、
+  API、Worker 均 healthy、零重启；API/Worker UID 均为 10001、运行配置摘要一致、
+  双库均在唯一 head。同源前端 200、Demo Session 201，未配置 Provider 的任务从
+  queued 安全收敛为 `failed / MODEL_PROVIDER_NOT_CONFIGURED`，没有外部调用或日志泄密。
+- 当前没有未关闭 P0/P1。保留 P2：开发工具传递依赖
+  `brace-expansion@1.1.16` 的 high advisory（生产依赖审计为 0）；既有 aiosqlite
+  线程收尾 warning 继续监测但本轮未复现；真实性能样本仍不足以宣称统计 P95，真实
+  最多五跳 URL 也只由离线测试覆盖。
+- 本轮未读取 `.env`，真实模型、高德、网页、图片和其他外部/付费 API 调用为 0。
+  M1-Gate 现已完成，M1 正式关闭；当前允许开始 M2-0，尚未实现任何 M2 功能。
 
 ## 2026-08-01 M1-Gate 图片外层截止测试稳定性修复
 

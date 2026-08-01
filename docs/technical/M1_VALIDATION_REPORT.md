@@ -1,5 +1,68 @@
 # M1-Gate 核心闭环验收报告
 
+## 2026-08-01 M1-Gate 最终主控复验与关闭结论
+
+**结论：通过。M1-Gate 已完成，M1 正式关闭，当前允许开始 M2-0。** 最终代码候选
+`102673db799257a63a2f161cc95060c5731ae178` 直接线性基于
+`a9d54f260a8af688ebcf7f705db6de0deda5ed18`。候选只修改
+`backend/tests/contract/test_m0_4d_unified_input.py` 和两份验收/状态文档；没有生产
+Python/TypeScript、配置、迁移、前端或 M2 改动。
+
+主控独立审查确认原测试在完整 API/Worker operation 的极短截止与 Provider handler
+取消证据之间存在不可靠的时序假设。修复后，API/Worker 用例证明权威超时终态和无业务
+副作用；图片服务/正式 Provider 用例以 `request_started` 事件建立确定性屏障，再证明
+唯一 HTTP 请求收到取消、客户端关闭和存储清理。没有 sleep、测试重试、skip、生产
+旁路、断言放宽、第二套 timeout helper 或样本特例；生产取消链没有为测试而改变。
+
+### 最终环境与离线结果
+
+- macOS 26.5.2 arm64、Python 3.14.0、Node.js 25.8.0、npm 11.11.0、
+  Docker 29.6.1；所有后端测试来自候选精确 Git 快照及全新虚拟环境。
+- pip check、Ruff、strict mypy（140 个源文件）全部通过；目标测试在 20 个独立
+  pytest 进程中 `20/20`，统一输入合同文件 `32 passed`。
+- 非真实 Provider/Map 后端全集连续三轮均为
+  `1726 passed, 16 skipped, 2 deselected`，耗时 145.63、146.06、151.57 秒；
+  仓库外插件封锁 DNS 与全部 socket 连接后为 `1726 passed, 18 deselected`，耗时
+  146.68 秒。本轮三轮全集没有 warning；指定 aiosqlite 目标将
+  `PytestUnhandledThreadExceptionWarning` 升级为错误后 `1 passed`。
+- Alembic 唯一 head 为 `20260729_0017`。SQLite upgrade/check/downgrade/upgrade
+  往返和迁移合同 `25 passed`；临时 PostgreSQL 16 专项为
+  `16 passed, 1728 deselected`。
+- 前端全新依赖下 lint、typecheck、production build 通过，Vitest `135 passed`，
+  Playwright `46 passed`（53.8 秒），覆盖 Agent、收藏详情、地点确认、计划、分享、
+  SSE 恢复、键盘、reduced motion 和 320–1440 像素布局。
+
+### Compose、运行安全与架构结论
+
+候选精确快照使用仓库外空 env、隔离 project 和测试端口完成镜像构建与四服务启动。
+正式 PostgreSQL、Demo PostgreSQL、API 和 Worker 全部 healthy、restart count 为 0；
+API/Worker UID 均为 10001，pip check 通过，运行配置摘要一致，模型和地图 Provider
+均未配置，两库均处于 `20260729_0017 (head)`。镜像中 `.env`、Git、tests、缓存、
+数据库和本机路径匹配为 0。
+
+Next.js 经 `localhost` 同源代理返回 200，Demo Session 返回 201；未配置 Provider
+的文本任务先 202/queued，再由 Worker 收敛为
+`failed / MODEL_PROVIDER_NOT_CONFIGURED`，没有永久 queued/running。API/Worker 日志中
+Authorization、Cookie、输入正文、外部 URL 和供应商域名匹配均为 0；容器、镜像、
+卷、网络、端口和临时 PostgreSQL 均已清理。
+
+完整差异审查确认仍只有一个 ModelProvider 契约、OpenAI-compatible Provider、
+AgentRunner、ToolRegistry、图片服务、统一输入工作流、结构化解析/repair、Web
+Provider、MapProvider、收藏写入和计划服务；没有新增测试专用生产分支、重复业务规则、
+密钥、响应快照、M2 或其他无关功能。当前没有未关闭 P0/P1。
+
+### 接受的 P2 与观测边界
+
+1. `npm audit` 的 high 位于既有开发工具传递依赖 `brace-expansion@1.1.16`；
+   `npm audit --omit=dev` 为 0，作为依赖维护 P2。
+2. 既有 aiosqlite 事件循环关闭后的偶发线程 warning 继续监测；本轮三次全集和
+   warning-as-error 定点复跑均未复现，未通过 sleep、skip 或放宽 warning 掩盖。
+3. 历史真实文字、图片和 URL 各只有 5 个样本，只能作为观测值，不能宣称统计 P95；
+   最多五跳 URL 继续由离线测试证明，不宣称真实五跳统计覆盖。
+
+本最终窗口未读取 `.env`，真实模型、高德、网页、图片和其他外部/付费 API 调用为
+0；未发布或部署。M2-0 仅获准开始技术 Spike，尚未实现任何 M2 功能。
+
 ## 2026-08-01 图片外层截止取消测试稳定性修复
 
 图片截止测试稳定性修复完成，等待主控复验；M1-Gate 仍打开；M2-0 未开始且阻塞。
