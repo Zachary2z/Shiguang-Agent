@@ -158,6 +158,29 @@ class SharedBudgetImageProvider(ModelProvider):
         raise AssertionError("unreachable")
 
 
+class BlockingImageProvider(ModelProvider):
+    """Block if the API deadline reaches the provider; terminal state is the contract."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat(
+        self,
+        *,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None,
+        response_format: StructuredOutput | None = None,
+    ) -> ModelResponse:
+        del messages, tools, response_format
+        self.calls += 1
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+
+async def _one_chunk(payload: bytes) -> AsyncIterator[bytes]:
+    yield payload
+
+
 def _place(title: str = "深圳当代艺术与城市规划馆") -> PlaceCandidate:
     return PlaceCandidate(
         title=title,
@@ -1570,12 +1593,60 @@ async def test_image_initial_and_repair_share_one_outer_workflow_budget(
 
 
 @pytest.mark.asyncio
+async def test_image_outer_deadline_is_terminal_without_collection_side_effects(
+    test_settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = test_settings.model_copy(update={"agent_timeout_seconds": 0.01})
+    provider = BlockingImageProvider()
+
+    monkeypatch.setattr(
+        ImageRecognitionService,
+        "_prepare_validated_image",
+        lambda _self, payload, content_type: (payload, content_type),
+    )
+
+    async with _client(settings, provider) as (api, client, _storage):
+        session_id = await _demo(client)
+        response = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            content=PNG_SCREENSHOT,
+            headers={
+                "Content-Type": "image/png",
+                "Idempotency-Key": "outer-deadline-terminal",
+            },
+        )
+        async with api.state.demo_database.session() as session:
+            count_values: list[int] = []
+            for table in (
+                "sources",
+                "collection_items",
+                "collection_write_operations",
+            ):
+                value = await session.scalar(text(f"SELECT COUNT(*) FROM {table}"))
+                count_values.append(int(value or 0))
+            counts = tuple(count_values)
+
+    private_root = (
+        Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
+        / "demo-private"
+    )
+    assert response.status_code == 504
+    assert response.json()["error_code"] == "RUN_TIMEOUT"
+    assert counts == (1, 0, 0)
+    assert len(list((private_root / "objects").iterdir())) == 1
+    assert len(list((private_root / "metadata").iterdir())) == 1
+    for directory in (".tmp", ".reservations"):
+        assert list((private_root / directory).iterdir()) == []
+
+
+@pytest.mark.asyncio
 async def test_image_outer_deadline_cancels_longer_provider_safety_cap(
     test_settings: Settings,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = test_settings.model_copy(update={"agent_timeout_seconds": 0.6})
     request_cancelled = asyncio.Event()
+    request_started = asyncio.Event()
     requests: list[httpx.Request] = []
 
     monkeypatch.setattr(
@@ -1586,6 +1657,7 @@ async def test_image_outer_deadline_cancels_longer_provider_safety_cap(
 
     async def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
+        request_started.set()
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
@@ -1603,42 +1675,42 @@ async def test_image_outer_deadline_cancels_longer_provider_safety_cap(
         ),
         http_client=sdk_http_client,
     )
-    try:
-        async with _client(settings, provider) as (api, client, _storage):
-            session_id = await _demo(client)
-            response = await client.post(
-                f"/api/v1/sessions/{session_id}/messages",
-                content=PNG_SCREENSHOT,
-                headers={
-                    "Content-Type": "image/png",
-                    "Idempotency-Key": "outer-before-provider-cap",
-                },
-            )
-            async with api.state.demo_database.session() as session:
-                count_values: list[int] = []
-                for table in (
-                    "sources",
-                    "collection_items",
-                    "collection_write_operations",
-                ):
-                    value = await session.scalar(text(f"SELECT COUNT(*) FROM {table}"))
-                    count_values.append(int(value or 0))
-                counts = tuple(count_values)
-    finally:
-        await provider.close()
-
     private_root = (
         Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
-        / "demo-private"
+        / "provider-cancellation-private"
     )
-    assert response.status_code == 504
-    assert response.json()["error_code"] == "RUN_TIMEOUT"
+    storage_settings = test_settings.model_copy(
+        update={"demo_storage_private_root": private_root}
+    )
+    storage_config = storage_settings.demo_storage_provider_settings()
+    storage = LocalPrivateStorageProvider(config=storage_config)
+    recognition = ImageRecognitionService(
+        provider=provider,
+        storage=storage,
+        storage_config=storage_config,
+    )
+    recognition_task = asyncio.create_task(
+        recognition.recognize(
+            _one_chunk(PNG_SCREENSHOT),
+            content_type="image/png",
+        )
+    )
+    try:
+        await asyncio.wait_for(request_started.wait(), timeout=5)
+        with pytest.raises(TimeoutError):
+            async with asyncio.timeout(0.01):
+                await recognition_task
+    finally:
+        if not recognition_task.done():
+            recognition_task.cancel()
+            await asyncio.gather(recognition_task, return_exceptions=True)
+        await provider.close()
+
     assert request_cancelled.is_set()
     assert len(requests) == 1
     assert sdk_http_client.is_closed is True
-    assert counts == (1, 0, 0)
-    assert len(list((private_root / "objects").iterdir())) == 1
-    assert len(list((private_root / "metadata").iterdir())) == 1
+    assert list((private_root / "objects").iterdir()) == []
+    assert list((private_root / "metadata").iterdir()) == []
     for directory in (".tmp", ".reservations"):
         assert list((private_root / directory).iterdir()) == []
 

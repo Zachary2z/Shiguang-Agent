@@ -4,10 +4,34 @@
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
 | 当前子阶段 | M1-Gate 最终复验与收口 |
-| 状态 | 稳定化修复 1–4 均已通过主控验收；当前只允许最终复验与收口；M1-Gate 继续打开，M2-0 未开始。 |
-| 当前分支 | main |
+| 状态 | 图片截止测试稳定性修复完成，等待主控复验；M1-Gate 仍打开；M2-0 未开始且阻塞。 |
+| 当前分支 | codex/m1-gate-image-deadline-test-stability |
 | 最近更新 | 2026-08-01 |
 | 阻塞项 | M1-Gate 尚未最终关闭；M2-0 未开始且阻塞 |
+
+## 2026-08-01 M1-Gate 图片外层截止测试稳定性修复
+
+- 图片截止测试稳定性修复完成，等待主控复验；M1-Gate 仍打开；M2-0 未开始且阻塞。
+- 根因是原测试把完整 API 提交、Job 领取、数据库事件、图片读取与准备都计入 0.6 秒
+  应用截止，却只有进入 OpenAI-compatible MockTransport handler 后才设置取消证据。
+  全集负载下可能在 handler 前合法耗尽预算，因此 504 / `RUN_TIMEOUT` 正确而
+  `request_cancelled` 为 false；隔离连续通过不能证明该同步假设稳定。
+- 生产审查确认共享应用截止仍由唯一 `AgentRunService.execute_application()` 取消
+  整个 operation，取消继续经图片识别服务、正式 Provider 和 HTTP 请求 handler
+  传播；图片服务与 Worker 都等待取消和清理完成。Agent 正式上限仍为 60 秒，Provider
+  异常安全上限仍为 75 秒，富输入仍共享既有完整流程截止。本轮未修改生产代码。
+- 测试沿现有边界拆分：API/Worker 用例只证明 504 / `RUN_TIMEOUT`、无收藏或收藏写入
+  操作、保留唯一已暂存 Source、临时文件与 reservation 清理；Provider/图片服务用例
+  先等待确定性 `request_started` 事件，再启动短外层截止，随后精确断言请求 1 次、
+  handler 收到 `CancelledError`、SDK HTTP 客户端关闭，以及对象、metadata、临时文件
+  和 reservation 全部清理。没有 sleep、skip、重试、放宽取消断言或测试专用生产入口。
+- 验证通过：`pip check`、Ruff、strict mypy（140 个源文件）；目标测试独立进程连续
+  20 次均为 `1 passed`；统一输入合同文件 `32 passed`；非真实 Provider/Map 全集三轮
+  均为 `1726 passed, 16 skipped, 2 deselected`；指定 aiosqlite 收尾目标以
+  `PytestUnhandledThreadExceptionWarning` 升级为错误后 `1 passed`。Alembic 唯一
+  head 保持 `20260729_0017`。
+- 未读取 `.env`；真实模型、高德、网页、图片和其他外部/付费 API 调用为 0。未合并、
+  未推送、未发布、未部署。
 
 ## 2026-08-01 M1-Gate 修复 4 主控复验与集成
 

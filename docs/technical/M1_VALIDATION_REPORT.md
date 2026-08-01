@@ -1,5 +1,43 @@
 # M1-Gate 核心闭环验收报告
 
+## 2026-08-01 图片外层截止取消测试稳定性修复
+
+图片截止测试稳定性修复完成，等待主控复验；M1-Gate 仍打开；M2-0 未开始且阻塞。
+
+原合同测试以 0.6 秒作为完整图片应用 operation 的截止，却把进入 Provider HTTP
+handler 作为取消断言的隐含前置。该预算同时覆盖数据库事件、图片读取/准备和工具阶段
+持久化；全量负载下可以在 handler 前合法超时，所以 API 已正确返回 504 /
+`RUN_TIMEOUT`，但 handler 没有机会收到 `CancelledError`。隔离连续成功进一步表明
+问题是测试同步和时限夹具不稳定，未形成可独立复现的生产取消缺陷。
+
+生产链路审查确认 `AgentRunService.execute_application()` 仍以唯一共享截止取消整个
+应用 operation；`ApplicationRunObserver` 不吞取消，`ImageRecognitionService` 在取消
+后完成当前文件清理，`OpenAICompatibleProvider` 原样传播 `CancelledError`，Worker
+在 `finally` 中等待 handler 与 heartbeat 任务收尾。Agent 正式上限保持 60 秒，
+Provider 异常安全上限保持 75 秒，富输入继续共享既有完整流程截止；本轮没有修改任何
+生产代码、配置、迁移或超时策略。
+
+测试按既有公开边界拆成两条：
+
+1. API/Worker 测试允许截止在准备链任意位置发生，只验证权威终态为 504 /
+   `RUN_TIMEOUT`、没有收藏或收藏写入操作、只保留提交阶段唯一 Source，并且 `.tmp` 与
+   `.reservations` 清空。
+2. Provider/图片服务测试用 MockTransport 的 `request_started` 事件作为屏障；确认请求
+   已进入 handler 后才启动短外层截止，因而稳定证明正在等待的唯一 Provider 请求被
+   取消、handler 收到 `CancelledError`、请求次数精确为 1、SDK HTTP 客户端关闭，且
+   objects、metadata、临时文件和 reservation 全部清理。
+
+实现没有 sleep、skip、自动重试、第二套 timeout helper、样本特例、测试专用生产入口
+或取消断言放宽。验证结果：`pip check`、Ruff、strict mypy（140 个源文件）通过；目标
+测试在 20 个独立 pytest 进程中连续 `20/20` 通过；完整统一输入合同文件
+`32 passed`；非真实 Provider/Map 全集三轮均为
+`1726 passed, 16 skipped, 2 deselected`，耗时分别为 155.45、155.81、151.84 秒；
+指定目标以 `PytestUnhandledThreadExceptionWarning` 升级为错误后 `1 passed`。
+Alembic 唯一 head 仍为 `20260729_0017`。
+
+本轮未读取 `.env`，真实模型、高德、网页、图片和其他外部/付费 API 调用为 0；未合并、
+未推送、未发布、未部署。
+
 ## 2026-08-01 M1-Gate 修复 4 主控复验
 
 主控确认返修提交 `3c21be47c7be9174c570062bf9879546c7aeab24` 线性基于初始候选
