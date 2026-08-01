@@ -1,5 +1,35 @@
 # M1-Gate 核心闭环验收报告
 
+## 2026-08-01 M1-Gate 修复 4 主控复验
+
+主控确认返修提交 `3c21be47c7be9174c570062bf9879546c7aeab24` 线性基于初始候选
+`288f0c6a43053dc1e8ca5d42d36bb5bf889f816b`，完整修复链直接基于
+`36bd980dc0b994c617c3fd23886d68a76dcec4e2`。最终范围只有 `.env.example`、
+Compose、README、一个配置契约测试和交接文档；没有生产 Python/TypeScript、迁移
+或 M2 代码。
+
+初始候选的隔离全栈复验确认两套 PostgreSQL、API、Worker 全部 healthy、零重启，
+两库均处于 `20260729_0017 (head)`，API/Worker 配置摘要一致；`localhost` 前端入口
+200、同源 Demo Session 201，无 Provider 任务由 Worker 从 queued 收敛为
+`failed / MODEL_PROVIDER_NOT_CONFIGURED`。浏览器无 warning/error，服务日志没有
+Authorization、Cookie、输入正文、Provider URL 或外部调用。
+
+定点返修将 `.env.example` 的结构化输出恢复为百炼已验真的 `json_object`。主控
+显式解析示例配置确认 Settings 转换为 `StructuredOutputMode.JSON_OBJECT`，Compose
+中的 API 与 Worker 有效值也均为 `json_object`；没有新增自动探测、fallback、重试
+或第二套配置边界。
+
+主控复验结果：pip check、Ruff、strict mypy（140 个源文件）、配置契约
+`132 passed`、非真实 Provider/Map 全集
+`1725 passed, 16 skipped, 2 deselected`，Compose 示例配置解析全部通过。初始候选的
+前端 lint、typecheck、Vitest `135 passed` 和 production build 结果继续有效，返修
+没有修改前端文件或依赖。
+
+本轮未读取 `.env`，真实模型、高德、网页、图片和其他外部 API 调用为 0。当前无
+未关闭 P0/P1。`npm audit` 的一个 high 只存在于既有开发工具传递依赖
+`brace-expansion@1.1.16`，生产依赖审计为 0，登记为依赖维护 P2。稳定化修复 1–4
+现均已通过；M1-Gate 继续打开，当前只允许最终复验与收口，M2-0 仍阻塞。
+
 ## 2026-08-01 M1-Gate 修复 4 定点返修：结构化输出示例配置
 
 主控在候选 `288f0c6a43053dc1e8ca5d42d36bb5bf889f816b` 发现 P1：唯一推荐

@@ -3,11 +3,34 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M1 Web/H5 核心闭环 |
-| 当前子阶段 | M1-Gate 修复 4：运行配置与本地完整启动一致性 |
-| 状态 | 修复 4 已完成定点返修并等待主控复验；M1-Gate 继续打开，M2-0 未开始。 |
-| 当前分支 | codex/m1-gate-local-runtime-consistency |
+| 当前子阶段 | M1-Gate 最终复验与收口 |
+| 状态 | 稳定化修复 1–4 均已通过主控验收；当前只允许最终复验与收口；M1-Gate 继续打开，M2-0 未开始。 |
+| 当前分支 | main |
 | 最近更新 | 2026-08-01 |
 | 阻塞项 | M1-Gate 尚未最终关闭；M2-0 未开始且阻塞 |
+
+## 2026-08-01 M1-Gate 修复 4 主控复验与集成
+
+- 主控确认返修提交 `3c21be47c7be9174c570062bf9879546c7aeab24` 线性基于
+  初始候选 `288f0c6a43053dc1e8ca5d42d36bb5bf889f816b`，完整修复链直接基于
+  `36bd980dc0b994c617c3fd23886d68a76dcec4e2`。范围只包含运行配置、README、
+  一个配置契约测试及交接文档；没有生产业务代码、迁移或 M2 变化。
+- 初始候选的唯一完整启动路径已由独立 Compose project 复验：正式 PostgreSQL、
+  Demo PostgreSQL、API、Worker 全部 healthy、零重启，两库均为
+  `20260729_0017 (head)`；API/Worker 配置摘要一致，前端 `localhost` 同源入口、
+  Demo Session 及无 Provider 任务的明确失败终态均正确，日志无敏感信息和外部调用。
+- 定点返修关闭主控发现的结构化输出 P1：复制 `.env.example` 后，Settings、API 与
+  Worker 现在均使用已验真的 `json_object`，未新增模式探测、fallback、重试或第二套
+  配置逻辑。README 阶段描述也已与状态文档一致。
+- 主控复验通过：pip check、Ruff、strict mypy（140 个源文件）；配置契约
+  `132 passed`；非真实 Provider/Map 全集
+  `1725 passed, 16 skipped, 2 deselected`；Compose 示例配置解析通过，API/Worker
+  模式均为 `json_object`。初始候选的前端 lint、typecheck、Vitest `135 passed` 和
+  production build 结果继续有效，因为返修没有修改前端文件或依赖。
+- 真实模型、高德、网页、图片和其他外部 API 调用为 0；未读取 `.env`。当前无未关闭
+  P0/P1。`npm audit` 的一个 high 仅位于既有开发工具传递依赖
+  `brace-expansion@1.1.16`，`npm audit --omit=dev` 为 0，作为依赖维护 P2 留待最终
+  Gate 评估。当前只允许 M1-Gate 最终复验与收口，M2-0 继续阻塞。
 
 ## 2026-08-01 M1-Gate 修复 4：运行配置与本地完整启动一致性
 
