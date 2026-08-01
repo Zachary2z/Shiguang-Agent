@@ -2431,7 +2431,7 @@ async def test_event_and_any_branch_targets_are_invalidated_by_location_edits(
 
 
 @pytest.mark.asyncio
-async def test_provider_failure_after_confirmed_location_edit_never_restores_old_target(
+async def test_provider_failure_after_confirmed_location_edit_restores_trusted_target(
     write_database: tuple[str, Path],
 ) -> None:
     database_url, _ = write_database
@@ -2449,24 +2449,24 @@ async def test_provider_failure_after_confirmed_location_edit_never_restores_old
             source=_source(user.id),
             idempotency_key="confirmed-provider-failure",
         )
-        with pytest.raises(MapProviderError):
-            await service.patch(
-                user_id=user.id,
-                collection_item_id=active.id,
-                expected_version=active.version,
-                patch=CollectionItemPatch(address="发生变化的公开地址"),
-                place_matching=_matching_service(StubMapProvider(call_hook=fail)),
-            )
+        updated = await service.patch(
+            user_id=user.id,
+            collection_item_id=active.id,
+            expected_version=active.version,
+            patch=CollectionItemPatch(address="发生变化的公开地址"),
+            place_matching=_matching_service(StubMapProvider(call_hook=fail)),
+        )
         stored = await service._repository.get_collection_item(
             user_id=user.id,
             collection_item_id=active.id,
         )
 
     assert stored is not None
+    assert updated == stored
     assert stored.address == "发生变化的公开地址"
-    assert stored.place_target is None
-    assert stored.place_candidate_snapshot is None
-    assert stored.status is CollectionStatus.PENDING_DETAILS
+    assert stored.place_target == active.place_target
+    assert stored.place_candidate_snapshot == active.place_candidate_snapshot
+    assert stored.status is CollectionStatus.ACTIVE
     await database.close()
 
 

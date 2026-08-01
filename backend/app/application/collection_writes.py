@@ -215,11 +215,30 @@ class CollectionWriteService:
                 )
         if not location_identity_changed:
             return updated
-        return await self.continue_location_confirmation(
-            owner=owner,
-            item=updated,
-            place_matching=place_matching,
-        )
+        try:
+            return await self.continue_location_confirmation(
+                owner=owner,
+                item=updated,
+                place_matching=place_matching,
+            )
+        except MapProviderError as exc:
+            if current.place_target is None or not exc.retryable:
+                raise
+            restored = updated.model_copy(
+                update={
+                    "status": current.status,
+                    "place_target": current.place_target,
+                    "place_candidate_snapshot": current.place_candidate_snapshot,
+                    "updated_at": now,
+                },
+                deep=True,
+            )
+            async with self._session.begin():
+                return await self._repository.apply_place_resolution(
+                    user_id=owner,
+                    item=restored,
+                    expected_version=updated.version,
+                )
 
     async def continue_location_confirmation(
         self,

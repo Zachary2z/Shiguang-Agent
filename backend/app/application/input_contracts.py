@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 from app.application.text_extraction import MAX_TEXT_INPUT_CHARS
+from app.domain.places.links import inspect_amap_official_link
 
 
 class _InputModel(BaseModel):
@@ -52,6 +53,9 @@ class UrlInput(_InputModel):
             valid = False
         if not valid:
             raise ValueError("url must be an HTTP(S) URL without credentials")
+        amap_link = inspect_amap_official_link(value)
+        if amap_link.is_official and amap_link.has_sensitive_query:
+            raise ValueError("official Amap URLs cannot contain credentials")
         return value
 
 

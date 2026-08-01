@@ -85,10 +85,6 @@ class PlaceTargetSelectionService:
             target_status = (
                 CollectionStatus.PENDING_SELECTION
                 if snapshot.candidates
-                and (
-                    item.kind is CollectionKind.EVENT
-                    or snapshot.result.status is MatchStatus.AMBIGUOUS
-                )
                 else CollectionStatus.PENDING_DETAILS
             )
             if auto_candidate is not None and item.kind is CollectionKind.PLACE:
@@ -675,8 +671,8 @@ class PlaceTargetSelectionService:
         result = snapshot.result
         if result.status is not MatchStatus.MATCHED:
             return None
-        if len(result.candidates) != 1:
-            raise ValueError("matched result must contain exactly one automatic candidate")
+        if not result.candidates:
+            raise ValueError("matched result must contain an automatic candidate")
         candidate = result.candidates[0]
         if candidate.confidence is not MatchConfidence.HIGH:
             raise ValueError("matched result requires one high-confidence candidate")

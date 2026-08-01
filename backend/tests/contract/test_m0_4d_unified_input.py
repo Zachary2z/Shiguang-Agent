@@ -53,6 +53,8 @@ from app.domain.places import (
     CityScope,
     Coordinate,
     CoordinateSystem,
+    GetPoiRequest,
+    GetPoiResult,
     Poi,
     PoiProvider,
     PoiSearchResult,
@@ -440,6 +442,79 @@ async def test_text_url_and_image_share_one_result_and_collection_mapping(
 
 
 @pytest.mark.asyncio
+async def test_official_amap_place_url_binds_exact_target_without_web_or_model(
+    test_settings: Settings,
+) -> None:
+    poi = Poi(
+        provider=PoiProvider.AMAP,
+        poi_id="B0SZ000001",
+        name="只有核心事实的地点",
+        city_code="shenzhen",
+        address=None,
+        coordinate=Coordinate(
+            latitude=22.541174,
+            longitude=114.057701,
+            coordinate_system=CoordinateSystem.GCJ_02,
+        ),
+        poi_type=PoiType.OTHER,
+    )
+    request = GetPoiRequest(
+        poi_id=poi.poi_id,
+        city=CityScope(city_code="shenzhen"),
+    )
+    map_calls: list[object] = []
+
+    async def record_map_call(value: object) -> None:
+        map_calls.append(value)
+
+    map_provider = StubMapProvider(
+        poi_results={request: GetPoiResult(poi=poi)},
+        call_hook=record_map_call,  # type: ignore[arg-type]
+    )
+    model = FakeProvider([])
+    web = StubWebProvider(_web_success())
+    async with _client(
+        test_settings,
+        model,
+        web=web,
+        map_provider=map_provider,
+    ) as (api, client, _storage):
+        session_id = await _demo(client)
+        user_id = await _demo_owner_id(api, session_id)
+        response = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={
+                "type": "url",
+                "idempotency_key": "official-amap-place",
+                "url": f"https://www.amap.com/place/{poi.poi_id}",
+            },
+        )
+        replay = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={
+                "type": "url",
+                "idempotency_key": "official-amap-place",
+                "url": f"https://www.amap.com/place/{poi.poi_id}",
+            },
+        )
+        async with api.state.demo_database.session() as session:
+            items = await SqlAlchemyCollectionRepository(session).list_collection_items(
+                user_id=user_id,
+                include_inactive=True,
+            )
+
+    assert response.status_code == 200
+    assert replay.status_code == 200
+    assert replay.json()["replayed"] is True
+    assert response.json()["collections"][0]["status"] == "active"
+    assert items[0].place_target is not None
+    assert items[0].place_target.poi == poi
+    assert web.calls == []
+    assert model.calls == []
+    assert map_calls == [request]
+
+
+@pytest.mark.asyncio
 async def test_text_url_and_image_first_place_save_use_one_matching_entry(
     test_settings: Settings,
 ) -> None:
@@ -745,6 +820,35 @@ async def test_url_failure_is_recoverable_and_never_calls_model(
     assert len(sources) == 1 and sources[0].parse_status.value == "failed"
     assert sources[0].metadata.failure_code == "WEB_TARGET_BLOCKED"
     assert "hidden" not in run.text
+
+
+@pytest.mark.asyncio
+async def test_official_amap_link_without_identity_never_follows_arbitrary_redirect(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider([])
+    web = StubWebProvider(
+        _web_success().model_copy(
+            update={"final_url": "https://evil.example/place/B0SZ000001"}
+        )
+    )
+    async with _client(test_settings, provider, web=web) as (_api, client, _storage):
+        session_id = await _demo(client)
+        response = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={
+                "type": "url",
+                "idempotency_key": "amap-no-identity",
+                "url": "https://surl.amap.com/opaque-share-token",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["run_status"] == "partially_succeeded"
+    assert response.json()["error_code"] == "WEB_CONTENT_UNREADABLE"
+    assert response.json()["collections"] == []
+    assert web.calls == []
+    assert provider.calls == []
 
 
 @pytest.mark.asyncio

@@ -101,7 +101,7 @@ def test_exact_target_requires_one_valid_confirmed_gcj02_poi() -> None:
         )
 
 
-def test_low_confidence_and_hard_conflict_candidates_cannot_become_exact_targets() -> None:
+def test_low_confidence_user_choice_is_allowed_but_hard_conflict_is_not() -> None:
     low_confidence = _candidate().model_copy(update={"confidence": MatchConfidence.LOW})
     conflict_evidence = _evidence()[0].model_copy(
         update={
@@ -115,12 +115,12 @@ def test_low_confidence_and_hard_conflict_candidates_cannot_become_exact_targets
         update={"evidence": (conflict_evidence, *_evidence()[1:])}
     )
 
-    with pytest.raises(ValueError, match="low-confidence"):
-        exact_target_from_candidate(
-            low_confidence,
-            confirmed_by=PlaceConfirmationSource.USER_SELECTION,
-            confirmed_at=NOW,
-        )
+    target = exact_target_from_candidate(
+        low_confidence,
+        confirmed_by=PlaceConfirmationSource.USER_SELECTION,
+        confirmed_at=NOW,
+    )
+    assert target.confidence is MatchConfidence.LOW
     with pytest.raises(ValueError, match="hard-conflict"):
         exact_target_from_candidate(
             hard_conflict,

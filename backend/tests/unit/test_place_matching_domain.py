@@ -217,10 +217,10 @@ def test_same_name_in_different_areas_prefers_the_supported_area() -> None:
 
     result = classify_place_matches(scored, policy=POLICY)
 
-    assert result.status is MatchStatus.NEEDS_CONTEXT
+    assert result.status is MatchStatus.AMBIGUOUS
     assert result.candidates[0].poi_id == "book_nanshan"
     assert result.candidates[0].provider_rank == 2
-    assert len(result.candidates) == 1
+    assert len(result.candidates) == 2
     assert all(not candidate.has_hard_conflict for candidate in result.candidates)
 
 
@@ -241,10 +241,12 @@ def test_matching_name_with_district_conflict_needs_context() -> None:
     result = classify_place_matches((scored,), policy=POLICY)
 
     assert result.status is MatchStatus.NEEDS_CONTEXT
-    assert result.candidates == ()
+    assert tuple(candidate.poi_id for candidate in result.candidates) == (
+        "book_wrong_district",
+    )
     district = _by_field(scored)[EvidenceField.DISTRICT]
     assert district.outcome is EvidenceOutcome.CONFLICT
-    assert district.hard_conflict is True
+    assert district.hard_conflict is False
 
 
 def test_name_and_branch_fields_produce_match_and_conflict_evidence() -> None:
@@ -278,7 +280,7 @@ def test_name_and_branch_fields_produce_match_and_conflict_evidence() -> None:
     assert _by_field(unsupported)[EvidenceField.NAME].outcome is EvidenceOutcome.CONFLICT
     branch = _by_field(unsupported)[EvidenceField.BRANCH_NAME]
     assert branch.outcome is EvidenceOutcome.CONFLICT
-    assert branch.hard_conflict is True
+    assert branch.hard_conflict is False
 
 
 @pytest.mark.parametrize(
@@ -391,8 +393,12 @@ def test_two_chains_distinguish_generic_correct_and_wrong_branch_names(
     assert _by_field(by_id[expected_id])[EvidenceField.BRANCH_NAME].outcome is EvidenceOutcome.MATCH
     wrong_branch = _by_field(by_id[other_id])[EvidenceField.BRANCH_NAME]
     assert wrong_branch.outcome is EvidenceOutcome.CONFLICT
-    assert wrong_branch.hard_conflict is True
-    assert tuple(candidate.poi_id for candidate in specific_result.candidates) == (expected_id,)
+    assert wrong_branch.hard_conflict is False
+    assert specific_result.status is MatchStatus.AMBIGUOUS
+    assert tuple(candidate.poi_id for candidate in specific_result.candidates) == (
+        expected_id,
+        other_id,
+    )
 
 
 @pytest.mark.parametrize(
@@ -464,7 +470,7 @@ def test_phone_and_type_supply_positive_and_negative_evidence() -> None:
     assert _by_field(positive_score)[EvidenceField.PHONE].outcome is EvidenceOutcome.MATCH
     assert _by_field(positive_score)[EvidenceField.POI_TYPE].outcome is EvidenceOutcome.MATCH
     assert _by_field(negative_score)[EvidenceField.PHONE].outcome is EvidenceOutcome.CONFLICT
-    assert _by_field(negative_score)[EvidenceField.PHONE].hard_conflict is True
+    assert _by_field(negative_score)[EvidenceField.PHONE].hard_conflict is False
     assert _by_field(negative_score)[EvidenceField.POI_TYPE].outcome is EvidenceOutcome.CONFLICT
 
 
@@ -888,14 +894,14 @@ def test_invalid_or_non_current_selection_is_rejected() -> None:
 @pytest.mark.parametrize(
     ("score", "hard_conflict", "visible"),
     [
-        (0.0, False, False),
-        (POLICY.candidate_score - 0.001, False, False),
+        (0.0, False, True),
+        (POLICY.candidate_score - 0.001, False, True),
         (POLICY.candidate_score, False, True),
         (POLICY.candidate_score + 0.001, False, True),
         (POLICY.candidate_score + 20.0, True, False),
     ],
 )
-def test_only_threshold_qualified_conflict_free_candidates_are_public(
+def test_all_conflict_free_candidates_are_public_without_lowering_auto_thresholds(
     score: float,
     hard_conflict: bool,
     visible: bool,
@@ -912,7 +918,7 @@ def test_only_threshold_qualified_conflict_free_candidates_are_public(
     assert (len(result.candidates) == 1) is visible
 
 
-def test_provider_results_without_reliable_candidates_are_not_not_found() -> None:
+def test_multiple_safe_low_score_candidates_remain_selectable() -> None:
     result = classify_place_matches(
         (
             _scored(0.0, poi_id="zero"),
@@ -922,8 +928,8 @@ def test_provider_results_without_reliable_candidates_are_not_not_found() -> Non
         policy=POLICY,
     )
 
-    assert result.status is MatchStatus.NEEDS_CONTEXT
-    assert result.candidates == ()
+    assert result.status is MatchStatus.AMBIGUOUS
+    assert tuple(candidate.poi_id for candidate in result.candidates) == ("low", "zero")
 
 
 def test_result_contract_only_allows_empty_candidates_for_safe_empty_outcomes() -> None:
@@ -943,7 +949,7 @@ def test_result_contract_only_allows_empty_candidates_for_safe_empty_outcomes() 
         )
 
 
-def test_hidden_low_quality_and_hard_conflict_candidates_cannot_be_selected() -> None:
+def test_safe_low_quality_candidate_is_selectable_but_hard_conflict_is_hidden() -> None:
     result = classify_place_matches(
         (
             _scored(0.0, poi_id="zero"),
@@ -952,14 +958,51 @@ def test_hidden_low_quality_and_hard_conflict_candidates_cannot_be_selected() ->
         policy=POLICY,
     )
 
-    for poi_id in ("zero", "conflict"):
-        selection = PlaceSelection(
+    selected = validate_place_selection(
+        result,
+        PlaceSelection(
             kind=PlaceSelectionKind.CANDIDATE,
             provider=PoiProvider.AMAP,
-            poi_id=poi_id,
+            poi_id="zero",
+        ),
+    )
+    assert selected.poi_id == "zero"
+    with pytest.raises(ValueError, match="not a unique member"):
+        validate_place_selection(
+            result,
+            PlaceSelection(
+                kind=PlaceSelectionKind.CANDIDATE,
+                provider=PoiProvider.AMAP,
+                poi_id="conflict",
+            ),
         )
-        with pytest.raises(ValueError, match="without current candidates"):
-            validate_place_selection(result, selection)
+
+
+def test_evidence_accepts_missing_optional_fields_and_normalizes_input_order() -> None:
+    complete = _scored(50.0, poi_id="evidence")
+    by_field = _by_field(complete)
+    payload = complete.model_dump()
+    payload["evidence"] = (
+        by_field[EvidenceField.CITY],
+        by_field[EvidenceField.NAME],
+    )
+    candidate = PlaceMatchCandidate.model_validate(payload)
+
+    assert tuple(item.field for item in candidate.evidence) == (
+        EvidenceField.NAME,
+        EvidenceField.CITY,
+    )
+    with pytest.raises(ValidationError, match="unique"):
+        PlaceMatchCandidate.model_validate(
+            {
+                **complete.model_dump(),
+                "evidence": (
+                    by_field[EvidenceField.NAME],
+                    by_field[EvidenceField.NAME],
+                    by_field[EvidenceField.CITY],
+                ),
+            }
+        )
 
 
 @pytest.mark.parametrize(

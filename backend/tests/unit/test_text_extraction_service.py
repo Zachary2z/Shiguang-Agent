@@ -832,7 +832,7 @@ def _parse_raw_result(
     )
 
 
-def test_place_empty_fields_are_recorded_missing_in_candidate_field_order() -> None:
+def test_place_empty_optional_fields_do_not_require_missing_enumeration() -> None:
     raw_candidate: dict[str, object] = {
         "kind": "place",
         "title": "保守归一化地点",
@@ -847,16 +847,7 @@ def test_place_empty_fields_are_recorded_missing_in_candidate_field_order() -> N
     candidate = result.candidates[0]
     assert isinstance(candidate, PlaceCandidate)
     assert candidate.title == "保守归一化地点"
-    assert candidate.missing_fields == (
-        CandidateField.CITY_HINT,
-        CandidateField.DISTRICT,
-        CandidateField.ADDRESS,
-        CandidateField.BUSINESS_DISTRICT,
-        CandidateField.LANDMARK,
-        CandidateField.METRO_STATION,
-        CandidateField.PRICE,
-        CandidateField.TAGS,
-    )
+    assert candidate.missing_fields == ()
     assert CandidateField.EVENT_START_AT not in candidate.missing_fields
     assert CandidateField.EVENT_END_AT not in candidate.missing_fields
 
@@ -884,15 +875,10 @@ def test_event_adds_time_fields_without_changing_explicit_uncertainty() -> None:
     assert CandidateField.DISTRICT not in candidate.missing_fields
     assert candidate.missing_fields == (
         CandidateField.ADDRESS,
-        CandidateField.BUSINESS_DISTRICT,
-        CandidateField.LANDMARK,
-        CandidateField.METRO_STATION,
         CandidateField.EVENT_START_DATE,
         CandidateField.EVENT_END_DATE,
         CandidateField.EVENT_START_AT,
         CandidateField.EVENT_END_AT,
-        CandidateField.PRICE,
-        CandidateField.TAGS,
     )
 
 
@@ -1252,16 +1238,16 @@ async def test_two_invalid_outputs_stop_at_two_calls_with_stable_result() -> Non
 
 
 @pytest.mark.asyncio
-async def test_repair_normalizes_only_unclassified_absent_field_without_third_call() -> None:
-    invalid_repair = json.loads(
+async def test_optional_absence_passes_without_enumeration_or_third_call() -> None:
+    optional_absence = json.loads(
         ExtractionResult.with_candidates((_only_name_place(),)).model_dump_json()
     )
-    invalid_repair["candidates"][0]["missing_fields"].remove("address")
-    original_repair = deepcopy(invalid_repair)
+    optional_absence["candidates"][0]["missing_fields"] = []
+    original_repair = deepcopy(optional_absence)
     provider = FakeProvider(
         [
             fake_response(content="{fixed-local-invalid-json"),
-            fake_response(content=json.dumps(invalid_repair, ensure_ascii=False)),
+            fake_response(content=json.dumps(optional_absence, ensure_ascii=False)),
         ]
     )
 
@@ -1269,9 +1255,9 @@ async def test_repair_normalizes_only_unclassified_absent_field_without_third_ca
 
     candidate = result.candidates[0]
     assert candidate.title == "M Stand"
-    assert set(candidate.missing_fields) == set(_only_name_place().missing_fields)
-    assert candidate.missing_fields[-1] is CandidateField.ADDRESS
-    assert invalid_repair == original_repair
+    assert candidate.missing_fields == ()
+    assert candidate.address is None
+    assert optional_absence == original_repair
     assert len(provider.calls) == 2
 
 
@@ -1441,10 +1427,7 @@ async def test_concurrent_calls_do_not_share_result_state() -> None:
 
     result_titles = {result.candidates[0].title for result in results}
     assert result_titles == set(titles)
-    assert all(
-        result.candidates[0].missing_fields == _only_name_place().missing_fields
-        for result in results
-    )
+    assert all(result.candidates[0].missing_fields == () for result in results)
     assert len({id(result) for result in results}) == 4
     assert len(provider.calls) == 4
 

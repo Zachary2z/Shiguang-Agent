@@ -348,7 +348,8 @@ async def test_search_isolates_malformed_candidate_and_preserves_valid_order(
         raw_poi(poi_id=f"B0SZ00000{index}", name=f"合法候选{index}")
         for index in range(1, 5)
     ]
-    malformed = raw_poi(poi_id="B0SZ000009", name="畸形候选", typecode="damaged")
+    malformed = raw_poi(poi_id="B0SZ000009", name="畸形候选")
+    malformed.pop("id")
     pois = [*valid]
     pois.insert(invalid_index, malformed)
     snapshot = deepcopy(pois)
@@ -401,7 +402,14 @@ async def test_search_isolates_multiple_candidate_local_mapping_failures() -> No
 
     result = await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
 
-    assert [poi.poi_id for poi in result.pois] == ["B0SZ000001", "B0SZ000005"]
+    assert [poi.poi_id for poi in result.pois] == [
+        "B0SZ000002",
+        "B0SZ000001",
+        "B0SZ000004",
+        "B0SZ000005",
+    ]
+    assert result.pois[0].poi_type is PoiType.OTHER
+    assert result.pois[2].address is None
     await provider.close()
 
 
@@ -432,7 +440,8 @@ async def test_search_isolates_mixed_city_candidate_without_weakening_city_scope
 
 @pytest.mark.asyncio
 async def test_search_repeated_and_concurrent_candidate_isolation_has_no_state() -> None:
-    invalid = raw_poi(poi_id="B0SZ000002", typecode="damaged")
+    invalid = raw_poi(poi_id="B0SZ000002")
+    invalid["location"] = "damaged"
     pois = [
         raw_poi(poi_id="B0SZ000001", name="合法候选一"),
         invalid,
@@ -466,8 +475,8 @@ async def test_search_success_does_not_expose_discarded_candidate_content(
     malformed = raw_poi(
         poi_id="B0SZ000002",
         name=discarded_secret,
-        typecode="damaged",
     )
+    malformed["location"] = "damaged"
     provider = AmapMapProvider(
         config=amap_config(max_retries=0),
         transport=mock_transport(
@@ -633,7 +642,7 @@ async def test_missing_empty_and_blank_optional_text_all_map_to_none() -> None:
     [["not", "empty"], {"unexpected": "mapping"}, ("unexpected",), 1, True, None],
 )
 @pytest.mark.asyncio
-async def test_optional_poi_text_rejects_nonempty_lists_and_other_non_strings(
+async def test_malformed_optional_poi_text_normalizes_to_none(
     field: str,
     invalid_value: object,
 ) -> None:
@@ -647,22 +656,59 @@ async def test_optional_poi_text_rejects_nonempty_lists_and_other_non_strings(
         ),
     )
 
-    with pytest.raises(MapProviderError) as exc_info:
-        await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
+    result = await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
 
-    assert exc_info.value.code is MapProviderErrorCode.INVALID_RESPONSE
-    assert exc_info.value.__context__ is None
-    assert exc_info.value.__cause__ is None
+    mapped = result.pois[0]
+    assert getattr(mapped, "business_area" if field == "business_area" else "phone") is None
     assert poi == snapshot
     await provider.close()
 
 
 @pytest.mark.asyncio
-async def test_search_rejects_duplicate_valid_identities() -> None:
+async def test_search_deduplicates_identical_core_facts() -> None:
     pois = [raw_poi(), raw_poi()]
     provider = AmapMapProvider(
         config=amap_config(max_retries=0),
         transport=mock_transport(lambda request: httpx.Response(200, json=envelope(pois=pois))),
+    )
+
+    result = await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
+
+    assert tuple(poi.poi_id for poi in result.pois) == ("B0SZ000001",)
+    await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_search_isolates_conflicting_duplicate_identity_and_keeps_others() -> None:
+    first = raw_poi()
+    conflict = raw_poi(name="冲突核心名称")
+    valid = raw_poi(poi_id="B0SZ000002", name="其他合法候选")
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(
+            lambda request: httpx.Response(
+                200,
+                json=envelope(pois=[first, valid, conflict]),
+            )
+        ),
+    )
+
+    result = await provider.search_poi(SearchPoiRequest(query="地点", city=SHENZHEN))
+
+    assert tuple(poi.poi_id for poi in result.pois) == ("B0SZ000002",)
+    await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_search_rejects_only_conflicting_duplicate_identity() -> None:
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(
+            lambda request: httpx.Response(
+                200,
+                json=envelope(pois=[raw_poi(), raw_poi(name="冲突核心名称")]),
+            )
+        ),
     )
 
     with pytest.raises(MapProviderError) as exc_info:
@@ -1199,8 +1245,6 @@ async def test_non_json_empty_json_and_wrong_field_types_are_invalid(
     [
         lambda poi: poi.pop("id"),
         lambda poi: poi.update(name=[]),
-        lambda poi: poi.update(address=""),
-        lambda poi: poi.update(address=[]),
         lambda poi: poi.update(location="22.54,114.05,extra"),
         lambda poi: poi.update(location="NaN,22.54"),
         lambda poi: poi.update(location="181,22.54"),
@@ -1208,7 +1252,6 @@ async def test_non_json_empty_json_and_wrong_field_types_are_invalid(
         lambda poi: poi.update(pname="not-guangdong"),
         lambda poi: poi.update(cityname="广州市"),
         lambda poi: poi.update(citycode="020"),
-        lambda poi: poi.update(typecode="damaged"),
     ],
 )
 @pytest.mark.asyncio

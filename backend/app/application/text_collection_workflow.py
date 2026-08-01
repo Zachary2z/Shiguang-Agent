@@ -19,6 +19,7 @@ from app.application.image_recognition import (
 )
 from app.application.input_contracts import CollectionInput, ImageInput, TextInput, UrlInput
 from app.application.place_matching import PlaceMatchingService
+from app.application.place_targets import PlaceTargetSelectionService
 from app.application.pricing import PricingPolicy
 from app.application.run_tracking import (
     AgentRunService,
@@ -40,6 +41,7 @@ from app.domain.collections import (
     MessageContentType,
     MessageRole,
     PlaceCandidate,
+    PlanCity,
     ResourceNotFoundError,
     Source,
     SourceMetadata,
@@ -47,11 +49,13 @@ from app.domain.collections import (
     SourceType,
 )
 from app.domain.collections.writes import validate_idempotency_key
+from app.domain.places import CityScope, PlaceMatchResult, inspect_amap_official_link
 from app.domain.runs import AgentRunCreate, AgentRunStatus
 from app.domain.time import utc_now
-from app.domain.web import WebFetchFailure, WebPageContent
+from app.domain.web import WebFetchFailure, WebFetchFailureCode, WebPageContent
 from app.domain.web.security import UrlPolicyError, validate_web_url
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
+from app.providers.map import MapProviderError
 from app.providers.storage import PrivateFileMetadata, StorageProvider, StorageProviderError
 from app.providers.web import WebContentProvider
 from nanobot_core.providers import ModelProvider, ProviderError, StructuredOutputMode
@@ -728,6 +732,50 @@ class TextCollectionWorkflow:
         input: UrlInput,
         observer: ApplicationRunObserver,
     ) -> _OperationResult:
+        official_link = inspect_amap_official_link(input.url)
+        if official_link.is_official:
+            await observer.set_stage("place_recognition")
+            if official_link.poi_id is None or self._place_matching is None:
+                return await self._official_amap_link_failure(
+                    user_id=user_id,
+                    source_id=source_id,
+                    input=input,
+                    code=(
+                        WebFetchFailureCode.CONTENT_UNREADABLE.value
+                        if official_link.poi_id is None
+                        else "MAP_PROVIDER_NOT_CONFIGURED"
+                    ),
+                )
+            place_matching = self._place_matching
+            fingerprint = self._input_fingerprint(input)
+            try:
+                match_result = await observer.run_tool(
+                    tool_name="map_poi_get",
+                    arguments_fingerprint=fingerprint,
+                    input_summary='{"input_type":"official_amap_url"}',
+                    operation=lambda: place_matching.match_official_amap_link(
+                        input.url,
+                        city=CityScope(city_code=PlanCity.SHENZHEN.value),
+                    ),
+                    summarize=self._summarize_official_amap_match,
+                )
+            except asyncio.CancelledError:
+                raise
+            except MapProviderError as exc:
+                return await self._official_amap_link_failure(
+                    user_id=user_id,
+                    source_id=source_id,
+                    input=input,
+                    code=exc.code.value,
+                )
+            return await self._save_official_amap_match(
+                user_id=user_id,
+                idempotency_key=idempotency_key,
+                source_id=source_id,
+                input=input,
+                match_result=match_result,
+            )
+
         if self._web_provider is None:
             raise ApplicationRunFailureError(error_code="WEB_PROVIDER_NOT_CONFIGURED")
         web_provider = self._web_provider
@@ -817,6 +865,86 @@ class TextCollectionWorkflow:
             extraction=extraction,
             saved=saved,
             recovery_actions=recovery_actions,
+        )
+
+    async def _official_amap_link_failure(
+        self,
+        *,
+        user_id: str,
+        source_id: str,
+        input: UrlInput,
+        code: str,
+    ) -> _OperationResult:
+        timestamp = self._now()
+        recovery_actions = (_RECOVERY_SUPPLY_TEXT, _RECOVERY_SEND_SCREENSHOT)
+        source = Source(
+            id=source_id,
+            user_id=user_id,
+            type=SourceType.URL,
+            url=input.url,
+            parse_status=SourceParseStatus.FAILED,
+            metadata=SourceMetadata(
+                failure_code=code,
+                workflow_recovery_actions=recovery_actions,
+            ),
+            created_at=timestamp,
+            updated_at=timestamp,
+        )
+        await self._persist_source(source)
+        return _OperationResult(
+            source=source,
+            extraction=None,
+            saved=AutoSaveResult(source_id=source.id),
+            recovery_actions=recovery_actions,
+            error_code=code,
+        )
+
+    async def _save_official_amap_match(
+        self,
+        *,
+        user_id: str,
+        idempotency_key: str,
+        source_id: str,
+        input: UrlInput,
+        match_result: PlaceMatchResult,
+    ) -> _OperationResult:
+        candidate = match_result.candidates[0]
+        extraction = ExtractionResult.with_candidates(
+            (
+                PlaceCandidate(
+                    title=candidate.name,
+                    city_hint=PlanCity.SHENZHEN.value,
+                    district=candidate.district,
+                    address=candidate.address,
+                    business_district=candidate.business_area,
+                ),
+            )
+        )
+        timestamp = self._now()
+        source = self._with_extraction_summary(
+            Source(
+                id=source_id,
+                user_id=user_id,
+                type=SourceType.URL,
+                url=input.url,
+                parse_status=SourceParseStatus.PARSED,
+                created_at=timestamp,
+                updated_at=timestamp,
+            ),
+            extraction=extraction,
+            recovery_actions=(),
+        )
+        saved = await self._save_extraction(
+            user_id=user_id,
+            idempotency_key=idempotency_key,
+            source=source,
+            extraction=extraction,
+            direct_match_result=match_result,
+        )
+        return _OperationResult(
+            source=source,
+            extraction=extraction,
+            saved=saved,
         )
 
     async def _process_image(
@@ -967,6 +1095,7 @@ class TextCollectionWorkflow:
         idempotency_key: str,
         source: Source,
         extraction: ExtractionResult,
+        direct_match_result: PlaceMatchResult | None = None,
     ) -> AutoSaveResult:
         if extraction.outcome is not ExtractionOutcome.CANDIDATES:
             await self._persist_source(source)
@@ -980,8 +1109,23 @@ class TextCollectionWorkflow:
             idempotency_key=idempotency_key,
             source=source,
             extraction_result=extraction,
-            place_matching=self._place_matching,
+            place_matching=(None if direct_match_result is not None else self._place_matching),
         )
+        if direct_match_result is not None and not saved.replayed:
+            target_service = PlaceTargetSelectionService(session=self._session)
+            resolved = []
+            for item in saved.items:
+                resolved.append(
+                    await target_service.record_candidates(
+                        user_id=user_id,
+                        collection_item_id=item.id,
+                        source_id=source.id,
+                        match_result=direct_match_result,
+                        queried_at=self._now(),
+                        expected_version=item.version,
+                    )
+                )
+            return saved.model_copy(update={"items": tuple(resolved)})
         return saved
 
     async def _persist_source(self, source: Source) -> Source:
@@ -1296,6 +1440,17 @@ class TextCollectionWorkflow:
         return ApplicationToolOutcome(
             succeeded=True,
             output_summary='{"outcome":"success","source_count":1}',
+        )
+
+    @staticmethod
+    def _summarize_official_amap_match(
+        result: PlaceMatchResult,
+    ) -> ApplicationToolOutcome:
+        return ApplicationToolOutcome(
+            succeeded=True,
+            output_summary=(
+                f'{{"candidate_count":{len(result.candidates)},"outcome":"success"}}'
+            ),
         )
 
     @staticmethod

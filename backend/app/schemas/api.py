@@ -825,7 +825,7 @@ class PlaceCandidateResponse(ApiModel):
     city_code: str
     district: str | None
     business_area: str | None
-    address: str
+    address: str | None
     poi_type: PoiType
     matching_clues: tuple[str, ...]
 

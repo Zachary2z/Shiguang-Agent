@@ -19,6 +19,7 @@ from app.domain.places.contracts import (
     WeatherRequest,
     WeatherResult,
 )
+from app.domain.places.links import AmapOfficialLink, inspect_amap_official_link
 from app.domain.places.matching import (
     MAX_PLACE_MATCH_CANDIDATES,
     EvidenceField,
@@ -92,6 +93,8 @@ __all__ = [
     "resolve_city_hint",
     "score_place_candidate",
     "validate_place_selection",
+    "AmapOfficialLink",
+    "inspect_amap_official_link",
     "BrandIdentityConfirmationSource",
     "ConfirmedBrandIdentity",
     "PlaceCandidateSnapshot",

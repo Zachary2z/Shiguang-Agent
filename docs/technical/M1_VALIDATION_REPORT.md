@@ -1,5 +1,66 @@
 # M1-Gate 核心闭环验收报告
 
+## 2026-08-02 M1 稳定化修复 1：地点就绪与候选处理
+
+**结论：通过。本次是 M1 关闭后的定点稳定化，不重开 M1，也不开始 M2-0。** 修复
+精确基于 `e1e9e5a32c20f711cc65836a1706c2d80b62358c`，范围只覆盖地点事实、候选隔离、
+匹配证据、收藏就绪状态、Extraction 可选字段和高德官方公开地点链接。
+
+### 最终契约
+
+- 硬事实：`provider`、`poi_id`、`name`、`city_code`、合法 coordinate 及显式坐标系。
+  任一非法只隔离该候选。
+- 软事实：`address`、`district`、`business_area`、`branch_name`、`phone`、
+  `opening_hours_summary`、typecode 映射以及商圈/地标/地铁等补充信息。缺失或畸形
+  归一化为 `null`，未知/非法 typecode 归 `PoiType.OTHER`。
+- 唯一高置信结果自动确认并进入 `ACTIVE`；一个或多个合法非自动候选进入
+  `PENDING_SELECTION`；没有可展示候选才进入 `PENDING_DETAILS`。候选最多 3 个，
+  Provider rank 只参与确定性排序，不作为正确性证明，自动阈值未修改。
+- 可选证据缺失为中性；证据按 `EvidenceField` 唯一关联并确定性排序，不依赖调用方
+  顺序。名称核心冲突、城市边界冲突及同一 Provider identity 的核心事实冲突继续硬
+  阻断；区县、地址、商圈、分店和电话冲突只影响评分。用户可选择安全的低置信候选，
+  但自动确认仍必须是高置信。
+- 已确认 POI 只要保有硬事实即可保持 `ACTIVE` 并进入结构化规划检索。临时
+  `TIMEOUT` / `UNAVAILABLE` / `RATE_LIMITED` 重新匹配失败时恢复原可信 target；
+  不复制状态机或匹配实现。
+
+### Provider、Extraction 与官方链接边界
+
+高德搜索继续严格校验鉴权/限流/超时 envelope、城市范围和坐标。单个候选的软字段
+异常不影响其他候选；相同 identity 与相同核心事实保留首个，核心事实冲突则隔离该
+identity，其他合法候选保持原顺序；全部核心无效才映射 `INVALID_RESPONSE`。
+
+Extraction 删除了“所有缺失可选字段必须枚举”的旧校验和自动补全路径；模型可直接
+省略城市、区县、地址、商圈、地标、地铁、价格和标签。显式 missing/uncertainty 的
+唯一、互斥、与现值不冲突规则不变，title 和 Event 原有时间契约不变，repair 次数未
+增加，也没有关键词或样本白名单。
+
+官方链接只允许 `www.amap.com`、`ditu.amap.com`、`uri.amap.com`、
+`surl.amap.com` 的 HTTP(S) 精确 host。可靠 `/place/{poi_id}` 或 marker `poiid`
+通过既有 `PlaceMatchingService` 调用唯一 `MapProvider.get_poi`；无 identity 的官方
+短链直接可恢复失败，不启动网页抓取、不跟任意跳转、不猜地点。非官方/伪造 host、
+内网地址、自定义协议、凭据和 URL 密钥均被既有输入与 SSRF 边界拒绝或留在普通 URL
+路径；未新增 HTTP Client、网页抓取器、Provider 或日志敏感字段。
+
+### 离线验证与架构复核
+
+- editable 安装成功，`pip check`、Ruff、strict mypy（141 个源文件）通过。
+- 指定单元聚焦组 `294 passed`；指定集成/应用/合同组 `161 passed`。
+- `APP_ENV=test RUN_REAL_MODEL_TESTS=0 RUN_REAL_MAP_TESTS=0` 的非真实全集为
+  `1739 passed, 16 skipped, 2 deselected`，无 warning。
+- 仓库外 `/tmp` pytest 插件同时封锁 `socket.getaddrinfo`、`socket.socket.connect`、
+  `connect_ex`、`socket.create_connection` 后，地点、统一输入和收藏聚焦组
+  `489 passed`。
+- 后端 DTO 地址可空引起的前端最小契约同步已通过 lint、typecheck、相关 Vitest
+  `44 passed` 和 Playwright `21 passed`。
+- Alembic 唯一 head 为 `20260729_0017`，没有新增迁移。生产定义复核仍各只有一个
+  `MapProvider`、`AmapMapProvider`、`PlaceMatchingService`、
+  `PlaceTargetSelectionService`、`CollectionWriteService` 和 `TextCollectionWorkflow`；
+  地点事实、评分、候选分类和状态映射各只有一个正式实现。
+
+本窗口未读取 `.env`，真实模型、高德、网页和其他外部/付费 API 调用为 0；没有合并、
+推送、发布或部署，也没有实现稳定化修复 2–5 或任何 M2 功能。
+
 ## 2026-08-01 M1-Gate 最终主控复验与关闭结论
 
 **结论：通过。M1-Gate 已完成，M1 正式关闭，当前允许开始 M2-0。** 最终代码候选

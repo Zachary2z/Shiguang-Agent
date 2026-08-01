@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from pydantic import ValidationError
 
+from app.application.input_contracts import UrlInput
 from app.application.text_collection_workflow import (
     IdempotencyLockRegistry,
     _IdempotencyLockEntry,
 )
+from app.domain.places import inspect_amap_official_link
 
 
 class _CoordinatedCleanupRegistry(IdempotencyLockRegistry):
@@ -26,6 +29,33 @@ class _CoordinatedCleanupRegistry(IdempotencyLockRegistry):
         self.cleanup_started.set()
         await self.allow_cleanup.wait()
         await super()._leave(key, entry)
+
+
+@pytest.mark.parametrize(
+    ("url", "official", "poi_id"),
+    [
+        ("https://www.amap.com/place/B0SZ000001", True, "B0SZ000001"),
+        ("http://ditu.amap.com/place/B0SZ000001", True, "B0SZ000001"),
+        ("https://uri.amap.com/marker?poiid=B0SZ000001", True, "B0SZ000001"),
+        ("https://surl.amap.com/abc123", True, None),
+        ("https://amap.com.evil.example/place/B0SZ000001", False, None),
+        ("http://127.0.0.1/place/B0SZ000001", False, None),
+    ],
+)
+def test_official_amap_link_boundary_is_exact_and_never_guesses(
+    url: str,
+    official: bool,
+    poi_id: str | None,
+) -> None:
+    inspected = inspect_amap_official_link(url)
+
+    assert inspected.is_official is official
+    assert inspected.poi_id == poi_id
+
+
+def test_official_amap_link_rejects_url_credentials_before_persistence() -> None:
+    with pytest.raises(ValidationError, match="cannot contain credentials"):
+        UrlInput(url="https://www.amap.com/place/B0SZ000001?key=must-not-persist")
 
 
 @pytest.mark.asyncio

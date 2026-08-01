@@ -219,8 +219,8 @@ class AmapMapProvider(MapProvider):
                 mapped_pois.append(poi)
             if raw_pois and not mapped_pois:
                 raise _InvalidAmapResponse
-            pois = tuple(mapped_pois)
-            if len({(poi.provider, poi.poi_id) for poi in pois}) != len(pois):
+            pois = _deduplicate_search_pois(mapped_pois)
+            if raw_pois and not pois:
                 raise _InvalidAmapResponse
             result = PoiSearchResult(city_code=city.city_code, pois=pois)
         except (_InvalidAmapResponse, ValidationError, TypeError, ValueError):
@@ -568,7 +568,7 @@ def _optional_text(container: Mapping[str, object], key: str) -> str | None:
     if isinstance(value, list) and not value:
         return None
     if not isinstance(value, str):
-        raise _InvalidAmapResponse
+        return None
     normalized = " ".join(value.split())
     return normalized or None
 
@@ -612,16 +612,16 @@ def _map_poi(value: object, *, city: _AmapCity) -> Poi:
     assert latitude is not None
     if not isfinite(longitude) or not isfinite(latitude):
         raise _InvalidAmapResponse
-    typecode = _required_text(item, "typecode")
+    typecode = _optional_text(item, "typecode")
     return Poi(
         provider=PoiProvider.AMAP,
         poi_id=_required_text(item, "id"),
         name=_required_text(item, "name"),
         branch_name=None,
         city_code=city.city_code,
-        district=_required_text(item, "adname"),
+        district=_optional_text(item, "adname"),
         business_area=_optional_text(item, "business_area"),
-        address=_required_text(item, "address"),
+        address=_optional_text(item, "address"),
         coordinate=Coordinate(
             latitude=latitude,
             longitude=longitude,
@@ -633,13 +633,44 @@ def _map_poi(value: object, *, city: _AmapCity) -> Poi:
     )
 
 
-def _map_poi_type(typecode: str) -> PoiType:
-    if len(typecode) != 6 or not typecode.isascii() or not typecode.isdigit():
-        raise _InvalidAmapResponse
+def _map_poi_type(typecode: str | None) -> PoiType:
+    if (
+        typecode is None
+        or len(typecode) != 6
+        or not typecode.isascii()
+        or not typecode.isdigit()
+    ):
+        return PoiType.OTHER
     for prefix, poi_type in _POI_TYPE_PREFIXES:
         if typecode.startswith(prefix):
             return poi_type
     return PoiType.OTHER
+
+
+def _deduplicate_search_pois(pois: list[Poi]) -> tuple[Poi, ...]:
+    """Keep identical identities once and isolate identities with conflicting core facts."""
+
+    grouped: dict[tuple[PoiProvider, str], list[Poi]] = {}
+    for poi in pois:
+        grouped.setdefault((poi.provider, poi.poi_id), []).append(poi)
+
+    accepted: list[Poi] = []
+    for identity_pois in grouped.values():
+        first = identity_pois[0]
+        first_core = _poi_core_facts(first)
+        if all(_poi_core_facts(item) == first_core for item in identity_pois[1:]):
+            accepted.append(first)
+    return tuple(accepted)
+
+
+def _poi_core_facts(poi: Poi) -> tuple[object, ...]:
+    return (
+        poi.provider,
+        poi.poi_id,
+        poi.name,
+        poi.city_code,
+        poi.coordinate,
+    )
 
 
 def _non_negative_integer(container: Mapping[str, object], key: str) -> int:

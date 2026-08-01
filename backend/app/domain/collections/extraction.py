@@ -171,8 +171,6 @@ class _CandidateBase(ExtractionDomainModel):
         for field, is_present in present_fields.items():
             if is_present and field in missing:
                 raise _semantic_error("present_field_marked_missing")
-            if not is_present and field not in missing and field not in uncertain_fields:
-                raise _semantic_error("absent_field_not_classified")
         return self
 
 

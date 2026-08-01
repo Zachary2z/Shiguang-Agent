@@ -217,7 +217,7 @@ class PlaceMatchCandidate(PlaceMatchingContract):
     branch_name: str | None = Field(default=None, max_length=160)
     district: str | None = Field(default=None, max_length=100)
     business_area: str | None = Field(default=None, max_length=100)
-    address: str = Field(min_length=1, max_length=500)
+    address: str | None = Field(default=None, max_length=500)
     poi_type: PoiType
     opening_hours_summary: str | None = Field(default=None, max_length=240)
     provider_rank: int = Field(ge=1)
@@ -233,12 +233,19 @@ class PlaceMatchCandidate(PlaceMatchingContract):
             raise ValueError("score must be finite")
         return round(value, 3)
 
-    @model_validator(mode="after")
-    def validate_evidence(self) -> Self:
-        fields = tuple(item.field for item in self.evidence)
-        if fields != tuple(EvidenceField):
-            raise ValueError("candidate evidence must cover every field in stable order")
-        return self
+    @field_validator("evidence")
+    @classmethod
+    def normalize_evidence(
+        cls,
+        value: tuple[MatchEvidence, ...],
+    ) -> tuple[MatchEvidence, ...]:
+        fields = tuple(item.field for item in value)
+        if len(set(fields)) != len(fields):
+            raise ValueError("candidate evidence fields must be unique")
+        if not {EvidenceField.NAME, EvidenceField.CITY}.issubset(fields):
+            raise ValueError("candidate evidence must retain core identity fields")
+        order = {field: index for index, field in enumerate(EvidenceField)}
+        return tuple(sorted(value, key=lambda item: order[item.field]))
 
     @property
     def identity(self) -> tuple[PoiProvider, str]:
@@ -543,7 +550,6 @@ def _branch_evidence(
             outcome=EvidenceOutcome.CONFLICT,
             reason=EvidenceReason.BRANCH_CONFLICT,
             score_delta=-weight,
-            hard_conflict=True,
         )
     return MatchEvidence(
         field=EvidenceField.BRANCH_NAME,
@@ -586,7 +592,6 @@ def _phone_evidence(*, poi: Poi, context: str, weight: float) -> MatchEvidence:
             EvidenceReason.PHONE_CORROBORATED if matches else EvidenceReason.PHONE_CONFLICT
         ),
         score_delta=weight if matches else -weight,
-        hard_conflict=not matches,
     )
 
 
@@ -698,6 +703,7 @@ def score_place_candidate(
             provider=provider_name,
             weight=weights.name,
             partial_factor=policy.partial_match_factor,
+            hard_conflict=True,
         ),
         _branch_evidence(
             candidate=candidate,
@@ -731,7 +737,6 @@ def score_place_candidate(
             provider=poi.district,
             weight=weights.district,
             partial_factor=policy.partial_match_factor,
-            hard_conflict=True,
         ),
         _weighted_evidence(
             field=EvidenceField.BUSINESS_AREA,
@@ -819,7 +824,7 @@ def classify_place_matches(
     reasonable = tuple(
         candidate
         for candidate in ordered
-        if candidate.score >= policy.candidate_score and not candidate.has_hard_conflict
+        if not candidate.has_hard_conflict
     )
     selected = tuple(
         candidate.model_copy(update={"rank": index}, deep=True)
@@ -832,7 +837,7 @@ def classify_place_matches(
 
     top = selected[0]
     competitor_scores = tuple(
-        candidate.score for candidate in ordered if candidate.identity != top.identity
+        candidate.score for candidate in reasonable if candidate.identity != top.identity
     )
     gap = top.score - max(competitor_scores) if competitor_scores else 100.0
     if (

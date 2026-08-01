@@ -5,9 +5,40 @@
 | 当前总阶段 | M2 微信 ClawBot 完整 MVP |
 | 当前子阶段 | M2-0 ClawBot 技术 Spike |
 | 状态 | M1-Gate 已完成；M1 正式关闭；M2-0 当前允许开始但尚未开始。 |
-| 当前分支 | main |
-| 最近更新 | 2026-08-01 |
+| 当前分支 | codex/m1-place-readiness-convergence |
+| 最近更新 | 2026-08-02 |
 | 阻塞项 | 无 P0/P1；M2-0 尚未开始 |
+
+## 2026-08-02 M1 稳定化修复 1：地点识别与收藏就绪状态收敛
+
+- 基于 `e1e9e5a32c20f711cc65836a1706c2d80b62358c` 完成地点就绪收敛；M1 的关闭结论
+  不变，M2-0 仍只是允许开始、尚未开始。本轮没有迁移，也没有实现 Event 时间、收藏
+  字段失效关系、计划价格/天气/路线/版本、图片/SSE/日期控件等后续稳定化修复。
+- 地点硬事实统一为 `provider + poi_id + name + city_code + 合法坐标及坐标系`；地址、
+  区县、商圈、分店名、电话、营业时间和 typecode 映射均为软事实。软事实缺失或畸形
+  归一化为 `null` / `PoiType.OTHER`，不再否定合法 POI。高德搜索逐候选隔离，重复
+  identity 的相同核心事实确定性去重，核心事实冲突只隔离该 identity；只有全部候选
+  核心无效时才返回 `MAP_PROVIDER_INVALID_RESPONSE`。
+- 唯一高置信匹配仍使用原阈值并自动绑定 `PlaceTarget`、进入 `ACTIVE`；任何合法但不能
+  自动确认的一个或多个候选进入 `PENDING_SELECTION`，最多展示 3 个；零候选进入
+  `PENDING_DETAILS`。可选证据缺失保持中性，证据按 `EvidenceField` 唯一并确定性排序；
+  名称核心冲突、城市边界冲突和 Provider identity 核心事实冲突仍为硬否决。临时地图
+  Provider 失败会恢复已有可信 target，不把已确认地点降级。
+- Extraction 不再要求模型枚举每个缺失的城市、区县、地址、商圈、地标、地铁、价格
+  和标签；缺失可选字段直接保持 `null` / 空集合。已声明的 missing/uncertainty 仍需
+  唯一、互斥且不得与现有值矛盾；Event 既有时间契约和最多一次 repair 保持不变。
+- 统一 URL 输入在唯一安全 URL / Web / Map Provider 边界内识别明确允许的高德官方
+  host。只有 `/place/{poi_id}` 或 `uri.amap.com/marker?poiid=...` 的可靠 identity
+  才调用既有 `get_poi`；无 identity、短链或任意跳转不抓取、不猜测并返回可恢复失败。
+  非官方 host、内网目标、自定义协议和 URL 密钥不进入官方链接路径，未新增 HTTP
+  Client、网页抓取器或地图 Provider。
+- 验证通过：editable 安装、`pip check`、Ruff、strict mypy（141 个源文件）；两组
+  指定聚焦测试分别为 `294 passed`、`161 passed`；非真实 Provider/Map 全集为
+  `1739 passed, 16 skipped, 2 deselected`，无 warning；仓库外 `/tmp` 插件封锁
+  DNS 与四个 socket 连接入口后，地点、统一输入和收藏聚焦测试为 `489 passed`。
+  前端 lint、typecheck、相关 Vitest `44 passed`、相关 Playwright `21 passed`。
+- Alembic 唯一 head 保持 `20260729_0017`。本轮未读取 `.env`，真实模型、高德、网页
+  和付费 API 调用为 0；未合并、未推送、未发布或部署。
 
 ## 2026-08-01 M1-Gate 最终主控复验与收口
 

@@ -249,11 +249,23 @@ def test_city_hint_is_trimmed_bounded_and_not_a_plan_city_enum() -> None:
         _full_place(city_hint=1)
 
 
-def test_absent_city_hint_must_be_missing_or_uncertain_and_present_hint_is_not_missing() -> None:
+def test_absent_optional_fields_need_not_be_enumerated() -> None:
     payload = _full_place().model_dump()
-    payload["city_hint"] = None
-    with pytest.raises(ValidationError, match="absent_field_not_classified"):
-        PlaceCandidate.model_validate(payload)
+    payload.update(
+        city_hint=None,
+        district=None,
+        address=None,
+        business_district=None,
+        landmark=None,
+        metro_station=None,
+        price_amount=None,
+        price_currency=None,
+        tags=(),
+        missing_fields=(),
+    )
+    candidate = PlaceCandidate.model_validate(payload)
+    assert candidate.title == _full_place().title
+    assert candidate.missing_fields == ()
 
     payload = _full_place().model_dump()
     payload["missing_fields"] = (CandidateField.CITY_HINT,)
@@ -366,10 +378,6 @@ def test_candidate_semantic_errors_have_stable_value_free_types() -> None:
     payload = _full_place().model_dump()
     payload["missing_fields"] = (CandidateField.CITY_HINT,)
     assert _first_error_type(PlaceCandidate, payload) == "present_field_marked_missing"
-
-    payload = _full_place().model_dump()
-    payload["city_hint"] = None
-    assert _first_error_type(PlaceCandidate, payload) == "absent_field_not_classified"
 
     payload = _full_place().model_dump()
     payload["missing_fields"] = (CandidateField.EVENT_START_AT,)

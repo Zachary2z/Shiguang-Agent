@@ -14,6 +14,8 @@ from app.domain.places import (
     CityScope,
     Coordinate,
     CoordinateSystem,
+    GetPoiRequest,
+    GetPoiResult,
     MatchStatus,
     PlaceMatchRequest,
     PoiSearchResult,
@@ -105,6 +107,45 @@ async def test_service_returns_unique_high_confidence_match() -> None:
     assert result.candidates[0].poi_id == "sz_mocaup"
     assert result.candidates[0].city_code == "shenzhen"
     assert result.candidates[0].coordinate.coordinate_system is CoordinateSystem.GCJ_02
+
+
+@pytest.mark.asyncio
+async def test_official_amap_link_resolves_exact_identity_without_search() -> None:
+    request = GetPoiRequest(poi_id=SHENZHEN_MOCAUP.poi_id, city=SHENZHEN)
+    calls: list[object] = []
+
+    async def record_call(value: object) -> None:
+        calls.append(value)
+
+    provider = StubMapProvider(
+        poi_results={request: GetPoiResult(poi=SHENZHEN_MOCAUP)},
+        call_hook=record_call,  # type: ignore[arg-type]
+    )
+
+    result = await _service(provider).match_official_amap_link(
+        f"https://www.amap.com/place/{SHENZHEN_MOCAUP.poi_id}",
+        city=SHENZHEN,
+    )
+
+    assert result.status is MatchStatus.MATCHED
+    assert tuple(candidate.poi_id for candidate in result.candidates) == (
+        SHENZHEN_MOCAUP.poi_id,
+    )
+    assert calls == [request]
+
+
+@pytest.mark.asyncio
+async def test_official_amap_link_propagates_get_poi_cancellation() -> None:
+    async def cancel(_: object) -> None:
+        raise asyncio.CancelledError("cancel official POI resolution")
+
+    provider = StubMapProvider(call_hook=cancel)  # type: ignore[arg-type]
+
+    with pytest.raises(asyncio.CancelledError, match="cancel official"):
+        await _service(provider).match_official_amap_link(
+            "https://www.amap.com/place/B0SZ000001",
+            city=SHENZHEN,
+        )
 
 
 @pytest.mark.asyncio

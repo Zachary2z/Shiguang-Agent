@@ -105,13 +105,13 @@ class Poi(PlaceContract):
     city_code: _CityCode
     district: str | None = Field(default=None, max_length=100)
     business_area: str | None = Field(default=None, max_length=100)
-    address: str = Field(min_length=1, max_length=500)
+    address: str | None = Field(default=None, max_length=500)
     coordinate: Coordinate
     poi_type: PoiType
     phone: str | None = Field(default=None, max_length=64, repr=False)
     opening_hours_summary: str | None = Field(default=None, max_length=240)
 
-    @field_validator("poi_id", "name", "address")
+    @field_validator("poi_id", "name")
     @classmethod
     def normalize_required_text(cls, value: str) -> str:
         return _required_text(value, field_name="POI text")
@@ -120,6 +120,7 @@ class Poi(PlaceContract):
         "branch_name",
         "district",
         "business_area",
+        "address",
         "phone",
         "opening_hours_summary",
     )

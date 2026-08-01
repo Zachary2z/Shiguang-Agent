@@ -173,8 +173,11 @@ class PlaceTarget(PlaceTargetContract):
                 raise ValueError("exact targets require GCJ-02 coordinates")
             if self.match_status is not MatchStatus.MATCHED or self.confidence is None:
                 raise ValueError("exact targets require a matched status and confidence")
-            if self.confidence is MatchConfidence.LOW:
-                raise ValueError("low-confidence candidates cannot become exact targets")
+            if (
+                self.confirmed_by is PlaceConfirmationSource.AUTO_UNIQUE_MATCH
+                and self.confidence is not MatchConfidence.HIGH
+            ):
+                raise ValueError("automatic exact targets require high confidence")
             if not self.evidence_summary:
                 raise ValueError("exact targets require a matching evidence summary")
         else:
@@ -292,8 +295,6 @@ def exact_target_from_candidate(
 
     if candidate.has_hard_conflict:
         raise ValueError("hard-conflict candidates cannot become exact targets")
-    if candidate.confidence is MatchConfidence.LOW:
-        raise ValueError("low-confidence candidates cannot become exact targets")
     poi = Poi(
         provider=candidate.provider,
         poi_id=candidate.poi_id,
@@ -305,6 +306,7 @@ def exact_target_from_candidate(
         address=candidate.address,
         coordinate=candidate.coordinate.model_copy(deep=True),
         poi_type=candidate.poi_type,
+        opening_hours_summary=candidate.opening_hours_summary,
     )
     return PlaceTarget(
         scope=PlaceScope.EXACT,

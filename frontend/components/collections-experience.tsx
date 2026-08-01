@@ -75,7 +75,7 @@ type PlaceCandidate = {
   city_code: string;
   district: string | null;
   business_area: string | null;
-  address: string;
+  address: string | null;
   poi_type: string;
   matching_clues: string[];
 };

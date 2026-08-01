@@ -18,6 +18,7 @@ from app.domain.collections import (
     CandidateField,
     CollectionDataIntegrityError,
     CollectionItem,
+    CollectionItemPatch,
     CollectionKind,
     CollectionStatus,
     ExtractionResult,
@@ -60,10 +61,17 @@ from app.domain.places import (
 )
 from app.infrastructure.db import Database
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
+from app.providers import MapProviderError, MapProviderErrorCode
 from tests.fixtures.place_matching import M_STAND_COASTAL, M_STAND_MIXC
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 NOW = datetime(2026, 7, 22, 5, 0, tzinfo=UTC)
+
+
+class _UnavailablePlaceMatching:
+    async def match(self, request: object) -> object:
+        del request
+        raise MapProviderError(code=MapProviderErrorCode.UNAVAILABLE)
 
 
 @pytest.fixture
@@ -401,7 +409,52 @@ async def test_unique_high_confidence_match_atomically_becomes_active_exact(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("invalid_kind", ["multiple", "medium", "hard_conflict"])
+async def test_temporary_provider_failure_preserves_existing_trusted_target(
+    target_database: tuple[str, Path],
+) -> None:
+    database_url, _ = target_database
+    database = Database(database_url)
+    user, source, item = await _seed_pending(database)
+    active = await _record_result(database, user, source, item, _unique_match_result())
+    original_target = active.place_target
+
+    async with database.session() as session:
+        stored = await CollectionWriteService(session=session, now=lambda: NOW).patch(
+            user_id=user.id,
+            collection_item_id=active.id,
+            expected_version=active.version,
+            patch=CollectionItemPatch(title="修改后的地点线索"),
+            place_matching=_UnavailablePlaceMatching(),  # type: ignore[arg-type]
+        )
+
+    assert stored.status is CollectionStatus.ACTIVE
+    assert stored.place_target == original_target
+    assert stored.title == "修改后的地点线索"
+
+
+@pytest.mark.asyncio
+async def test_unique_high_match_ignores_lower_supporting_candidates_for_auto_binding(
+    target_database: tuple[str, Path],
+) -> None:
+    database_url, _ = target_database
+    database = Database(database_url)
+    user, source, item = await _seed_pending(database)
+    high = _unique_match_result().candidates[0]
+    result = PlaceMatchResult(
+        status=MatchStatus.MATCHED,
+        candidates=(high, _candidate(1)),
+    )
+
+    stored = await _record_result(database, user, source, item, result)
+
+    assert stored.status is CollectionStatus.ACTIVE
+    assert stored.place_target is not None
+    assert stored.place_target.poi is not None
+    assert stored.place_target.poi.poi_id == high.poi_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_kind", ["medium", "hard_conflict"])
 async def test_illegal_matched_results_are_rejected_without_writes(
     target_database: tuple[str, Path],
     invalid_kind: str,
@@ -410,12 +463,7 @@ async def test_illegal_matched_results_are_rejected_without_writes(
     database = Database(database_url)
     user, source, item = await _seed_pending(database)
     high = _unique_match_result().candidates[0]
-    if invalid_kind == "multiple":
-        second = _candidate(1).model_copy(
-            update={"confidence": MatchConfidence.HIGH, "score": 80.0}, deep=True
-        )
-        result = PlaceMatchResult(status=MatchStatus.MATCHED, candidates=(high, second))
-    elif invalid_kind == "medium":
+    if invalid_kind == "medium":
         result = PlaceMatchResult(
             status=MatchStatus.MATCHED,
             candidates=(_candidate(0),),
@@ -457,7 +505,7 @@ async def test_illegal_matched_results_are_rejected_without_writes(
         (MatchStatus.NOT_FOUND, False),
     ],
 )
-async def test_non_selectable_match_outcomes_enter_pending_details(
+async def test_candidate_presence_alone_controls_selection_vs_detail_readiness(
     target_database: tuple[str, Path],
     status: MatchStatus,
     with_candidate: bool,
@@ -475,7 +523,11 @@ async def test_non_selectable_match_outcomes_enter_pending_details(
         PlaceMatchResult(status=status, candidates=candidates),
     )
 
-    assert stored.status is CollectionStatus.PENDING_DETAILS
+    assert stored.status is (
+        CollectionStatus.PENDING_SELECTION
+        if with_candidate
+        else CollectionStatus.PENDING_DETAILS
+    )
     assert stored.place_target is None
     assert stored.place_candidate_snapshot.result.status is status
 

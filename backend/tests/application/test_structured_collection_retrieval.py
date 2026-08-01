@@ -499,6 +499,32 @@ async def test_current_user_place_and_live_event_are_included_without_writes() -
 
 
 @pytest.mark.asyncio
+async def test_active_exact_place_with_only_core_poi_facts_is_planning_retrievable() -> None:
+    user_id = generate_user_id()
+    poi = Poi(
+        provider=PoiProvider.AMAP,
+        poi_id="poi_core_only",
+        name="核心事实地点",
+        city_code="shenzhen",
+        coordinate=SHENZHEN_COORDINATE,
+        poi_type=PoiType.OTHER,
+    )
+    place = _place(user_id, poi=poi)
+    service, _repository = _service([place])
+
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(area=None, origin=ORIGIN),
+        facts=PlanningFactSnapshot(pois=(_known_poi_facts(poi),)),
+        now=NOW,
+    )
+
+    assert tuple(decision.collection_item_ids for decision in result.included) == (
+        (place.id,),
+    )
+
+
+@pytest.mark.asyncio
 async def test_only_effective_confirmed_memory_scores_matching_candidates() -> None:
     user_id = generate_user_id()
     indoor_poi = _poi("poi_memory_indoor", name="室内艺术馆")

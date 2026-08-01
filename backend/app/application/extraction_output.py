@@ -11,8 +11,6 @@ from pydantic import ValidationError
 
 from app.domain.collections import (
     EVENT_TEMPORAL_FIELDS,
-    CandidateField,
-    CollectionKind,
     EventCandidate,
     ExtractionOutcome,
     ExtractionReasonCode,
@@ -32,22 +30,6 @@ from nanobot_core.providers import (
 MAX_MODEL_OUTPUT_CHARS: Final = 50_000
 _EXTRACTION_SCHEMA_NAME: Final = "shiguang_extraction_result"
 _EXTRACTION_RESULT_SCHEMA: Final = ExtractionResult.model_json_schema()
-_CANDIDATE_FIELD_VALUES: Final = frozenset(field.value for field in CandidateField)
-_CANDIDATE_MODELS_BY_KIND: Final[
-    dict[str, type[PlaceCandidate] | type[EventCandidate]]
-] = {
-    CollectionKind.PLACE.value: PlaceCandidate,
-    CollectionKind.EVENT.value: EventCandidate,
-}
-_CANDIDATE_FIELDS_BY_KIND: Final[dict[str, tuple[CandidateField, ...]]] = {
-    kind: tuple(
-        field
-        for field in CandidateField
-        if field is not CandidateField.TITLE
-        and (field is CandidateField.PRICE or field.value in model.model_fields)
-    )
-    for kind, model in _CANDIDATE_MODELS_BY_KIND.items()
-}
 EXTRACTION_SEMANTIC_RULES: Final = (
     "- Select exactly one outcome shape:\n"
     "  * candidates: one or more candidates; reason_code, unsupported_reason, "
@@ -60,8 +42,9 @@ EXTRACTION_SEMANTIC_RULES: Final = (
     "  * Never emit model_invalid_output; that outcome is reserved for the application.\n"
     "- For every candidate, missing_fields must be unique and uncertainties may contain "
     "at most one item per field. The two sets must not overlap.\n"
-    "- Leave unavailable candidate facts empty. The application records conservative "
-    "missing state after the model response; explicit uncertainty must remain explicit.\n"
+    "- Leave unavailable optional candidate facts empty. Do not enumerate every absent "
+    "optional fact as missing; explicit missing or uncertain classifications must remain "
+    "unique, non-overlapping, and consistent with present values.\n"
     "- Place candidates must not carry or classify Event date, exact-time, or time-clue "
     "semantics.\n"
     "- A destination the user wants to visit is a Place even when the user mentions a "
@@ -114,7 +97,6 @@ _REPAIR_GUIDANCE_BY_TYPE: Final = {
     "price_currency_unsupported": "Use CNY for a known local amount; do not convert currency.",
     "missing_and_uncertain_conflict": "Classify a field as missing or uncertain, never both.",
     "present_field_marked_missing": "Remove present fields from missing_fields.",
-    "absent_field_not_classified": "Classify each absent candidate field missing or uncertain.",
     "duplicate_missing_field": "List every missing field at most once.",
     "duplicate_uncertainty_field": "Give at most one uncertainty for each field.",
     "place_has_event_metadata": (
@@ -256,77 +238,28 @@ def _normalize_model_extraction_output(raw_result: object) -> object:
 def _normalize_model_candidate(candidate: object) -> object:
     if not isinstance(candidate, dict):
         return candidate
-
     normalized = default_cny_for_known_price(candidate)
-    classification = _valid_candidate_classification(normalized)
-    kind = normalized.get("kind")
-    applicable_fields = (
-        _CANDIDATE_FIELDS_BY_KIND.get(kind) if isinstance(kind, str) else None
-    )
-    if classification is None or applicable_fields is None:
+    if normalized.get("kind") != "event":
         return normalized
-
-    missing_fields, uncertain_fields = classification
+    missing = normalized.get("missing_fields", [])
+    uncertainties = normalized.get("uncertainties", [])
+    if not isinstance(missing, list) or not isinstance(uncertainties, list):
+        return normalized
+    uncertain_fields = {
+        item.get("field")
+        for item in uncertainties
+        if isinstance(item, dict) and isinstance(item.get("field"), str)
+    }
     additions = [
         field.value
-        for field in applicable_fields
-        if field.value not in missing_fields
+        for field in EVENT_TEMPORAL_FIELDS
+        if normalized.get(field.value) is None
+        and field.value not in missing
         and field.value not in uncertain_fields
-        and _candidate_field_is_empty(normalized, field)
     ]
     if additions:
-        normalized["missing_fields"] = [*missing_fields, *additions]
+        normalized["missing_fields"] = [*missing, *additions]
     return normalized
-
-
-def _valid_candidate_classification(
-    candidate: dict[str, object],
-) -> tuple[list[str], set[str]] | None:
-    raw_missing = candidate.get("missing_fields", [])
-    raw_uncertainties = candidate.get("uncertainties", [])
-    if not isinstance(raw_missing, list) or not isinstance(raw_uncertainties, list):
-        return None
-    if not all(isinstance(field, str) for field in raw_missing):
-        return None
-
-    missing_fields = list(raw_missing)
-    if (
-        any(field not in _CANDIDATE_FIELD_VALUES for field in missing_fields)
-        or len(set(missing_fields)) != len(missing_fields)
-    ):
-        return None
-
-    uncertain_fields: list[str] = []
-    for uncertainty in raw_uncertainties:
-        if (
-            not isinstance(uncertainty, dict)
-            or set(uncertainty) != {"field", "reason"}
-            or not isinstance(uncertainty.get("field"), str)
-            or not isinstance(uncertainty.get("reason"), str)
-        ):
-            return None
-        uncertain_fields.append(uncertainty["field"])
-    if (
-        any(field not in _CANDIDATE_FIELD_VALUES for field in uncertain_fields)
-        or len(set(uncertain_fields)) != len(uncertain_fields)
-        or set(missing_fields).intersection(uncertain_fields)
-    ):
-        return None
-    return missing_fields, set(uncertain_fields)
-
-
-def _candidate_field_is_empty(
-    candidate: dict[str, object],
-    field: CandidateField,
-) -> bool:
-    if field is CandidateField.PRICE:
-        return (
-            candidate.get("price_amount") is None
-            and candidate.get("price_currency") is None
-        )
-    if field is CandidateField.TAGS:
-        return candidate.get(field.value, []) == []
-    return candidate.get(field.value) is None
 
 
 def build_repair_messages(

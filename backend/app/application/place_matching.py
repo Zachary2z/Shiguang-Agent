@@ -4,13 +4,25 @@ from __future__ import annotations
 
 from app.domain.collections.extraction import PlaceCandidate
 from app.domain.places.contracts import (
+    CityScope,
     Coordinate,
     CoordinateSystem,
+    GetPoiRequest,
+    GetPoiResult,
     Poi,
+    PoiProvider,
     PoiSearchResult,
     SearchPoiRequest,
 )
+from app.domain.places.links import inspect_amap_official_link
 from app.domain.places.matching import (
+    EvidenceField,
+    EvidenceOutcome,
+    EvidenceReason,
+    MatchConfidence,
+    MatchEvidence,
+    MatchStatus,
+    PlaceMatchCandidate,
     PlaceMatchingPolicy,
     PlaceMatchRequest,
     PlaceMatchResult,
@@ -60,6 +72,59 @@ class PlaceMatchingService:
         )
         return classify_place_matches(scored, policy=self._policy)
 
+    async def match_official_amap_link(
+        self,
+        url: str,
+        *,
+        city: CityScope,
+    ) -> PlaceMatchResult:
+        """Resolve one explicit official identity through the same MapProvider boundary."""
+
+        link = inspect_amap_official_link(url)
+        if not link.is_official or link.poi_id is None:
+            raise MapProviderError(code=MapProviderErrorCode.INVALID_REQUEST)
+        result = await self._map_provider.get_poi(
+            GetPoiRequest(poi_id=link.poi_id, city=city.model_copy(deep=True))
+        )
+        poi = self._validated_provider_poi(
+            result=result,
+            poi_id=link.poi_id,
+            city=city,
+        )
+        evidence = (
+            MatchEvidence(
+                field=EvidenceField.NAME,
+                outcome=EvidenceOutcome.MISSING,
+                reason=EvidenceReason.SOURCE_MISSING,
+                score_delta=0.0,
+            ),
+            MatchEvidence(
+                field=EvidenceField.CITY,
+                outcome=EvidenceOutcome.MATCH,
+                reason=EvidenceReason.WITHIN_SEARCH_SCOPE,
+                score_delta=0.0,
+            ),
+        )
+        candidate = PlaceMatchCandidate(
+            provider=poi.provider,
+            poi_id=poi.poi_id,
+            city_code=poi.city_code,
+            coordinate=poi.coordinate.model_copy(deep=True),
+            name=poi.name,
+            branch_name=poi.branch_name,
+            district=poi.district,
+            business_area=poi.business_area,
+            address=poi.address,
+            poi_type=poi.poi_type,
+            opening_hours_summary=poi.opening_hours_summary,
+            provider_rank=1,
+            rank=1,
+            score=100.0,
+            confidence=MatchConfidence.HIGH,
+            evidence=evidence,
+        )
+        return PlaceMatchResult(status=MatchStatus.MATCHED, candidates=(candidate,))
+
     @staticmethod
     def _validated_provider_result(
         *,
@@ -72,25 +137,7 @@ class PlaceMatchingService:
                 # Rebuild from the public internal fields so even a test double that used
                 # ``model_construct`` cannot bypass validation or retain extra payloads.
                 pois = tuple(
-                    Poi(
-                        provider=poi.provider,
-                        poi_id=poi.poi_id,
-                        name=poi.name,
-                        branch_name=poi.branch_name,
-                        city_code=poi.city_code,
-                        district=poi.district,
-                        business_area=poi.business_area,
-                        address=poi.address,
-                        coordinate=Coordinate(
-                            latitude=poi.coordinate.latitude,
-                            longitude=poi.coordinate.longitude,
-                            coordinate_system=poi.coordinate.coordinate_system,
-                        ),
-                        poi_type=poi.poi_type,
-                        phone=poi.phone,
-                        opening_hours_summary=poi.opening_hours_summary,
-                    )
-                    for poi in result.pois
+                    PlaceMatchingService._copy_provider_poi(poi) for poi in result.pois
                 )
                 validated = PoiSearchResult(city_code=result.city_code, pois=pois)
             except Exception:
@@ -110,3 +157,49 @@ class PlaceMatchingService:
         if invalid:
             raise MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE)
         return validated
+
+    @staticmethod
+    def _validated_provider_poi(
+        *,
+        result: object,
+        poi_id: str,
+        city: CityScope,
+    ) -> Poi:
+        validated: Poi | None = None
+        if isinstance(result, GetPoiResult):
+            try:
+                validated = PlaceMatchingService._copy_provider_poi(result.poi)
+            except Exception:
+                validated = None
+        if (
+            validated is None
+            or validated.provider is not PoiProvider.AMAP
+            or validated.poi_id != poi_id
+            or validated.city_code != city.city_code
+            or validated.coordinate.coordinate_system is not CoordinateSystem.GCJ_02
+        ):
+            raise MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE)
+        return validated
+
+    @staticmethod
+    def _copy_provider_poi(source: Poi) -> Poi:
+        """Rebuild one provider DTO through the sole public internal POI contract."""
+
+        return Poi(
+            provider=source.provider,
+            poi_id=source.poi_id,
+            name=source.name,
+            branch_name=source.branch_name,
+            city_code=source.city_code,
+            district=source.district,
+            business_area=source.business_area,
+            address=source.address,
+            coordinate=Coordinate(
+                latitude=source.coordinate.latitude,
+                longitude=source.coordinate.longitude,
+                coordinate_system=source.coordinate.coordinate_system,
+            ),
+            poi_type=source.poi_type,
+            phone=source.phone,
+            opening_hours_summary=source.opening_hours_summary,
+        )
