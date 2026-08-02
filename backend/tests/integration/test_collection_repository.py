@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -111,6 +112,148 @@ def _item(
         created_at=NOW,
         updated_at=NOW,
     )
+
+
+async def _query(
+    repository: SqlAlchemyCollectionRepository,
+    *,
+    user_id: str,
+    search: str | None = None,
+    tags: tuple[str, ...] = (),
+    offset: int = 0,
+    limit: int = 20,
+) -> tuple[list[CollectionItem], int]:
+    return await repository.query_collection_items(
+        user_id=user_id,
+        search=search,
+        city_hint=None,
+        city_code=None,
+        city_code_not=None,
+        include_flexible_brands=False,
+        exclude_flexible_brands=False,
+        city_pending=None,
+        formal_city_pending=None,
+        district=None,
+        kind=None,
+        status=None,
+        tags=tags,
+        include_inactive=False,
+        sort_field="created_at",
+        descending=False,
+        offset=offset,
+        limit=limit,
+    )
+
+
+async def _assert_native_tag_search(database_url: str) -> None:
+    database = Database(database_url)
+    user, other_user = _user(), _user()
+    items = (
+        _item(user.id, title="周末餐厅").model_copy(
+            update={
+                "address": "海岸路1号",
+                "business_district": "后海",
+                "tags": ("朋友聚餐", "Dinner"),
+            }
+        ),
+        _item(user.id, title="朋友小聚").model_copy(
+            update={
+                "tags": ("朋友", "dinner-party"),
+                "created_at": NOW + timedelta(seconds=1),
+                "updated_at": NOW + timedelta(seconds=1),
+            }
+        ),
+        _item(user.id, title="符号标签").model_copy(
+            update={
+                "tags": ("100%", "under_score", "back\\slash"),
+                "created_at": NOW + timedelta(seconds=2),
+                "updated_at": NOW + timedelta(seconds=2),
+            }
+        ),
+        _item(user.id, title="聚餐续场").model_copy(
+            update={
+                "tags": ("朋友聚餐", "聚会"),
+                "created_at": NOW + timedelta(seconds=3),
+                "updated_at": NOW + timedelta(seconds=3),
+            }
+        ),
+    )
+    foreign = _item(other_user.id, title="他人聚餐").model_copy(
+        update={"tags": ("朋友聚餐",)}
+    )
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        for owner in (user, other_user):
+            await repository.add_user(user_id=owner.id, user=owner)
+        for item in (*items, foreign):
+            await repository.add_collection_item(user_id=item.user_id, item=item)
+        await session.commit()
+
+        chinese_search, chinese_total = await _query(
+            repository,
+            user_id=user.id,
+            search="朋友聚餐",
+        )
+        first_page, exact_total = await _query(
+            repository,
+            user_id=user.id,
+            tags=("朋友聚餐",),
+            limit=1,
+        )
+        second_page, second_total = await _query(
+            repository,
+            user_id=user.id,
+            tags=("朋友聚餐",),
+            offset=1,
+            limit=1,
+        )
+        substring, _ = await _query(repository, user_id=user.id, tags=("朋友",))
+        english, _ = await _query(repository, user_id=user.id, tags=("DINNER",))
+        english_search, _ = await _query(
+            repository,
+            user_id=user.id,
+            search="DINNER",
+        )
+        escaped = {
+            term: await _query(repository, user_id=user.id, search=term)
+            for term in ("%", "_", "\\")
+        }
+        field_searches = {
+            term: await _query(repository, user_id=user.id, search=term)
+            for term in ("周末餐厅", "海岸路", "后海")
+        }
+
+    assert [item.id for item in chinese_search] == [items[0].id, items[3].id]
+    assert chinese_total == exact_total == second_total == 2
+    assert [item.id for item in first_page] == [items[0].id]
+    assert [item.id for item in second_page] == [items[3].id]
+    assert [item.id for item in substring] == [items[1].id]
+    assert [item.id for item in english] == [items[0].id]
+    assert [item.id for item in english_search] == [items[0].id, items[1].id]
+    assert all(
+        [item.id for item in result] == [items[2].id] and total == 1
+        for result, total in escaped.values()
+    )
+    assert all(
+        [item.id for item in result] == [items[0].id] and total == 1
+        for result, total in field_searches.values()
+    )
+    assert foreign.id not in {item.id for item in chinese_search}
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_native_tag_search_preserves_text_and_exact_semantics(
+    collection_database: tuple[str, Path],
+) -> None:
+    await _assert_native_tag_search(collection_database[0])
+
+
+@pytest.mark.postgresql
+def test_postgresql_native_tag_search_preserves_text_and_exact_semantics(
+    postgresql_database_url: str,
+) -> None:
+    asyncio.run(_assert_native_tag_search(postgresql_database_url))
 
 
 @pytest.mark.asyncio

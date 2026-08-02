@@ -4,10 +4,28 @@
 |---|---|
 | 当前总阶段 | M2 微信 ClawBot 完整 MVP |
 | 当前子阶段 | M2-0 ClawBot 技术 Spike |
-| 状态 | AgentRun 超时终态一致性修复已通过主控验收；M2-0 尚未开始。 |
-| 当前分支 | main |
+| 状态 | PostgreSQL 中文标签搜索漏匹配修复完成，等待主控独立验收；M2-0 尚未开始。 |
+| 当前分支 | codex/m1-postgresql-tag-search |
 | 最近更新 | 2026-08-02 |
-| 阻塞项 | PostgreSQL 中文标签搜索漏匹配 P1 待修复；M2-0 尚未开始 |
+| 阻塞项 | 本次 P1 修复待主控验收；M2-0 尚未开始 |
+
+## 2026-08-02 PostgreSQL 中文标签搜索漏匹配修复
+
+- 根因是唯一 `SqlAlchemyCollectionRepository.query_collection_items` 在非 SQLite
+  分支将 `tags_json` 整体转成字符串后执行 `LIKE`；PostgreSQL JSON 序列化可把中文
+  保存为 Unicode 转义文本，因此卡片读取正常但中文 search 与精确 tags 查询漏匹配。
+- 查询边界现在保持 SQLite 使用既有 `json_each`，PostgreSQL 使用原生
+  `json_array_elements_text`；通用 search 对数组元素文本执行转义后的包含匹配，
+  tags 参数对单个元素执行大小写不敏感的完整相等匹配。标题、城市、区县、地址、
+  商圈、地标和地铁搜索，以及用户隔离、total、分页和稳定排序均未改变。
+- `pip check`、Ruff、strict mypy（141 个源文件）通过；收藏/检索/Repository 聚焦
+  `91 passed, 1 skipped`，临时 PostgreSQL 16 定点 `1 passed`，非真实 Provider/Map
+  全集 `1770 passed, 18 skipped, 2 deselected`。回归覆盖“朋友聚餐”中文包含与
+  精确筛选、英文大小写、`%`/`_`/反斜杠转义、标签子串隔离、既有字段搜索、用户
+  隔离、total、分页、排序及 SQLite 等同行为。
+- 生产代码净减少一行，只修改既有 Repository 查询；未新增字段、索引表、迁移、
+  搜索服务、Repository、依赖、兼容兜底或 Python 全表过滤。未读取 `.env`，真实
+  模型、高德及其他外部/付费 API 调用为 0；未处理其他功能、未合并、未推送。
 
 ## 2026-08-02 AgentRun 超时终态一致性主控验收
 

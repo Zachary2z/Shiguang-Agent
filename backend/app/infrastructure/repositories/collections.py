@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
-from sqlalchemy import String, cast, delete, func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.collections import (
@@ -473,23 +473,21 @@ class SqlAlchemyCollectionRepository:
             )
         if district is not None:
             conditions.append(CollectionItemModel.district == district)
+        tag_rows = (
+            func.json_each(CollectionItemModel.tags_json).table_valued("value")
+            if self._session.bind is not None
+            and self._session.bind.dialect.name == "sqlite"
+            else func.json_array_elements_text(
+                CollectionItemModel.tags_json
+            ).table_valued("value")
+        )
         for tag in tags:
-            if self._session.bind is not None and self._session.bind.dialect.name == "sqlite":
-                tag_rows = func.json_each(CollectionItemModel.tags_json).table_valued(
-                    "value"
-                )
-                conditions.append(
-                    select(1)
-                    .select_from(tag_rows)
-                    .where(func.lower(tag_rows.c.value) == tag.casefold())
-                    .exists()
-                )
-            else:
-                conditions.append(
-                    func.lower(cast(CollectionItemModel.tags_json, String)).like(
-                        f'%"{tag.casefold()}"%'
-                    )
-                )
+            conditions.append(
+                select(1)
+                .select_from(tag_rows)
+                .where(func.lower(tag_rows.c.value) == tag.casefold())
+                .exists()
+            )
         if search is not None:
             escaped = (
                 search.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -504,9 +502,10 @@ class SqlAlchemyCollectionRepository:
                     func.lower(CollectionItemModel.business_district).like(needle, escape="\\"),
                     func.lower(CollectionItemModel.landmark).like(needle, escape="\\"),
                     func.lower(CollectionItemModel.metro_station).like(needle, escape="\\"),
-                    func.lower(cast(CollectionItemModel.tags_json, String)).like(
-                        needle, escape="\\"
-                    ),
+                    select(1)
+                    .select_from(tag_rows)
+                    .where(func.lower(tag_rows.c.value).like(needle, escape="\\"))
+                    .exists(),
                 )
             )
 
