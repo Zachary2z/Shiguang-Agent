@@ -5,9 +5,25 @@
 | 当前总阶段 | M2 微信 ClawBot 完整 MVP |
 | 当前子阶段 | M2-0 ClawBot 技术 Spike |
 | 状态 | M1-Gate 已完成；M1 正式关闭；M2-0 当前允许开始但尚未开始。 |
-| 当前分支 | codex/m1-place-readiness-convergence |
+| 当前分支 | main |
 | 最近更新 | 2026-08-02 |
 | 阻塞项 | 无 P0/P1；M2-0 尚未开始 |
+
+## 2026-08-02 M1 稳定化修复 1：主控复验与集成
+
+- 主控确认返修提交 `6f26be9497411619edffd6be4fb00aeaa7deb39d` 线性基于初始
+  候选 `7fa9df5468e536e2a333ed69a516bcb5229f4715`，完整修复链直接基于
+  `e1e9e5a32c20f711cc65836a1706c2d80b62358c`，并已纯快进集成到 `main`。
+- 两个 P1 均已关闭：核心地点线索修改与重新匹配现在一次原子提交，任何 Provider
+  错误、取消或并发版本变化都不留下“新线索 + 旧 POI”；高德官方地点链接不再固定
+  深圳，单次 identity 详情响应可确定深圳或广州，未知城市安全失败且不探测、不重试。
+- 独立复验通过：`pip check`、Ruff、strict mypy（141 个源文件）、Alembic 唯一 head
+  `20260729_0017`、后端聚焦 `376 passed`、非真实 Provider/Map 全集
+  `1752 passed, 16 skipped, 2 deselected`、前端 lint/typecheck 与 Vitest
+  `135 passed`。封网聚焦 `287 passed`；一次 `aiosqlite` 线程收尾 warning 在指定
+  基线同样可复现，维持既有 P2，不归因于本次修复。
+- 范围、唯一实现、幂等、安全和净复杂度检查通过；未读取 `.env`，真实模型、高德、
+  网页和其他外部/付费 API 调用为 0。未实现稳定化修复 2–5 或任何 M2 功能。
 
 ## 2026-08-02 M1 稳定化修复 1：两个 P1 返修
 
