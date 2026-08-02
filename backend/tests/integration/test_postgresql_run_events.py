@@ -17,7 +17,9 @@ from app.api.dependencies import (
     get_current_user_id,
     get_request_identity,
 )
+from app.application.pricing import ConfiguredPricingPolicy
 from app.application.run_events import RunEventService
+from app.application.run_tracking import AgentRunService, ApplicationRunTimeoutError
 from app.config import Settings
 from app.domain.identity import BrowserSession, CurrentPrincipal, PrincipalMode
 from app.domain.runs.events import (
@@ -273,6 +275,66 @@ def test_run_event_summary_is_allowlisted_and_accepts_content_hash(
                     status=AgentRunStatus.SUCCEEDED,
                     content_sha256="a" * 64,
                 )
+        finally:
+            await database.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.postgresql
+def test_timeout_terminal_write_obeys_real_postgresql_duration_constraint(
+    postgresql_database_url: str,
+) -> None:
+    async def scenario() -> None:
+        clock = iter((0.0, 60.005))
+        database = Database(postgresql_database_url)
+        try:
+            async with database.session() as session:
+                service = AgentRunService(
+                    session=session,
+                    runner=None,
+                    pricing=ConfiguredPricingPolicy(
+                        model_name=None,
+                        input_price_per_million_tokens=None,
+                        output_price_per_million_tokens=None,
+                        currency="CNY",
+                        source="not_configured",
+                    ),
+                    timeout_seconds=0.001,
+                    clock=lambda: next(clock),
+                )
+
+                with pytest.raises(ApplicationRunTimeoutError):
+                    await service.execute_application(
+                        AgentRunCreate(
+                            trace_id=TRACE_ID,
+                            user_id=RUN_USER_ID,
+                            session_id=None,
+                            intent="postgresql_timeout_probe",
+                            workflow="m1_gate",
+                        ),
+                        lambda _observer: asyncio.Event().wait(),
+                    )
+                summary = await service.get_by_trace_id(
+                    user_id=RUN_USER_ID,
+                    trace_id=TRACE_ID,
+                )
+                events = await RunEventService(session).list_after(
+                    user_id=RUN_USER_ID,
+                    trace_id=TRACE_ID,
+                    after_sequence=0,
+                )
+
+                assert summary is not None
+                assert summary.status is AgentRunStatus.FAILED
+                assert summary.error_code == "RUN_TIMEOUT"
+                assert summary.duration_ms == 60_000
+                assert [event.event_type for event in events].count(
+                    RunEventType.RESULT_UPDATED
+                ) == 1
+                assert [event.event_type for event in events].count(
+                    RunEventType.RUN_FAILED
+                ) == 1
         finally:
             await database.close()
 

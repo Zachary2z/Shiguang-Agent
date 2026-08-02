@@ -16,8 +16,13 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from app.application.pricing import ConfiguredPricingPolicy
-from app.application.run_tracking import AgentRunService
+from app.application.run_events import RunEventService
+from app.application.run_tracking import (
+    AgentRunService,
+    ApplicationRunTimeoutError,
+)
 from app.domain.runs import AgentRunCreate, AgentRunStatus, RunErrorCode, ToolRunStatus
+from app.domain.runs.events import RunEventType
 from app.infrastructure.db import Database
 from app.infrastructure.db.models import ToolRunModel
 from app.infrastructure.repositories import AgentRunRepository, RunFinalization
@@ -556,6 +561,53 @@ async def test_total_timeout_and_external_cancel_are_distinct_and_queryable(
         assert cancel_summary is not None
         assert cancel_summary.status is AgentRunStatus.CANCELLED
         assert cancel_summary.ended_due_to_external_cancellation is True
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_application_timeout_clamps_terminal_duration_and_persists_events(
+    migrated_database_url: str,
+) -> None:
+    clock = iter((0.0, 60.005))
+    operation_cancelled = asyncio.Event()
+
+    async def blocked_operation(_observer: object) -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            operation_cancelled.set()
+            raise
+
+    database = Database(migrated_database_url)
+    async with database.session() as session:
+        service = AgentRunService(
+            session=session,
+            runner=None,
+            pricing=_pricing(),
+            timeout_seconds=0.001,
+            clock=lambda: next(clock),
+        )
+
+        with pytest.raises(ApplicationRunTimeoutError):
+            await service.execute_application(_request(53), blocked_operation)
+        summary = await service.get_by_trace_id(
+            user_id=USER_ID,
+            trace_id=_trace(53),
+        )
+        events = await RunEventService(session).list_after(
+            user_id=USER_ID,
+            trace_id=_trace(53),
+            after_sequence=0,
+        )
+
+        assert operation_cancelled.is_set()
+        assert summary is not None
+        assert summary.status is AgentRunStatus.FAILED
+        assert summary.error_code == RunErrorCode.TIMEOUT.value
+        assert summary.duration_ms == 60_000
+        assert summary.finished_at is not None
+        assert [event.event_type for event in events].count(RunEventType.RESULT_UPDATED) == 1
+        assert [event.event_type for event in events].count(RunEventType.RUN_FAILED) == 1
     await database.close()
 
 

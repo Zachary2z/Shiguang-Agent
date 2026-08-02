@@ -4,10 +4,29 @@
 |---|---|
 | 当前总阶段 | M2 微信 ClawBot 完整 MVP |
 | 当前子阶段 | M2-0 ClawBot 技术 Spike |
-| 状态 | M1-Gate 已完成；M1 正式关闭；M2-0 当前允许开始但尚未开始。 |
-| 当前分支 | codex/m1-frontend-long-task-stability |
+| 状态 | AgentRun 超时终态一致性修复完成，等待主控独立验收；M2-0 尚未开始。 |
+| 当前分支 | codex/m1-final-run-timeout-terminal |
 | 最近更新 | 2026-08-02 |
-| 阻塞项 | 无 P0/P1；M2-0 尚未开始 |
+| 阻塞项 | 本次 P1 修复待主控验收；M2-0 尚未开始 |
+
+## 2026-08-02 AgentRun 超时终态一致性修复
+
+- 根因是唯一 `AgentRunService._persist_final` 将单调时钟实测的 `duration_ms` 原样
+  写入数据库；60 秒截止后的取消与清理可使观测值达到 60005ms，违反既有
+  `ck_agent_runs_duration_bound <= 60000`，同一事务中的 FAILED 状态、
+  `RESULT_UPDATED` 和 `RUN_FAILED` 因而全部回滚。
+- 共享终态持久化边界现在只对持久化耗时应用既有 60 秒 Agent 上限；真实墙钟截止、
+  Provider 75 秒安全上限、取消传播和等待清理语义不变。60005ms 超时可原子写入
+  `FAILED / RUN_TIMEOUT`、`finished_at`、60000ms，并各产生一次结果与失败终态事件；
+  ContentImportJob 仍以 handler 成功、`outcome=failed` 收口，SSE/API 返回现有恢复状态。
+- `pip check`、Ruff、strict mypy（141 个源文件）通过；后端聚焦 `73 passed`，
+  非真实 Provider/Map 全集 `1769 passed, 17 skipped, 2 deselected`，迁移
+  `25 passed`。临时 PostgreSQL 16 的真实约束、RunEvent 与迁移专项 `5 passed`；
+  前端 Agent 终态恢复 Vitest `28 passed`。全集唯一 warning 是既有 aiosqlite
+  事件循环关闭后的线程收尾 P2。
+- 生产改动只有共享边界一行；未新增状态机、watchdog、reconciler、轮询、自动重试、
+  迁移、配置或依赖。未读取 `.env`，真实模型、高德、网页及其他外部/付费 API 调用
+  为 0；未合并、未推送、未开始中文标签搜索或 M2。
 
 ## 2026-08-02 M1 稳定化修复 5：前端完整交互与长任务恢复
 

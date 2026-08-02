@@ -81,7 +81,7 @@ from app.domain.web import (
     WebFetchFailureCode,
     WebPageContent,
 )
-from app.infrastructure.db.models import SessionModel
+from app.infrastructure.db.models import ScheduledJobModel, SessionModel
 from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.infrastructure.storage import LocalPrivateStorageProvider
@@ -1660,7 +1660,7 @@ async def test_url_timeout_is_terminal_replayable_and_does_not_retry(
     settings = test_settings.model_copy(update={"agent_timeout_seconds": 0.01})
     provider = FakeProvider([])
     web = BlockingWebProvider()
-    async with _client(settings, provider, web=web) as (_api, client, _storage):
+    async with _client(settings, provider, web=web) as (api, client, _storage):
         session_id = await _demo(client)
         payload = {
             "type": "url",
@@ -1676,6 +1676,15 @@ async def test_url_timeout_is_terminal_replayable_and_does_not_retry(
             json=payload,
         )
         run = await client.get(f"/api/v1/agent-runs/{timed_out.json()['trace_id']}")
+        events = await client.get(
+            f"/api/v1/agent-runs/{timed_out.json()['trace_id']}/events"
+        )
+        async with api.state.demo_database.session() as session:
+            job_summary = await session.scalar(
+                select(ScheduledJobModel.result_summary_json).where(
+                    ScheduledJobModel.trace_id == timed_out.json()["trace_id"]
+                )
+            )
 
     assert timed_out.status_code == replay.status_code == 504
     assert timed_out.json()["error_code"] == replay.json()["error_code"] == "RUN_TIMEOUT"
@@ -1683,6 +1692,9 @@ async def test_url_timeout_is_terminal_replayable_and_does_not_retry(
     assert run.json()["status"] == "failed"
     assert run.json()["tool_runs"][0]["status"] == "cancelled"
     assert run.json()["tool_runs"][0]["error_code"] == "RUN_TIMEOUT"
+    assert events.text.count('event: result.updated') == 1
+    assert events.text.count('event: run.failed') == 1
+    assert job_summary == {"outcome": "failed"}
 
 
 @pytest.mark.asyncio

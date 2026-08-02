@@ -802,7 +802,7 @@ class AgentRunService:
         finalization = collector.finalization(
             status=status,
             error_code=error_code,
-            duration_ms=duration_ms,
+            duration_ms=min(duration_ms, int(MAX_RUN_TIMEOUT_SECONDS * 1000)),
             finished_at=self._now(),
         )
         await self._repository.finalize(run_id, finalization)
