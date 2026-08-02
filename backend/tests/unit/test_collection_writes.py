@@ -60,10 +60,7 @@ def test_status_mapping_never_fakes_poi_selection_and_requires_exact_event_time(
         **_common_candidate_fields(),
         event_start_date=date(2026, 6, 13),
         event_end_date=date(2026, 7, 31),
-        missing_fields=(
-            CandidateField.EVENT_START_AT,
-            CandidateField.EVENT_END_AT,
-        ),
+        missing_fields=(),
     )
 
     assert status_for_extraction_candidate(place) is CollectionStatus.PENDING_DETAILS

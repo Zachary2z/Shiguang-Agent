@@ -1068,7 +1068,7 @@ async def test_event_end_and_time_window_boundaries_are_deterministic() -> None:
 
 
 @pytest.mark.asyncio
-async def test_date_only_event_is_saved_but_never_treated_as_exact_plan_window() -> None:
+async def test_date_range_event_intersects_plan_date_without_exact_time() -> None:
     user_id = generate_user_id()
     date_only = _event(
         user_id,
@@ -1077,7 +1077,7 @@ async def test_date_only_event_is_saved_but_never_treated_as_exact_plan_window()
         end_at=None,
         start_date=date(2026, 7, 25),
         end_date=date(2026, 7, 31),
-        status=CollectionStatus.PENDING_DETAILS,
+        status=CollectionStatus.ACTIVE,
     )
     service, _ = _service([date_only])
     facts = PlanningFactSnapshot(collections=(_known_event_facts(date_only),))
@@ -1090,10 +1090,49 @@ async def test_date_only_event_is_saved_but_never_treated_as_exact_plan_window()
     )
 
     decision = result.decisions[0]
-    assert decision.outcome is CandidateOutcome.EXCLUDED
-    assert CandidateReasonCode.STATUS_NOT_ACTIVE in decision.reason_codes
-    assert CandidateReasonCode.EVENT_TIME_UNKNOWN in decision.reason_codes
-    assert result.included == ()
+    assert decision.outcome is CandidateOutcome.INCLUDED
+    assert CandidateReasonCode.EVENT_TIME_UNKNOWN not in decision.reason_codes
+    assert result.included == (decision,)
+
+
+@pytest.mark.asyncio
+async def test_date_range_event_outside_plan_date_is_conflict_or_ended() -> None:
+    user_id = generate_user_id()
+    future = _event(
+        user_id,
+        title="尚未开始",
+        start_at=None,
+        end_at=None,
+        start_date=date(2026, 7, 26),
+        end_date=date(2026, 7, 31),
+    )
+    ended = _event(
+        user_id,
+        title="已经结束",
+        start_at=None,
+        end_at=None,
+        start_date=date(2026, 7, 1),
+        end_date=date(2026, 7, 24),
+    )
+    service, _ = _service([future, ended])
+    facts = PlanningFactSnapshot(
+        collections=tuple(_known_event_facts(item) for item in (future, ended))
+    )
+
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(),
+        facts=facts,
+        now=NOW,
+    )
+    by_title = {item.title: item for item in result.decisions}
+
+    assert by_title["尚未开始"].reason_codes == (
+        CandidateReasonCode.TIME_WINDOW_CONFLICT,
+    )
+    assert by_title["已经结束"].reason_codes == (
+        CandidateReasonCode.EVENT_ENDED,
+    )
 
 
 @pytest.mark.asyncio
@@ -2055,7 +2094,7 @@ async def test_map_fact_chain_includes_exact_event_with_precise_time_window(
 
 
 @pytest.mark.asyncio
-async def test_map_fact_chain_conservatively_excludes_date_only_event_without_route(
+async def test_map_fact_chain_includes_date_range_event_with_visit_duration(
     retrieval_database: str,
 ) -> None:
     user_id = generate_user_id()
@@ -2078,9 +2117,28 @@ async def test_map_fact_chain_conservatively_excludes_date_only_event_without_ro
         provider=_map_fact_provider(constraints=constraints, calls=calls),
     )
 
-    assert result.draft.candidates == ()
-    assert not any(isinstance(call, RouteRequest) for call in calls)
-    assert not any(isinstance(call, WeatherRequest) for call in calls)
+    assert result.draft.candidates[0].collection_item_ids == (event.id,)
+    assert result.draft.candidates[0].event_start_at is None
+    assert result.draft.candidates[0].event_end_at is None
+    assert sum(isinstance(call, RouteRequest) for call in calls) == 1
+    assert sum(isinstance(call, WeatherRequest) for call in calls) == 1
+
+    retrieval_service, _ = _service([event])
+    retrieval = await retrieval_service.retrieve(
+        user_id=user_id,
+        constraints=constraints,
+        facts=result.retrieval,
+        now=NOW,
+    )
+    draft = PlanDraftService().generate(
+        constraints=constraints,
+        collections=retrieval,
+        facts=result.draft,
+    )
+
+    assert draft.outcome is PlanDraftOutcome.GENERATED
+    assert draft.options[0].items[0].start_at == START + timedelta(minutes=10)
+    assert draft.options[0].items[0].end_at == START + timedelta(minutes=70)
 
 
 @pytest.mark.asyncio

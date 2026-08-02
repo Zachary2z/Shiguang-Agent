@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from app.domain.collections import (
     PERSISTABLE_COLLECTION_STATUSES,
+    CandidateField,
     CollectionItem,
     CollectionKind,
     CollectionSource,
@@ -29,11 +30,13 @@ from app.domain.collections import (
     SourceParseStatus,
     SourceType,
     SupportedTimezone,
+    Uncertainty,
     User,
     UserMode,
     can_collection_enter_plan,
     ensure_collection_transition,
     ensure_persistable_collection_status,
+    event_schedule_is_confirmed,
     is_collection_visible_by_default,
 )
 from app.domain.identifiers import (
@@ -378,6 +381,48 @@ def test_provider_independent_place_event_fields_version_price_and_tags() -> Non
         uncollected_item["status"] = recognition_status
         with pytest.raises(ValidationError):
             CollectionItem.model_validate(uncollected_item)
+
+
+def test_event_schedule_accepts_one_complete_shape_and_rejects_partial_or_uncertain() -> None:
+    values = {
+        "event_start_date": date(2026, 7, 25),
+        "event_end_date": date(2026, 7, 31),
+        "event_start_at": None,
+        "event_end_at": None,
+        "uncertainties": (),
+    }
+    assert event_schedule_is_confirmed(**values)
+    assert event_schedule_is_confirmed(
+        **{
+            **values,
+            "event_start_date": None,
+            "event_end_date": None,
+            "event_start_at": NOW,
+            "event_end_at": NOW + timedelta(hours=2),
+        }
+    )
+    assert not event_schedule_is_confirmed(**{**values, "event_end_date": None})
+    assert not event_schedule_is_confirmed(
+        **{**values, "event_start_at": NOW}
+    )
+    assert not event_schedule_is_confirmed(
+        **{
+            **values,
+            "event_start_at": datetime(2026, 8, 1, tzinfo=UTC),
+            "event_end_at": datetime(2026, 8, 1, 2, tzinfo=UTC),
+        }
+    )
+    assert not event_schedule_is_confirmed(
+        **{
+            **values,
+            "uncertainties": (
+                Uncertainty(
+                    field=CandidateField.EVENT_START_DATE,
+                    reason="日期仍需确认",
+                ),
+            ),
+        }
+    )
 
 
 def test_collection_source_validates_owner_and_both_foreign_identifiers() -> None:

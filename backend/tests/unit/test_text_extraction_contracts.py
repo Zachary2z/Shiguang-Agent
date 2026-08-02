@@ -59,10 +59,7 @@ def _full_event(**updates: object) -> EventCandidate:
         "event_end_at": START + timedelta(hours=3),
         "event_start_clue": "7月25日14:00",
         "event_end_clue": "7月25日17:00",
-        "missing_fields": (
-            CandidateField.EVENT_START_DATE,
-            CandidateField.EVENT_END_DATE,
-        ),
+        "missing_fields": (),
     }
     payload.update(updates)
     return EventCandidate.model_validate(payload)
@@ -91,6 +88,7 @@ def test_complete_event_candidate_normalizes_aware_times_to_utc() -> None:
     assert candidate.event_end_at == START + timedelta(hours=3)
     assert candidate.event_start_at is not None
     assert candidate.event_start_at.tzinfo is UTC
+    assert candidate.missing_fields == ()
 
 
 def test_place_candidate_forbids_event_only_fields_and_metadata() -> None:
@@ -128,7 +126,9 @@ def test_event_effective_dates_are_date_only_and_allow_partial_or_missing_ranges
     start_date: date | None,
     end_date: date | None,
 ) -> None:
-    missing = [CandidateField.EVENT_START_AT, CandidateField.EVENT_END_AT]
+    missing: list[CandidateField] = []
+    if start_date is None or end_date is None:
+        missing.extend((CandidateField.EVENT_START_AT, CandidateField.EVENT_END_AT))
     if start_date is None:
         missing.append(CandidateField.EVENT_START_DATE)
     if end_date is None:
@@ -389,6 +389,10 @@ def test_candidate_semantic_errors_have_stable_value_free_types() -> None:
 
     payload = _full_event().model_dump()
     payload["event_start_at"] = None
+    payload["missing_fields"] = (
+        CandidateField.EVENT_START_DATE,
+        CandidateField.EVENT_END_DATE,
+    )
     assert _first_error_type(EventCandidate, payload) == "event_time_absent_not_classified"
 
 

@@ -461,6 +461,18 @@ class CollectionWriteService:
             ]
             if not is_present:
                 missing.append(field)
+        if (
+            values.get("event_start_date") is not None
+            and values.get("event_end_date") is not None
+            and values.get("event_start_at") is None
+            and values.get("event_end_at") is None
+        ):
+            missing = [
+                field
+                for field in missing
+                if field
+                not in {CandidateField.EVENT_START_AT, CandidateField.EVENT_END_AT}
+            ]
         values["missing_fields"] = tuple(dict.fromkeys(missing))
         values["uncertainties"] = tuple(uncertainties)
 

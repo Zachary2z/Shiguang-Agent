@@ -456,10 +456,12 @@ def test_missing_visit_or_origin_route_returns_stable_not_generated_result() -> 
     assert draft.failure_code is PlanDraftFailureCode.NO_EXECUTABLE_OPTION
 
 
-def test_event_without_explicit_window_and_disallowed_route_mode_are_not_scheduled() -> None:
+def test_date_range_event_uses_visit_duration_and_disallowed_route_mode_is_rejected() -> None:
     event = _decision(1, kind=CollectionKind.EVENT, poi=None)
-    no_event_window, _, _, _ = _generate((event,), facts=_facts((event,)))
-    assert no_event_window.failure_code is PlanDraftFailureCode.NO_EXECUTABLE_OPTION
+    date_range, _, _, _ = _generate((event,), facts=_facts((event,)))
+    assert date_range.outcome is PlanDraftOutcome.GENERATED
+    assert date_range.options[0].items[0].start_at == START + timedelta(minutes=10)
+    assert date_range.options[0].items[0].end_at == START + timedelta(minutes=70)
 
     place = _decision(2)
     base_facts = _facts((place,))

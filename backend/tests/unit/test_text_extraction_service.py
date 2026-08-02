@@ -150,10 +150,7 @@ def _date_only_event() -> EventCandidate:
         tags=("展览",),
         event_start_date=date(2026, 6, 13),
         event_end_date=date(2026, 7, 31),
-        missing_fields=(
-            CandidateField.EVENT_START_AT,
-            CandidateField.EVENT_END_AT,
-        ),
+        missing_fields=(),
     )
 
 
@@ -184,6 +181,8 @@ async def test_date_only_text_extraction_preserves_calendar_dates_without_midnig
     assert candidate.event_end_date == date(2026, 7, 31)
     assert candidate.event_start_at is None
     assert candidate.event_end_at is None
+    assert CandidateField.EVENT_START_AT not in candidate.missing_fields
+    assert CandidateField.EVENT_END_AT not in candidate.missing_fields
     assert {entry.field for entry in candidate.uncertainties} >= {
         CandidateField.EVENT_START_DATE,
         CandidateField.EVENT_END_DATE,

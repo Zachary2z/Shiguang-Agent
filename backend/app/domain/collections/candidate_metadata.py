@@ -8,11 +8,13 @@ from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_core import PydanticCustomError
 
 PRICE_CURRENCY_CNY = "CNY"
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 _SENSITIVE_TEXT = re.compile(
     r"(?:authorization\s*[:=]|set-cookie\s*:|cookie\s*[:=]|bearer\s+\S+|"
     r"api[-_ ]?key\s*[:=]|\bsk-[a-z0-9]{8,})",
@@ -71,22 +73,39 @@ def event_schedule_is_confirmed(
     event_end_at: datetime | None,
     uncertainties: Iterable[Uncertainty],
 ) -> bool:
-    """Require exact session bounds and confirmation of every proposed Event time."""
+    """Accept one complete, ordered Event schedule with no temporal uncertainty."""
 
-    if event_start_at is None or event_end_at is None:
+    if (event_start_date is None) is not (event_end_date is None) or (
+        (event_start_at is None) is not (event_end_at is None)
+    ):
         return False
-    proposed = {
-        field
-        for field, value in (
-            (CandidateField.EVENT_START_DATE, event_start_date),
-            (CandidateField.EVENT_END_DATE, event_end_date),
-            (CandidateField.EVENT_START_AT, event_start_at),
-            (CandidateField.EVENT_END_AT, event_end_at),
-        )
-        if value is not None
-    }
-    uncertain = {entry.field for entry in uncertainties}
-    return proposed.isdisjoint(uncertain)
+    if any(entry.field in EVENT_TEMPORAL_FIELDS for entry in uncertainties):
+        return False
+    date_range_ready = (
+        event_start_date is not None
+        and event_end_date is not None
+        and event_end_date >= event_start_date
+    )
+    exact_session_ready = (
+        event_start_at is not None
+        and event_end_at is not None
+        and event_end_at > event_start_at
+    )
+    if date_range_ready and exact_session_ready:
+        assert event_start_date is not None
+        assert event_end_date is not None
+        assert event_start_at is not None
+        assert event_end_at is not None
+        if not (
+            event_start_date
+            <= event_start_at.astimezone(_SHANGHAI).date()
+            <= event_end_at.astimezone(_SHANGHAI).date()
+            and event_start_date
+            <= event_end_at.astimezone(_SHANGHAI).date()
+            <= event_end_date
+        ):
+            return False
+    return date_range_ready or exact_session_ready
 
 
 def default_cny_for_known_price(values: Mapping[str, Any]) -> dict[str, Any]:

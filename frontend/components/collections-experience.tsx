@@ -129,14 +129,16 @@ const locationClueLabels: Readonly<Record<string, string>> = {
   metro_station: "地铁站",
 };
 const locationClueFields = Object.keys(locationClueLabels);
-const requiredEventTimeFields = new Set([
-  "event_start_at",
-  "event_end_at",
-]);
-
 function eventTimeNeedsAttention(item: CollectionItem): boolean {
+  const exactSessionExists = Boolean(
+    item.event_start_at && item.event_end_at,
+  );
   return (
-    item.missing_fields.some((field) => requiredEventTimeFields.has(field)) ||
+    item.missing_fields.some((field) =>
+      exactSessionExists
+        ? field === "event_start_at" || field === "event_end_at"
+        : field === "event_start_date" || field === "event_end_date",
+    ) ||
     item.uncertainties.some((entry) =>
       eventTemporalFields.includes(entry.field),
     )
@@ -237,7 +239,7 @@ function eventLabel(item: CollectionItem): string | null {
     }
   }
   if (item.event_start_date && item.event_end_date) {
-    return `${item.event_start_date} – ${item.event_end_date} · 具体时段待补充`;
+    return `${item.event_start_date} – ${item.event_end_date}`;
   }
   return item.event_start_clue ?? "活动时间待确认";
 }
@@ -302,7 +304,6 @@ export function CollectionsExperience() {
   const [draftTags, setDraftTags] = useState("");
   const [draftEventStartDate, setDraftEventStartDate] = useState("");
   const [draftEventEndDate, setDraftEventEndDate] = useState("");
-  const [draftEventSessionDate, setDraftEventSessionDate] = useState("");
   const [draftEventStartAt, setDraftEventStartAt] = useState("");
   const [draftEventEndAt, setDraftEventEndAt] = useState("");
   const [draftEventStartAtDirty, setDraftEventStartAtDirty] = useState(false);
@@ -333,7 +334,6 @@ export function CollectionsExperience() {
     setDraftTags(item.tags.join("、"));
     setDraftEventStartDate(item.event_start_date ?? "");
     setDraftEventEndDate(item.event_end_date ?? "");
-    setDraftEventSessionDate("");
     setDraftEventStartAt(startAt?.time ?? "");
     setDraftEventEndAt(endAt?.time ?? "");
     setDraftEventStartAtDirty(false);
@@ -734,49 +734,15 @@ export function CollectionsExperience() {
       setFeedback("活动有效结束日期不能早于开始日期。");
       return;
     }
-    const effectiveRangeIsSingleDay = Boolean(
-      draftEventStartDate &&
-        draftEventEndDate &&
-        draftEventStartDate === draftEventEndDate,
+    const exactSessionExists = Boolean(
+      detail.item.event_start_at && detail.item.event_end_at,
     );
-    const effectiveRangeIsMultiDay = Boolean(
-      draftEventStartDate &&
-        draftEventEndDate &&
-        draftEventStartDate !== draftEventEndDate,
-    );
-    const newSessionDate = effectiveRangeIsSingleDay
-      ? draftEventStartDate
-      : draftEventSessionDate;
     const currentStartAt = isoToShanghaiParts(detail.item.event_start_at);
     const currentEndAt = isoToShanghaiParts(detail.item.event_end_at);
-    const startSessionDate =
-      currentStartAt?.date || newSessionDate;
-    const endSessionDate = currentEndAt?.date || newSessionDate;
-    if (draftEventStartAt && !startSessionDate) {
-      setFeedback(
-        effectiveRangeIsMultiDay
-          ? "多日活动需要填写具体场次日期。"
-          : "填写具体开始时间时，必须先填写完整活动有效日期。",
-      );
-      return;
-    }
-    if (draftEventEndAt && !endSessionDate) {
-      setFeedback(
-        effectiveRangeIsMultiDay
-          ? "多日活动需要填写具体场次日期。"
-          : "填写具体结束时间时，必须先填写完整活动有效日期。",
-      );
-      return;
-    }
-    const sessionDates = [
-      effectiveRangeIsMultiDay &&
-      ((draftEventStartAt && !currentStartAt?.date) ||
-        (draftEventEndAt && !currentEndAt?.date))
-        ? draftEventSessionDate
-        : "",
-      draftEventStartAt ? startSessionDate : "",
-      draftEventEndAt ? endSessionDate : "",
-    ].filter(Boolean);
+    const sessionDates =
+      exactSessionExists && currentStartAt && currentEndAt
+        ? [currentStartAt.date, currentEndAt.date]
+        : [];
     if (
       draftEventStartDate &&
       sessionDates.some((date) => date < draftEventStartDate)
@@ -796,16 +762,16 @@ export function CollectionsExperience() {
       return;
     }
     const startAt =
-      draftEventStartAt && startSessionDate
+      exactSessionExists && draftEventStartAt && currentStartAt
         ? !draftEventStartAtDirty && detail.item.event_start_at
           ? detail.item.event_start_at
-          : shanghaiDateAndTimeToIso(startSessionDate, draftEventStartAt)
+          : shanghaiDateAndTimeToIso(currentStartAt.date, draftEventStartAt)
         : null;
     const endAt =
-      draftEventEndAt && endSessionDate
+      exactSessionExists && draftEventEndAt && currentEndAt
         ? !draftEventEndAtDirty && detail.item.event_end_at
           ? detail.item.event_end_at
-          : shanghaiDateAndTimeToIso(endSessionDate, draftEventEndAt)
+          : shanghaiDateAndTimeToIso(currentEndAt.date, draftEventEndAt)
         : null;
     if (
       startAt &&
@@ -820,10 +786,12 @@ export function CollectionsExperience() {
     for (const [field, draft, current] of [
       ["event_start_date", draftEventStartDate, detail.item.event_start_date],
       ["event_end_date", draftEventEndDate, detail.item.event_end_date],
-      ["event_start_at", startAt, detail.item.event_start_at],
-      ["event_end_at", endAt, detail.item.event_end_at],
     ] as const) {
       if (draft || current) changes[field] = draft || null;
+    }
+    if (exactSessionExists) {
+      changes.event_start_at = startAt;
+      changes.event_end_at = endAt;
     }
 
     const collectionId = detail.item.id;
@@ -845,19 +813,10 @@ export function CollectionsExperience() {
       (item) => {
         setDetail((current) => (current ? { ...current, item } : current));
         restoreDrafts(item);
-        const uncertain = new Set(
-          item.uncertainties.map((entry) => entry.field),
-        );
-        const exactTimeConfirmed = Boolean(
-          item.event_start_at &&
-            item.event_end_at &&
-            !uncertain.has("event_start_at") &&
-            !uncertain.has("event_end_at"),
-        );
         if (item.planning_eligible) {
           setFeedback("活动时间已确认，可参与当前计划。");
-        } else if (!exactTimeConfirmed) {
-          setFeedback("已保存当前活动时间，具体时段待补充。");
+        } else if (item.planning_exclusion_reason === "event_time_unconfirmed") {
+          setFeedback("已保存当前活动时间，仍有时间信息待确认。");
         } else {
           setFeedback("活动时间已确认，准确地点确认后才可参与计划。");
         }
@@ -1312,49 +1271,35 @@ export function CollectionsExperience() {
                           }
                         />
                       </label>
-                      {draftEventStartDate &&
-                      draftEventEndDate &&
-                      draftEventStartDate !== draftEventEndDate &&
-                      (!detail.item.event_start_at ||
-                        !detail.item.event_end_at) ? (
-                        <label>
-                          具体场次日期
-                          <input
-                            name="event_session_date"
-                            type="date"
-                            min={draftEventStartDate}
-                            max={draftEventEndDate}
-                            value={draftEventSessionDate}
-                            onChange={(event) =>
-                              setDraftEventSessionDate(event.target.value)
-                            }
-                          />
-                        </label>
+                      {detail.item.event_start_at &&
+                      detail.item.event_end_at ? (
+                        <>
+                          <label>
+                            具体开始时间
+                            <input
+                              name="event_start_at"
+                              type="time"
+                              value={draftEventStartAt}
+                              onChange={(event) => {
+                                setDraftEventStartAt(event.target.value);
+                                setDraftEventStartAtDirty(true);
+                              }}
+                            />
+                          </label>
+                          <label>
+                            具体结束时间
+                            <input
+                              name="event_end_at"
+                              type="time"
+                              value={draftEventEndAt}
+                              onChange={(event) => {
+                                setDraftEventEndAt(event.target.value);
+                                setDraftEventEndAtDirty(true);
+                              }}
+                            />
+                          </label>
+                        </>
                       ) : null}
-                      <label>
-                        具体开始时间
-                        <input
-                          name="event_start_at"
-                          type="time"
-                          value={draftEventStartAt}
-                          onChange={(event) => {
-                            setDraftEventStartAt(event.target.value)
-                            setDraftEventStartAtDirty(true);
-                          }}
-                        />
-                      </label>
-                      <label>
-                        具体结束时间
-                        <input
-                          name="event_end_at"
-                          type="time"
-                          value={draftEventEndAt}
-                          onChange={(event) => {
-                            setDraftEventEndAt(event.target.value)
-                            setDraftEventEndAtDirty(true);
-                          }}
-                        />
-                      </label>
                     </div>
                     <div className="event-time-state">
                       <p>
@@ -1376,10 +1321,6 @@ export function CollectionsExperience() {
                           )
                           .join("、") || "无"}
                       </p>
-                      {!detail.item.event_start_at ||
-                      !detail.item.event_end_at ? (
-                        <p>具体时段待补充；仅确认日期仍不能参与计划。</p>
-                      ) : null}
                     </div>
                     <button
                       className="primary-button"

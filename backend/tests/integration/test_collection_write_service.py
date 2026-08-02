@@ -173,10 +173,7 @@ def _date_only_event() -> EventCandidate:
         **_candidate_fields(title="夏季展览"),
         event_start_date=date(2026, 6, 13),
         event_end_date=date(2026, 7, 31),
-        missing_fields=(
-            CandidateField.EVENT_START_AT,
-            CandidateField.EVENT_END_AT,
-        ),
+        missing_fields=(),
     )
 
 
@@ -1841,7 +1838,7 @@ async def test_patch_can_activate_one_clear_place_but_never_provider_rank_alone(
 
 
 @pytest.mark.asyncio
-async def test_event_location_patch_reuses_candidates_and_selection_is_idempotent(
+async def test_date_range_event_selection_is_planning_ready_and_idempotent(
     write_database: tuple[str, Path],
 ) -> None:
     database_url, database_path = write_database
@@ -1851,6 +1848,8 @@ async def test_event_location_patch_reuses_candidates_and_selection_is_idempoten
     source = _source(user.id)
     event = EventCandidate(
         title="周末咖啡活动",
+        event_start_date=date(2026, 8, 2),
+        event_end_date=date(2026, 8, 4),
         missing_fields=(
             CandidateField.CITY_HINT,
             CandidateField.DISTRICT,
@@ -1858,14 +1857,9 @@ async def test_event_location_patch_reuses_candidates_and_selection_is_idempoten
             CandidateField.BUSINESS_DISTRICT,
             CandidateField.LANDMARK,
             CandidateField.METRO_STATION,
-            CandidateField.EVENT_START_DATE,
-            CandidateField.EVENT_END_DATE,
-            CandidateField.EVENT_START_AT,
-            CandidateField.EVENT_END_AT,
             CandidateField.PRICE,
             CandidateField.TAGS,
         ),
-        event_start_clue="周末",
     )
     search = SearchPoiRequest(
         query="未名咖啡",
@@ -1952,7 +1946,8 @@ async def test_event_location_patch_reuses_candidates_and_selection_is_idempoten
     assert selected.replayed is False
     assert replayed.replayed is True
     assert replayed.items == selected.items
-    assert confirmed.status is CollectionStatus.PENDING_DETAILS
+    assert replayed.items[0].version == selected.items[0].version
+    assert confirmed.status is CollectionStatus.ACTIVE
     assert confirmed.place_target is not None
     assert confirmed.place_target.poi is not None
     assert confirmed.place_target.poi.provider.value == "amap"
@@ -1963,8 +1958,8 @@ async def test_event_location_patch_reuses_candidates_and_selection_is_idempoten
         is CoordinateSystem.GCJ_02
     )
     response = CollectionItemResponse.from_domain(confirmed)
-    assert response.planning_eligible is False
-    assert response.planning_exclusion_reason == "event_time_unconfirmed"
+    assert response.planning_eligible is True
+    assert response.planning_exclusion_reason is None
     with sqlite3.connect(database_path) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM collection_items WHERE id = ?",

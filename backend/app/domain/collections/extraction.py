@@ -226,13 +226,24 @@ class EventCandidate(_CandidateBase):
 
         missing = set(self.missing_fields)
         uncertain = {item.field for item in self.uncertainties}
+        exact_session_ready = (
+            self.event_start_at is not None and self.event_end_at is not None
+        )
+        date_range_ready = (
+            self.event_start_date is not None and self.event_end_date is not None
+        )
         for field, value in (
             (CandidateField.EVENT_START_DATE, self.event_start_date),
             (CandidateField.EVENT_END_DATE, self.event_end_date),
         ):
             if value is not None and field in missing:
                 raise _semantic_error("present_field_marked_missing")
-            if value is None and field not in missing and field not in uncertain:
+            if (
+                value is None
+                and not exact_session_ready
+                and field not in missing
+                and field not in uncertain
+            ):
                 raise _semantic_error("event_date_absent_not_classified")
         for field, value in (
             (CandidateField.EVENT_START_AT, self.event_start_at),
@@ -240,7 +251,12 @@ class EventCandidate(_CandidateBase):
         ):
             if value is not None and field in missing:
                 raise _semantic_error("present_field_marked_missing")
-            if value is None and field not in missing and field not in uncertain:
+            if (
+                value is None
+                and not date_range_ready
+                and field not in missing
+                and field not in uncertain
+            ):
                 raise _semantic_error("event_time_absent_not_classified")
         return self
 

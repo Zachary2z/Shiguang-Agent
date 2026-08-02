@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from app.domain.collections import (
     EVENT_TEMPORAL_FIELDS,
+    CandidateField,
     EventCandidate,
     ExtractionOutcome,
     ExtractionReasonCode,
@@ -250,10 +251,41 @@ def _normalize_model_candidate(candidate: object) -> object:
         for item in uncertainties
         if isinstance(item, dict) and isinstance(item.get("field"), str)
     }
+    date_range_ready = (
+        normalized.get("event_start_date") is not None
+        and normalized.get("event_end_date") is not None
+    )
+    exact_session_ready = (
+        normalized.get("event_start_at") is not None
+        and normalized.get("event_end_at") is not None
+    )
+    ignored_missing = (
+        {CandidateField.EVENT_START_DATE.value, CandidateField.EVENT_END_DATE.value}
+        if exact_session_ready
+        else {
+            CandidateField.EVENT_START_AT.value,
+            CandidateField.EVENT_END_AT.value,
+        }
+        if date_range_ready
+        else set()
+    )
+    missing = [field for field in missing if field not in ignored_missing]
+    normalized["missing_fields"] = missing
     additions = [
         field.value
         for field in EVENT_TEMPORAL_FIELDS
         if normalized.get(field.value) is None
+        and not (
+            (
+                field
+                in {CandidateField.EVENT_START_DATE, CandidateField.EVENT_END_DATE}
+                and exact_session_ready
+            )
+            or (
+                field in {CandidateField.EVENT_START_AT, CandidateField.EVENT_END_AT}
+                and date_range_ready
+            )
+        )
         and field.value not in missing
         and field.value not in uncertain_fields
     ]

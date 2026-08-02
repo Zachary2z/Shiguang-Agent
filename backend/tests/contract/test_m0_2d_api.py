@@ -121,10 +121,7 @@ def _date_only_event() -> EventCandidate:
         tags=("展览",),
         event_start_date=date(2026, 6, 13),
         event_end_date=date(2026, 7, 31),
-        missing_fields=(
-            CandidateField.EVENT_START_AT,
-            CandidateField.EVENT_END_AT,
-        ),
+        missing_fields=(),
     )
 
 

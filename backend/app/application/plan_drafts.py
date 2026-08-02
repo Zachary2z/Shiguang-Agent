@@ -317,10 +317,6 @@ class PlanDraftService:
                     or item.price_amount != decision.price_amount
                     or item.price_currency != decision.price_currency
                     or (
-                        decision.kind is CollectionKind.EVENT
-                        and (visit.event_start_at is None or visit.event_end_at is None)
-                    )
-                    or (
                         decision.kind is CollectionKind.PLACE
                         and (visit.event_start_at is not None or visit.event_end_at is not None)
                     )
@@ -553,10 +549,6 @@ class PlanDraftService:
         visit = candidate_facts.get(decision.collection_item_ids)
         route = routes.get((from_ids, decision.collection_item_ids))
         if visit is None or route is None:
-            return None
-        if decision.kind is CollectionKind.EVENT and (
-            visit.event_start_at is None or visit.event_end_at is None
-        ):
             return None
         if decision.kind is CollectionKind.PLACE and (
             visit.event_start_at is not None or visit.event_end_at is not None

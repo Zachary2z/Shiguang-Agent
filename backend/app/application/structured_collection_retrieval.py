@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import ClassVar
 from unicodedata import normalize
+from zoneinfo import ZoneInfo
 
 from app.application.collection_queries import (
     CollectionPlanningBlocker,
@@ -44,6 +45,8 @@ from app.domain.plans.retrieval import (
     WeatherAssessment,
     outcome_for_reasons,
 )
+
+_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 class StructuredCollectionRetrievalError(RuntimeError):
@@ -207,15 +210,25 @@ def assess_collection_candidate(
             event_end_at=item.event_end_at,
             uncertainties=item.uncertainties,
         ):
-            assert item.event_start_at is not None
-            assert item.event_end_at is not None
-            if item.event_end_at <= constraints.start_at:
-                reasons.add(CandidateReasonCode.EVENT_ENDED)
-            elif (
-                item.event_start_at >= constraints.end_at
-                or item.event_end_at <= constraints.start_at
-            ):
-                reasons.add(CandidateReasonCode.TIME_WINDOW_CONFLICT)
+            if item.event_start_at is not None and item.event_end_at is not None:
+                if item.event_end_at <= constraints.start_at:
+                    reasons.add(CandidateReasonCode.EVENT_ENDED)
+                elif (
+                    item.event_start_at >= constraints.end_at
+                    or item.event_end_at <= constraints.start_at
+                ):
+                    reasons.add(CandidateReasonCode.TIME_WINDOW_CONFLICT)
+            else:
+                assert item.event_start_date is not None
+                assert item.event_end_date is not None
+                plan_start_date = constraints.start_at.astimezone(_SHANGHAI).date()
+                plan_end_date = (
+                    constraints.end_at - timedelta(microseconds=1)
+                ).astimezone(_SHANGHAI).date()
+                if item.event_end_date < plan_start_date:
+                    reasons.add(CandidateReasonCode.EVENT_ENDED)
+                elif item.event_start_date > plan_end_date:
+                    reasons.add(CandidateReasonCode.TIME_WINDOW_CONFLICT)
 
     if constraints.area is not None:
         if constraints.area.districts:
