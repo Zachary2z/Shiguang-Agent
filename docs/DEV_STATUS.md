@@ -4,10 +4,26 @@
 |---|---|
 | 当前总阶段 | M2 微信 ClawBot 完整 MVP |
 | 当前子阶段 | M2-0 ClawBot 技术 Spike |
-| 状态 | PostgreSQL 中文标签搜索漏匹配修复完成，等待主控独立验收；M2-0 尚未开始。 |
-| 当前分支 | codex/m1-postgresql-tag-search |
+| 状态 | PostgreSQL 中文标签搜索漏匹配修复已通过主控验收；等待最终真实用户闭环复验，M2-0 尚未开始。 |
+| 当前分支 | main |
 | 最近更新 | 2026-08-02 |
-| 阻塞项 | 本次 P1 修复待主控验收；M2-0 尚未开始 |
+| 阻塞项 | 最终真实用户闭环复验尚未执行；M2-0 尚未开始 |
+
+## 2026-08-02 PostgreSQL 中文标签搜索主控验收
+
+- 主控确认候选 `a2fb700590a8a6e3047f319178489e04aa81687e` 直接基于
+  `fe3fd48ea3914e2b1416acaeea959ac0ec46e87f`，提交链线性且工作区干净。
+- 生产改动只在唯一收藏 Repository 查询边界使用数据库原生 JSON 数组元素；
+  PostgreSQL 不再把完整 JSON 转成字符串搜索，SQLite 继续复用既有 `json_each`。
+  没有新增迁移、字段、搜索服务、依赖、兼容兜底或 Python 全表过滤。
+- `pip check`、Ruff、strict mypy（141 个源文件）通过；收藏/API/检索聚焦
+  `91 passed, 1 skipped`，临时 PostgreSQL 16 定点 `1 passed`，非真实全集
+  `1770 passed, 18 skipped, 2 deselected`，Alembic 唯一 head 为
+  `20260729_0017`。
+- 全集一次既有 aiosqlite 收尾 warning 以 warning-as-error 定点复跑
+  `1 passed`，继续作为 P2 监测。本轮真实 API 调用为 0。
+- 中文标签搜索 P1 已关闭。M2-0 前仍需重新执行一次真实用户核心闭环复验，确认截图
+  超时恢复、标签搜索以及计划生成/确认/路线/日历/反馈/记忆没有联动回归。
 
 ## 2026-08-02 PostgreSQL 中文标签搜索漏匹配修复
 
