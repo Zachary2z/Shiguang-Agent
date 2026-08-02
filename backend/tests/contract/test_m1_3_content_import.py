@@ -6,8 +6,10 @@ import asyncio
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -613,8 +615,13 @@ async def test_offline_text_details_selection_plan_adjust_confirm_core_loop(
             poll_seconds=0.01,
         )
         plan_request = _request("offline-core-plan")
-        plan_request["start_at"] = "2026-08-02T10:00:00+08:00"
-        plan_request["end_at"] = "2026-08-02T18:00:00+08:00"
+        plan_day = datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(days=1)
+        plan_request["start_at"] = plan_day.replace(
+            hour=10, minute=0, second=0, microsecond=0
+        ).isoformat()
+        plan_request["end_at"] = plan_day.replace(
+            hour=18, minute=0, second=0, microsecond=0
+        ).isoformat()
         created = await client.post("/api/v1/plans", json=plan_request)
         assert created.status_code == 202, created.text
         assert await plan_worker.run_once() is not None

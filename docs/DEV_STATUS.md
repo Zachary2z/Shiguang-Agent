@@ -5,9 +5,19 @@
 | 当前总阶段 | M2 微信 ClawBot 完整 MVP |
 | 当前子阶段 | M2-0 ClawBot 技术 Spike |
 | 状态 | M1-Gate 已完成；M1 正式关闭；M2-0 当前允许开始但尚未开始。 |
-| 当前分支 | codex/m1-plan-facts-consistency |
+| 当前分支 | codex/m1-fixed-date-fixture-stability |
 | 最近更新 | 2026-08-02 |
 | 阻塞项 | 无 P0/P1；M2-0 尚未开始 |
+
+## 2026-08-02 固定日期测试夹具稳定化
+
+- `test_offline_text_details_selection_plan_adjust_confirm_core_loop` 不再使用固定的
+  `2026-08-02`，改用 Python 标准库生成 Asia/Shanghai 下一自然日 10:00–18:00，
+  保持确认审批发生在计划开始前；未修改生产代码、约束、断言、依赖或迁移。
+- pip check、Ruff、strict mypy（141 个源文件）通过；定点测试 `1 passed`，M1-3
+  合同文件 `12 passed`，非真实 Provider/Map 全集
+  `1768 passed, 16 skipped, 2 deselected`；Alembic 唯一 head 仍为
+  `20260729_0017`。未读取 `.env`，真实模型、地图、网页及付费 API 调用为 0。
 
 ## 2026-08-02 Repair 4：跨版本反馈一致性 P1 修复
 
