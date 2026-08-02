@@ -175,7 +175,11 @@ class CollectionWriteService:
                 values=values,
                 patch=patch,
             )
-            self._recalculate_candidate_metadata(values, patch=patch)
+            self._recalculate_candidate_metadata(
+                current=current,
+                values=values,
+                patch=patch,
+            )
             self._preserve_unconfirmed_event_time_metadata(
                 current=current,
                 values=values,
@@ -323,13 +327,16 @@ class CollectionWriteService:
         patch: CollectionItemPatch,
     ) -> bool:
         updates = patch.updates()
+        fields = LOCATION_CLUE_FIELDS.intersection(patch.model_fields_set)
+        if current.kind is CollectionKind.EVENT:
+            fields = fields.difference({"title"})
         return any(
             not cls._equivalent_location_clue(
                 field=field,
                 current=getattr(current, field),
                 updated=updates[field],
             )
-            for field in LOCATION_CLUE_FIELDS.intersection(patch.model_fields_set)
+            for field in fields
         )
 
     @classmethod
@@ -412,13 +419,16 @@ class CollectionWriteService:
             ),
         )
 
-    @staticmethod
+    @classmethod
     def _recalculate_candidate_metadata(
-        values: dict[str, object],
+        cls,
         *,
+        current: CollectionItem,
+        values: dict[str, object],
         patch: CollectionItemPatch,
     ) -> None:
         field_by_patch_name = {
+            "title": CandidateField.TITLE,
             "city_hint": CandidateField.CITY_HINT,
             "district": CandidateField.DISTRICT,
             "address": CandidateField.ADDRESS,
@@ -436,20 +446,19 @@ class CollectionWriteService:
             field_by_patch_name[name]
             for name in patch.model_fields_set
             if name in field_by_patch_name
+            and not (
+                name in LOCATION_CLUE_FIELDS
+                and cls._equivalent_location_clue(
+                    field=name,
+                    current=getattr(current, name),
+                    updated=values[name],
+                )
+            )
         }
         if not touched:
             return
-        missing = [
-            CandidateField(field)
-            for field in cast(tuple[CandidateField | str, ...], values.get("missing_fields", ()))
-        ]
-        uncertainties = [
-            Uncertainty.model_validate(entry)
-            for entry in cast(
-                tuple[Uncertainty | dict[str, object], ...],
-                values.get("uncertainties", ()),
-            )
-        ]
+        missing = list(current.missing_fields)
+        uncertainties = list(current.uncertainties)
         for name, field in field_by_patch_name.items():
             if field not in touched:
                 continue

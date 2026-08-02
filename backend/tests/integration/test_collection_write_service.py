@@ -1525,6 +1525,7 @@ async def test_patch_all_allowed_fields_version_conflict_noop_and_domain_validat
         )
         assert cleared.price_amount is None
         assert cleared.price_currency is None
+        assert CandidateField.PRICE in cleared.missing_fields
         assert cleared.version == 3
     await database.close()
 
@@ -1680,6 +1681,7 @@ async def test_patch_resolves_missing_metadata_then_requires_ambiguous_place_sel
 
         assert pending.status is CollectionStatus.PENDING_SELECTION
         assert CandidateField.ADDRESS not in pending.missing_fields
+        assert CandidateField.PRICE in pending.missing_fields
         assert all(
             uncertainty.field is not CandidateField.ADDRESS
             for uncertainty in pending.uncertainties
@@ -2399,6 +2401,16 @@ async def test_event_and_any_branch_targets_are_invalidated_by_location_edits(
                             CandidateField.EVENT_START_DATE,
                             CandidateField.EVENT_END_DATE,
                         ),
+                        uncertainties=(
+                            Uncertainty(
+                                field=CandidateField.TITLE,
+                                reason="活动名称待确认",
+                            ),
+                            Uncertainty(
+                                field=CandidateField.LANDMARK,
+                                reason="地标待确认",
+                            ),
+                        ),
                     ),
                 )
             ),
@@ -2446,12 +2458,38 @@ async def test_event_and_any_branch_targets_are_invalidated_by_location_edits(
             )
         ).items[0]
         assert selected_event.place_target is not None
-        edited_event = await service.patch(
+        event_map_calls: list[SearchPoiRequest] = []
+
+        async def record_event_map_call(request: object) -> None:
+            assert isinstance(request, SearchPoiRequest)
+            event_map_calls.append(request)
+
+        equivalent_title = await service.patch(
             user_id=user.id,
             collection_item_id=selected_event.id,
             expected_version=selected_event.version,
+            patch=CollectionItemPatch(title="　周末咖啡活动　"),
+            place_matching=_matching_service(
+                StubMapProvider(call_hook=record_event_map_call)
+            ),
+        )
+        renamed_event = await service.patch(
+            user_id=user.id,
+            collection_item_id=equivalent_title.id,
+            expected_version=equivalent_title.version,
+            patch=CollectionItemPatch(title="周末咖啡分享会"),
+            place_matching=_matching_service(
+                StubMapProvider(call_hook=record_event_map_call)
+            ),
+        )
+        edited_event = await service.patch(
+            user_id=user.id,
+            collection_item_id=renamed_event.id,
+            expected_version=renamed_event.version,
             patch=CollectionItemPatch(district="天河区"),
-            place_matching=_matching_service(StubMapProvider()),
+            place_matching=_matching_service(
+                StubMapProvider(call_hook=record_event_map_call)
+            ),
         )
 
         brand_service = _service(session, token=TOKEN_TWO)
@@ -2519,10 +2557,25 @@ async def test_event_and_any_branch_targets_are_invalidated_by_location_edits(
             place_matching=_matching_service(StubMapProvider()),
         )
 
+    assert equivalent_title == selected_event
+    assert renamed_event.version == selected_event.version + 1
+    assert renamed_event.title == "周末咖啡分享会"
+    assert renamed_event.place_target == selected_event.place_target
+    assert renamed_event.place_candidate_snapshot == selected_event.place_candidate_snapshot
+    assert renamed_event.event_start_at == selected_event.event_start_at
+    assert renamed_event.event_end_at == selected_event.event_end_at
+    assert CandidateField.TITLE not in {
+        uncertainty.field for uncertainty in renamed_event.uncertainties
+    }
+    assert CandidateField.LANDMARK in {
+        uncertainty.field for uncertainty in renamed_event.uncertainties
+    }
+    assert len(event_map_calls) == 1
     assert edited_event.place_target is None
     assert edited_event.status is CollectionStatus.PENDING_DETAILS
-    assert edited_event.event_start_at == selected_event.event_start_at
-    assert edited_event.event_end_at == selected_event.event_end_at
+    assert edited_event.title == renamed_event.title
+    assert edited_event.event_start_at == renamed_event.event_start_at
+    assert edited_event.event_end_at == renamed_event.event_end_at
     assert edited_brand.place_target is None
     assert edited_brand.status is CollectionStatus.PENDING_DETAILS
     await database.close()

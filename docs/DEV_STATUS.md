@@ -9,6 +9,23 @@
 | 最近更新 | 2026-08-02 |
 | 阻塞项 | 无 P0/P1；M2-0 尚未开始 |
 
+## 2026-08-02 M1 稳定化修复 3：收藏字段失效关系收敛
+
+- 唯一 `CollectionWriteService.patch` 现在按收藏类型判断地点身份：Place 名称与六类
+  地点线索实质变化、Event 六类地点线索实质变化仍原子失效并复用既有匹配/选择链路；
+  Event 活动标题、时间、价格和标签修改保留已确认地点，时间状态仍只由既有时间契约
+  重新计算。等价地点文本继续零地图请求、零状态抖动、零版本增加。
+- 字段修改只清除该字段原 missing/uncertainty，清空字段恢复对应 missing，未触及字段
+  保留原 metadata；新增 title 对应收敛，未复制字段规则。Provider 错误、取消和并发
+  CAS 冲突继续在原子提交前退出，原收藏字段、target、候选快照和版本完整不变。
+- `pip check`、Ruff、mypy（123 个源文件）、Alembic 空库升级及唯一 head
+  `20260729_0017` 通过；后端聚焦及仓库外 DNS/socket 封网复跑均为 `400 passed`，
+  非真实 Provider/Map 全集 `1756 passed, 16 skipped, 2 deselected`。前端 lint、
+  typecheck、Vitest `133 passed` 与 Playwright `46 passed` 均通过。
+- 生产净增 9 行，只修改既有写服务；未新增 Provider、Repository、服务、状态机、DTO、
+  迁移、依赖、字段或失效矩阵，未修改 2A/2B、规划准入或前端 planning 状态来源。
+  未读取 `.env`，真实模型、高德、网页和其他外部/付费 API 调用为 0；未进入 M2。
+
 ## 2026-08-02 M1 稳定化修复 2B：Event 地点权威状态
 
 - Event 唯一高置信 POI 现在复用既有 exact `PlaceTarget` 自动确认；多候选仍待选择，
