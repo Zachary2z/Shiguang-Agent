@@ -500,6 +500,12 @@ class PlanShareService:
             total_cost_amount=option.total_cost_amount,
             total_cost_currency=option.total_cost_currency,
             risks=option.risks,
+            weather_status=(
+                None if plan.draft.weather_status is None else plan.draft.weather_status.value
+            ),
+            weather_source=plan.draft.weather_source,
+            weather_queried_at=plan.draft.weather_queried_at,
+            weather_summary=plan.draft.weather_summary,
             expires_at=expires_at,
         )
 

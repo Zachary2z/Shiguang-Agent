@@ -68,12 +68,12 @@ async def _require_execution_plan(
 ) -> PlanModel:
     # Keep the existing repository gate as the public source of confirmation semantics.
     repository = SqlAlchemyPlanRepository(session)
-    await repository.require_confirmed_for_execution(
+    plan = await repository.require_confirmed_for_execution(
         user_id=user_id, plan_id=plan_id
     )
     row = await session.scalar(
         select(PlanModel)
-        .where(PlanModel.id == plan_id, PlanModel.user_id == user_id)
+        .where(PlanModel.id == plan.id, PlanModel.user_id == user_id)
         .with_for_update()
     )
     if row is None:
@@ -106,7 +106,7 @@ class PlanCalendarService:
     ) -> bytes:
         row = await _require_execution_plan(session, user_id=user_id, plan_id=plan_id)
         items = tuple(_parse_item(item) for item in await _main_rows(
-            session, user_id=user_id, plan_id=plan_id
+            session, user_id=user_id, plan_id=row.id
         ))
         if not items:
             raise PlanExecutionNotAllowedError
@@ -148,7 +148,7 @@ class PlanCalendarService:
             "END:STANDARD",
             "END:VTIMEZONE",
             "BEGIN:VEVENT",
-            f"UID:{_ics_escape(plan_id)}@shiguang.local",
+            f"UID:{_ics_escape(row.id)}@shiguang.local",
             f"DTSTAMP:{stamp:%Y%m%dT%H%M%SZ}",
             f"DTSTART;TZID=Asia/Shanghai:{start:%Y%m%dT%H%M%S}",
             f"DTEND;TZID=Asia/Shanghai:{end:%Y%m%dT%H%M%S}",
@@ -171,10 +171,10 @@ class PlanNavigationService:
         user_id: str,
         plan_id: str,
         map_provider: MapProvider,
-    ) -> tuple[PlanExecutionItem, ...]:
-        await _require_execution_plan(session, user_id=user_id, plan_id=plan_id)
+    ) -> tuple[str, tuple[PlanExecutionItem, ...]]:
+        plan = await _require_execution_plan(session, user_id=user_id, plan_id=plan_id)
         result: list[PlanExecutionItem] = []
-        for row in await _main_rows(session, user_id=user_id, plan_id=plan_id):
+        for row in await _main_rows(session, user_id=user_id, plan_id=plan.id):
             item = _parse_item(row)
             poi = item.source.concrete_poi
             uri = None
@@ -201,7 +201,7 @@ class PlanNavigationService:
                     navigation_uri=uri,
                 )
             )
-        return tuple(result)
+        return plan.id, tuple(result)
 
 
 class PlanFeedbackService:

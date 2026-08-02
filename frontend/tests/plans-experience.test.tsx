@@ -222,6 +222,41 @@ describe("PlansExperience", () => {
     expect(screen.getByText("¥88.00")).toBeInTheDocument();
   });
 
+  it("renders server weather facts and an unknown first route without inventing totals", async () => {
+    bootstrap([
+      {
+        ...plan,
+        draft: {
+          ...plan.draft,
+          weather_status: "provider_failed",
+          weather_source: "amap",
+          weather_queried_at: "2026-07-29T01:30:00Z",
+          weather_summary: "The map provider request timed out.",
+          options: [
+            {
+              ...plan.draft.options[0],
+              items: [
+                {
+                  ...plan.draft.options[0].items[0],
+                  inbound_route: {
+                    ...plan.draft.options[0].items[0].inbound_route,
+                    duration_seconds: null,
+                    distance_meters: null,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ]);
+    render(<PlansExperience />);
+
+    expect(await screen.findByText("首段路线待确认（未提供精确起点）")).toBeInTheDocument();
+    expect(screen.getByText(/The map provider request timed out.*amap/)).toBeInTheDocument();
+    expect(screen.queryByText(/0 分钟 · 0 m/)).not.toBeInTheDocument();
+  });
+
   it("never labels a historical version as the current version", async () => {
     bootstrap([
       {
@@ -242,6 +277,30 @@ describe("PlansExperience", () => {
 
     expect(await screen.findByText("V1 · 历史版本")).toBeInTheDocument();
     expect(screen.queryByText("V1 · 当前版本")).not.toBeInTheDocument();
+  });
+
+  it("keeps the confirmed version explicit while a newer draft awaits confirmation", async () => {
+    bootstrap([
+      {
+        ...plan,
+        id: "pln_1123456789abcdef0123456789abcdef",
+        parent_plan_id: plan.id,
+        version: 2,
+        versions: [
+          { ...plan.versions[0], status: "confirmed" },
+          {
+            id: "pln_1123456789abcdef0123456789abcdef",
+            version: 2,
+            status: "draft",
+            adjustment_text: "节奏轻松一点",
+          },
+        ],
+      },
+    ]);
+    render(<PlansExperience />);
+
+    expect(await screen.findByText("已有确认版本，但有新草案")).toBeInTheDocument();
+    expect(screen.getByText("V1 仍是日历、路线和分享的执行版本")).toBeInTheDocument();
   });
 
   it("shows external supplement approval without treating it as confirmation", async () => {

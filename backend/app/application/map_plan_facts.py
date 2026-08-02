@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -84,6 +85,8 @@ class MapPlanFactResolver:
         )
         self._route_calls = 0
         self._weather_assessment: WeatherAssessment | None = None
+        self._weather_queried_at: datetime | None = None
+        self._weather_summary: str | None = None
 
     async def resolve(
         self,
@@ -93,6 +96,8 @@ class MapPlanFactResolver:
     ) -> PlanGenerationFacts:
         self._route_calls = 0
         self._weather_assessment = None
+        self._weather_queried_at = None
+        self._weather_summary = None
         queried_at = utc_now()
         items = await self._repository.list_collection_items(
             user_id=user_id,
@@ -145,10 +150,9 @@ class MapPlanFactResolver:
                         location_confirmed=True,
                         coordinate=candidate.poi.coordinate,
                         resolved_poi=candidate.poi,
-                        route=(
-                            RouteAssessment.REACHABLE
-                            if route is not None
-                            else RouteAssessment.PROVIDER_FAILED
+                        route=_route_assessment(
+                            route,
+                            origin_known=constraints.origin is not None,
                         ),
                         route_duration_seconds=None if route is None else route[0],
                         route_distance_meters=None if route is None else route[1],
@@ -173,6 +177,7 @@ class MapPlanFactResolver:
                     self._poi_facts(
                         candidate,
                         self._weather_assessment or WeatherAssessment.UNKNOWN,
+                        origin_known=constraints.origin is not None,
                     )
                 )
             elif resolved.brand_identity is not None:
@@ -200,10 +205,9 @@ class MapPlanFactResolver:
                         location_confirmed=True,
                         coordinate=candidate.poi.coordinate,
                         resolved_poi=candidate.poi,
-                        route=(
-                            RouteAssessment.REACHABLE
-                            if route is not None
-                            else RouteAssessment.PROVIDER_FAILED
+                        route=_route_assessment(
+                            route,
+                            origin_known=constraints.origin is not None,
                         ),
                         route_duration_seconds=None if route is None else route[0],
                         route_distance_meters=None if route is None else route[1],
@@ -266,6 +270,12 @@ class MapPlanFactResolver:
             draft=PlanDraftFactSnapshot(
                 candidates=tuple(candidate_facts),
                 routes=tuple((*origin_routes, *pair_routes)),
+                weather_status=self._weather_assessment,
+                weather_source=(
+                    "amap" if self._weather_assessment is not None else None
+                ),
+                weather_queried_at=self._weather_queried_at,
+                weather_summary=self._weather_summary,
             ),
             required_gap=required_gap,
         )
@@ -377,16 +387,14 @@ class MapPlanFactResolver:
     def _poi_facts(
         candidate: _ExecutableCandidate,
         weather: WeatherAssessment,
+        *,
+        origin_known: bool,
     ) -> PoiPlanningFacts:
         route = candidate.route
         return PoiPlanningFacts(
             provider=candidate.poi.provider,
             poi_id=candidate.poi.poi_id,
-            route=(
-                RouteAssessment.REACHABLE
-                if route is not None
-                else RouteAssessment.PROVIDER_FAILED
-            ),
+            route=_route_assessment(route, origin_known=origin_known),
             route_duration_seconds=None if route is None else route[0],
             route_distance_meters=None if route is None else route[1],
             weather=weather,
@@ -429,8 +437,9 @@ class MapPlanFactResolver:
         return routes
 
     async def _weather(self, constraints: PlanConstraints) -> WeatherAssessment:
+        self._weather_queried_at = utc_now()
         try:
-            await self._map.weather(
+            result = await self._map.weather(
                 WeatherRequest(
                     city=constraints.city_scope,
                     on_date=constraints.start_at.date(),
@@ -438,8 +447,10 @@ class MapPlanFactResolver:
             )
         except asyncio.CancelledError:
             raise
-        except MapProviderError:
+        except MapProviderError as error:
+            self._weather_summary = error.summary
             return WeatherAssessment.PROVIDER_FAILED
+        self._weather_summary = result.summary or result.condition
         return WeatherAssessment.COMPATIBLE
 
     async def _ensure_weather(self, constraints: PlanConstraints) -> None:
@@ -455,7 +466,7 @@ class MapPlanFactResolver:
         mode: TransportMode,
     ) -> tuple[int, int] | None:
         if origin is None:
-            return (0, 0)
+            return None
         if self._route_calls >= MAX_PLAN_ROUTE_CALLS:
             return None
         self._route_calls += 1
@@ -473,6 +484,16 @@ class MapPlanFactResolver:
         except MapProviderError:
             return None
         return (result.duration_seconds, result.distance_meters)
+
+
+def _route_assessment(
+    route: tuple[int, int] | None,
+    *,
+    origin_known: bool,
+) -> RouteAssessment:
+    if route is not None:
+        return RouteAssessment.REACHABLE
+    return RouteAssessment.PROVIDER_FAILED if origin_known else RouteAssessment.UNKNOWN
 
 
 def _unique_poi_facts(

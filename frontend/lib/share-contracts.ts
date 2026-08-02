@@ -15,8 +15,8 @@ export type SharedPlanItem = {
   public_address: string | null;
   visit_duration_seconds: number;
   transport_mode: string;
-  travel_duration_seconds: number;
-  travel_distance_meters: number;
+  travel_duration_seconds: number | null;
+  travel_distance_meters: number | null;
   buffer_after_seconds: number;
   price_amount: string | null;
   price_currency: string | null;
@@ -37,6 +37,10 @@ export type SharedPlanSnapshot = {
   total_cost_amount: string | null;
   total_cost_currency: string | null;
   risks: string[];
+  weather_status?: string | null;
+  weather_source?: string | null;
+  weather_queried_at?: string | null;
+  weather_summary?: string | null;
   expires_at: string;
 };
 

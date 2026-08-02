@@ -133,15 +133,14 @@ class SqlAlchemyPlanRepository:
         user_id: str,
         plan_id: str,
     ) -> PlanVersion:
-        """The sole execution boundary for confirmed and subsequently completed plans."""
+        """Resolve any version in a plan root to its latest confirmed execution version."""
 
-        plan = await self.require(user_id=user_id, plan_id=plan_id)
-        if plan.status not in {
-            PlanStatus.CONFIRMED,
-            PlanStatus.COMPLETED,
-            PlanStatus.PARTIALLY_COMPLETED,
-            PlanStatus.NOT_COMPLETED,
-        }:
+        requested = await self.require(user_id=user_id, plan_id=plan_id)
+        plan = await self.latest_confirmed(
+            user_id=user_id,
+            root_plan_id=requested.root_plan_id,
+        )
+        if plan is None:
             raise PlanExecutionNotAllowedError
         return plan
 

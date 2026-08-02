@@ -7,7 +7,8 @@ from decimal import Decimal
 from unicodedata import normalize
 
 from app.domain.collections import PRICE_CURRENCY_CNY, CollectionKind
-from app.domain.plans import PlanConstraints, PlanPace
+from app.domain.places import TransportMode
+from app.domain.plans import PlanConstraints, PlanPace, WeatherAssessment
 from app.domain.plans.drafts import (
     FAILURE_SUMMARIES,
     RISK_SUMMARIES,
@@ -61,17 +62,34 @@ def _option_cost(items: tuple[PlanItem, ...]) -> tuple[Decimal | None, str | Non
     )
 
 
-def _option_risks(items: tuple[PlanItem, ...]) -> tuple[PlanRiskCode, ...]:
+def _option_risks(
+    items: tuple[PlanItem, ...],
+    weather_status: WeatherAssessment | None,
+) -> tuple[PlanRiskCode, ...]:
     selected = {risk for item in items for risk in item.risk_codes}
+    if weather_status is WeatherAssessment.PROVIDER_FAILED:
+        selected.add(PlanRiskCode.WEATHER_PROVIDER_FAILED)
+    elif weather_status in {WeatherAssessment.UNKNOWN, WeatherAssessment.CONFLICT}:
+        selected.add(PlanRiskCode.WEATHER_UNKNOWN)
     return tuple(code for code in PlanRiskCode if code in selected)
 
 
 def _item_risks(
     price_amount: Decimal | None,
+    *,
+    budget: Decimal | None,
+    route_known: bool,
 ) -> tuple[PlanRiskCode, ...]:
+    selected: set[PlanRiskCode] = set()
     if price_amount is None:
-        return (PlanRiskCode.PRICE_UNKNOWN,)
-    return ()
+        selected.add(
+            PlanRiskCode.BUDGET_UNVERIFIED
+            if budget is not None
+            else PlanRiskCode.PRICE_UNKNOWN
+        )
+    if not route_known:
+        selected.add(PlanRiskCode.ROUTE_UNKNOWN)
+    return tuple(code for code in PlanRiskCode if code in selected)
 
 
 class PlanDraftService:
@@ -161,7 +179,7 @@ class PlanDraftService:
                 continue
             seen_sequences.add(sequence)
             total_amount, total_currency = _option_cost(items)
-            risks = _option_risks(items)
+            risks = _option_risks(items, facts.weather_status)
             options.append(
                 PlanOption(
                     role=(PlanOptionRole.MAIN if not options else PlanOptionRole.ALTERNATIVE),
@@ -187,7 +205,7 @@ class PlanDraftService:
             )
             if external_item is not None:
                 total_amount, total_currency = _option_cost((external_item,))
-                risks = _option_risks((external_item,))
+                risks = _option_risks((external_item,), facts.weather_status)
                 options.append(
                     PlanOption(
                         role=PlanOptionRole.MAIN,
@@ -207,6 +225,10 @@ class PlanDraftService:
             outcome=PlanDraftOutcome.GENERATED,
             options=tuple(options),
             exclusions=exclusions,
+            weather_status=facts.weather_status,
+            weather_source=facts.weather_source,
+            weather_queried_at=facts.weather_queried_at,
+            weather_summary=facts.weather_summary,
         )
         validation = self.validate(
             draft=draft,
@@ -249,6 +271,10 @@ class PlanDraftService:
             or draft.failure_code is not None
             or draft.failure_summary is not None
             or draft.exclusions != self._exclusions(collections)
+            or draft.weather_status != facts.weather_status
+            or draft.weather_source != facts.weather_source
+            or draft.weather_queried_at != facts.weather_queried_at
+            or draft.weather_summary != facts.weather_summary
         ):
             violations.add(PlanDraftViolationCode.RESULT_SHAPE_INVALID)
 
@@ -323,21 +349,36 @@ class PlanDraftService:
                 ):
                     violations.add(PlanDraftViolationCode.FACTS_MISSING_OR_MISMATCHED)
                 route = routes.get((previous_ids, item.source.collection_item_ids))
-                if route is None or not self._route_matches(item.inbound_route, route):
+                unknown_origin_route = (
+                    item_index == 0
+                    and constraints.origin is None
+                    and route is None
+                    and item.inbound_route.duration_seconds is None
+                    and item.inbound_route.distance_meters is None
+                )
+                if not unknown_origin_route and (
+                    route is None or not self._route_matches(item.inbound_route, route)
+                ):
                     violations.add(PlanDraftViolationCode.ROUTE_MISSING_OR_MISMATCHED)
                     continue
-                if (
+                if route is not None and (
                     constraints.transport_modes
                     and route.transport_mode not in constraints.transport_modes
                 ):
                     violations.add(PlanDraftViolationCode.ROUTE_MISSING_OR_MISMATCHED)
-                if item_index == 0 and not self._origin_route_matches_decision(decision, route):
+                if (
+                    item_index == 0
+                    and route is not None
+                    and not self._origin_route_matches_decision(decision, route)
+                ):
                     violations.add(PlanDraftViolationCode.ROUTE_MISSING_OR_MISMATCHED)
 
                 departure = previous_end
                 if item_index == 1:
                     departure += timedelta(seconds=expected_switch)
-                expected_start = departure + timedelta(seconds=route.duration_seconds)
+                expected_start = departure + timedelta(
+                    seconds=0 if route is None else route.duration_seconds
+                )
                 if visit.event_start_at is not None:
                     expected_start = max(expected_start, visit.event_start_at)
                 expected_item_end = expected_start + timedelta(seconds=visit.visit_duration_seconds)
@@ -391,6 +432,8 @@ class PlanDraftService:
                     violations.add(PlanDraftViolationCode.RISK_INVALID)
                 if item.risk_codes != _item_risks(
                     item.price_amount,
+                    budget=constraints.budget,
+                    route_known=item.inbound_route.duration_seconds is not None,
                 ):
                     violations.add(PlanDraftViolationCode.RISK_INVALID)
                 previous_end = item.end_at
@@ -402,13 +445,15 @@ class PlanDraftService:
                 or option.total_cost_currency != expected_currency
             ):
                 violations.add(PlanDraftViolationCode.COST_TOTAL_INVALID)
-            expected_risks = _option_risks(option.items)
+            expected_risks = _option_risks(option.items, facts.weather_status)
             if option.risk_codes != expected_risks or option.risks != tuple(
                 RISK_SUMMARIES[risk] for risk in expected_risks
             ):
                 violations.add(PlanDraftViolationCode.RISK_INVALID)
-            if constraints.budget is not None and (
-                expected_amount is None or expected_amount > constraints.budget
+            if (
+                constraints.budget is not None
+                and expected_amount is not None
+                and expected_amount > constraints.budget
             ):
                 violations.add(PlanDraftViolationCode.BUDGET_VIOLATED)
 
@@ -417,12 +462,21 @@ class PlanDraftService:
         return self._validation(violations)
 
     @staticmethod
-    def _external_risks(candidate: ExternalDraftCandidate) -> tuple[PlanRiskCode, ...]:
+    def _external_risks(
+        candidate: ExternalDraftCandidate,
+        constraints: PlanConstraints,
+    ) -> tuple[PlanRiskCode, ...]:
         risks = (
-            [PlanRiskCode.PRICE_UNKNOWN]
+            [
+                PlanRiskCode.BUDGET_UNVERIFIED
+                if constraints.budget is not None
+                else PlanRiskCode.PRICE_UNKNOWN
+            ]
             if candidate.price_amount is None
             else []
         )
+        if candidate.inbound_route.duration_seconds is None:
+            risks.append(PlanRiskCode.ROUTE_UNKNOWN)
         if candidate.poi.opening_hours_summary is None:
             risks.append(PlanRiskCode.OPENING_HOURS_UNKNOWN)
         return tuple(risks)
@@ -441,7 +495,7 @@ class PlanDraftService:
         route = candidate.inbound_route
         if route.from_collection_item_ids != from_ids:
             return None
-        risks = self._external_risks(candidate)
+        risks = self._external_risks(candidate, constraints)
         reason = (
             PlanSelectionReasonCode.PRIMARY_STABLE_RANK
             if role is PlanItemRole.CORE
@@ -548,26 +602,44 @@ class PlanDraftService:
         # Kept as a narrow helper so generation and validation share the same fact shape.
         visit = candidate_facts.get(decision.collection_item_ids)
         route = routes.get((from_ids, decision.collection_item_ids))
-        if visit is None or route is None:
+        if visit is None or (route is None and (from_ids or constraints.origin is not None)):
             return None
         if decision.kind is CollectionKind.PLACE and (
             visit.event_start_at is not None or visit.event_end_at is not None
         ):
             return None
-        if constraints.transport_modes and route.transport_mode not in constraints.transport_modes:
+        if (
+            route is not None
+            and constraints.transport_modes
+            and route.transport_mode not in constraints.transport_modes
+        ):
             return None
         if decision.any_branch_collection_item_ids and visit.poi_queried_at is None:
             return None
-        if from_ids == () and not self._origin_route_matches_decision(decision, route):
+        if (
+            from_ids == ()
+            and route is not None
+            and not self._origin_route_matches_decision(decision, route)
+        ):
             return None
         inbound_route = PlanRouteLeg(
-            from_collection_item_ids=route.from_collection_item_ids,
-            to_collection_item_ids=route.to_collection_item_ids,
-            duration_seconds=route.duration_seconds,
-            distance_meters=route.distance_meters,
-            transport_mode=route.transport_mode,
+            from_collection_item_ids=() if route is None else route.from_collection_item_ids,
+            to_collection_item_ids=decision.collection_item_ids,
+            duration_seconds=None if route is None else route.duration_seconds,
+            distance_meters=None if route is None else route.distance_meters,
+            transport_mode=(
+                route.transport_mode
+                if route is not None
+                else constraints.transport_modes[0]
+                if constraints.transport_modes
+                else TransportMode.TRANSIT
+            ),
         )
-        risks = _item_risks(decision.price_amount)
+        risks = _item_risks(
+            decision.price_amount,
+            budget=constraints.budget,
+            route_known=route is not None,
+        )
         return self._schedule_known_item(
             role=role,
             title=decision.title,
@@ -618,7 +690,7 @@ class PlanDraftService:
 
         if constraints.transport_modes and route.transport_mode not in constraints.transport_modes:
             return None
-        start_at = earliest_departure + timedelta(seconds=route.duration_seconds)
+        start_at = earliest_departure + timedelta(seconds=route.duration_seconds or 0)
         if event_start_at is not None:
             start_at = max(start_at, event_start_at)
         end_at = start_at + timedelta(seconds=visit_duration_seconds)
@@ -631,8 +703,8 @@ class PlanDraftService:
         prices = [item.price_amount for item in existing_items]
         prices.append(price_amount)
         if constraints.budget is not None and (
-            any(price is None for price in prices)
-            or sum((price for price in prices if price is not None), Decimal()) > constraints.budget
+            sum((price for price in prices if price is not None), Decimal())
+            > constraints.budget
         ):
             return None
         return PlanItem(

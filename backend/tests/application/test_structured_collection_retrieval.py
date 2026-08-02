@@ -1267,16 +1267,21 @@ async def test_unknown_price_flows_from_retrieval_into_draft_by_budget_state() -
     assert decision.price_amount is None
     assert decision.price_currency is None
     assert decision.reason_codes == ()
-    assert with_budget.verification_required[0].reason_codes == (
+    assert with_budget.included[0].reason_codes == (
         CandidateReasonCode.PRICE_UNKNOWN,
     )
-    blocked_draft = PlanDraftService().generate(
+    budget_draft = PlanDraftService().generate(
         constraints=budget_constraints,
         collections=with_budget,
-        facts=PlanDraftFactSnapshot(),
+        facts=_draft_facts(
+            collection_item_ids=decision.collection_item_ids,
+            route_duration_seconds=decision.route_duration_seconds,
+            route_distance_meters=decision.route_distance_meters,
+        ),
     )
-    assert blocked_draft.outcome is not PlanDraftOutcome.GENERATED
-    assert blocked_draft.options == ()
+    assert budget_draft.outcome is PlanDraftOutcome.GENERATED
+    assert budget_draft.options[0].total_cost_amount is None
+    assert budget_draft.options[0].risk_codes == (PlanRiskCode.BUDGET_UNVERIFIED,)
 
     assert decision.route_duration_seconds is not None
     assert decision.route_distance_meters is not None
@@ -1377,10 +1382,10 @@ async def test_explicit_route_weather_and_availability_facts_never_fake_success(
 
     assert expected in result.decisions[0].reason_codes
     if expected in {
-        CandidateReasonCode.ROUTE_PROVIDER_FAILED,
+        CandidateReasonCode.WEATHER_CONFLICT,
         CandidateReasonCode.WEATHER_PROVIDER_FAILED,
     }:
-        assert result.decisions[0].outcome is CandidateOutcome.VERIFICATION_REQUIRED
+        assert result.decisions[0].outcome is CandidateOutcome.INCLUDED
     else:
         assert result.decisions[0].outcome is CandidateOutcome.EXCLUDED
 
@@ -1498,12 +1503,12 @@ async def test_started_event_remains_eligible_when_arrival_precedes_end() -> Non
         (
             RouteAssessment.UNKNOWN,
             CandidateReasonCode.ROUTE_UNKNOWN,
-            CandidateOutcome.VERIFICATION_REQUIRED,
+            CandidateOutcome.INCLUDED,
         ),
         (
             RouteAssessment.PROVIDER_FAILED,
             CandidateReasonCode.ROUTE_PROVIDER_FAILED,
-            CandidateOutcome.VERIFICATION_REQUIRED,
+            CandidateOutcome.EXCLUDED,
         ),
     ],
 )
@@ -1808,7 +1813,11 @@ async def test_resolved_any_branch_still_applies_candidate_hard_rules(
         now=NOW,
     )
 
-    assert result.decisions[0].outcome is CandidateOutcome.EXCLUDED
+    assert result.decisions[0].outcome is (
+        CandidateOutcome.INCLUDED
+        if failed_rule == "weather"
+        else CandidateOutcome.EXCLUDED
+    )
     expected_reason = {
         "weather": CandidateReasonCode.WEATHER_CONFLICT,
         "availability": CandidateReasonCode.PLACE_UNAVAILABLE,
@@ -2020,6 +2029,7 @@ def _map_fact_provider(
     constraints: PlanConstraints,
     search_pois: tuple[Poi, ...] = (),
     search_timeout: bool = False,
+    weather_timeout: bool = False,
     calls: list[object] | None = None,
 ) -> StubMapProvider:
     route_request = RouteRequest(
@@ -2073,7 +2083,14 @@ def _map_fact_provider(
                 temperature_celsius=28,
             )
         },
-        timeout_requests=(search_request,) if search_timeout else (),
+        timeout_requests=tuple(
+            request
+            for request, timed_out in (
+                (search_request, search_timeout),
+                (weather_request, weather_timeout),
+            )
+            if timed_out
+        ),
         call_hook=record,
     )
 
@@ -2167,6 +2184,10 @@ async def test_map_fact_chain_includes_date_range_event_with_visit_duration(
     assert result.draft.candidates[0].event_end_at is None
     assert sum(isinstance(call, RouteRequest) for call in calls) == 1
     assert sum(isinstance(call, WeatherRequest) for call in calls) == 1
+    assert result.draft.weather_status is WeatherAssessment.COMPATIBLE
+    assert result.draft.weather_source == "amap"
+    assert result.draft.weather_queried_at is not None
+    assert result.draft.weather_summary == "晴"
 
     retrieval_service, _ = _service([event])
     retrieval = await retrieval_service.retrieve(
@@ -2184,6 +2205,224 @@ async def test_map_fact_chain_includes_date_range_event_with_visit_duration(
     assert draft.outcome is PlanDraftOutcome.GENERATED
     assert draft.options[0].items[0].start_at == START + timedelta(minutes=10)
     assert draft.options[0].items[0].end_at == START + timedelta(minutes=70)
+
+
+@pytest.mark.asyncio
+async def test_weather_provider_failure_is_frozen_as_non_blocking_plan_risk(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    poi = _poi("poi_weather_failure").model_copy(
+        update={"opening_hours_summary": "开放时间已确认"}
+    )
+    item = _place(user_id, poi=poi)
+    constraints = _constraints(origin=ORIGIN)
+    facts = await _resolve_map_facts(
+        database_url=retrieval_database,
+        user_id=user_id,
+        items=(item,),
+        constraints=constraints,
+        provider=_map_fact_provider(
+            constraints=constraints,
+            weather_timeout=True,
+        ),
+    )
+    retrieval, _ = _service([item])
+    collections = await retrieval.retrieve(
+        user_id=user_id,
+        constraints=constraints,
+        facts=facts.retrieval,
+        now=NOW,
+    )
+    draft = PlanDraftService().generate(
+        constraints=constraints,
+        collections=collections,
+        facts=facts.draft,
+    )
+
+    assert collections.decisions[0].outcome is CandidateOutcome.INCLUDED
+    assert draft.outcome is PlanDraftOutcome.GENERATED
+    assert draft.weather_status is WeatherAssessment.PROVIDER_FAILED
+    assert draft.weather_source == "amap"
+    assert draft.weather_queried_at is not None
+    assert draft.weather_summary == "The map provider request timed out."
+    assert PlanRiskCode.WEATHER_PROVIDER_FAILED in draft.options[0].risk_codes
+
+
+@pytest.mark.asyncio
+async def test_area_only_plan_never_queries_or_fakes_an_origin_route(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    poi = _poi("poi_area_only").model_copy(
+        update={"opening_hours_summary": "开放时间已确认"}
+    )
+    item = _place(user_id, poi=poi)
+    constraints = _constraints(origin=None)
+    calls: list[object] = []
+    facts = await _resolve_map_facts(
+        database_url=retrieval_database,
+        user_id=user_id,
+        items=(item,),
+        constraints=constraints,
+        provider=_map_fact_provider(constraints=constraints, calls=calls),
+    )
+    retrieval, _ = _service([item])
+    collections = await retrieval.retrieve(
+        user_id=user_id,
+        constraints=constraints,
+        facts=facts.retrieval,
+        now=NOW,
+    )
+    draft = PlanDraftService().generate(
+        constraints=constraints,
+        collections=collections,
+        facts=facts.draft,
+    )
+
+    assert not any(isinstance(call, RouteRequest) for call in calls)
+    assert collections.decisions[0].reason_codes == (CandidateReasonCode.ROUTE_UNKNOWN,)
+    assert draft.outcome is PlanDraftOutcome.GENERATED
+    route = draft.options[0].items[0].inbound_route
+    assert route.duration_seconds is None
+    assert route.distance_meters is None
+    assert PlanRiskCode.ROUTE_UNKNOWN in draft.options[0].risk_codes
+
+
+@pytest.mark.asyncio
+async def test_one_failed_origin_route_excludes_only_that_candidate(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    failed_poi = _poi("poi_route_failed").model_copy(
+        update={
+            "opening_hours_summary": "开放时间已确认",
+            "coordinate": Coordinate(
+                latitude=22.54,
+                longitude=114.04,
+                coordinate_system=CoordinateSystem.GCJ_02,
+            )
+        }
+    )
+    working_poi = _poi("poi_route_working").model_copy(
+        update={
+            "opening_hours_summary": "开放时间已确认",
+            "coordinate": Coordinate(
+                latitude=22.55,
+                longitude=114.05,
+                coordinate_system=CoordinateSystem.GCJ_02,
+            )
+        }
+    )
+    failed = _place(user_id, title="路线失败", poi=failed_poi)
+    working = _place(user_id, title="路线成功", poi=working_poi)
+    constraints = _constraints(origin=ORIGIN)
+    mode = TransportMode.TRANSIT
+    route_request = RouteRequest(
+        city=constraints.city_scope,
+        origin=ORIGIN,
+        destination=working_poi.coordinate,
+        mode=mode,
+    )
+    weather_request = WeatherRequest(
+        city=constraints.city_scope,
+        on_date=constraints.start_at.date(),
+    )
+    provider = StubMapProvider(
+        route_results={
+            route_request: RouteResult(
+                city_code=constraints.city_code.value,
+                origin=route_request.origin,
+                destination=route_request.destination,
+                mode=mode,
+                distance_meters=900,
+                duration_seconds=600,
+            )
+        },
+        weather_results={
+            weather_request: WeatherResult(
+                city_code=constraints.city_code.value,
+                on_date=constraints.start_at.date(),
+                condition="晴",
+                temperature_celsius=28,
+            )
+        },
+    )
+    facts = await _resolve_map_facts(
+        database_url=retrieval_database,
+        user_id=user_id,
+        items=(failed, working),
+        constraints=constraints,
+        provider=provider,
+    )
+    retrieval, _ = _service([failed, working])
+    collections = await retrieval.retrieve(
+        user_id=user_id,
+        constraints=constraints,
+        facts=facts.retrieval,
+        now=NOW,
+    )
+    draft = PlanDraftService().generate(
+        constraints=constraints,
+        collections=collections,
+        facts=facts.draft,
+    )
+
+    assert collections.included[0].title == "路线成功"
+    assert collections.excluded[0].reason_codes == (
+        CandidateReasonCode.ROUTE_PROVIDER_FAILED,
+    )
+    assert draft.outcome is PlanDraftOutcome.GENERATED
+    assert draft.options[0].items[0].title == "路线成功"
+
+
+@pytest.mark.asyncio
+async def test_all_failed_origin_routes_report_the_route_reason(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    poi = _poi("poi_all_routes_failed").model_copy(
+        update={"opening_hours_summary": "开放时间已确认"}
+    )
+    item = _place(user_id, poi=poi)
+    constraints = _constraints(origin=ORIGIN)
+    weather_request = WeatherRequest(
+        city=constraints.city_scope,
+        on_date=constraints.start_at.date(),
+    )
+    facts = await _resolve_map_facts(
+        database_url=retrieval_database,
+        user_id=user_id,
+        items=(item,),
+        constraints=constraints,
+        provider=StubMapProvider(
+            weather_results={
+                weather_request: WeatherResult(
+                    city_code=constraints.city_code.value,
+                    on_date=constraints.start_at.date(),
+                    condition="晴",
+                    temperature_celsius=28,
+                )
+            }
+        ),
+    )
+    retrieval, _ = _service([item])
+    collections = await retrieval.retrieve(
+        user_id=user_id,
+        constraints=constraints,
+        facts=facts.retrieval,
+        now=NOW,
+    )
+    draft = PlanDraftService().generate(
+        constraints=constraints,
+        collections=collections,
+        facts=facts.draft,
+    )
+
+    assert draft.outcome is PlanDraftOutcome.NOT_GENERATED
+    assert draft.exclusions[0].reason_codes == (
+        CandidateReasonCode.ROUTE_PROVIDER_FAILED,
+    )
 
 
 @pytest.mark.asyncio

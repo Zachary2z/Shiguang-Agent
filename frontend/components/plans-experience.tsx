@@ -32,8 +32,8 @@ type PlanItem = {
   end_at: string;
   visit_duration_seconds: number;
   inbound_route: {
-    duration_seconds: number;
-    distance_meters: number;
+    duration_seconds: number | null;
+    distance_meters: number | null;
     transport_mode: string;
   };
   price_amount: string | null;
@@ -69,7 +69,14 @@ type Plan = {
     collection_only: boolean;
   };
   adjustment_text: string | null;
-  draft: { options: PlanOption[]; exclusions: unknown[] } | null;
+  draft: {
+    options: PlanOption[];
+    exclusions: unknown[];
+    weather_status?: "compatible" | "conflict" | "unknown" | "provider_failed" | null;
+    weather_source?: string | null;
+    weather_queried_at?: string | null;
+    weather_summary?: string | null;
+  } | null;
   trace_id: string;
   events_url: `/${string}`;
   result_url: `/${string}`;
@@ -247,6 +254,12 @@ function clock(value: string) {
 
 function distance(value: number) {
   return value >= 1000 ? `${(value / 1000).toFixed(1)} km` : `${value} m`;
+}
+
+function routeLabel(route: PlanItem["inbound_route"]) {
+  if (route.duration_seconds === null) return "首段路线待确认（未提供精确起点）";
+  const mode = transportLabels[route.transport_mode] ?? route.transport_mode;
+  return `抵达：${mode} · ${Math.round(route.duration_seconds / 60)} 分钟 · ${distance(route.distance_meters ?? 0)}`;
 }
 
 export function PlansExperience() {
@@ -705,6 +718,9 @@ export function PlansExperience() {
     "partially_completed",
     "not_completed",
   ].includes(plan.status);
+  const priorConfirmed = plan?.versions.filter((version) =>
+    ["confirmed", "completed", "partially_completed", "not_completed"].includes(version.status),
+  ).at(-1);
 
   async function loadExecution() {
     if (!plan) return;
@@ -969,13 +985,20 @@ export function PlansExperience() {
                     <div className="rail-card">
                       <div className="rail-title"><h3>{item.title}</h3><span className={item.source.kind === "external_place" ? "source-external" : "source-collection"}>{item.source.kind === "external_place" ? item.source.source_label ?? "外部补充 · 未收藏" : "来自收藏"}</span></div>
                       <p>{clock(item.start_at)}—{clock(item.end_at)} · 停留 {Math.round(item.visit_duration_seconds / 60)} 分钟</p>
-                      <p>抵达：{transportLabels[item.inbound_route.transport_mode] ?? item.inbound_route.transport_mode} · {Math.round(item.inbound_route.duration_seconds / 60)} 分钟 · {distance(item.inbound_route.distance_meters)}</p>
+                      <p>{routeLabel(item.inbound_route)}</p>
                       <p className="selection-reason">{item.selection_reason}</p>
                       {item.risks.length > 0 && <ul className="risk-list">{item.risks.map((risk) => <li key={risk}>{risk}</li>)}</ul>}
                     </div>
                   </li>
                 ))}
               </ol>
+              {plan.draft.weather_status && (
+                <p className="option-risk">
+                  天气事实：{plan.draft.weather_summary ?? plan.draft.weather_status}
+                  {plan.draft.weather_source ? ` · ${plan.draft.weather_source}` : ""}
+                  {plan.draft.weather_queried_at ? ` · ${new Date(plan.draft.weather_queried_at).toLocaleString("zh-CN")}` : ""}
+                </p>
+              )}
               {option.risks.length > 0 && <p className="option-risk">出发前留意：{option.risks.join("；")}</p>}
             </article>
           )}
@@ -987,7 +1010,10 @@ export function PlansExperience() {
             </form>
           )}
           <div className="plan-confirm-bar">
-            <div><strong>{executable ? "这一版已确认" : plan.is_current_version ? "确认当前版本" : "这是历史版本"}</strong><span>{executable ? "执行入口与反馈只属于这一确认版本" : "未确认计划不会产生执行动作"}</span></div>
+            <div>
+              <strong>{executable ? "这一版已确认" : priorConfirmed && plan.is_current_version ? "已有确认版本，但有新草案" : plan.is_current_version ? "确认当前版本" : "这是历史版本"}</strong>
+              <span>{executable ? "执行入口与反馈只属于这一确认版本" : priorConfirmed && plan.is_current_version ? `V${priorConfirmed.version} 仍是日历、路线和分享的执行版本` : "未确认计划不会产生执行动作"}</span>
+            </div>
             <button className="primary-button" type="button" disabled={!plan.is_current_version || plan.status !== "draft"} onClick={() => void confirmPlan()}>{executable ? "已确认" : "明确确认 V" + plan.version}</button>
           </div>
         </>

@@ -16,6 +16,10 @@ const active: PublicPlanShare = {
     total_cost_amount: "88.00",
     total_cost_currency: "CNY",
     risks: ["雨天注意路滑"],
+    weather_status: "compatible",
+    weather_source: "amap",
+    weather_queried_at: "2026-07-29T01:30:00Z",
+    weather_summary: "晴，28°C",
     expires_at: "2026-08-06T10:00:00Z",
     items: [
       {
@@ -73,6 +77,7 @@ describe("PublicShareExperience", () => {
     );
     expect(screen.getByText("V2")).toBeInTheDocument();
     expect(screen.getByText("南山区望海路")).toBeInTheDocument();
+    expect(screen.getByText(/晴，28°C.*amap/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "查看路线" })).toHaveAttribute(
       "rel",
       "noreferrer",

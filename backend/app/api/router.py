@@ -918,7 +918,7 @@ async def get_plan_execution(
     map_provider = request.app.state.map_provider
     if map_provider is None:
         raise PlanProviderNotConfiguredError
-    items = await PlanNavigationService().list_entries(
+    execution_plan_id, items = await PlanNavigationService().list_entries(
         session=session,
         user_id=user_id,
         plan_id=plan_id,
@@ -927,9 +927,13 @@ async def get_plan_execution(
     feedback = await PlanFeedbackService().current(
         session=session,
         user_id=user_id,
-        plan_id=plan_id,
+        plan_id=execution_plan_id,
     )
-    return PlanExecutionResponse(plan_id=plan_id, items=items, feedback=feedback)
+    return PlanExecutionResponse(
+        plan_id=execution_plan_id,
+        items=items,
+        feedback=feedback,
+    )
 
 
 @api_router.post(

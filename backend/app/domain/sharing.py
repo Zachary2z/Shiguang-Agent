@@ -47,8 +47,8 @@ class SharedPlanItem(ShareContract):
     public_address: str | None = Field(default=None, max_length=500)
     visit_duration_seconds: int = Field(gt=0)
     transport_mode: TransportMode
-    travel_duration_seconds: int = Field(ge=0)
-    travel_distance_meters: int = Field(ge=0)
+    travel_duration_seconds: int | None = Field(default=None, ge=0)
+    travel_distance_meters: int | None = Field(default=None, ge=0)
     buffer_after_seconds: int = Field(ge=0)
     price_amount: Decimal | None = Field(default=None, ge=0)
     price_currency: str | None = Field(default=None, pattern=r"^CNY$")
@@ -68,6 +68,10 @@ class SharedPlanItem(ShareContract):
             raise ValueError("shared item end must follow start")
         if (self.price_amount is None) is not (self.price_currency is None):
             raise ValueError("shared price amount and currency must be paired")
+        if (self.travel_duration_seconds is None) is not (
+            self.travel_distance_meters is None
+        ):
+            raise ValueError("shared route duration and distance must be paired")
         return self
 
 
@@ -82,6 +86,10 @@ class SharedPlanSnapshot(ShareContract):
     total_cost_amount: Decimal | None = Field(default=None, ge=0)
     total_cost_currency: str | None = Field(default=None, pattern=r"^CNY$")
     risks: tuple[str, ...] = ()
+    weather_status: str | None = Field(default=None, max_length=32)
+    weather_source: str | None = Field(default=None, max_length=80)
+    weather_queried_at: datetime | None = None
+    weather_summary: str | None = Field(default=None, max_length=240)
     expires_at: datetime
 
     @field_validator(
@@ -90,10 +98,11 @@ class SharedPlanSnapshot(ShareContract):
         "start_at",
         "end_at",
         "expires_at",
+        "weather_queried_at",
     )
     @classmethod
-    def normalize_times(cls, value: datetime) -> datetime:
-        return require_aware_utc(value)
+    def normalize_times(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else require_aware_utc(value)
 
     @model_validator(mode="after")
     def validate_shape(self) -> SharedPlanSnapshot:

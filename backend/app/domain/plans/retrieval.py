@@ -297,7 +297,7 @@ _EXCLUSION_REASONS = frozenset(
         CandidateReasonCode.BUDGET_EXCEEDED,
         CandidateReasonCode.ROUTE_UNREACHABLE,
         CandidateReasonCode.ROUTE_EXCEEDS_TIME_WINDOW,
-        CandidateReasonCode.WEATHER_CONFLICT,
+        CandidateReasonCode.ROUTE_PROVIDER_FAILED,
         CandidateReasonCode.PLACE_UNAVAILABLE,
         CandidateReasonCode.BRANCH_NOT_FOUND,
         CandidateReasonCode.BRANCH_PROVIDER_FAILED,
@@ -305,11 +305,21 @@ _EXCLUSION_REASONS = frozenset(
     }
 )
 
+_NON_BLOCKING_REASONS = frozenset(
+    {
+        CandidateReasonCode.PRICE_UNKNOWN,
+        CandidateReasonCode.WEATHER_CONFLICT,
+        CandidateReasonCode.WEATHER_UNKNOWN,
+        CandidateReasonCode.WEATHER_PROVIDER_FAILED,
+        CandidateReasonCode.ROUTE_UNKNOWN,
+    }
+)
+
 
 def outcome_for_reasons(reasons: tuple[CandidateReasonCode, ...]) -> CandidateOutcome:
     if any(reason in _EXCLUSION_REASONS for reason in reasons):
         return CandidateOutcome.EXCLUDED
-    if reasons:
+    if any(reason not in _NON_BLOCKING_REASONS for reason in reasons):
         return CandidateOutcome.VERIFICATION_REQUIRED
     return CandidateOutcome.INCLUDED
 

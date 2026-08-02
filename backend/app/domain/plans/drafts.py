@@ -13,7 +13,7 @@ from app.domain.collections import CollectionKind, validate_cny_price_pair
 from app.domain.identifiers import validate_collection_item_id
 from app.domain.places import Poi, PoiProvider, TransportMode
 from app.domain.plans.contracts import PlanContract
-from app.domain.plans.retrieval import CandidateReasonCode
+from app.domain.plans.retrieval import CandidateReasonCode, WeatherAssessment
 from app.domain.time import require_aware_utc
 
 MIN_SWITCH_BUFFER_SECONDS = 10 * 60
@@ -98,6 +98,15 @@ class PlanDraftFactSnapshot(PlanContract):
 
     candidates: tuple[DraftCandidateFacts, ...] = Field(default_factory=tuple)
     routes: tuple[DraftRouteFacts, ...] = Field(default_factory=tuple)
+    weather_status: WeatherAssessment | None = None
+    weather_source: str | None = Field(default=None, min_length=1, max_length=80)
+    weather_queried_at: datetime | None = None
+    weather_summary: str | None = Field(default=None, min_length=1, max_length=240)
+
+    @field_validator("weather_queried_at")
+    @classmethod
+    def normalize_weather_time(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else require_aware_utc(value)
 
     @model_validator(mode="after")
     def require_unique_facts(self) -> Self:
@@ -107,6 +116,14 @@ class PlanDraftFactSnapshot(PlanContract):
             raise ValueError("candidate facts must be unique")
         if len(set(route_ids)) != len(route_ids):
             raise ValueError("route facts must be unique")
+        if len(
+            {
+                self.weather_status is None,
+                self.weather_source is None,
+                self.weather_queried_at is None,
+            }
+        ) != 1:
+            raise ValueError("weather status, source, and query time must be present together")
         return self
 
 
@@ -168,11 +185,23 @@ SELECTION_REASON_SUMMARIES: dict[PlanSelectionReasonCode, str] = {
 
 class PlanRiskCode(StrEnum):
     PRICE_UNKNOWN = "PRICE_UNKNOWN"
+    BUDGET_UNVERIFIED = "BUDGET_UNVERIFIED"
+    WEATHER_UNKNOWN = "WEATHER_UNKNOWN"
+    WEATHER_PROVIDER_FAILED = "WEATHER_PROVIDER_FAILED"
+    ROUTE_UNKNOWN = "ROUTE_UNKNOWN"
     OPENING_HOURS_UNKNOWN = "OPENING_HOURS_UNKNOWN"
 
 
 RISK_SUMMARIES: dict[PlanRiskCode, str] = {
     PlanRiskCode.PRICE_UNKNOWN: "The item price needs confirmation.",
+    PlanRiskCode.BUDGET_UNVERIFIED: (
+        "The plan budget cannot be verified until the price is confirmed."
+    ),
+    PlanRiskCode.WEATHER_UNKNOWN: "Weather conditions are not available for this plan.",
+    PlanRiskCode.WEATHER_PROVIDER_FAILED: "Weather information is temporarily unavailable.",
+    PlanRiskCode.ROUTE_UNKNOWN: (
+        "The first route is unknown because no precise origin was provided."
+    ),
     PlanRiskCode.OPENING_HOURS_UNKNOWN: "The opening hours need confirmation.",
 }
 
@@ -193,8 +222,8 @@ class PlanRouteLeg(PlanContract):
     to_collection_item_ids: tuple[str, ...] = Field(default_factory=tuple)
     to_external_provider: PoiProvider | None = None
     to_external_poi_id: str | None = Field(default=None, min_length=1, max_length=128)
-    duration_seconds: int = Field(ge=0)
-    distance_meters: int = Field(ge=0)
+    duration_seconds: int | None = Field(default=None, ge=0)
+    distance_meters: int | None = Field(default=None, ge=0)
     transport_mode: TransportMode
 
     @field_validator("from_collection_item_ids")
@@ -214,6 +243,8 @@ class PlanRouteLeg(PlanContract):
         )
         if (not self.to_collection_item_ids) is not has_external:
             raise ValueError("route requires exactly one collection or external target")
+        if (self.duration_seconds is None) is not (self.distance_meters is None):
+            raise ValueError("route duration and distance must be known together")
         return self
 
 
@@ -362,9 +393,26 @@ class PlanDraftResult(PlanContract):
     exclusions: tuple[PlanDraftExclusion, ...] = Field(default_factory=tuple)
     failure_code: PlanDraftFailureCode | None = None
     failure_summary: str | None = None
+    weather_status: WeatherAssessment | None = None
+    weather_source: str | None = Field(default=None, min_length=1, max_length=80)
+    weather_queried_at: datetime | None = None
+    weather_summary: str | None = Field(default=None, min_length=1, max_length=240)
+
+    @field_validator("weather_queried_at")
+    @classmethod
+    def normalize_weather_time(cls, value: datetime | None) -> datetime | None:
+        return None if value is None else require_aware_utc(value)
 
     @model_validator(mode="after")
     def validate_result_shape(self) -> Self:
+        if len(
+            {
+                self.weather_status is None,
+                self.weather_source is None,
+                self.weather_queried_at is None,
+            }
+        ) != 1:
+            raise ValueError("weather status, source, and query time must be present together")
         if self.outcome is PlanDraftOutcome.GENERATED:
             if (
                 not self.options

@@ -272,6 +272,73 @@ async def test_calendar_and_navigation_are_stable_safe_and_parseable(test_settin
 
 
 @pytest.mark.asyncio
+async def test_calendar_and_navigation_follow_latest_confirmed_version(
+    test_settings,
+) -> None:
+    async with _client(test_settings) as (api, client):
+        api.state.map_provider = make_stub_map_provider()
+        await _demo(client)
+        root_id, collection_id, _item_ids = await _seed_plan(api, confirmed=True)
+        database = api.state.demo_database
+        async with database.session_factory() as session:
+            user_id = await session.scalar(select(UserModel.id))
+            assert user_id is not None
+            now = datetime(2026, 7, 28, 3, tzinfo=UTC)
+            adjusted_id = generate_plan_id()
+            adjusted = PlanVersion(
+                id=adjusted_id,
+                root_plan_id=root_id,
+                parent_plan_id=root_id,
+                user_id=user_id,
+                version=2,
+                operation=PlanOperation.ADJUST,
+                status=PlanStatus.GENERATING,
+                constraints=_constraints(),
+                adjustment_text="稍微调整",
+                trace_id=generate_trace_id(),
+                idempotency_key=f"seed-{adjusted_id}",
+                created_at=now,
+                updated_at=now,
+            )
+            repository = SqlAlchemyPlanRepository(session)
+            await repository.add(
+                adjusted,
+                request_fingerprint=plan_request_fingerprint("adjusted"),
+            )
+            await repository.complete_generation(
+                user_id=user_id,
+                plan_id=adjusted_id,
+                draft=_draft(collection_id),
+                now=now,
+            )
+            await session.commit()
+
+        before_calendar = await client.get(f"/api/v1/plans/{adjusted_id}/calendar.ics")
+        before_execution = await client.get(f"/api/v1/plans/{adjusted_id}/execution")
+        assert before_calendar.status_code == before_execution.status_code == 200
+        assert f"UID:{root_id}@shiguang.local" in before_calendar.text
+        assert before_execution.json()["plan_id"] == root_id
+
+        async with database.session_factory() as session:
+            user_id = await session.scalar(select(UserModel.id))
+            assert user_id is not None
+            await SqlAlchemyPlanRepository(session).confirm(
+                user_id=user_id,
+                plan_id=adjusted_id,
+                idempotency_key=f"confirm-{adjusted_id}",
+                request_fingerprint=plan_request_fingerprint("confirm-adjusted"),
+                now=datetime(2026, 7, 28, 4, tzinfo=UTC),
+            )
+            await session.commit()
+
+        after_calendar = await client.get(f"/api/v1/plans/{root_id}/calendar.ics")
+        after_execution = await client.get(f"/api/v1/plans/{root_id}/execution")
+        assert after_calendar.status_code == after_execution.status_code == 200
+        assert f"UID:{adjusted_id}@shiguang.local" in after_calendar.text
+        assert after_execution.json()["plan_id"] == adjusted_id
+
+
+@pytest.mark.asyncio
 async def test_partial_feedback_correction_is_audited_and_recomputes_collection(
     test_settings,
 ) -> None:

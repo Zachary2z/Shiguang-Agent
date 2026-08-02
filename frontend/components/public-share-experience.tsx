@@ -94,8 +94,9 @@ function ActiveShare({ plan }: { plan: SharedPlanSnapshot }) {
                 <p>{clock(item.start_at)}—{clock(item.end_at)} · 停留 {minutes(item.visit_duration_seconds)}</p>
                 {item.public_address && <address>{item.public_address}</address>}
                 <p>
-                  抵达：{transportLabels[item.transport_mode] ?? item.transport_mode} · {minutes(item.travel_duration_seconds)}
-                  {item.travel_distance_meters > 0 ? ` · ${(item.travel_distance_meters / 1000).toFixed(1)} km` : ""}
+                  {item.travel_duration_seconds === null
+                    ? "首段路线待确认（未提供精确起点）"
+                    : `抵达：${transportLabels[item.transport_mode] ?? item.transport_mode} · ${minutes(item.travel_duration_seconds)}${item.travel_distance_meters && item.travel_distance_meters > 0 ? ` · ${(item.travel_distance_meters / 1000).toFixed(1)} km` : ""}`}
                 </p>
                 {item.buffer_after_seconds > 0 && <p>预留缓冲 {minutes(item.buffer_after_seconds)}</p>}
                 <p>费用：{item.price_amount === null ? "待确认" : `¥${item.price_amount}`}</p>
@@ -106,6 +107,16 @@ function ActiveShare({ plan }: { plan: SharedPlanSnapshot }) {
             </li>
           ))}
         </ol>
+        {plan.weather_status && (
+          <aside className="public-risks">
+            <strong>天气事实</strong>
+            <p>
+              {plan.weather_summary ?? plan.weather_status}
+              {plan.weather_source ? ` · ${plan.weather_source}` : ""}
+              {plan.weather_queried_at ? ` · ${dateTime(plan.weather_queried_at)}` : ""}
+            </p>
+          </aside>
+        )}
         {plan.risks.length > 0 && <aside className="public-risks"><strong>出发前留意</strong><p>{plan.risks.join("；")}</p></aside>}
       </section>
 

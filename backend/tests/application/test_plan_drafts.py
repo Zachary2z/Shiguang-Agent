@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -19,7 +20,7 @@ from app.domain.places import (
     PoiType,
     TransportMode,
 )
-from app.domain.plans import ActivityArea, PlanConstraints, PlanPace
+from app.domain.plans import ActivityArea, PlanConstraints, PlanPace, WeatherAssessment
 from app.domain.plans.drafts import (
     DraftCandidateFacts,
     DraftRouteFacts,
@@ -320,6 +321,94 @@ def test_unknown_price_is_never_rewritten_as_zero() -> None:
     assert PlanDraftViolationCode.RISK_INVALID in validation.violations
 
 
+def test_free_price_remains_known_zero_cny() -> None:
+    draft, _, _, _ = _generate((_decision(1, price=Decimal("0")),))
+
+    item = draft.options[0].items[0]
+    assert item.price_amount == Decimal("0")
+    assert item.price_currency == "CNY"
+    assert draft.options[0].total_cost_amount == Decimal("0")
+    assert draft.options[0].risk_codes == ()
+
+
+@pytest.mark.parametrize(
+    ("status", "risk"),
+    [
+        (WeatherAssessment.UNKNOWN, PlanRiskCode.WEATHER_UNKNOWN),
+        (WeatherAssessment.PROVIDER_FAILED, PlanRiskCode.WEATHER_PROVIDER_FAILED),
+    ],
+)
+def test_weather_unknown_and_failure_are_snapshotted_non_blocking_risks(
+    status: WeatherAssessment,
+    risk: PlanRiskCode,
+) -> None:
+    decision = _decision(1)
+    facts = _facts((decision,)).model_copy(
+        update={
+            "weather_status": status,
+            "weather_source": "amap",
+            "weather_queried_at": QUERY_TIME,
+            "weather_summary": "The map provider request timed out.",
+        }
+    )
+    draft, collections, constraints, _ = _generate(
+        (decision,),
+        facts=facts,
+    )
+
+    assert draft.outcome is PlanDraftOutcome.GENERATED
+    assert draft.weather_status is status
+    assert draft.weather_source == "amap"
+    assert draft.weather_queried_at == QUERY_TIME
+    assert draft.weather_summary == "The map provider request timed out."
+    assert risk in draft.options[0].risk_codes
+    assert PlanDraftService().validate(
+        draft=draft,
+        constraints=constraints,
+        collections=collections,
+        facts=facts,
+    ).is_valid
+
+
+def test_old_draft_json_without_weather_fields_reads_as_none() -> None:
+    draft, _, _, _ = _generate((_decision(1),))
+    payload = draft.model_dump(mode="json", exclude_none=True)
+
+    restored = type(draft).model_validate_json(json.dumps(payload))
+
+    assert restored.weather_status is None
+    assert restored.weather_source is None
+    assert restored.weather_queried_at is None
+    assert restored.weather_summary is None
+
+
+def test_area_only_plan_keeps_first_route_unknown_without_zero_facts() -> None:
+    decision = _decision(1).model_copy(
+        update={"route_duration_seconds": None, "route_distance_meters": None}
+    )
+    facts = PlanDraftFactSnapshot(
+        candidates=(
+            DraftCandidateFacts(
+                collection_item_ids=decision.collection_item_ids,
+                visit_duration_seconds=3600,
+            ),
+        ),
+    )
+    draft, collections, constraints, _ = _generate((decision,), facts=facts)
+
+    item = draft.options[0].items[0]
+    assert draft.outcome is PlanDraftOutcome.GENERATED
+    assert item.inbound_route.duration_seconds is None
+    assert item.inbound_route.distance_meters is None
+    assert PlanRiskCode.ROUTE_UNKNOWN in item.risk_codes
+    assert PlanDraftService().validate(
+        draft=draft,
+        constraints=constraints,
+        collections=collections,
+        facts=facts,
+    ).is_valid
+
+
 @pytest.mark.parametrize(
     ("price_amount", "price_currency"),
     [(None, "CNY"), (Decimal("35"), None), (Decimal("35"), "USD")],
@@ -349,7 +438,7 @@ def test_retrieval_decisions_and_plan_items_reject_noncanonical_price_pairs(
 def test_excluded_and_verification_required_candidates_never_enter_options() -> None:
     included = _decision(1)
     excluded = _excluded(2)
-    verification_code = CandidateReasonCode.PRICE_UNKNOWN
+    verification_code = CandidateReasonCode.AVAILABILITY_UNKNOWN
     verification = CollectionCandidateDecision(
         outcome=CandidateOutcome.VERIFICATION_REQUIRED,
         reason_codes=(verification_code,),

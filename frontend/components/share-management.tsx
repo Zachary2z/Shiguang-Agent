@@ -218,11 +218,9 @@ export function ShareManagement({ planId, csrfToken }: ShareManagementProps) {
                 <span>{dateTime(item.start_at)}—{dateTime(item.end_at)}</span>
                 <span>{item.public_address ?? "不公开详细地址"}</span>
                 <span>
-                  {transportLabels[item.transport_mode] ?? item.transport_mode}
-                  {" "}{Math.round(item.travel_duration_seconds / 60)} 分钟
-                  {item.travel_distance_meters > 0
-                    ? ` · ${(item.travel_distance_meters / 1000).toFixed(1)} km`
-                    : ""} ·
+                  {item.travel_duration_seconds === null
+                    ? "首段路线待确认（未提供精确起点）"
+                    : `${transportLabels[item.transport_mode] ?? item.transport_mode} ${Math.round(item.travel_duration_seconds / 60)} 分钟${item.travel_distance_meters && item.travel_distance_meters > 0 ? ` · ${(item.travel_distance_meters / 1000).toFixed(1)} km` : ""}`} ·
                   缓冲 {Math.round(item.buffer_after_seconds / 60)} 分钟 ·
                   费用 {item.price_amount === null ? "待确认" : `¥${item.price_amount}`}
                 </span>
