@@ -129,21 +129,6 @@ const locationClueLabels: Readonly<Record<string, string>> = {
   metro_station: "地铁站",
 };
 const locationClueFields = Object.keys(locationClueLabels);
-function eventTimeNeedsAttention(item: CollectionItem): boolean {
-  const exactSessionExists = Boolean(
-    item.event_start_at && item.event_end_at,
-  );
-  return (
-    item.missing_fields.some((field) =>
-      exactSessionExists
-        ? field === "event_start_at" || field === "event_end_at"
-        : field === "event_start_date" || field === "event_end_date",
-    ) ||
-    item.uncertainties.some((entry) =>
-      eventTemporalFields.includes(entry.field),
-    )
-  );
-}
 
 function planningExclusionLabel(item: CollectionItem): string {
   return (
@@ -762,13 +747,19 @@ export function CollectionsExperience() {
       return;
     }
     const startAt =
-      exactSessionExists && draftEventStartAt && currentStartAt
+      exactSessionExists &&
+      draftEventStartAt &&
+      draftEventEndAt &&
+      currentStartAt
         ? !draftEventStartAtDirty && detail.item.event_start_at
           ? detail.item.event_start_at
           : shanghaiDateAndTimeToIso(currentStartAt.date, draftEventStartAt)
         : null;
     const endAt =
-      exactSessionExists && draftEventEndAt && currentEndAt
+      exactSessionExists &&
+      draftEventStartAt &&
+      draftEventEndAt &&
+      currentEndAt
         ? !draftEventEndAtDirty && detail.item.event_end_at
           ? detail.item.event_end_at
           : shanghaiDateAndTimeToIso(currentEndAt.date, draftEventEndAt)
@@ -789,7 +780,7 @@ export function CollectionsExperience() {
     ] as const) {
       if (draft || current) changes[field] = draft || null;
     }
-    if (exactSessionExists) {
+    if (detail.item.event_start_at || detail.item.event_end_at) {
       changes.event_start_at = startAt;
       changes.event_end_at = endAt;
     }
@@ -1234,7 +1225,8 @@ export function CollectionsExperience() {
                       <div>
                         <strong>确认活动时间</strong>
                         <p>
-                          {eventTimeNeedsAttention(detail.item)
+                          {detail.item.planning_exclusion_reason ===
+                          "event_time_unconfirmed"
                             ? "以下是模型建议。即使内容正确，也需要你明确确认后才能用于计划。"
                             : "以下是已保存的活动时间；修改后需要再次明确保存。"}
                         </p>
