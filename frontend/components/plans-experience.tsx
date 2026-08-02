@@ -772,7 +772,8 @@ export function PlansExperience() {
       setFeedback("部分完成需要选择至少一项、但不能选择全部地点。");
       return;
     }
-    const planId = plan.id;
+    const pagePlanId = plan.id;
+    const executionPlanId = execution.plan_id;
     const owner = ++generation.current;
     requestController.current?.abort();
     const controller = new AbortController();
@@ -801,7 +802,7 @@ export function PlansExperience() {
       setFeedback("请完整填写偏好候选的内容、结构化值和依据。");
       return;
     }
-    const fingerprint = JSON.stringify({ plan_id: planId, ...payload });
+    const fingerprint = JSON.stringify({ plan_id: executionPlanId, ...payload });
     if (feedbackAttempt.current?.fingerprint !== fingerprint) {
       feedbackAttempt.current = {
         fingerprint,
@@ -812,7 +813,7 @@ export function PlansExperience() {
     setExecutionBusy(true);
     try {
       const result = await apiClient.request<{ feedback: FeedbackRecord }>(
-        `/api/v1/plans/${planId}/feedback`,
+        `/api/v1/plans/${executionPlanId}/feedback`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -829,20 +830,20 @@ export function PlansExperience() {
       }
       if (
         generation.current !== owner ||
-        currentPlanId.current !== planId
+        currentPlanId.current !== pagePlanId
       ) return;
       const loaded = await apiClient.request<Execution>(
-        `/api/v1/plans/${planId}/execution`,
+        `/api/v1/plans/${pagePlanId}/execution`,
         { signal: controller.signal },
       );
       if (
         generation.current !== owner ||
-        currentPlanId.current !== planId
+        currentPlanId.current !== pagePlanId
       ) return;
       setExecution(loaded);
       setVisitedItems(new Set(loaded.feedback?.visited_plan_item_ids ?? []));
       setPlan((current) =>
-        current?.id === planId
+        current?.id === pagePlanId && pagePlanId === executionPlanId
           ? { ...current, status: result.feedback.completion_status }
           : current,
       );
@@ -854,13 +855,13 @@ export function PlansExperience() {
     } catch (error) {
       if (
         generation.current !== owner ||
-        currentPlanId.current !== planId
+        currentPlanId.current !== pagePlanId
       ) return;
       setFeedback(messageFor(error));
     } finally {
       if (
         generation.current === owner &&
-        currentPlanId.current === planId
+        currentPlanId.current === pagePlanId
       ) {
         if (requestController.current === controller) {
           requestController.current = null;

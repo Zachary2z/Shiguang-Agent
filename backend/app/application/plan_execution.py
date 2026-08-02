@@ -220,6 +220,8 @@ class PlanFeedbackService:
         expected_revision: int | None,
         preference_candidate: PreferenceSuggestion | None = None,
     ) -> FeedbackSubmission:
+        plan = await _require_execution_plan(session, user_id=user_id, plan_id=plan_id)
+        plan_id = plan.id
         key = _scoped_feedback_key(user_id, client_idempotency_key)
         fingerprint = plan_request_fingerprint(
             {
@@ -256,18 +258,6 @@ class PlanFeedbackService:
         ):
             stored_candidate = None
 
-        plan = await _require_execution_plan(session, user_id=user_id, plan_id=plan_id)
-        # The Plan row lock is the cross-process serialization boundary. A competing
-        # request may have committed while this transaction waited, so replay must be
-        # checked again before optimistic revision comparison.
-        replay = await _feedback_replay(
-            session=session,
-            user_id=user_id,
-            key=key,
-            fingerprint=fingerprint,
-        )
-        if replay is not None:
-            return replay
         item_rows = await _main_rows(session, user_id=user_id, plan_id=plan_id)
         if not item_rows:
             raise PlanExecutionNotAllowedError
@@ -471,10 +461,10 @@ class PlanFeedbackService:
     async def current(
         self, *, session: AsyncSession, user_id: str, plan_id: str
     ) -> PlanFeedback | None:
-        await _require_execution_plan(session, user_id=user_id, plan_id=plan_id)
+        plan = await _require_execution_plan(session, user_id=user_id, plan_id=plan_id)
         state = await session.scalar(
             select(PlanFeedbackStateModel).where(
-                PlanFeedbackStateModel.plan_id == plan_id,
+                PlanFeedbackStateModel.plan_id == plan.id,
                 PlanFeedbackStateModel.user_id == user_id,
             )
         )

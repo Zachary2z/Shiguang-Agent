@@ -9,6 +9,27 @@
 | 最近更新 | 2026-08-02 |
 | 阻塞项 | 无 P0/P1；M2-0 尚未开始 |
 
+## 2026-08-02 Repair 4：跨版本反馈一致性 P1 修复
+
+- `PlanFeedbackService.submit/current` 现在先通过既有 `_require_execution_plan` 与
+  `require_confirmed_for_execution` 锁定最新确认版本，随后幂等指纹、重放、偏好证据、
+  PlanItem、反馈状态/审计、到访来源、执行状态和 Plan 完成状态只使用该规范版本 ID。
+  历史/root 入口与规范入口使用相同 key 和载荷时返回同一 replay，不再拆分写入版本。
+- 计划页继续用页面版本 ID 处理版本选择、刷新和迟到响应隔离；反馈 endpoint 与幂等
+  fingerprint 改用服务端 `execution.plan_id`。提交后仍可经页面版本入口刷新执行视图，
+  只有页面本身就是规范执行版本时才直接更新页面状态，历史版本不会显示为 completed。
+- 回归覆盖 V2 未确认时沿用 V1，以及 V2 确认后从 V1/root 提交 completed 与
+  partially_completed；验证反馈 state/audit、PlanItem、CollectionVisitSource 和 Plan
+  状态只写 V2，V1 无新增副作用，并覆盖跨入口 replay、stale revision、非法 item、
+  跨用户、current 规范读取、前端迟到响应与不确定网络同键重放。
+- `pip check`、Ruff、strict mypy（141 个源文件）通过；指定后端聚焦 `72 passed`。
+  用户指定 marker 全集为 `1767 passed, 16 skipped, 2 deselected, 1 failed`，唯一失败
+  仍是 Repair 4 已记录且本次未修改的固定 `2026-08-02` 过期计划基线用例。前端 lint、
+  typecheck、计划页聚焦 `25 passed`、完整 Vitest `137 passed` 均通过。
+- 生产代码净减少 9 行，只修改既有反馈服务与计划页；未新增服务、Repository、DTO、
+  状态机、字段、迁移、依赖或版本解析器。未读取 `.env`，真实模型、地图、网页及其他
+  外部/付费 API 调用为 0；未合并、未推送、未进入 M2。
+
 ## 2026-08-02 M1 稳定化修复 4：计划事实与版本一致性
 
 - 价格继续复用唯一人民币契约：未知价格不再阻断无预算计划，也不写成 0；明确免费仍为

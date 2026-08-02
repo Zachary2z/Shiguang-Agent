@@ -43,8 +43,11 @@ from app.domain.plans.drafts import (
 )
 from app.infrastructure.db.models import (
     CollectionItemModel,
+    CollectionVisitSourceModel,
     PlanFeedbackAuditModel,
+    PlanFeedbackStateModel,
     PlanItemModel,
+    PlanModel,
     UserModel,
 )
 from app.infrastructure.repositories import (
@@ -211,6 +214,67 @@ async def _seed_plan(
         return plan_id, collection_id, (item_ids[0], item_ids[1])
 
 
+async def _seed_adjusted_plan(
+    api,
+    *,
+    root_id: str,
+    collection_id: str,
+    confirmed: bool,
+) -> tuple[str, tuple[str, str]]:
+    database = api.state.demo_database
+    async with database.session_factory() as session:
+        user_id = await session.scalar(select(UserModel.id))
+        assert user_id is not None
+        now = datetime(2026, 7, 28, 3, tzinfo=UTC)
+        adjusted_id = generate_plan_id()
+        adjusted = PlanVersion(
+            id=adjusted_id,
+            root_plan_id=root_id,
+            parent_plan_id=root_id,
+            user_id=user_id,
+            version=2,
+            operation=PlanOperation.ADJUST,
+            status=PlanStatus.GENERATING,
+            constraints=_constraints(),
+            adjustment_text="稍微调整",
+            trace_id=generate_trace_id(),
+            idempotency_key=f"seed-{adjusted_id}",
+            created_at=now,
+            updated_at=now,
+        )
+        repository = SqlAlchemyPlanRepository(session)
+        await repository.add(
+            adjusted,
+            request_fingerprint=plan_request_fingerprint("adjusted"),
+        )
+        await repository.complete_generation(
+            user_id=user_id,
+            plan_id=adjusted_id,
+            draft=_draft(collection_id),
+            now=now,
+        )
+        if confirmed:
+            await repository.confirm(
+                user_id=user_id,
+                plan_id=adjusted_id,
+                idempotency_key=f"confirm-{adjusted_id}",
+                request_fingerprint=plan_request_fingerprint("confirm-adjusted"),
+                now=now + timedelta(hours=1),
+            )
+        await session.commit()
+        item_ids = tuple(
+            (
+                await session.scalars(
+                    select(PlanItemModel.id)
+                    .where(PlanItemModel.plan_id == adjusted_id)
+                    .order_by(PlanItemModel.item_index)
+                )
+            ).all()
+        )
+        assert len(item_ids) == 2
+        return adjusted_id, (item_ids[0], item_ids[1])
+
+
 @pytest.mark.asyncio
 async def test_unconfirmed_plan_rejects_all_execution_surfaces(test_settings) -> None:
     async with _client(test_settings) as (api, client):
@@ -279,39 +343,12 @@ async def test_calendar_and_navigation_follow_latest_confirmed_version(
         api.state.map_provider = make_stub_map_provider()
         await _demo(client)
         root_id, collection_id, _item_ids = await _seed_plan(api, confirmed=True)
-        database = api.state.demo_database
-        async with database.session_factory() as session:
-            user_id = await session.scalar(select(UserModel.id))
-            assert user_id is not None
-            now = datetime(2026, 7, 28, 3, tzinfo=UTC)
-            adjusted_id = generate_plan_id()
-            adjusted = PlanVersion(
-                id=adjusted_id,
-                root_plan_id=root_id,
-                parent_plan_id=root_id,
-                user_id=user_id,
-                version=2,
-                operation=PlanOperation.ADJUST,
-                status=PlanStatus.GENERATING,
-                constraints=_constraints(),
-                adjustment_text="稍微调整",
-                trace_id=generate_trace_id(),
-                idempotency_key=f"seed-{adjusted_id}",
-                created_at=now,
-                updated_at=now,
-            )
-            repository = SqlAlchemyPlanRepository(session)
-            await repository.add(
-                adjusted,
-                request_fingerprint=plan_request_fingerprint("adjusted"),
-            )
-            await repository.complete_generation(
-                user_id=user_id,
-                plan_id=adjusted_id,
-                draft=_draft(collection_id),
-                now=now,
-            )
-            await session.commit()
+        adjusted_id, _adjusted_items = await _seed_adjusted_plan(
+            api,
+            root_id=root_id,
+            collection_id=collection_id,
+            confirmed=False,
+        )
 
         before_calendar = await client.get(f"/api/v1/plans/{adjusted_id}/calendar.ics")
         before_execution = await client.get(f"/api/v1/plans/{adjusted_id}/execution")
@@ -319,6 +356,7 @@ async def test_calendar_and_navigation_follow_latest_confirmed_version(
         assert f"UID:{root_id}@shiguang.local" in before_calendar.text
         assert before_execution.json()["plan_id"] == root_id
 
+        database = api.state.demo_database
         async with database.session_factory() as session:
             user_id = await session.scalar(select(UserModel.id))
             assert user_id is not None
@@ -336,6 +374,126 @@ async def test_calendar_and_navigation_follow_latest_confirmed_version(
         assert after_calendar.status_code == after_execution.status_code == 200
         assert f"UID:{adjusted_id}@shiguang.local" in after_calendar.text
         assert after_execution.json()["plan_id"] == adjusted_id
+
+
+@pytest.mark.parametrize(
+    ("completion_status", "visited_index", "expected_item_statuses"),
+    [
+        ("completed", None, ("visited", "visited")),
+        ("partially_completed", 0, ("visited", "not_visited")),
+    ],
+)
+@pytest.mark.asyncio
+async def test_feedback_through_historical_version_only_updates_latest_confirmed(
+    test_settings,
+    completion_status: str,
+    visited_index: int | None,
+    expected_item_statuses: tuple[str, str],
+) -> None:
+    async with _client(test_settings) as (api, client):
+        api.state.map_provider = make_stub_map_provider()
+        await _demo(client)
+        root_id, collection_id, root_items = await _seed_plan(api, confirmed=True)
+        adjusted_id, adjusted_items = await _seed_adjusted_plan(
+            api,
+            root_id=root_id,
+            collection_id=collection_id,
+            confirmed=True,
+        )
+        body = {
+            "idempotency_key": f"historical-{completion_status}",
+            "completion_status": completion_status,
+            "visited_plan_item_ids": (
+                [] if visited_index is None else [adjusted_items[visited_index]]
+            ),
+            "expected_revision": None,
+        }
+
+        submitted = await client.post(f"/api/v1/plans/{root_id}/feedback", json=body)
+        replay = await client.post(
+            f"/api/v1/plans/{adjusted_id}/feedback",
+            json=body,
+        )
+        assert submitted.status_code == replay.status_code == 200
+        assert submitted.json()["feedback"]["plan_id"] == adjusted_id
+        assert replay.json()["replayed"] is True
+
+        stale = await client.post(
+            f"/api/v1/plans/{root_id}/feedback",
+            json={**body, "idempotency_key": f"stale-{completion_status}"},
+        )
+        illegal = await client.post(
+            f"/api/v1/plans/{root_id}/feedback",
+            json={
+                **body,
+                "idempotency_key": f"illegal-{completion_status}",
+                "visited_plan_item_ids": [root_items[0]],
+                "completion_status": "partially_completed",
+                "expected_revision": 1,
+            },
+        )
+        assert stale.status_code == 409
+        assert illegal.status_code == 422
+
+        execution = await client.get(f"/api/v1/plans/{root_id}/execution")
+        assert execution.status_code == 200
+        assert execution.json()["plan_id"] == adjusted_id
+        assert execution.json()["feedback"]["plan_id"] == adjusted_id
+
+        async with api.state.demo_database.session_factory() as session:
+            user_id = await session.scalar(select(UserModel.id))
+            assert user_id is not None
+            current = await PlanFeedbackService().current(
+                session=session,
+                user_id=user_id,
+                plan_id=root_id,
+            )
+            assert current is not None and current.plan_id == adjusted_id
+            assert await session.get(PlanFeedbackStateModel, root_id) is None
+            assert await session.get(PlanFeedbackStateModel, adjusted_id) is not None
+            assert tuple(
+                (
+                    await session.scalars(
+                        select(PlanFeedbackAuditModel.plan_id)
+                    )
+                ).all()
+            ) == (adjusted_id,)
+            root_statuses = tuple(
+                (
+                    await session.scalars(
+                        select(PlanItemModel.execution_status)
+                        .where(PlanItemModel.plan_id == root_id)
+                        .order_by(PlanItemModel.item_index)
+                    )
+                ).all()
+            )
+            adjusted_statuses = tuple(
+                (
+                    await session.scalars(
+                        select(PlanItemModel.execution_status)
+                        .where(PlanItemModel.plan_id == adjusted_id)
+                        .order_by(PlanItemModel.item_index)
+                    )
+                ).all()
+            )
+            assert root_statuses == ("pending", "pending")
+            assert adjusted_statuses == expected_item_statuses
+            visit_plan_ids = tuple(
+                (
+                    await session.scalars(
+                        select(PlanItemModel.plan_id)
+                        .join(
+                            CollectionVisitSourceModel,
+                            CollectionVisitSourceModel.plan_item_id == PlanItemModel.id,
+                        )
+                    )
+                ).all()
+            )
+            assert visit_plan_ids == (adjusted_id,)
+            root = await session.get(PlanModel, root_id)
+            adjusted = await session.get(PlanModel, adjusted_id)
+            assert root is not None and root.status == PlanStatus.SUPERSEDED.value
+            assert adjusted is not None and adjusted.status == completion_status
 
 
 @pytest.mark.asyncio

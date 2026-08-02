@@ -595,6 +595,108 @@ describe("PlansExperience", () => {
     });
   });
 
+  it("submits feedback to the execution version without completing the historical page", async () => {
+    const canonicalExecution = { ...execution, plan_id: secondPlan.id };
+    const requests = vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path === "/api/v1/plans" && !options?.method) {
+        return { items: [versionedPlan] } as never;
+      }
+      if (path === `/api/v1/plans/${plan.id}/execution`) {
+        return canonicalExecution as never;
+      }
+      if (path === `/api/v1/plans/${secondPlan.id}/feedback`) {
+        return {
+          feedback: {
+            id: "fdb_4123456789abcdef0123456789abcdef",
+            plan_id: secondPlan.id,
+            revision: 1,
+            completion_status: "completed",
+            visited_plan_item_ids: canonicalExecution.items.map((item) => item.id),
+            reason: null,
+            preference_suggestion: null,
+            created_at: "2026-07-29T12:00:00Z",
+          },
+          replayed: false,
+        } as never;
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<PlansExperience />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "查看路线、日历与完成反馈" }),
+    );
+    await userEvent.click(screen.getByRole("radio", { name: /^已完成/ }));
+    await userEvent.click(screen.getByRole("button", { name: "保存完成反馈" }));
+
+    await waitFor(() => expect(screen.getByText("完成反馈已保存。")).toBeInTheDocument());
+    expect(requests).toHaveBeenCalledWith(
+      `/api/v1/plans/${secondPlan.id}/feedback`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(screen.getByText("V1 · 已确认")).toBeInTheDocument();
+    expect(screen.queryByText("V1 · 已完成")).not.toBeInTheDocument();
+  });
+
+  it("keeps one feedback key when historical and canonical pages share an execution", async () => {
+    const canonicalExecution = { ...execution, plan_id: secondPlan.id };
+    const submittedKeys: string[] = [];
+    let submission = 0;
+    vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path === "/api/v1/plans" && !options?.method) {
+        return { items: [versionedPlan] } as never;
+      }
+      if (path === `/api/v1/plans/${secondPlan.id}`) return secondPlan as never;
+      if (
+        path === `/api/v1/plans/${plan.id}/execution` ||
+        path === `/api/v1/plans/${secondPlan.id}/execution`
+      ) {
+        return canonicalExecution as never;
+      }
+      if (path === `/api/v1/plans/${secondPlan.id}/feedback`) {
+        submittedKeys.push(JSON.parse(String(options?.body)).idempotency_key);
+        submission += 1;
+        if (submission === 1) throw new Error("uncertain network result");
+        return {
+          feedback: {
+            id: "fdb_5123456789abcdef0123456789abcdef",
+            plan_id: secondPlan.id,
+            revision: 1,
+            completion_status: "partially_completed",
+            visited_plan_item_ids: [canonicalExecution.items[0].id],
+            reason: null,
+            preference_suggestion: null,
+            created_at: "2026-07-29T12:00:00Z",
+          },
+          replayed: true,
+        } as never;
+      }
+      throw new Error(`unexpected ${path}`);
+    });
+    render(<PlansExperience />);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "查看路线、日历与完成反馈" }),
+    );
+    await userEvent.click(screen.getByRole("radio", { name: /部分完成/ }));
+    await userEvent.click(screen.getByRole("checkbox", { name: /海边咖啡/ }));
+    await userEvent.click(screen.getByRole("button", { name: "保存完成反馈" }));
+    await waitFor(() => expect(submittedKeys).toHaveLength(1));
+
+    await userEvent.click(screen.getByRole("button", { name: /^V2/ }));
+    await userEvent.click(
+      await screen.findByRole("button", { name: "查看路线、日历与完成反馈" }),
+    );
+    await userEvent.click(screen.getByRole("radio", { name: /部分完成/ }));
+    await userEvent.click(screen.getByRole("checkbox", { name: /海边咖啡/ }));
+    await userEvent.click(screen.getByRole("button", { name: "保存完成反馈" }));
+    await waitFor(() => expect(submittedKeys).toHaveLength(2));
+
+    expect(submittedKeys[0]).toBe(submittedKeys[1]);
+  });
+
   it("ignores a V1 execution response that arrives after switching to V2", async () => {
     const lateExecution = deferred<typeof execution>();
     vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
