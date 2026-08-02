@@ -1391,7 +1391,7 @@ async def test_explicit_route_weather_and_availability_facts_never_fake_success(
 
 
 @pytest.mark.asyncio
-async def test_unknown_route_weather_and_opening_require_verification() -> None:
+async def test_unknown_route_weather_and_opening_are_non_blocking() -> None:
     user_id, poi = generate_user_id(), _poi("poi_unknown_facts")
     item = _place(user_id, poi=poi)
     service, _ = _service([item])
@@ -1404,7 +1404,7 @@ async def test_unknown_route_weather_and_opening_require_verification() -> None:
     )
 
     decision = result.decisions[0]
-    assert decision.outcome is CandidateOutcome.VERIFICATION_REQUIRED
+    assert decision.outcome is CandidateOutcome.INCLUDED
     assert decision.reason_codes[-3:] == (
         CandidateReasonCode.ROUTE_UNKNOWN,
         CandidateReasonCode.WEATHER_UNKNOWN,

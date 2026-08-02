@@ -312,6 +312,8 @@ _NON_BLOCKING_REASONS = frozenset(
         CandidateReasonCode.WEATHER_UNKNOWN,
         CandidateReasonCode.WEATHER_PROVIDER_FAILED,
         CandidateReasonCode.ROUTE_UNKNOWN,
+        CandidateReasonCode.AVAILABILITY_UNKNOWN,
+        CandidateReasonCode.AVAILABILITY_PROVIDER_FAILED,
     }
 )
 

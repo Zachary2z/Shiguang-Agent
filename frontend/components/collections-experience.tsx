@@ -836,7 +836,7 @@ export function CollectionsExperience() {
         setDetail((current) => (current ? { ...current, item } : current));
         restoreDrafts(item);
         if (item.planning_eligible) {
-          setFeedback("活动时间已确认，可参与当前计划。");
+          setFeedback("活动时间已确认，生成计划时会按时间与范围筛选。");
         } else if (item.planning_exclusion_reason === "event_time_unconfirmed") {
           setFeedback("已保存当前活动时间，仍有时间信息待确认。");
         } else {
@@ -919,6 +919,7 @@ export function CollectionsExperience() {
       const item = result.items[0];
       if (!item || !ownsDetailOperation(operation)) return;
       setDetail((current) => (current && item ? { ...current, item } : current));
+      restoreDrafts(item);
       setCandidates(null);
       selectionAttempt.current = null;
       setFeedback(
@@ -1089,7 +1090,7 @@ export function CollectionsExperience() {
                 {eventLabel(item) ? <span>{eventLabel(item)}</span> : null}
                 <span className={item.planning_eligible ? "eligible" : "excluded"}>
                   {item.planning_eligible
-                    ? "可参与当前深圳计划"
+                    ? "基础信息已确认，生成计划时会按时间与范围筛选"
                     : planningExclusionLabel(item)}
                 </span>
                 <span className="collection-tag-row">
@@ -1269,7 +1270,7 @@ export function CollectionsExperience() {
                       </div>
                       <span>
                         {detail.item.planning_eligible
-                          ? "可参与计划"
+                          ? "基础信息已确认"
                           : detail.item.planning_exclusion_reason ===
                               "event_time_unconfirmed"
                             ? "活动时间待确认"

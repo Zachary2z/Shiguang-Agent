@@ -438,7 +438,7 @@ def test_retrieval_decisions_and_plan_items_reject_noncanonical_price_pairs(
 def test_excluded_and_verification_required_candidates_never_enter_options() -> None:
     included = _decision(1)
     excluded = _excluded(2)
-    verification_code = CandidateReasonCode.AVAILABILITY_UNKNOWN
+    verification_code = CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT
     verification = CollectionCandidateDecision(
         outcome=CandidateOutcome.VERIFICATION_REQUIRED,
         reason_codes=(verification_code,),

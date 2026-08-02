@@ -169,6 +169,7 @@ const locationClueFields = new Set([
   "metro_station",
 ]);
 const automaticRecoveryDelaysMs = [1_000, 2_000] as const;
+const sseObservationWindowMs = 30_000;
 
 function needsEventTimeConfirmation(item: CollectionItem): boolean {
   return (
@@ -381,6 +382,10 @@ export function AgentExperience() {
         const finishConnection = () => {
           if (finished) return;
           finished = true;
+          if (recoveryTimer.current !== null) {
+            window.clearTimeout(recoveryTimer.current);
+            recoveryTimer.current = null;
+          }
           if (connection && sseCancel.current === connection.cancel) {
             sseCancel.current = null;
           }
@@ -419,6 +424,11 @@ export function AgentExperience() {
         });
         if (!finished) {
           sseCancel.current = connection.cancel;
+          recoveryTimer.current = window.setTimeout(() => {
+            recoveryTimer.current = null;
+            connection?.cancel();
+            finishConnection();
+          }, sseObservationWindowMs);
         }
         void connection.closed.then(finishConnection, finishConnection);
       }

@@ -48,3 +48,16 @@ export type PublicPlanShare = {
   status: "active" | "cancelled" | "unavailable";
   plan: SharedPlanSnapshot | null;
 };
+
+const sharedRiskLabels: Readonly<Record<string, string>> = {
+  "The item price needs confirmation.": "价格待确认。",
+  "The plan budget cannot be verified until the price is confirmed.": "价格确认前无法核验预算。",
+  "Weather conditions are not available for this plan.": "天气情况待确认。",
+  "Weather information is temporarily unavailable.": "天气信息暂时不可用。",
+  "The first route is unknown because no precise origin was provided.": "未提供精确起点，首段路线待确认。",
+  "The opening hours need confirmation.": "营业时间待确认。",
+};
+
+export function sharedRiskLabel(risk: string) {
+  return sharedRiskLabels[risk] ?? risk;
+}

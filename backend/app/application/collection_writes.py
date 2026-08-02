@@ -398,7 +398,11 @@ class CollectionWriteService:
         )
         return PlaceCandidate(
             title=(
-                item.address or item.landmark or item.title
+                item.landmark
+                if item.kind is CollectionKind.EVENT
+                and item.landmark is not None
+                and CandidateField.LANDMARK not in uncertain_fields
+                else item.address or item.title
                 if item.kind is CollectionKind.EVENT
                 else item.title
             ),

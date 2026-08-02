@@ -406,7 +406,9 @@ describe("CollectionsExperience", () => {
     await userEvent.click(
       within(dialog).getByRole("button", { name: "确认并保存" }),
     );
-    expect(await screen.findByText("活动时间已确认，可参与当前计划。")).toBeInTheDocument();
+    expect(
+      await screen.findByText("活动时间已确认，生成计划时会按时间与范围筛选。"),
+    ).toBeInTheDocument();
     expect(bodies).toEqual([
       {
         expected_version: 1,
@@ -421,7 +423,7 @@ describe("CollectionsExperience", () => {
     expect(bodies[0].changes).not.toHaveProperty("uncertainties");
     expect(bodies[0].changes).not.toHaveProperty("missing_fields");
     expect(within(dialog).getByText("版本 2")).toBeInTheDocument();
-    expect(within(dialog).getByText("可参与计划")).toBeInTheDocument();
+    expect(within(dialog).getByText("基础信息已确认")).toBeInTheDocument();
   });
 
   it("changes only HH:mm while preserving the original exact-session dates", async () => {
@@ -570,7 +572,7 @@ describe("CollectionsExperience", () => {
       event_end_date: "2026-08-02",
     });
     expect(
-      await screen.findByText("活动时间已确认，可参与当前计划。"),
+      await screen.findByText("活动时间已确认，生成计划时会按时间与范围筛选。"),
     ).toBeInTheDocument();
   });
 
@@ -709,13 +711,13 @@ describe("CollectionsExperience", () => {
       within(dialog).getByRole("button", { name: "确认并保存" }),
     );
     expect(
-      await screen.findByText("活动时间已确认，可参与当前计划。"),
+      await screen.findByText("活动时间已确认，生成计划时会按时间与范围筛选。"),
     ).toBeInTheDocument();
     expect(bodies[0].changes).toEqual({
       event_start_date: "2026-08-02",
       event_end_date: "2026-08-04",
     });
-    expect(within(dialog).getByText("可参与计划")).toBeInTheDocument();
+    expect(within(dialog).getByText("基础信息已确认")).toBeInTheDocument();
   });
 
   it.each(["具体开始时间", "具体结束时间"])(
@@ -892,7 +894,9 @@ describe("CollectionsExperience", () => {
     );
     await waitFor(() => expect(endDate).toHaveValue("2026-08-05"));
     expect(within(dialog).queryByLabelText("具体开始时间")).toBeNull();
-    expect(screen.queryByText("活动时间已确认，可参与当前计划。")).toBeNull();
+    expect(
+      screen.queryByText("活动时间已确认，生成计划时会按时间与范围筛选。"),
+    ).toBeNull();
   });
 
   it("uses the server response to keep a time-confirmed Event without exact POI unplannable", async () => {
@@ -1072,16 +1076,19 @@ describe("CollectionsExperience", () => {
     };
     const active = {
       ...pendingSelection,
+      title: "一尺花园（海上世界店）",
       status: "active",
       version: 3,
       planning_eligible: true,
       planning_exclusion_reason: null,
     };
+    const tagged = { ...active, tags: ["朋友聚餐"], version: 4 };
     const choices = {
       ...candidatePage(pendingDetails.id),
       expected_version: 2,
     };
     let currentItem: Record<string, unknown> = pendingDetails;
+    let patchCount = 0;
     vi.spyOn(apiClient, "request").mockImplementation(
       async (path, options) => {
         if (path === "/api/v1/demo/sessions") return session as never;
@@ -1089,8 +1096,9 @@ describe("CollectionsExperience", () => {
           return { ...filledPage, items: [currentItem] } as never;
         }
         if (options?.method === "PATCH") {
-          currentItem = pendingSelection;
-          return pendingSelection as never;
+          patchCount += 1;
+          currentItem = patchCount === 1 ? pendingSelection : tagged;
+          return currentItem as never;
         }
         if (path.endsWith("/poi-candidates")) return choices as never;
         if (path.endsWith("/poi-selection")) {
@@ -1113,6 +1121,19 @@ describe("CollectionsExperience", () => {
       screen.getByRole("button", { name: /一尺花园 · 海上世界店/ }),
     );
     expect(await screen.findByText("准确地点已保存。")).toBeInTheDocument();
+    expect(within(dialog).getByText("想去")).toBeInTheDocument();
+    expect(within(dialog).getByRole("textbox", { name: "名称" })).toHaveValue(
+      "一尺花园（海上世界店）",
+    );
+
+    await userEvent.type(
+      within(dialog).getByRole("textbox", { name: "标签" }),
+      "朋友聚餐",
+    );
+    await userEvent.click(within(dialog).getByRole("button", { name: "保存修改" }));
+    expect(
+      await screen.findByText("修改已保存，Agent 与收藏库会读取同一条数据。"),
+    ).toBeInTheDocument();
     expect(within(dialog).getByText("想去")).toBeInTheDocument();
   });
 

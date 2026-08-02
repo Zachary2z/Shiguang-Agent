@@ -15,7 +15,7 @@ const active: PublicPlanShare = {
     origin_label: "南山区 · 海上世界",
     total_cost_amount: "88.00",
     total_cost_currency: "CNY",
-    risks: ["雨天注意路滑"],
+    risks: ["Weather information is temporarily unavailable."],
     weather_status: "compatible",
     weather_source: "amap",
     weather_queried_at: "2026-07-29T01:30:00Z",
@@ -35,7 +35,7 @@ const active: PublicPlanShare = {
         price_amount: "88.00",
         price_currency: "CNY",
         source_label: "计划地点",
-        risks: ["价格可能变化"],
+        risks: ["The item price needs confirmation."],
         queried_at: "2026-07-29T01:30:00Z",
         map_url: "https://uri.amap.com/marker?position=113.9,22.4",
       },
@@ -78,6 +78,9 @@ describe("PublicShareExperience", () => {
     expect(screen.getByText("V2")).toBeInTheDocument();
     expect(screen.getByText("南山区望海路")).toBeInTheDocument();
     expect(screen.getByText(/晴，28°C.*amap/)).toBeInTheDocument();
+    expect(screen.getByText("价格待确认。")).toBeInTheDocument();
+    expect(screen.getByText("天气信息暂时不可用。")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/The item price|Weather information/);
     expect(screen.getByRole("link", { name: "查看路线" })).toHaveAttribute(
       "rel",
       "noreferrer",

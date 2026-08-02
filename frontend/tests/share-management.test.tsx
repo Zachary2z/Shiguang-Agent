@@ -43,14 +43,14 @@ const preview = {
       price_amount: "20.00",
       price_currency: "CNY",
       source_label: "计划地点",
-      risks: ["出发前复核开放时间"],
+      risks: ["The opening hours need confirmation."],
       queried_at: "2026-07-29T00:00:00Z",
       map_url: "https://uri.amap.com/marker?position=114,22",
     },
   ],
   total_cost_amount: "20.00",
   total_cost_currency: "CNY",
-  risks: ["留意天气"],
+  risks: ["Weather information is temporarily unavailable."],
   expires_at: "2026-08-06T08:00:00Z",
 };
 
@@ -82,6 +82,9 @@ describe("ShareManagement", () => {
     );
     expect(await screen.findByText("深圳博物馆")).toBeInTheDocument();
     expect(screen.getByText("福中路184号")).toBeInTheDocument();
+    expect(screen.getByText(/营业时间待确认/)).toBeInTheDocument();
+    expect(screen.getByText(/天气信息暂时不可用/)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/opening hours|Weather information/);
     expect(screen.getByText(/含公开路线入口/)).toBeInTheDocument();
     await userEvent.click(
       screen.getByRole("button", { name: "确认并生成链接" }),

@@ -392,6 +392,45 @@ async def test_first_place_save_matches_once_and_replay_does_not_search(
 
 
 @pytest.mark.asyncio
+async def test_event_location_match_prefers_landmark_over_descriptive_address(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    calls: list[SearchPoiRequest] = []
+
+    async def record_call(request: object) -> None:
+        assert isinstance(request, SearchPoiRequest)
+        calls.append(request)
+
+    candidate = EventCandidate(
+        title="西蒙神奇车库6周年作品展",
+        city_hint="深圳",
+        district="南山区",
+        address="南山区保利文化广场嘉乐道B1超级车库",
+        landmark="保利文化广场",
+        event_start_date=date(2026, 6, 13),
+        event_end_date=date(2026, 7, 31),
+        missing_fields=(),
+    )
+    async with database.session() as session:
+        await _service(session).auto_save(
+            user_id=user.id,
+            idempotency_key="event-landmark-match",
+            source=_source(user.id),
+            extraction_result=ExtractionResult.with_candidates((candidate,)),
+            place_matching=_matching_service(
+                StubMapProvider(call_hook=record_call)
+            ),
+        )
+
+    assert [call.query for call in calls] == ["保利文化广场"]
+    await database.close()
+
+
+@pytest.mark.asyncio
 async def test_same_operation_exact_poi_merge_deduplicates_replay_and_undo(
     write_database: tuple[str, Path],
 ) -> None:

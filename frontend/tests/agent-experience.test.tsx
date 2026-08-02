@@ -168,6 +168,7 @@ async function submitAndShowCollections() {
 describe("Agent experience", () => {
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -946,6 +947,34 @@ describe("Agent experience", () => {
       await screen.findByRole("heading", { name: item.title }),
     ).toBeInTheDocument();
     expect(connect).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers through the authoritative result when an SSE reader never settles", async () => {
+    vi.useFakeTimers();
+    const item = collection(
+      "col_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab",
+      "长任务收藏",
+    );
+    const cancel = vi.fn();
+    request.mockReset();
+    request
+      .mockResolvedValueOnce(session)
+      .mockResolvedValueOnce({ messages: [{ ...accepted, run_status: "running" }] })
+      .mockResolvedValueOnce(completedResult([item]));
+    connect.mockReturnValueOnce({
+      cancel,
+      closed: new Promise<void>(() => {}),
+    });
+
+    render(<AgentExperience />);
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(connect).toHaveBeenCalledTimes(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(30_000));
+    await act(async () => Promise.resolve());
+
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("heading", { name: item.title })).toBeInTheDocument();
   });
 
   it("bounds automatic re-observation and lets the user refresh the same run without another POST", async () => {

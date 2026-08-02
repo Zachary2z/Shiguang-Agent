@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { API_BASE_URL } from "@/lib/api-client";
-import type { PublicPlanShare, SharedPlanSnapshot } from "@/lib/share-contracts";
+import { sharedRiskLabel, type PublicPlanShare, type SharedPlanSnapshot } from "@/lib/share-contracts";
 
 const transportLabels: Record<string, string> = {
   walking: "步行",
@@ -101,7 +101,7 @@ function ActiveShare({ plan }: { plan: SharedPlanSnapshot }) {
                 {item.buffer_after_seconds > 0 && <p>预留缓冲 {minutes(item.buffer_after_seconds)}</p>}
                 <p>费用：{item.price_amount === null ? "待确认" : `¥${item.price_amount}`}</p>
                 {item.queried_at && <p className="public-query-time">地点信息查询于 {dateTime(item.queried_at)}</p>}
-                {item.risks.length > 0 && <ul>{item.risks.map((risk) => <li key={risk}>{risk}</li>)}</ul>}
+                {item.risks.length > 0 && <ul>{item.risks.map((risk) => <li key={risk}>{sharedRiskLabel(risk)}</li>)}</ul>}
                 {item.map_url && <a href={item.map_url} target="_blank" rel="noreferrer">打开公开地点 / 路线</a>}
               </article>
             </li>
@@ -117,7 +117,7 @@ function ActiveShare({ plan }: { plan: SharedPlanSnapshot }) {
             </p>
           </aside>
         )}
-        {plan.risks.length > 0 && <aside className="public-risks"><strong>出发前留意</strong><p>{plan.risks.join("；")}</p></aside>}
+        {plan.risks.length > 0 && <aside className="public-risks"><strong>出发前留意</strong><p>{plan.risks.map(sharedRiskLabel).join("；")}</p></aside>}
       </section>
 
       <footer className="public-share-footer">

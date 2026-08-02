@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 
 import { ApiClient, ApiError } from "@/lib/api-client";
-import type {
-  OwnerPlanShare,
-  SharedPlanSnapshot,
+import {
+  sharedRiskLabel,
+  type OwnerPlanShare,
+  type SharedPlanSnapshot,
 } from "@/lib/share-contracts";
 
 const transportLabels: Record<string, string> = {
@@ -225,14 +226,14 @@ export function ShareManagement({ planId, csrfToken }: ShareManagementProps) {
                   费用 {item.price_amount === null ? "待确认" : `¥${item.price_amount}`}
                 </span>
                 <span>
-                  风险：{item.risks.length ? item.risks.join("；") : "暂无"}
+                  风险：{item.risks.length ? item.risks.map(sharedRiskLabel).join("；") : "暂无"}
                   {item.map_url ? " · 含公开路线入口" : " · 暂无路线入口"}
                 </span>
                 {item.queried_at && <span>地点信息查询于 {dateTime(item.queried_at)}</span>}
               </li>
             ))}
           </ol>
-          {preview.risks.length > 0 && <p>整体风险：{preview.risks.join("；")}</p>}
+          {preview.risks.length > 0 && <p>整体风险：{preview.risks.map(sharedRiskLabel).join("；")}</p>}
           <p>
             预计总费用：
             {preview.total_cost_amount === null
