@@ -1,5 +1,43 @@
 # M1-Gate 核心闭环验收报告
 
+## 2026-08-02 M1 稳定化修复 1：两个 P1 权威状态返修
+
+主控确认候选 `7fa9df5468e536e2a333ed69a516bcb5229f4715` 的两项结论不成立：重匹配
+失败后的第二次“恢复 target”提交保留了已先行落库的新 title/address/city，造成展示事实
+与坐标身份分裂；官方高德 identity 查询及后续 Extraction 又固定使用深圳，使广州 POI
+无法按正式城市收藏。本次以独立后续提交返修，范围仍属于稳定化修复 1。
+
+- `CollectionWriteService.patch` 不再先写待确认状态，也不再吞掉可重试地图错误后执行
+  补偿写。它读取原收藏、生成待提交编辑并完成一次地图匹配；只有匹配成功后，既有
+  `PlaceTargetSelectionService` 才在一个数据库事务中把编辑、候选分类、正式 target 和
+  最终状态作为一次版本保护写入。Provider 错误、非重试错误或同一个
+  `CancelledError` 返回时数据库没有写入，原权威字段、状态、target、候选快照、版本与
+  规划资格完整保留；最终 CAS 前的并发变化继续产生版本冲突。
+- 地点状态映射仍由原 `CollectionStatus` / `MatchStatus` / `PlaceTarget` 路径负责。为允许
+  ACTIVE 地点身份编辑在一次原子写中直接得到合法但不唯一的候选，既有领域转移新增
+  `ACTIVE -> PENDING_SELECTION`；高置信唯一结果直接 `ACTIVE -> ACTIVE`，零候选直接
+  `ACTIVE -> PENDING_DETAILS`，不再用中间提交绕行。
+- `GetPoiRequest.city` 仅对 identity 详情查询变为可选：显式 city 仍是严格断言；官方
+  identity 路径不提供计划城市。唯一 `AmapMapProvider` 从一份详情响应确定其支持城市，
+  深圳与广州均复用同一个 `_map_poi` 硬事实校验。未知 citycode 返回
+  `MAP_PROVIDER_UNSUPPORTED_CITY`，citycode/adcode/省市冲突返回
+  `MAP_PROVIDER_INVALID_RESPONSE`。一条链接只调用一次 `get_poi`，没有 search、城市
+  探测循环、fallback、自动重试、网页 Provider 或模型调用。
+- 统一输入将匹配候选的正式 `city_code` 写入 Extraction 城市线索。深圳、广州链接都
+  建立 Amap/GCJ-02 exact target 并进入 ACTIVE；广州收藏继续由唯一结构化检索规则以
+  `CITY_MISMATCH` 排除在固定深圳 Plan 之外。幂等重放不重复详情请求或收藏写入；非官方
+  host、敏感 query、无可靠 identity、恶意跳转和 SSRF 的既有安全失败保持不变。
+- 复杂度复核确认仍各只有一个 `MapProvider` / `AmapMapProvider`、
+  `PlaceMatchingService`、`PlaceTargetSelectionService`、`CollectionWriteService`、
+  URL 安全入口和统一输入工作流；删除了旧补偿路径，没有地名/POI 白名单、测试样本生产
+  分支、第二套城市解析、匹配、状态机或 HTTP Client，也没有迁移、阈值或前端改动。
+- 离线验证：`pip check`、Ruff、strict mypy（141 个源文件）通过；两组指定聚焦测试
+  分别 `236 passed`、`236 passed`；非真实 Provider/Map 全集
+  `1752 passed, 16 skipped, 2 deselected`，无 warning；仓库外插件封锁 DNS、socket
+  `connect` / `connect_ex` / `create_connection` 后，受影响聚焦集 `368 passed`。
+  Alembic 唯一 head 为 `20260729_0017`。未读取 `.env`，真实模型、高德、网页和其他
+  外部/付费 API 调用为 0；未合并、未推送，未开始修复 2–5 或 M2。
+
 ## 2026-08-02 M1 稳定化修复 1：地点就绪与候选处理
 
 **结论：通过。本次是 M1 关闭后的定点稳定化，不重开 M1，也不开始 M2-0。** 修复

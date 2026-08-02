@@ -30,6 +30,7 @@ class MapProviderErrorCode(StrEnum):
     RATE_LIMITED = "MAP_PROVIDER_RATE_LIMITED"
     INVALID_REQUEST = "MAP_PROVIDER_INVALID_REQUEST"
     INVALID_RESPONSE = "MAP_PROVIDER_INVALID_RESPONSE"
+    UNSUPPORTED_CITY = "MAP_PROVIDER_UNSUPPORTED_CITY"
 
 
 _ERROR_SUMMARIES = {
@@ -40,6 +41,7 @@ _ERROR_SUMMARIES = {
     MapProviderErrorCode.RATE_LIMITED: "The map provider rate limit was reached.",
     MapProviderErrorCode.INVALID_REQUEST: "The map provider request was rejected.",
     MapProviderErrorCode.INVALID_RESPONSE: "The map provider returned an invalid response.",
+    MapProviderErrorCode.UNSUPPORTED_CITY: "The POI belongs to an unsupported city.",
 }
 
 
@@ -87,7 +89,7 @@ class MapProviderError(Exception):
 
 
 class MapProvider(ABC):
-    """All map operations require request-local city scope."""
+    """The provider-neutral boundary for scoped map and POI identity operations."""
 
     @abstractmethod
     async def search_poi(self, request: SearchPoiRequest) -> PoiSearchResult:

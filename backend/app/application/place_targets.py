@@ -74,82 +74,138 @@ class PlaceTargetSelectionService:
         owner = validate_user_id(user_id)
         identifier = validate_collection_item_id(collection_item_id)
         source = validate_source_id(source_id)
-        snapshot = PlaceCandidateSnapshot(
-            result=match_result.model_copy(deep=True),
-            queried_at=require_aware_utc(queried_at),
-        )
-        auto_candidate = self._unique_auto_match_candidate(snapshot)
+        snapshot = self._candidate_snapshot(match_result, queried_at)
         async with self._session.begin():
             item = await self._require_pending_location(owner, identifier)
             await self._require_linked_source(owner, identifier, source)
-            target_status = (
-                CollectionStatus.PENDING_SELECTION
-                if snapshot.candidates
-                else CollectionStatus.PENDING_DETAILS
+            return await self._apply_candidate_resolution(
+                owner=owner,
+                persisted_item=item,
+                desired_item=item,
+                snapshot=snapshot,
+                expected_version=expected_version,
             )
-            if auto_candidate is not None and item.kind is CollectionKind.PLACE:
-                existing = await self._repository.find_exact_place_item(
+
+    async def record_candidates_after_patch(
+        self,
+        *,
+        user_id: str,
+        original_item: CollectionItem,
+        desired_item: CollectionItem,
+        source_id: str,
+        match_result: PlaceMatchResult,
+        queried_at: datetime,
+        expected_version: int,
+    ) -> CollectionItem:
+        """Atomically persist an identity edit together with its match decision."""
+
+        owner = validate_user_id(user_id)
+        identifier = validate_collection_item_id(original_item.id)
+        source = validate_source_id(source_id)
+        if desired_item.id != identifier or desired_item.user_id != owner:
+            raise ValueError("patched CollectionItem must preserve aggregate identity")
+        snapshot = self._candidate_snapshot(match_result, queried_at)
+        async with self._session.begin():
+            persisted = await self._repository.get_collection_item(
+                user_id=owner,
+                collection_item_id=identifier,
+            )
+            if persisted is None:
+                raise ResourceNotFoundError
+            if persisted.version != expected_version or persisted != original_item:
+                raise VersionConflictError
+            await self._require_linked_source(owner, identifier, source)
+            return await self._apply_candidate_resolution(
+                owner=owner,
+                persisted_item=persisted,
+                desired_item=desired_item,
+                snapshot=snapshot,
+                expected_version=expected_version,
+            )
+
+    async def _apply_candidate_resolution(
+        self,
+        *,
+        owner: str,
+        persisted_item: CollectionItem,
+        desired_item: CollectionItem,
+        snapshot: PlaceCandidateSnapshot,
+        expected_version: int,
+    ) -> CollectionItem:
+        auto_candidate = self._unique_auto_match_candidate(snapshot)
+        if auto_candidate is not None and persisted_item.kind is CollectionKind.PLACE:
+            existing = await self._repository.find_exact_place_item(
+                user_id=owner,
+                provider=auto_candidate.provider,
+                poi_id=auto_candidate.poi_id,
+            )
+            if existing is not None and existing.id != persisted_item.id:
+                await self._preserve_all_sources(
                     user_id=owner,
-                    provider=auto_candidate.provider,
-                    poi_id=auto_candidate.poi_id,
+                    original_item_id=persisted_item.id,
+                    target_item_id=existing.id,
                 )
-                if existing is not None:
-                    await self._preserve_all_sources(
+                write_operation = await self._repository.get_write_operation_for_item(
+                    user_id=owner,
+                    collection_item_id=persisted_item.id,
+                )
+                if write_operation is not None:
+                    await self._repository.replace_write_operation_item(
                         user_id=owner,
-                        original_item_id=item.id,
+                        operation_id=write_operation.id,
+                        original_item_id=persisted_item.id,
                         target_item_id=existing.id,
                     )
-                    write_operation = await self._repository.get_write_operation_for_item(
-                        user_id=owner,
-                        collection_item_id=item.id,
-                    )
-                    if write_operation is not None:
-                        await self._repository.replace_write_operation_item(
-                            user_id=owner,
-                            operation_id=write_operation.id,
-                            original_item_id=item.id,
-                            target_item_id=existing.id,
-                        )
-                    await self._repository.delete_collection_item(
-                        user_id=owner,
-                        collection_item_id=item.id,
-                        updated_at=snapshot.queried_at,
-                        expected_version=expected_version,
-                    )
-                    return existing
-                target = exact_target_from_candidate(
-                    auto_candidate,
-                    confirmed_by=PlaceConfirmationSource.AUTO_UNIQUE_MATCH,
-                    confirmed_at=snapshot.queried_at,
-                )
-                desired = self._updated_item(
-                    item,
-                    status=CollectionStatus.ACTIVE,
-                    target=target,
-                    snapshot=snapshot,
-                    now=snapshot.queried_at,
-                    title=self._official_title(auto_candidate),
-                    district=auto_candidate.district,
-                    address=auto_candidate.address,
-                    business_district=auto_candidate.business_area,
-                )
-                return await self._repository.apply_place_resolution(
+                await self._repository.delete_collection_item(
                     user_id=owner,
-                    item=desired,
+                    collection_item_id=persisted_item.id,
+                    updated_at=snapshot.queried_at,
                     expected_version=expected_version,
                 )
-            desired = self._updated_item(
-                item,
-                status=target_status,
+                return existing
+            target = exact_target_from_candidate(
+                auto_candidate,
+                confirmed_by=PlaceConfirmationSource.AUTO_UNIQUE_MATCH,
+                confirmed_at=snapshot.queried_at,
+            )
+            resolved = self._updated_item(
+                desired_item,
+                status=CollectionStatus.ACTIVE,
+                target=target,
+                snapshot=snapshot,
+                now=snapshot.queried_at,
+                title=self._official_title(auto_candidate),
+                district=auto_candidate.district,
+                address=auto_candidate.address,
+                business_district=auto_candidate.business_area,
+            )
+        else:
+            resolved = self._updated_item(
+                desired_item,
+                status=(
+                    CollectionStatus.PENDING_SELECTION
+                    if snapshot.candidates
+                    else CollectionStatus.PENDING_DETAILS
+                ),
                 target=None,
                 snapshot=snapshot,
                 now=snapshot.queried_at,
             )
-            return await self._repository.apply_place_resolution(
-                user_id=owner,
-                item=desired,
-                expected_version=expected_version,
-            )
+        return await self._repository.apply_place_resolution(
+            user_id=owner,
+            item=resolved,
+            expected_version=expected_version,
+        )
+
+    @staticmethod
+    def _candidate_snapshot(
+        match_result: PlaceMatchResult,
+        queried_at: datetime,
+    ) -> PlaceCandidateSnapshot:
+        return PlaceCandidateSnapshot(
+            result=match_result.model_copy(deep=True),
+            queried_at=require_aware_utc(queried_at),
+        )
 
     async def apply_selection(
         self,

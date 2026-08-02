@@ -63,6 +63,7 @@ _ALLOWED_TRANSITIONS: dict[
     ),
     CollectionStatus.ACTIVE: frozenset(
         {
+            CollectionStatus.PENDING_SELECTION,
             CollectionStatus.PENDING_DETAILS,
             CollectionStatus.VISITED,
             CollectionStatus.ARCHIVED,

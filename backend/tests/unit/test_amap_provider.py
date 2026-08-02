@@ -750,6 +750,77 @@ async def test_get_poi_success_not_found_and_city_conflict() -> None:
 
 
 @pytest.mark.parametrize(
+    ("city_code", "expected_city"),
+    [("shenzhen", "shenzhen"), ("guangzhou", "guangzhou")],
+)
+@pytest.mark.asyncio
+async def test_get_poi_identity_derives_supported_city_in_one_request(
+    city_code: str,
+    expected_city: str,
+) -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        assert request.url.path == "/v3/place/detail"
+        assert safe_params(request) == {
+            "id": "B0IDENTITY001",
+            "extensions": "all",
+            "output": "JSON",
+        }
+        return httpx.Response(
+            200,
+            json=envelope(
+                pois=[raw_poi(poi_id="B0IDENTITY001", city_code=city_code)]
+            ),
+        )
+
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(handler),
+    )
+
+    result = await provider.get_poi(GetPoiRequest(poi_id="B0IDENTITY001"))
+
+    assert result.poi.city_code == expected_city
+    assert calls == 1
+    await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_get_poi_identity_rejects_unsupported_or_conflicting_city_facts() -> None:
+    unsupported = raw_poi(poi_id="B0UNSUPPORTED")
+    unsupported.update(
+        pname="上海市",
+        cityname="上海市",
+        adcode="310101",
+        citycode="021",
+    )
+    conflict = raw_poi(poi_id="B0CONFLICT", city_code="guangzhou")
+    conflict["cityname"] = "深圳市"
+    responses = iter(
+        [envelope(pois=[unsupported]), envelope(pois=[conflict])]
+    )
+    provider = AmapMapProvider(
+        config=amap_config(max_retries=0),
+        transport=mock_transport(
+            lambda request: httpx.Response(200, json=next(responses))
+        ),
+    )
+
+    with pytest.raises(MapProviderError) as unsupported_error:
+        await provider.get_poi(GetPoiRequest(poi_id="B0UNSUPPORTED"))
+    with pytest.raises(MapProviderError) as conflict_error:
+        await provider.get_poi(GetPoiRequest(poi_id="B0CONFLICT"))
+
+    assert unsupported_error.value.code is MapProviderErrorCode.UNSUPPORTED_CITY
+    assert unsupported_error.value.retryable is False
+    assert conflict_error.value.code is MapProviderErrorCode.INVALID_RESPONSE
+    await provider.close()
+
+
+@pytest.mark.parametrize(
     ("mode", "expected_path"),
     [
         (TransportMode.WALKING, "/v5/direction/walking"),

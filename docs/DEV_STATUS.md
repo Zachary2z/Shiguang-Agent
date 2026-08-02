@@ -9,6 +9,35 @@
 | 最近更新 | 2026-08-02 |
 | 阻塞项 | 无 P0/P1；M2-0 尚未开始 |
 
+## 2026-08-02 M1 稳定化修复 1：两个 P1 返修
+
+- 主控复核否定了候选 `7fa9df5468e536e2a333ed69a516bcb5229f4715` 中“临时
+  Provider 失败会正确恢复可信 target”和“官方高德链接已跨城市就绪”的结论。前者先
+  提交新地点线索并清空 target，再用第二次补偿提交恢复旧 target，实际会形成“新线索
+  + 旧 POI”；后者在统一 URL 工作流的详情查询和保存线索中两次写死深圳。本返修只关闭
+  这两个 P1，不改变 M1 已关闭、M2-0 尚未开始的阶段边界。
+- 地点身份 PATCH 现在先读取完整权威收藏和版本，在不写库的情况下完成唯一
+  `PlaceMatchingService` 调用，再由既有 `PlaceTargetSelectionService` 把编辑字段、
+  候选快照、状态与 target 作为一次 CAS 提交。`TIMEOUT`、`UNAVAILABLE`、
+  `RATE_LIMITED`、非重试错误和 `CancelledError` 均原样向调用方传播；失败前后 title、
+  城市、地址、其他线索、status、target、候选快照和 version 完全不变。成功重匹配仍
+  只写一个新版本；并发版本变化返回 `VersionConflictError`，不覆盖胜出的请求。
+- 唯一 `MapProvider.get_poi` 现允许 identity-only 详情查询；高德适配器只发一次详情
+  HTTP 请求，并从同一响应的 citycode、adcode、省市字段确定深圳或广州，再复用原 POI
+  映射和核心事实校验。未支持城市返回 `MAP_PROVIDER_UNSUPPORTED_CITY`，响应城市事实
+  冲突返回 `MAP_PROVIDER_INVALID_RESPONSE`；不探测多个城市、不重试、不回退深圳。
+  统一输入以正式 POI 的 `city_code` 保存城市线索，因此深圳和广州官方链接均可 ACTIVE，
+  广州收藏由既有结构化检索以 `CITY_MISMATCH` 排除在深圳计划之外。
+- 未新增迁移、Provider、HTTP Client、匹配服务、状态机、城市解析器或补偿机制；URL
+  host、敏感查询、SSRF、重定向、日志脱敏和幂等边界保持原唯一实现。未修改软字段是否
+  触发重匹配的既有行为，未进入稳定化修复 2–5、Event、前端或 M2。
+- 验证通过：`pip check`、Ruff、strict mypy（141 个源文件）；用户指定两组聚焦测试
+  均为 `236 passed`；非真实 Provider/Map 全集为
+  `1752 passed, 16 skipped, 2 deselected`；仓库外插件封锁 DNS、`connect`、
+  `connect_ex` 和 `create_connection` 后，受影响地点、统一输入与收藏聚焦集为
+  `368 passed`。Alembic 唯一 head 仍为 `20260729_0017`，真实 API 调用为 0，未读取
+  `.env`。
+
 ## 2026-08-02 M1 稳定化修复 1：地点识别与收藏就绪状态收敛
 
 - 基于 `e1e9e5a32c20f711cc65836a1706c2d80b62358c` 完成地点就绪收敛；M1 的关闭结论

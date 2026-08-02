@@ -101,6 +101,9 @@ _AMAP_CITIES: Mapping[str, _AmapCity] = MappingProxyType(
         ),
     }
 )
+_AMAP_CITIES_BY_CITYCODE: Mapping[str, _AmapCity] = MappingProxyType(
+    {city.citycode: city for city in _AMAP_CITIES.values()}
+)
 
 # Amap typecode prefixes are ordered from specific to broad and map exactly once here.
 _POI_TYPE_PREFIXES: tuple[tuple[str, PoiType], ...] = (
@@ -125,6 +128,10 @@ _ROUTE_PATHS: Mapping[TransportMode, str] = MappingProxyType(
 
 class _InvalidAmapResponse(ValueError):
     """Internal sentinel carrying no response data."""
+
+
+class _UnsupportedAmapCity(ValueError):
+    """Internal sentinel for a valid identity outside the supported city catalog."""
 
 
 class _InvalidAmapRequest(ValueError):
@@ -231,7 +238,9 @@ class AmapMapProvider(MapProvider):
         return result
 
     async def get_poi(self, request: GetPoiRequest) -> GetPoiResult:
-        city = _require_city(request.city.city_code)
+        asserted_city = (
+            None if request.city is None else _require_city(request.city.city_code)
+        )
         payload = await self._request_json(
             "/v3/place/detail",
             params={"id": request.poi_id, "extensions": "all", "output": "JSON"},
@@ -245,10 +254,13 @@ class AmapMapProvider(MapProvider):
             elif len(raw_pois) != 1:
                 raise _InvalidAmapResponse
             else:
+                city = asserted_city or _city_from_poi(raw_pois[0])
                 poi = _map_poi(raw_pois[0], city=city)
                 if poi.poi_id != request.poi_id:
                     raise _InvalidAmapResponse
                 result = GetPoiResult(poi=poi)
+        except _UnsupportedAmapCity:
+            error_code = MapProviderErrorCode.UNSUPPORTED_CITY
         except (_InvalidAmapResponse, ValidationError, TypeError, ValueError):
             error_code = MapProviderErrorCode.INVALID_RESPONSE
         if error_code is not None:
@@ -455,6 +467,15 @@ def _require_city(city_code: str) -> _AmapCity:
     city = _AMAP_CITIES.get(city_code)
     if city is None:
         raise MapProviderError(code=MapProviderErrorCode.INVALID_REQUEST)
+    return city
+
+
+def _city_from_poi(value: object) -> _AmapCity:
+    item = _mapping_value(value)
+    city = _AMAP_CITIES_BY_CITYCODE.get(_required_text(item, "citycode"))
+    if city is None:
+        raise _UnsupportedAmapCity
+    _validate_city(item, city=city)
     return city
 
 

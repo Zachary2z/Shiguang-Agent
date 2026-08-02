@@ -41,7 +41,6 @@ from app.domain.collections import (
     MessageContentType,
     MessageRole,
     PlaceCandidate,
-    PlanCity,
     ResourceNotFoundError,
     Source,
     SourceMetadata,
@@ -49,7 +48,7 @@ from app.domain.collections import (
     SourceType,
 )
 from app.domain.collections.writes import validate_idempotency_key
-from app.domain.places import CityScope, PlaceMatchResult, inspect_amap_official_link
+from app.domain.places import PlaceMatchResult, inspect_amap_official_link
 from app.domain.runs import AgentRunCreate, AgentRunStatus
 from app.domain.time import utc_now
 from app.domain.web import WebFetchFailure, WebFetchFailureCode, WebPageContent
@@ -755,7 +754,6 @@ class TextCollectionWorkflow:
                     input_summary='{"input_type":"official_amap_url"}',
                     operation=lambda: place_matching.match_official_amap_link(
                         input.url,
-                        city=CityScope(city_code=PlanCity.SHENZHEN.value),
                     ),
                     summarize=self._summarize_official_amap_match,
                 )
@@ -913,7 +911,7 @@ class TextCollectionWorkflow:
             (
                 PlaceCandidate(
                     title=candidate.name,
-                    city_hint=PlanCity.SHENZHEN.value,
+                    city_hint=candidate.city_code,
                     district=candidate.district,
                     address=candidate.address,
                     business_district=candidate.business_area,

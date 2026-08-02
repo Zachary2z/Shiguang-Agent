@@ -75,7 +75,10 @@ class StubMapProvider(MapProvider):
             if search_result.city_code != search_request.city.city_code:
                 raise ValueError("search fixture city must match its request city")
         for poi_request, poi_result in self._poi_results.items():
-            if poi_result.poi.city_code != poi_request.city.city_code:
+            if (
+                poi_request.city is not None
+                and poi_result.poi.city_code != poi_request.city.city_code
+            ):
                 raise ValueError("POI fixture city must match its request city")
             if poi_result.poi.poi_id != poi_request.poi_id:
                 raise ValueError("POI fixture identifier must match its request")

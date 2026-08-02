@@ -215,6 +215,17 @@ def _matching_service(
     )
 
 
+class _RaisingStubMapProvider(StubMapProvider):
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self.error = error
+        self.calls: list[SearchPoiRequest] = []
+
+    async def search_poi(self, request: SearchPoiRequest) -> PoiSearchResult:
+        self.calls.append(request.model_copy(deep=True))
+        raise self.error
+
+
 async def _confirmed_shenzhen_place(
     *,
     session: Any,
@@ -2032,10 +2043,7 @@ async def test_cancelled_location_patch_never_persists_a_formal_place(
         )
 
     assert stored is not None
-    assert stored.address == "公开地址"
-    assert stored.place_target is None
-    assert stored.place_candidate_snapshot is None
-    assert stored.status is CollectionStatus.PENDING_DETAILS
+    assert stored == saved.items[0]
     await database.close()
 
 
@@ -2431,7 +2439,7 @@ async def test_event_and_any_branch_targets_are_invalidated_by_location_edits(
 
 
 @pytest.mark.asyncio
-async def test_provider_failure_after_confirmed_location_edit_restores_trusted_target(
+async def test_provider_failure_after_confirmed_location_edit_preserves_authority(
     write_database: tuple[str, Path],
 ) -> None:
     database_url, _ = write_database
@@ -2449,29 +2457,126 @@ async def test_provider_failure_after_confirmed_location_edit_restores_trusted_t
             source=_source(user.id),
             idempotency_key="confirmed-provider-failure",
         )
-        updated = await service.patch(
-            user_id=user.id,
-            collection_item_id=active.id,
-            expected_version=active.version,
-            patch=CollectionItemPatch(address="发生变化的公开地址"),
-            place_matching=_matching_service(StubMapProvider(call_hook=fail)),
-        )
+        with pytest.raises(MapProviderError) as exc_info:
+            await service.patch(
+                user_id=user.id,
+                collection_item_id=active.id,
+                expected_version=active.version,
+                patch=CollectionItemPatch(address="发生变化的公开地址"),
+                place_matching=_matching_service(StubMapProvider(call_hook=fail)),
+            )
         stored = await service._repository.get_collection_item(
             user_id=user.id,
             collection_item_id=active.id,
         )
 
     assert stored is not None
-    assert updated == stored
-    assert stored.address == "发生变化的公开地址"
-    assert stored.place_target == active.place_target
-    assert stored.place_candidate_snapshot == active.place_candidate_snapshot
-    assert stored.status is CollectionStatus.ACTIVE
+    assert exc_info.value.code is MapProviderErrorCode.UNAVAILABLE
+    assert exc_info.value.retryable is True
+    assert stored == active
     await database.close()
 
 
 @pytest.mark.asyncio
-async def test_cancelled_rematch_after_confirmed_edit_keeps_invalidation(
+@pytest.mark.parametrize(
+    ("code", "patch"),
+    [
+        (MapProviderErrorCode.TIMEOUT, CollectionItemPatch(title="广东省博物馆")),
+        (MapProviderErrorCode.UNAVAILABLE, CollectionItemPatch(city_hint="广州")),
+        (MapProviderErrorCode.RATE_LIMITED, CollectionItemPatch(address="珠江东路2号")),
+    ],
+)
+async def test_retryable_rematch_failure_preserves_full_place_and_version(
+    write_database: tuple[str, Path],
+    code: MapProviderErrorCode,
+    patch: CollectionItemPatch,
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    error = MapProviderError(code=code)
+    provider = _RaisingStubMapProvider(error)
+
+    async with database.session() as session:
+        service, active = await _confirmed_shenzhen_place(
+            session=session,
+            user_id=user.id,
+            source=_source(user.id),
+            idempotency_key=f"authoritative-{code.value}",
+        )
+        with pytest.raises(MapProviderError) as exc_info:
+            await service.patch(
+                user_id=user.id,
+                collection_item_id=active.id,
+                expected_version=active.version,
+                patch=patch,
+                place_matching=_matching_service(provider),
+            )
+        stored = await service._repository.get_collection_item(
+            user_id=user.id,
+            collection_item_id=active.id,
+        )
+
+    assert exc_info.value is error
+    assert stored == active
+    assert stored is not None
+    assert stored.version == active.version
+    assert stored.place_target == active.place_target
+    assert stored.place_candidate_snapshot == active.place_candidate_snapshot
+    assert CollectionItemResponse.from_domain(stored).planning_eligible is True
+    assert len(provider.calls) == 1
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_rematch_propagates_cancelled_error_object_and_nonretry_failure(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+
+    async with database.session() as session:
+        service, active = await _confirmed_shenzhen_place(
+            session=session,
+            user_id=user.id,
+            source=_source(user.id),
+            idempotency_key="authoritative-cancel-and-invalid",
+        )
+        cancellation = asyncio.CancelledError("same cancellation")
+        with pytest.raises(asyncio.CancelledError) as cancelled:
+            await service.patch(
+                user_id=user.id,
+                collection_item_id=active.id,
+                expected_version=active.version,
+                patch=CollectionItemPatch(title="另一个地点"),
+                place_matching=_matching_service(_RaisingStubMapProvider(cancellation)),
+            )
+        assert cancelled.value is cancellation
+
+        invalid = MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE)
+        with pytest.raises(MapProviderError) as failed:
+            await service.patch(
+                user_id=user.id,
+                collection_item_id=active.id,
+                expected_version=active.version,
+                patch=CollectionItemPatch(city_hint="广州"),
+                place_matching=_matching_service(_RaisingStubMapProvider(invalid)),
+            )
+        stored = await service._repository.get_collection_item(
+            user_id=user.id,
+            collection_item_id=active.id,
+        )
+
+    assert failed.value is invalid
+    assert stored == active
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_rematch_after_confirmed_edit_preserves_authority(
     write_database: tuple[str, Path],
 ) -> None:
     database_url, _ = write_database
@@ -2510,10 +2615,132 @@ async def test_cancelled_rematch_after_confirmed_edit_keeps_invalidation(
         )
 
     assert stored is not None
-    assert stored.city_hint == "广州"
-    assert stored.place_target is None
-    assert stored.place_candidate_snapshot is None
-    assert stored.status is CollectionStatus.PENDING_DETAILS
+    assert stored == active
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_successful_identity_rematch_atomically_writes_the_new_place(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    request = SearchPoiRequest(
+        query=GUANGZHOU_MUSEUM.name,
+        city=CityScope(city_code="guangzhou"),
+        district=GUANGZHOU_MUSEUM.district,
+    )
+    provider = StubMapProvider(
+        search_results={
+            request: PoiSearchResult(
+                city_code="guangzhou",
+                pois=(GUANGZHOU_MUSEUM,),
+            )
+        }
+    )
+
+    async with database.session() as session:
+        service, active = await _confirmed_shenzhen_place(
+            session=session,
+            user_id=user.id,
+            source=_source(user.id),
+            idempotency_key="atomic-successful-rematch",
+        )
+        updated = await service.patch(
+            user_id=user.id,
+            collection_item_id=active.id,
+            expected_version=active.version,
+            patch=CollectionItemPatch(
+                title=GUANGZHOU_MUSEUM.name,
+                city_hint="广州",
+                district=GUANGZHOU_MUSEUM.district,
+                address=GUANGZHOU_MUSEUM.address,
+            ),
+            place_matching=_matching_service(provider),
+        )
+
+    assert updated.status is CollectionStatus.ACTIVE
+    assert updated.version == active.version + 1
+    assert updated.place_target is not None
+    assert updated.place_target.poi == GUANGZHOU_MUSEUM
+    assert updated.city_hint == "广州"
+    await database.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_version_change_wins_over_completed_rematch(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def block(_: object) -> None:
+        started.set()
+        await release.wait()
+
+    request = SearchPoiRequest(
+        query=GUANGZHOU_MUSEUM.name,
+        city=CityScope(city_code="guangzhou"),
+        district=GUANGZHOU_MUSEUM.district,
+    )
+    matching = _matching_service(
+        StubMapProvider(
+            search_results={
+                request: PoiSearchResult(
+                    city_code="guangzhou",
+                    pois=(GUANGZHOU_MUSEUM,),
+                )
+            },
+            call_hook=block,
+        )
+    )
+
+    async with database.session() as first_session:
+        service, active = await _confirmed_shenzhen_place(
+            session=first_session,
+            user_id=user.id,
+            source=_source(user.id),
+            idempotency_key="concurrent-rematch",
+        )
+        rematch = asyncio.create_task(
+            service.patch(
+                user_id=user.id,
+                collection_item_id=active.id,
+                expected_version=active.version,
+                patch=CollectionItemPatch(
+                    title=GUANGZHOU_MUSEUM.name,
+                    city_hint="广州",
+                    district=GUANGZHOU_MUSEUM.district,
+                    address=GUANGZHOU_MUSEUM.address,
+                ),
+                place_matching=matching,
+            )
+        )
+        await started.wait()
+        async with database.session() as second_session:
+            concurrent = await _service(second_session).patch(
+                user_id=user.id,
+                collection_item_id=active.id,
+                expected_version=active.version,
+                patch=CollectionItemPatch(tags=("并发保留",)),
+            )
+        release.set()
+        with pytest.raises(VersionConflictError):
+            await rematch
+        stored = await service._repository.get_collection_item(
+            user_id=user.id,
+            collection_item_id=active.id,
+        )
+
+    assert stored == concurrent
+    assert stored.title == active.title
+    assert stored.place_target == active.place_target
     await database.close()
 
 

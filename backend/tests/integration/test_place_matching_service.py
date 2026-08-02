@@ -111,7 +111,7 @@ async def test_service_returns_unique_high_confidence_match() -> None:
 
 @pytest.mark.asyncio
 async def test_official_amap_link_resolves_exact_identity_without_search() -> None:
-    request = GetPoiRequest(poi_id=SHENZHEN_MOCAUP.poi_id, city=SHENZHEN)
+    request = GetPoiRequest(poi_id=SHENZHEN_MOCAUP.poi_id)
     calls: list[object] = []
 
     async def record_call(value: object) -> None:
@@ -124,7 +124,6 @@ async def test_official_amap_link_resolves_exact_identity_without_search() -> No
 
     result = await _service(provider).match_official_amap_link(
         f"https://www.amap.com/place/{SHENZHEN_MOCAUP.poi_id}",
-        city=SHENZHEN,
     )
 
     assert result.status is MatchStatus.MATCHED
@@ -144,8 +143,24 @@ async def test_official_amap_link_propagates_get_poi_cancellation() -> None:
     with pytest.raises(asyncio.CancelledError, match="cancel official"):
         await _service(provider).match_official_amap_link(
             "https://www.amap.com/place/B0SZ000001",
-            city=SHENZHEN,
         )
+
+
+@pytest.mark.asyncio
+async def test_official_amap_link_rejects_unsupported_city_without_relabeling() -> None:
+    unsupported = SHENZHEN_MOCAUP.model_copy(update={"city_code": "shanghai"})
+    request = GetPoiRequest(poi_id=unsupported.poi_id)
+    provider = StubMapProvider(
+        poi_results={request: GetPoiResult(poi=unsupported)},
+    )
+
+    with pytest.raises(MapProviderError) as exc_info:
+        await _service(provider).match_official_amap_link(
+            f"https://www.amap.com/place/{unsupported.poi_id}"
+        )
+
+    assert exc_info.value.code is MapProviderErrorCode.UNSUPPORTED_CITY
+    assert exc_info.value.retryable is False
 
 
 @pytest.mark.asyncio

@@ -164,10 +164,10 @@ class PoiSearchResult(PlaceContract):
 
 
 class GetPoiRequest(PlaceContract):
-    """Fetch one POI by identifier within an explicit city scope."""
+    """Fetch one POI by identity, optionally asserting an explicit city scope."""
 
     poi_id: str = Field(min_length=1, max_length=128)
-    city: CityScope
+    city: CityScope | None = None
 
     @field_validator("poi_id")
     @classmethod

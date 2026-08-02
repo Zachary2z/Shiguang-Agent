@@ -32,6 +32,9 @@ from app.application.plan_experience import (
     PlanGenerationOutcome,
 )
 from app.application.pricing import ConfiguredPricingPolicy
+from app.application.structured_collection_retrieval import (
+    StructuredCollectionRetrievalService,
+)
 from app.application.text_collection_workflow import (
     MAX_RICH_INPUT_WORKFLOW_SECONDS,
     TextCollectionWorkflow,
@@ -64,6 +67,14 @@ from app.domain.places import (
     WeatherResult,
 )
 from app.domain.plans import ActivityArea, PlanConstraints
+from app.domain.plans.retrieval import (
+    AvailabilityAssessment,
+    CandidateReasonCode,
+    PlanningFactSnapshot,
+    PoiPlanningFacts,
+    RouteAssessment,
+    WeatherAssessment,
+)
 from app.domain.web import (
     WebFetchDiagnostics,
     WebFetchFailure,
@@ -442,26 +453,35 @@ async def test_text_url_and_image_share_one_result_and_collection_mapping(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("city_code", "poi_id", "name", "latitude", "longitude"),
+    [
+        ("shenzhen", "B0SZ000001", "深圳核心事实地点", 22.541174, 114.057701),
+        ("guangzhou", "B0GZ000001", "广州核心事实地点", 23.117242, 113.321242),
+    ],
+)
 async def test_official_amap_place_url_binds_exact_target_without_web_or_model(
     test_settings: Settings,
+    city_code: str,
+    poi_id: str,
+    name: str,
+    latitude: float,
+    longitude: float,
 ) -> None:
     poi = Poi(
         provider=PoiProvider.AMAP,
-        poi_id="B0SZ000001",
-        name="只有核心事实的地点",
-        city_code="shenzhen",
+        poi_id=poi_id,
+        name=name,
+        city_code=city_code,
         address=None,
         coordinate=Coordinate(
-            latitude=22.541174,
-            longitude=114.057701,
+            latitude=latitude,
+            longitude=longitude,
             coordinate_system=CoordinateSystem.GCJ_02,
         ),
         poi_type=PoiType.OTHER,
     )
-    request = GetPoiRequest(
-        poi_id=poi.poi_id,
-        city=CityScope(city_code="shenzhen"),
-    )
+    request = GetPoiRequest(poi_id=poi.poi_id)
     map_calls: list[object] = []
 
     async def record_map_call(value: object) -> None:
@@ -485,7 +505,7 @@ async def test_official_amap_place_url_binds_exact_target_without_web_or_model(
             f"/api/v1/sessions/{session_id}/messages",
             json={
                 "type": "url",
-                "idempotency_key": "official-amap-place",
+                "idempotency_key": f"official-amap-place-{city_code}",
                 "url": f"https://www.amap.com/place/{poi.poi_id}",
             },
         )
@@ -493,7 +513,7 @@ async def test_official_amap_place_url_binds_exact_target_without_web_or_model(
             f"/api/v1/sessions/{session_id}/messages",
             json={
                 "type": "url",
-                "idempotency_key": "official-amap-place",
+                "idempotency_key": f"official-amap-place-{city_code}",
                 "url": f"https://www.amap.com/place/{poi.poi_id}",
             },
         )
@@ -502,6 +522,34 @@ async def test_official_amap_place_url_binds_exact_target_without_web_or_model(
                 user_id=user_id,
                 include_inactive=True,
             )
+            if city_code == "guangzhou":
+                retrieval = await StructuredCollectionRetrievalService(
+                    repository=SqlAlchemyCollectionRepository(session)
+                ).retrieve(
+                    user_id=user_id,
+                    constraints=PlanConstraints(
+                        city_code=PlanCity.SHENZHEN,
+                        start_at=datetime(2026, 8, 3, 2, 0, tzinfo=UTC),
+                        end_at=datetime(2026, 8, 3, 6, 0, tzinfo=UTC),
+                            area=ActivityArea(labels=("地点",)),
+                        created_at=datetime(2026, 8, 2, 1, 0, tzinfo=UTC),
+                        expires_at=datetime(2026, 8, 4, 1, 0, tzinfo=UTC),
+                    ),
+                    facts=PlanningFactSnapshot(
+                        pois=(
+                            PoiPlanningFacts(
+                                provider=poi.provider,
+                                poi_id=poi.poi_id,
+                                route=RouteAssessment.REACHABLE,
+                                route_duration_seconds=600,
+                                route_distance_meters=800,
+                                weather=WeatherAssessment.COMPATIBLE,
+                                availability=AvailabilityAssessment.AVAILABLE,
+                            ),
+                        )
+                    ),
+                    now=datetime(2026, 8, 2, 2, 0, tzinfo=UTC),
+                )
 
     assert response.status_code == 200
     assert replay.status_code == 200
@@ -509,9 +557,64 @@ async def test_official_amap_place_url_binds_exact_target_without_web_or_model(
     assert response.json()["collections"][0]["status"] == "active"
     assert items[0].place_target is not None
     assert items[0].place_target.poi == poi
+    if city_code == "guangzhou":
+        assert retrieval.included == ()
+        assert CandidateReasonCode.CITY_MISMATCH in retrieval.decisions[0].reason_codes
     assert web.calls == []
     assert model.calls == []
     assert map_calls == [request]
+
+
+@pytest.mark.asyncio
+async def test_official_amap_unsupported_city_is_recoverable_and_never_shenzhen(
+    test_settings: Settings,
+) -> None:
+    poi = Poi(
+        provider=PoiProvider.AMAP,
+        poi_id="B0SH000001",
+        name="未支持城市地点",
+        city_code="shanghai",
+        coordinate=Coordinate(
+            latitude=31.2304,
+            longitude=121.4737,
+            coordinate_system=CoordinateSystem.GCJ_02,
+        ),
+        poi_type=PoiType.OTHER,
+    )
+    request = GetPoiRequest(poi_id=poi.poi_id)
+    map_calls: list[object] = []
+
+    async def record_map_call(value: object) -> None:
+        map_calls.append(value)
+
+    model = FakeProvider([])
+    web = StubWebProvider(_web_success())
+    async with _client(
+        test_settings,
+        model,
+        web=web,
+        map_provider=StubMapProvider(
+            poi_results={request: GetPoiResult(poi=poi)},
+            call_hook=record_map_call,  # type: ignore[arg-type]
+        ),
+    ) as (_api, client, _storage):
+        session_id = await _demo(client)
+        response = await client.post(
+            f"/api/v1/sessions/{session_id}/messages",
+            json={
+                "type": "url",
+                "idempotency_key": "official-amap-unsupported-city",
+                "url": f"https://www.amap.com/place/{poi.poi_id}",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["collections"] == []
+    assert response.json()["error_code"] == "MAP_PROVIDER_UNSUPPORTED_CITY"
+    assert response.json()["recovery_actions"]
+    assert map_calls == [request]
+    assert web.calls == []
+    assert model.calls == []
 
 
 @pytest.mark.asyncio

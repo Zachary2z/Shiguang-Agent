@@ -416,20 +416,23 @@ async def test_temporary_provider_failure_preserves_existing_trusted_target(
     database = Database(database_url)
     user, source, item = await _seed_pending(database)
     active = await _record_result(database, user, source, item, _unique_match_result())
-    original_target = active.place_target
-
     async with database.session() as session:
-        stored = await CollectionWriteService(session=session, now=lambda: NOW).patch(
+        service = CollectionWriteService(session=session, now=lambda: NOW)
+        with pytest.raises(MapProviderError) as exc_info:
+            await service.patch(
+                user_id=user.id,
+                collection_item_id=active.id,
+                expected_version=active.version,
+                patch=CollectionItemPatch(title="修改后的地点线索"),
+                place_matching=_UnavailablePlaceMatching(),  # type: ignore[arg-type]
+            )
+        stored = await service._repository.get_collection_item(
             user_id=user.id,
             collection_item_id=active.id,
-            expected_version=active.version,
-            patch=CollectionItemPatch(title="修改后的地点线索"),
-            place_matching=_UnavailablePlaceMatching(),  # type: ignore[arg-type]
         )
 
-    assert stored.status is CollectionStatus.ACTIVE
-    assert stored.place_target == original_target
-    assert stored.title == "修改后的地点线索"
+    assert exc_info.value.code is MapProviderErrorCode.UNAVAILABLE
+    assert stored == active
 
 
 @pytest.mark.asyncio

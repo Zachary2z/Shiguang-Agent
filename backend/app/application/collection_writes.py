@@ -156,6 +156,7 @@ class CollectionWriteService:
         owner = validate_user_id(user_id)
         identifier = validate_collection_item_id(collection_item_id)
         now = self._now()
+        source_id: str | None = None
         async with self._session.begin():
             current = await self._repository.get_collection_item(
                 user_id=owner,
@@ -193,7 +194,22 @@ class CollectionWriteService:
                 )
             values["updated_at"] = now
             desired = CollectionItem.model_validate(values)
-            if invalidate_resolution:
+            if location_identity_changed and place_matching is not None:
+                links = await self._repository.list_collection_sources(
+                    user_id=owner,
+                    collection_item_id=identifier,
+                )
+                source_id = links[0].source_id if links else None
+                updated = (
+                    desired
+                    if source_id is not None
+                    else await self._repository.apply_place_resolution(
+                        user_id=owner,
+                        item=desired,
+                        expected_version=expected_version,
+                    )
+                )
+            elif invalidate_resolution:
                 updated = await self._repository.apply_place_resolution(
                     user_id=owner,
                     item=desired,
@@ -206,7 +222,7 @@ class CollectionWriteService:
                     expected_version=expected_version,
                 )
             target_status = self._event_status_after_confirmation(updated)
-            if target_status is not updated.status:
+            if source_id is None and target_status is not updated.status:
                 updated = await self._repository.transition_collection_status(
                     user_id=owner,
                     collection_item_id=identifier,
@@ -215,30 +231,34 @@ class CollectionWriteService:
                 )
         if not location_identity_changed:
             return updated
-        try:
-            return await self.continue_location_confirmation(
-                owner=owner,
-                item=updated,
-                place_matching=place_matching,
-            )
-        except MapProviderError as exc:
-            if current.place_target is None or not exc.retryable:
-                raise
-            restored = updated.model_copy(
-                update={
-                    "status": current.status,
-                    "place_target": current.place_target,
-                    "place_candidate_snapshot": current.place_candidate_snapshot,
-                    "updated_at": now,
-                },
-                deep=True,
-            )
+        if source_id is None or place_matching is None:
+            return updated
+        has_city_hint, city_code = resolve_city_hint(desired.city_hint)
+        if has_city_hint and city_code is None:
             async with self._session.begin():
                 return await self._repository.apply_place_resolution(
                     user_id=owner,
-                    item=restored,
-                    expected_version=updated.version,
+                    item=desired,
+                    expected_version=expected_version,
                 )
+        match_result = await place_matching.match(
+            PlaceMatchRequest(
+                candidate=self._place_candidate_from_item(desired),
+                city=CityScope(city_code=city_code or PlanCity.SHENZHEN.value),
+                search_district=desired.district,
+            )
+        )
+        return await PlaceTargetSelectionService(
+            session=self._session
+        ).record_candidates_after_patch(
+            user_id=owner,
+            original_item=current,
+            desired_item=desired,
+            source_id=source_id,
+            match_result=match_result,
+            queried_at=self._now(),
+            expected_version=expected_version,
+        )
 
     async def continue_location_confirmation(
         self,

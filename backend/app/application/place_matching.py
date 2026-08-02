@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from app.domain.collections.extraction import PlaceCandidate
 from app.domain.places.contracts import (
-    CityScope,
     Coordinate,
     CoordinateSystem,
     GetPoiRequest,
@@ -27,6 +26,7 @@ from app.domain.places.matching import (
     PlaceMatchRequest,
     PlaceMatchResult,
     classify_place_matches,
+    resolve_city_hint,
     score_place_candidate,
 )
 from app.providers.map import MapProvider, MapProviderError, MapProviderErrorCode
@@ -75,8 +75,6 @@ class PlaceMatchingService:
     async def match_official_amap_link(
         self,
         url: str,
-        *,
-        city: CityScope,
     ) -> PlaceMatchResult:
         """Resolve one explicit official identity through the same MapProvider boundary."""
 
@@ -84,12 +82,11 @@ class PlaceMatchingService:
         if not link.is_official or link.poi_id is None:
             raise MapProviderError(code=MapProviderErrorCode.INVALID_REQUEST)
         result = await self._map_provider.get_poi(
-            GetPoiRequest(poi_id=link.poi_id, city=city.model_copy(deep=True))
+            GetPoiRequest(poi_id=link.poi_id)
         )
         poi = self._validated_provider_poi(
             result=result,
             poi_id=link.poi_id,
-            city=city,
         )
         evidence = (
             MatchEvidence(
@@ -163,7 +160,6 @@ class PlaceMatchingService:
         *,
         result: object,
         poi_id: str,
-        city: CityScope,
     ) -> Poi:
         validated: Poi | None = None
         if isinstance(result, GetPoiResult):
@@ -175,10 +171,12 @@ class PlaceMatchingService:
             validated is None
             or validated.provider is not PoiProvider.AMAP
             or validated.poi_id != poi_id
-            or validated.city_code != city.city_code
             or validated.coordinate.coordinate_system is not CoordinateSystem.GCJ_02
         ):
             raise MapProviderError(code=MapProviderErrorCode.INVALID_RESPONSE)
+        _, supported_city = resolve_city_hint(validated.city_code)
+        if supported_city != validated.city_code:
+            raise MapProviderError(code=MapProviderErrorCode.UNSUPPORTED_CITY)
         return validated
 
     @staticmethod
