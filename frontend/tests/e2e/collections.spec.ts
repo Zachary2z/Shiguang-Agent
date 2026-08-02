@@ -39,10 +39,11 @@ const eventItem = {
   event_end_date: "2026-08-04",
   event_start_at: null,
   event_end_at: null,
-  missing_fields: ["event_start_at", "event_end_at"],
+  missing_fields: [],
   uncertainties: [],
-  status: "pending_details",
-  planning_exclusion_reason: "event_time_unconfirmed",
+  status: "active",
+  planning_eligible: true,
+  planning_exclusion_reason: null,
 };
 
 const mobileViewports = [
@@ -185,7 +186,7 @@ async function mockLongEventCollections(page: Page) {
       restoreRequests += 1;
       item = {
         ...item,
-        status: "pending_details",
+        status: "active",
         version: item.version + 1,
       };
       await route.fulfill({ json: item });
@@ -333,12 +334,13 @@ for (const viewport of mobileViewports) {
       page.locator(".mobile-nav-wrap .nav-link:focus"),
     ).toHaveCount(0);
 
-    const sessionDate = dialog.getByLabel("具体场次日期");
-    const startTime = dialog.getByLabel("具体开始时间");
-    const endTime = dialog.getByLabel("具体结束时间");
-    await sessionDate.fill("2026-08-03");
-    await startTime.fill("15:30");
-    await endTime.fill("20:00");
+    const startDate = dialog.getByLabel("活动有效开始日期");
+    const endDate = dialog.getByLabel("活动有效结束日期");
+    await expect(startDate).toHaveValue("2026-08-02");
+    await expect(endDate).toHaveValue("2026-08-04");
+    await expect(dialog.getByLabel("具体场次日期")).toHaveCount(0);
+    await expect(dialog.getByLabel("具体开始时间")).toHaveCount(0);
+    await expect(dialog.getByLabel("具体结束时间")).toHaveCount(0);
     const confirm = dialog.getByRole("button", { name: "确认并保存" });
     await expectReachable(page, confirm);
     await confirm.click();
@@ -421,20 +423,18 @@ for (const viewport of desktopViewports) {
   });
 }
 
-test("out-of-range Event session date reaches product validation without PATCH", async ({
+test("reversed Event date range reaches product validation without PATCH", async ({
   page,
 }) => {
   const requests = await mockEventCollections(page);
   await page.goto("/collections");
   await page.getByRole("button", { name: new RegExp(eventItem.title) }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByLabel("具体场次日期").fill("2026-08-05");
-  await dialog.getByLabel("具体开始时间").fill("15:30");
-  await dialog.getByLabel("具体结束时间").fill("20:00");
+  await dialog.getByLabel("活动有效结束日期").fill("2026-08-01");
   await dialog.getByRole("button", { name: "确认并保存" }).click();
 
   await expect(
-    page.getByText(/具体场次不在活动有效日期范围内/),
+    page.getByText("活动有效结束日期不能早于开始日期。"),
   ).toBeVisible();
   expect(requests.patchRequests()).toBe(0);
 });

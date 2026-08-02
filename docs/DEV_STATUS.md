@@ -17,6 +17,8 @@
   `planning_exclusion_reason`；完整合法日期范围的计划规则已同步到产品、技术与阶段文档。
 - Ruff、mypy（141 个源文件）、后端聚焦 `243 passed`、非真实 Provider/Map 全集
   `1754 passed, 16 skipped, 2 deselected`、前端 lint/typecheck 与 Vitest `133 passed`。
+- Playwright 已同步 date-range Event 界面：收藏 E2E `21 passed`，完整 E2E
+  `46 passed`；未恢复精确场次控件或修改生产代码。
 - 未新增时间模式、helper、DTO、字段、迁移、依赖或第二套状态；未涉及修复 2B 或 M2。
 
 ## 2026-08-02 M1 稳定化修复 2A：Event 日期范围与计划准入
