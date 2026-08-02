@@ -18,7 +18,7 @@
 - 字段修改只清除该字段原 missing/uncertainty，清空字段恢复对应 missing，未触及字段
   保留原 metadata；新增 title 对应收敛，未复制字段规则。Provider 错误、取消和并发
   CAS 冲突继续在原子提交前退出，原收藏字段、target、候选快照和版本完整不变。
-- `pip check`、Ruff、mypy（123 个源文件）、Alembic 空库升级及唯一 head
+- `pip check`、Ruff、mypy（141 个源文件）、Alembic 空库升级及唯一 head
   `20260729_0017` 通过；后端聚焦及仓库外 DNS/socket 封网复跑均为 `400 passed`，
   非真实 Provider/Map 全集 `1756 passed, 16 skipped, 2 deselected`。前端 lint、
   typecheck、Vitest `133 passed` 与 Playwright `46 passed` 均通过。
