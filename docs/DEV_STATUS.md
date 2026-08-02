@@ -4,10 +4,26 @@
 |---|---|
 | 当前总阶段 | M2 微信 ClawBot 完整 MVP |
 | 当前子阶段 | M2-0 ClawBot 技术 Spike |
-| 状态 | AgentRun 超时终态一致性修复完成，等待主控独立验收；M2-0 尚未开始。 |
-| 当前分支 | codex/m1-final-run-timeout-terminal |
+| 状态 | AgentRun 超时终态一致性修复已通过主控验收；M2-0 尚未开始。 |
+| 当前分支 | main |
 | 最近更新 | 2026-08-02 |
-| 阻塞项 | 本次 P1 修复待主控验收；M2-0 尚未开始 |
+| 阻塞项 | PostgreSQL 中文标签搜索漏匹配 P1 待修复；M2-0 尚未开始 |
+
+## 2026-08-02 AgentRun 超时终态一致性主控验收
+
+- 主控确认候选 `130336a4d9a361aca5dd01c5abea2fcd0d41bef5` 直接基于
+  `75b84f9f88054cfa71f8960fea98b6cc4b659316`，工作区干净且提交链线性。
+- 生产改动只有唯一 `AgentRunService._persist_final` 的一行持久化边界收敛；
+  60005ms 观测值稳定保存为既有 60000ms 上限，没有新增状态机、watchdog、重试、
+  迁移、配置或依赖。
+- `pip check`、Ruff、strict mypy（141 个源文件）通过；终态与统一输入聚焦
+  `61 passed`，前端恢复 `28 passed`，非真实全集
+  `1769 passed, 17 skipped, 2 deselected`。临时 PostgreSQL 16 约束专项
+  `1 passed`、迁移 `25 passed`，Alembic 唯一 head 为 `20260729_0017`。
+- 全集观察到一次既有 aiosqlite 收尾 warning；目标用例以 warning-as-error 独立
+  复跑 `1 passed`，未连续复现，继续保留为 P2。本轮真实 API 调用为 0。
+- 该 P1 已关闭。真实用户 QA 发现的 PostgreSQL 中文标签搜索漏匹配是独立 P1，
+  留给下一修复，不在本提交混入第二个根因；M2-0 继续阻塞。
 
 ## 2026-08-02 AgentRun 超时终态一致性修复
 
