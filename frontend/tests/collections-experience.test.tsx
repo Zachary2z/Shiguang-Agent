@@ -135,7 +135,10 @@ describe("CollectionsExperience", () => {
       async (path) => {
         if (path === "/api/v1/demo/sessions") return session as never;
         if (path.startsWith("/api/v1/collections?")) return filledPage as never;
-        return { item: baseItem, sources: [] } as never;
+        return {
+          item: baseItem,
+          sources: [{ id: "src_one", type: "image", parse_status: "parsed" }],
+        } as never;
       },
     );
     const view = render(<CollectionsExperience />);
@@ -147,17 +150,19 @@ describe("CollectionsExperience", () => {
       `/collections?item=${baseItem.id}`,
       { scroll: false },
     );
-
     currentQuery = `item=${baseItem.id}`;
     view.rerender(<CollectionsExperience />);
 
-    const dialog = await screen.findByRole("dialog");
-    const close = within(dialog).getByRole("button", {
+    const routedDialog = await screen.findByRole("dialog");
+    expect(within(routedDialog).getByText("地点")).toBeInTheDocument();
+    expect(within(routedDialog).getByText("截图 · 已解析")).toBeInTheDocument();
+    expect(within(routedDialog).queryByText(/Place|image|parsed/)).not.toBeInTheDocument();
+    const close = within(routedDialog).getByRole("button", {
       name: "关闭收藏详情",
     });
-    await within(dialog).findByRole("textbox", { name: "名称" });
+    await within(routedDialog).findByRole("textbox", { name: "名称" });
     await waitFor(() => expect(close).toHaveFocus());
-    const lastAction = within(dialog).getByRole("button", {
+    const lastAction = within(routedDialog).getByRole("button", {
       name: "保存修改",
     });
     lastAction.focus();
@@ -991,6 +996,8 @@ describe("CollectionsExperience", () => {
     render(<CollectionsExperience />);
     expect(await screen.findByText(/海上世界店/)).toBeInTheDocument();
     expect(screen.getByText(/南山区 · 海上世界 · 太子路118号/)).toBeInTheDocument();
+    expect(screen.getByText(/咖啡店/)).toBeInTheDocument();
+    expect(screen.queryByText(/cafe/)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /以上都不是/ }));
     expect(await screen.findByText(/原收藏已保留为待补充/)).toBeInTheDocument();
     expect(replace).not.toHaveBeenCalled();

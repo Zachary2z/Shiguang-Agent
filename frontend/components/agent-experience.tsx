@@ -128,6 +128,25 @@ const toolLabels: Readonly<Record<string, string>> = {
   web_content_fetch: "读取网页内容",
   image_recognition: "识别截图",
 };
+const toolStatusLabels: Readonly<Record<string, string>> = {
+  running: "处理中",
+  succeeded: "已完成",
+  failed: "失败",
+  blocked: "未执行",
+  cancelled: "已取消",
+};
+const collectionFieldLabels: Readonly<Record<string, string>> = {
+  city_hint: "城市线索",
+  district: "行政区",
+  address: "公开地址",
+  business_district: "商圈",
+  landmark: "地标",
+  metro_station: "地铁站",
+  event_start_date: "活动有效开始日期",
+  event_end_date: "活动有效结束日期",
+  event_start_at: "活动具体开始时间",
+  event_end_at: "活动具体结束时间",
+};
 
 const acceptedImageTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 const maxImageBytes = 10_000_000;
@@ -842,11 +861,12 @@ export function AgentExperience() {
                                     locationClueFields.has(field)
                                   : locationClueFields.has(field),
                               )
+                              .map((field) => collectionFieldLabels[field] ?? "其他信息")
                               .join("、")}
                           </p>
                         )}
                         {item.uncertainties.length > 0 && (
-                          <p><strong>待确认：</strong>{item.uncertainties.map((entry) => entry.field).join("、")}</p>
+                          <p><strong>待确认：</strong>{item.uncertainties.map((entry) => collectionFieldLabels[entry.field] ?? "其他信息").join("、")}</p>
                         )}
                       </div>
                     )}
@@ -919,9 +939,9 @@ export function AgentExperience() {
               {result.tool_steps.map((tool, index) => (
                 <li key={`${tool.tool_name}-${index}`}>
                   <span>{toolLabels[tool.tool_name] ?? "内容处理"}</span>
-                  <small>{stageLabels[tool.stage] ?? "结果整理"} · {tool.status}</small>
+                  <small>{stageLabels[tool.stage] ?? "结果整理"} · {toolStatusLabels[tool.status] ?? "状态待确认"}</small>
                   {tool.duration_ms !== null && <time>{tool.duration_ms} ms</time>}
-                  {tool.error_code && <code>{tool.error_code}</code>}
+                  {tool.error_code && <span>可稍后重试</span>}
                 </li>
               ))}
             </ul>

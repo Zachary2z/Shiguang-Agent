@@ -267,6 +267,50 @@ describe("Agent experience", () => {
     expect(container.querySelector("img")).toBeNull();
   });
 
+  it("keeps internal fields, tool states, and error codes out of the page", async () => {
+    const user = userEvent.setup();
+    const pending = collection(
+      "col_0123456789abcdef0123456789abcdee",
+      "待确认活动",
+      "pending_details",
+      "event",
+    );
+    pending.missing_fields = ["event_start_at"];
+    pending.uncertainties = [{ field: "event_end_at", reason: "needs review" }];
+    request
+      .mockResolvedValueOnce(accepted)
+      .mockResolvedValueOnce({
+        ...completedResult([pending]),
+        tool_steps: [
+          {
+            tool_name: "image_recognition",
+            stage: "result_organizing",
+            status: "failed",
+            source: "user_submission",
+            duration_ms: 10,
+            error_code: "MODEL_INVALID_RESPONSE",
+          },
+        ],
+      });
+    connect.mockImplementationOnce((options: MockSseOptions) => {
+      window.setTimeout(() => terminalEvent(options, 4), 0);
+      return { cancel: vi.fn(), closed: new Promise<void>(() => {}) };
+    });
+
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    await user.type(screen.getByRole("textbox", { name: "收藏内容" }), "活动截图");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByRole("heading", { name: "待确认活动" });
+    await user.click(screen.getByText("Agent 工具过程"));
+
+    expect(screen.getByText(/活动具体开始时间/)).toBeInTheDocument();
+    expect(screen.getByText(/活动具体结束时间/)).toBeInTheDocument();
+    expect(screen.getByText(/失败/)).toBeInTheDocument();
+    expect(screen.queryByText(/event_start_at|event_end_at/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/MODEL_INVALID_RESPONSE/)).not.toBeInTheDocument();
+  });
+
   it("reuses the prepared input key after uncertain network delivery", async () => {
     const user = userEvent.setup();
     request

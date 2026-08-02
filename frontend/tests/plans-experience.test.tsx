@@ -33,6 +33,7 @@ const plan = {
         role: "main",
         total_cost_amount: null,
         total_cost_currency: null,
+        risk_codes: ["PRICE_UNKNOWN"],
         risks: ["The item price needs confirmation."],
         items: [
           {
@@ -48,7 +49,9 @@ const plan = {
             price_amount: null,
             price_currency: null,
             source: { kind: "collection_derived", source_label: null },
+            selection_reason_code: "PRIMARY_STABLE_RANK",
             selection_reason: "Selected first by stable ranking.",
+            risk_codes: ["PRICE_UNKNOWN"],
             risks: ["The item price needs confirmation."],
           },
         ],
@@ -57,6 +60,7 @@ const plan = {
         role: "alternative",
         total_cost_amount: "88.00",
         total_cost_currency: "CNY",
+        risk_codes: [],
         risks: [],
         items: [
           {
@@ -75,7 +79,9 @@ const plan = {
               kind: "external_place",
               source_label: "高德补充 · 未收藏",
             },
+            selection_reason_code: "STABLE_ALTERNATIVE",
             selection_reason: "Stable alternative.",
+            risk_codes: [],
             risks: [],
           },
         ],
@@ -214,12 +220,26 @@ describe("PlansExperience", () => {
     expect(screen.getByText("未知")).toBeInTheDocument();
     expect(screen.getByText("来自收藏")).toBeInTheDocument();
     expect(screen.getByText(/公共交通 · 15 分钟 · 3.2 km/)).toBeInTheDocument();
-    expect(screen.getAllByText("The item price needs confirmation.").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("价格待确认。").length).toBeGreaterThan(0);
+    expect(screen.getByText("优先选择路线已知且排序稳定的收藏。")).toBeInTheDocument();
+    expect(screen.queryByText(/PRICE_UNKNOWN|Selected first|The item price/)).not.toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("tab", { name: "备选 1" }));
     expect(screen.getAllByText("外部花园").length).toBeGreaterThan(0);
     expect(screen.getByText("高德补充 · 未收藏")).toBeInTheDocument();
     expect(screen.getByText("¥88.00")).toBeInTheDocument();
+  });
+
+  it("keeps an empty native datetime input recoverable without crashing", async () => {
+    bootstrap();
+    render(<PlansExperience />);
+    const start = await screen.findByLabelText("开始时间");
+
+    await userEvent.clear(start);
+    await userEvent.click(screen.getByRole("button", { name: "检查生成条件" }));
+
+    expect(screen.getByText("请补全时间和活动范围。")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "时间与范围" })).toBeInTheDocument();
   });
 
   it("renders server weather facts and an unknown first route without inventing totals", async () => {
@@ -253,7 +273,8 @@ describe("PlansExperience", () => {
     render(<PlansExperience />);
 
     expect(await screen.findByText("首段路线待确认（未提供精确起点）")).toBeInTheDocument();
-    expect(screen.getByText(/The map provider request timed out.*amap/)).toBeInTheDocument();
+    expect(screen.getByText(/天气信息暂时不可用.*高德/)).toBeInTheDocument();
+    expect(screen.queryByText(/The map provider request timed out|amap/)).not.toBeInTheDocument();
     expect(screen.queryByText(/0 分钟 · 0 m/)).not.toBeInTheDocument();
   });
 

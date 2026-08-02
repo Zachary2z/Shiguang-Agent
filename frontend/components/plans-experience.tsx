@@ -39,14 +39,27 @@ type PlanItem = {
   price_amount: string | null;
   price_currency: string | null;
   source: { kind: "collection_derived" | "external_place"; source_label: string | null };
+  selection_reason_code:
+    | "PRIMARY_STABLE_RANK"
+    | "STABLE_ALTERNATIVE"
+    | "AUXILIARY_FITS_KNOWN_ROUTE";
   selection_reason: string;
+  risk_codes: PlanRiskCode[];
   risks: string[];
 };
+type PlanRiskCode =
+  | "PRICE_UNKNOWN"
+  | "BUDGET_UNVERIFIED"
+  | "WEATHER_UNKNOWN"
+  | "WEATHER_PROVIDER_FAILED"
+  | "ROUTE_UNKNOWN"
+  | "OPENING_HOURS_UNKNOWN";
 type PlanOption = {
   role: "main" | "alternative";
   items: PlanItem[];
   total_cost_amount: string | null;
   total_cost_currency: string | null;
+  risk_codes: PlanRiskCode[];
   risks: string[];
 };
 type Plan = {
@@ -176,6 +189,25 @@ const completionLabels: Partial<Record<PlanStatus, string>> = {
   partially_completed: "部分完成",
   not_completed: "未完成",
 };
+const selectionReasonLabels: Readonly<Record<PlanItem["selection_reason_code"], string>> = {
+  PRIMARY_STABLE_RANK: "优先选择路线已知且排序稳定的收藏。",
+  STABLE_ALTERNATIVE: "从其余可执行候选中选为稳定备选。",
+  AUXILIARY_FITS_KNOWN_ROUTE: "停留和路线时间适合当前剩余窗口。",
+};
+const riskLabels: Readonly<Record<PlanRiskCode, string>> = {
+  PRICE_UNKNOWN: "价格待确认。",
+  BUDGET_UNVERIFIED: "价格确认前无法核验预算。",
+  WEATHER_UNKNOWN: "天气情况待确认。",
+  WEATHER_PROVIDER_FAILED: "天气信息暂时不可用。",
+  ROUTE_UNKNOWN: "未提供精确起点，首段路线待确认。",
+  OPENING_HOURS_UNKNOWN: "营业时间待确认。",
+};
+const weatherStatusLabels: Readonly<Record<string, string>> = {
+  compatible: "天气条件适合",
+  conflict: "天气条件可能不适合",
+  unknown: "天气情况待确认",
+  provider_failed: "天气信息暂时不可用",
+};
 
 function localInput(offsetHours: number) {
   const value = new Date(Date.now() + offsetHours * 3_600_000);
@@ -231,7 +263,12 @@ function failureMessage(errorCode: string | null) {
     BRANCH_PROVIDER_FAILED: "分店 Provider 暂时失败，无法确认可执行分店。",
     RUN_CANCELLED: "计划任务已取消，未保存未完成结果。",
   };
-  return messages[errorCode] ?? `计划未完成（${errorCode}），未保存伪成功结果。`;
+  return messages[errorCode] ?? "计划未完成，未保存未确认结果。";
+}
+
+function inputToIso(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 }
 
 function keyForAttempt(
@@ -258,7 +295,7 @@ function distance(value: number) {
 
 function routeLabel(route: PlanItem["inbound_route"]) {
   if (route.duration_seconds === null) return "首段路线待确认（未提供精确起点）";
-  const mode = transportLabels[route.transport_mode] ?? route.transport_mode;
+  const mode = transportLabels[route.transport_mode] ?? "其他交通方式";
   return `抵达：${mode} · ${Math.round(route.duration_seconds / 60)} 分钟 · ${distance(route.distance_meters ?? 0)}`;
 }
 
@@ -455,8 +492,8 @@ export function PlansExperience() {
 
   const constraints = useMemo(
     () => ({
-      start_at: new Date(startAt).toISOString(),
-      end_at: new Date(endAt).toISOString(),
+      start_at: inputToIso(startAt),
+      end_at: inputToIso(endAt),
       area: { districts: district.trim() ? [district.trim()] : [], labels: areaLabel.trim() ? [areaLabel.trim()] : [] },
       budget: budget.trim() || null,
       pace,
@@ -891,7 +928,7 @@ export function PlansExperience() {
 
       {(phase === "editing" || phase === "reviewing") && (
         <div className="plan-compose">
-          <form className="plan-form" onSubmit={beginReview}>
+          <form className="plan-form" noValidate onSubmit={beginReview}>
             <div className="plan-section-title"><span>01</span><h2>时间与范围</h2></div>
             <div className="plan-form-grid">
               <label>开始时间<input name="start_at" type="datetime-local" value={startAt} onChange={(event) => { setStartAt(event.target.value); setDirty(true); }} autoComplete="off" required /></label>
@@ -987,20 +1024,20 @@ export function PlansExperience() {
                       <div className="rail-title"><h3>{item.title}</h3><span className={item.source.kind === "external_place" ? "source-external" : "source-collection"}>{item.source.kind === "external_place" ? item.source.source_label ?? "外部补充 · 未收藏" : "来自收藏"}</span></div>
                       <p>{clock(item.start_at)}—{clock(item.end_at)} · 停留 {Math.round(item.visit_duration_seconds / 60)} 分钟</p>
                       <p>{routeLabel(item.inbound_route)}</p>
-                      <p className="selection-reason">{item.selection_reason}</p>
-                      {item.risks.length > 0 && <ul className="risk-list">{item.risks.map((risk) => <li key={risk}>{risk}</li>)}</ul>}
+                      <p className="selection-reason">{selectionReasonLabels[item.selection_reason_code] ?? "按当前条件选入方案。"}</p>
+                      {item.risk_codes.length > 0 && <ul className="risk-list">{item.risk_codes.map((risk) => <li key={risk}>{riskLabels[risk] ?? "有信息待确认。"}</li>)}</ul>}
                     </div>
                   </li>
                 ))}
               </ol>
               {plan.draft.weather_status && (
                 <p className="option-risk">
-                  天气事实：{plan.draft.weather_summary ?? plan.draft.weather_status}
-                  {plan.draft.weather_source ? ` · ${plan.draft.weather_source}` : ""}
+                  天气事实：{plan.draft.weather_status === "provider_failed" ? weatherStatusLabels.provider_failed : plan.draft.weather_summary ?? weatherStatusLabels[plan.draft.weather_status] ?? "天气情况待确认"}
+                  {plan.draft.weather_source ? ` · ${plan.draft.weather_source === "amap" ? "高德" : "天气服务"}` : ""}
                   {plan.draft.weather_queried_at ? ` · ${new Date(plan.draft.weather_queried_at).toLocaleString("zh-CN")}` : ""}
                 </p>
               )}
-              {option.risks.length > 0 && <p className="option-risk">出发前留意：{option.risks.join("；")}</p>}
+              {option.risk_codes.length > 0 && <p className="option-risk">出发前留意：{option.risk_codes.map((risk) => riskLabels[risk] ?? "有信息待确认。").join("；")}</p>}
             </article>
           )}
           {plan.is_current_version && plan.status === "draft" && (

@@ -26,6 +26,7 @@ const plan = {
         role: "main",
         total_cost_amount: null,
         total_cost_currency: null,
+        risk_codes: ["PRICE_UNKNOWN"],
         risks: ["价格待确认"],
         items: [
           {
@@ -41,7 +42,9 @@ const plan = {
             price_amount: null,
             price_currency: null,
             source: { kind: "collection_derived", source_label: null },
+            selection_reason_code: "PRIMARY_STABLE_RANK",
             selection_reason: "收藏稳定排序优先。",
+            risk_codes: ["PRICE_UNKNOWN"],
             risks: ["价格待确认"],
           },
         ],

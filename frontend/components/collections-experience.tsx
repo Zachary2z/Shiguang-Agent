@@ -129,6 +129,37 @@ const locationClueLabels: Readonly<Record<string, string>> = {
   metro_station: "地铁站",
 };
 const locationClueFields = Object.keys(locationClueLabels);
+const sourceTypeLabels: Readonly<Record<string, string>> = {
+  text: "文字",
+  url: "链接",
+  image: "截图",
+};
+const sourceStatusLabels: Readonly<Record<string, string>> = {
+  pending: "处理中",
+  parsed: "已解析",
+  failed: "解析未完成",
+};
+const poiTypeLabels: Readonly<Record<string, string>> = {
+  attraction: "景点",
+  cafe: "咖啡店",
+  museum: "博物馆",
+  park: "公园",
+  restaurant: "餐厅",
+  shopping: "商场",
+  transit: "交通设施",
+  other: "其他地点",
+};
+const matchingClueLabels: Readonly<Record<string, string>> = {
+  name: "名称相符",
+  branch_name: "分店相符",
+  district: "行政区相符",
+  business_area: "商圈相符",
+  address: "地址相符",
+  landmark: "地标相符",
+  metro_station: "地铁站相符",
+  phone: "电话相符",
+  poi_type: "地点类型相符",
+};
 
 function planningExclusionLabel(item: CollectionItem): string {
   return (
@@ -201,7 +232,7 @@ function locationSaveErrorCopy(error: unknown): string {
 function cityLabel(item: CollectionItem): string {
   if (item.city_group === "shenzhen") return "深圳";
   if (item.formal_city_code === "guangzhou") return "广州";
-  if (item.formal_city_code) return item.formal_city_code;
+  if (item.formal_city_code) return "其他城市";
   return "城市待确认";
 }
 
@@ -921,7 +952,7 @@ export function CollectionsExperience() {
           <p className="page-eyebrow">Your city memory</p>
           <h1 className="page-title">收藏</h1>
           <p className="page-description">
-            管理所有城市的 Place 与 Event。只有已确认的深圳地点会进入当前计划。
+            管理所有城市的地点与活动。只有已确认的深圳地点会进入当前计划。
           </p>
         </div>
         <div className="collection-count" aria-label="收藏总数">
@@ -968,9 +999,9 @@ export function CollectionsExperience() {
               replaceQuery({ kind: event.target.value || null, page: null })
             }
           >
-            <option value="">Place 与 Event</option>
-            <option value="place">Place</option>
-            <option value="event">Event</option>
+            <option value="">全部类型</option>
+            <option value="place">地点</option>
+            <option value="event">活动</option>
           </select>
         </label>
         <label>
@@ -1043,7 +1074,7 @@ export function CollectionsExperience() {
                 navigateDetail(item.id);
               }}
             >
-              <span className={`collection-kind ${item.kind}`}>{item.kind === "place" ? "P" : "E"}</span>
+              <span className={`collection-kind ${item.kind}`}>{item.kind === "place" ? "地" : "活"}</span>
               <span className="collection-card-copy">
                 <span className="collection-card-topline">
                   <span>{cityLabel(item)}</span>
@@ -1121,7 +1152,7 @@ export function CollectionsExperience() {
             {detailState === "ready" && detail ? (
               <>
                 <div className="detail-summary">
-                  <span>{detail.item.kind === "place" ? "Place" : "Event"}</span>
+                  <span>{detail.item.kind === "place" ? "地点" : "活动"}</span>
                   <span>{cityLabel(detail.item)}</span>
                   <span>{statusLabels[detail.item.status]}</span>
                   <span>版本 {detail.item.version}</span>
@@ -1198,7 +1229,12 @@ export function CollectionsExperience() {
                             .join(" · ")}
                         </span>
                         <small>
-                          {[candidate.poi_type, ...candidate.matching_clues]
+                          {[
+                            poiTypeLabels[candidate.poi_type] ?? "其他地点",
+                            ...candidate.matching_clues.map(
+                              (clue) => matchingClueLabels[clue] ?? "其他匹配线索",
+                            ),
+                          ]
                             .filter(Boolean)
                             .join(" · ")}{" "}
                           · 高德候选
@@ -1335,7 +1371,9 @@ export function CollectionsExperience() {
                   <div className="detail-sources">
                     <strong>来源</strong>
                     {detail.sources.map((source) => (
-                      <span key={source.id}>{source.type} · {source.parse_status}</span>
+                      <span key={source.id}>
+                        {sourceTypeLabels[source.type] ?? "其他来源"} · {sourceStatusLabels[source.parse_status] ?? "状态待确认"}
+                      </span>
                     ))}
                   </div>
                   <div className="detail-actions">

@@ -5,9 +5,26 @@
 | 当前总阶段 | M2 微信 ClawBot 完整 MVP |
 | 当前子阶段 | M2-0 ClawBot 技术 Spike |
 | 状态 | M1-Gate 已完成；M1 正式关闭；M2-0 当前允许开始但尚未开始。 |
-| 当前分支 | codex/m1-fixed-date-fixture-stability |
+| 当前分支 | codex/m1-frontend-long-task-stability |
 | 最近更新 | 2026-08-02 |
 | 阻塞项 | 无 P0/P1；M2-0 尚未开始 |
+
+## 2026-08-02 M1 稳定化修复 5：前端完整交互与长任务恢复
+
+- 基线原本已正确：截图与文字可共存或单独发送，multipart 只写入一次图片和可选文字；
+  图片替换、删除、不确定网络与明确终态失败分别沿用既有幂等语义。原生文件输入支持
+  JPEG、PNG、WebP、中文非法格式提示、上传取消和移动/桌面触控。Agent 与计划长任务
+  继续读取同一 AgentRun/Plan 权威状态，不重复提交；继续等待、刷新状态、主动重试及
+  迟到响应隔离均复用既有 SSE/API 与 operation generation。收藏和计划失败恢复入口、
+  草稿保留及原生 date/time/datetime-local 控件也保持不变。
+- 本次实际修复两项：计划页不再在渲染空或部分 datetime-local 值时调用无效日期的
+  `toISOString()`，空值和非法顺序进入既有中文校验且不崩溃；Agent、收藏、计划页不再
+  直接展示内部字段名、英文枚举、错误码、候选线索、天气状态或计划原因/风险摘要，改为
+  读取既有公开 code 并显示中文文案。
+- 前端 lint、typecheck、聚焦 Vitest `96 passed`、全量 Vitest `139 passed`、指定
+  Playwright `30 passed` 和 production build 通过；后端兼容合同回归 `54 passed`。
+  未新增依赖、上传组件、状态机、轮询/重试框架、日期库、迁移或后端契约，未读取
+  `.env`，真实模型、地图、网页和付费 API 调用为 0；未合并、未推送、未进入 M2。
 
 ## 2026-08-02 固定日期测试夹具稳定化
 
