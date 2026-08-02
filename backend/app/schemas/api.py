@@ -43,7 +43,9 @@ from app.domain.places import (
     PlaceSelectionKind,
     PoiProvider,
     PoiType,
+    ResolvedPlaceTargetKind,
     TransportMode,
+    resolve_place_target,
 )
 from app.domain.plans import (
     ActivityArea,
@@ -649,20 +651,16 @@ class CollectionItemResponse(ApiModel):
     def from_domain(cls, item: CollectionItem) -> CollectionItemResponse:
         formal_city_code = collection_formal_city_code(item)
         target = item.place_target
-        flexible_brand_target = bool(
-            target is not None and target.brand_identity is not None
+        resolved = resolve_place_target(
+            target,
+            collection_status=item.status.value,
         )
+        flexible_brand_target = resolved.kind is ResolvedPlaceTargetKind.ANY_BRANCH
         blockers = collection_planning_blockers(
             item,
             plan_city_code="shenzhen",
             formal_city_code=formal_city_code,
-            location_confirmed=bool(
-                target is not None
-                and (
-                    target.poi is not None
-                    or flexible_brand_target
-                )
-            ),
+            location_confirmed=resolved.kind is not ResolvedPlaceTargetKind.UNCONFIRMED,
             flexible_brand_target=flexible_brand_target,
         )
         planning_eligible = not blockers

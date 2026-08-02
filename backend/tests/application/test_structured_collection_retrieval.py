@@ -242,6 +242,7 @@ def _event(
     city_hint: str | None = "深圳",
     price: Decimal | None = Decimal("20"),
     target: PlaceTarget | None = None,
+    location_confirmed: bool = True,
 ) -> CollectionItem:
     return CollectionItem(
         id=generate_collection_item_id(),
@@ -257,7 +258,11 @@ def _event(
         price_amount=price,
         price_currency=None if price is None else "CNY",
         tags=("室内", "展览"),
-        place_target=target,
+        place_target=(
+            target
+            if target is not None or not location_confirmed
+            else _exact_target(_poi("default_event_poi"))
+        ),
         status=status,
         created_at=NOW,
         updated_at=NOW,
@@ -910,8 +915,20 @@ async def test_formal_city_controls_eligibility_and_city_hint_never_substitutes(
         poi=_poi("poi_guangzhou", city_code="guangzhou", district="天河区"),
         city_hint="深圳",
     )
-    pending_city = _event(user_id, title="深圳标题但城市待确认", city_hint="深圳")
-    other_city_event = _event(user_id, title="广州活动", city_hint="深圳")
+    pending_city = _event(
+        user_id,
+        title="深圳标题但城市待确认",
+        city_hint="深圳",
+        location_confirmed=False,
+    )
+    other_city_event = _event(
+        user_id,
+        title="广州活动",
+        city_hint="深圳",
+        target=_exact_target(
+            _poi("guangzhou_event", city_code="guangzhou", district="天河区")
+        ),
+    )
     service, repository = _service([other_city, pending_city, other_city_event])
 
     result = await service.retrieve(
@@ -1065,6 +1082,31 @@ async def test_event_end_and_time_window_boundaries_are_deterministic() -> None:
     assert CandidateReasonCode.TIME_WINDOW_CONFLICT in by_title["late"].reason_codes
     assert by_title["unknown"].outcome is CandidateOutcome.VERIFICATION_REQUIRED
     assert CandidateReasonCode.EVENT_TIME_UNKNOWN in by_title["unknown"].reason_codes
+
+
+@pytest.mark.asyncio
+async def test_exact_event_target_stays_confirmed_while_time_is_pending() -> None:
+    user_id = generate_user_id()
+    event = _event(
+        user_id,
+        start_at=None,
+        end_at=None,
+        status=CollectionStatus.PENDING_DETAILS,
+        target=_exact_target(_poi("pending_event_time")),
+    )
+    service, _ = _service([event])
+
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(),
+        facts=PlanningFactSnapshot(),
+        now=NOW,
+    )
+
+    decision = result.decisions[0]
+    assert CandidateReasonCode.EVENT_TIME_UNKNOWN in decision.reason_codes
+    assert CandidateReasonCode.LOCATION_UNCONFIRMED not in decision.reason_codes
+    assert CandidateReasonCode.CITY_UNCONFIRMED not in decision.reason_codes
 
 
 @pytest.mark.asyncio
@@ -2098,15 +2140,18 @@ async def test_map_fact_chain_includes_date_range_event_with_visit_duration(
     retrieval_database: str,
 ) -> None:
     user_id = generate_user_id()
+    poi = _poi("poi_date_only_event").model_copy(
+        update={"district": None, "business_area": None, "address": None}
+    )
     event = _event(
         user_id,
         start_at=None,
         end_at=None,
         start_date=START.date(),
         end_date=START.date(),
-        target=_exact_target(_poi("poi_date_only_event")),
+        target=_exact_target(poi),
     )
-    constraints = _constraints(origin=ORIGIN)
+    constraints = _constraints(origin=ORIGIN, area=None)
     calls: list[object] = []
 
     result = await _resolve_map_facts(

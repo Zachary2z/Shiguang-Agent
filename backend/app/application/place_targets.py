@@ -133,36 +133,37 @@ class PlaceTargetSelectionService:
         expected_version: int,
     ) -> CollectionItem:
         auto_candidate = self._unique_auto_match_candidate(snapshot)
-        if auto_candidate is not None and persisted_item.kind is CollectionKind.PLACE:
-            existing = await self._repository.find_exact_place_item(
-                user_id=owner,
-                provider=auto_candidate.provider,
-                poi_id=auto_candidate.poi_id,
-            )
-            if existing is not None and existing.id != persisted_item.id:
-                await self._preserve_all_sources(
+        if auto_candidate is not None:
+            if persisted_item.kind is CollectionKind.PLACE:
+                existing = await self._repository.find_exact_place_item(
                     user_id=owner,
-                    original_item_id=persisted_item.id,
-                    target_item_id=existing.id,
+                    provider=auto_candidate.provider,
+                    poi_id=auto_candidate.poi_id,
                 )
-                write_operation = await self._repository.get_write_operation_for_item(
-                    user_id=owner,
-                    collection_item_id=persisted_item.id,
-                )
-                if write_operation is not None:
-                    await self._repository.replace_write_operation_item(
+                if existing is not None and existing.id != persisted_item.id:
+                    await self._preserve_all_sources(
                         user_id=owner,
-                        operation_id=write_operation.id,
                         original_item_id=persisted_item.id,
                         target_item_id=existing.id,
                     )
-                await self._repository.delete_collection_item(
-                    user_id=owner,
-                    collection_item_id=persisted_item.id,
-                    updated_at=snapshot.queried_at,
-                    expected_version=expected_version,
-                )
-                return existing
+                    write_operation = await self._repository.get_write_operation_for_item(
+                        user_id=owner,
+                        collection_item_id=persisted_item.id,
+                    )
+                    if write_operation is not None:
+                        await self._repository.replace_write_operation_item(
+                            user_id=owner,
+                            operation_id=write_operation.id,
+                            original_item_id=persisted_item.id,
+                            target_item_id=existing.id,
+                        )
+                    await self._repository.delete_collection_item(
+                        user_id=owner,
+                        collection_item_id=persisted_item.id,
+                        updated_at=snapshot.queried_at,
+                        expected_version=expected_version,
+                    )
+                    return existing
             target = exact_target_from_candidate(
                 auto_candidate,
                 confirmed_by=PlaceConfirmationSource.AUTO_UNIQUE_MATCH,
@@ -170,11 +171,26 @@ class PlaceTargetSelectionService:
             )
             resolved = self._updated_item(
                 desired_item,
-                status=CollectionStatus.ACTIVE,
+                status=(
+                    CollectionStatus.ACTIVE
+                    if desired_item.kind is CollectionKind.PLACE
+                    or event_schedule_is_confirmed(
+                        event_start_date=desired_item.event_start_date,
+                        event_end_date=desired_item.event_end_date,
+                        event_start_at=desired_item.event_start_at,
+                        event_end_at=desired_item.event_end_at,
+                        uncertainties=desired_item.uncertainties,
+                    )
+                    else CollectionStatus.PENDING_DETAILS
+                ),
                 target=target,
                 snapshot=snapshot,
                 now=snapshot.queried_at,
-                title=self._official_title(auto_candidate),
+                title=(
+                    self._official_title(auto_candidate)
+                    if desired_item.kind is CollectionKind.PLACE
+                    else None
+                ),
                 district=auto_candidate.district,
                 address=auto_candidate.address,
                 business_district=auto_candidate.business_area,

@@ -1838,6 +1838,101 @@ async def test_patch_can_activate_one_clear_place_but_never_provider_rank_alone(
 
 
 @pytest.mark.asyncio
+async def test_unique_event_poi_is_authoritative_without_soft_place_fields(
+    write_database: tuple[str, Path],
+) -> None:
+    database_url, _ = write_database
+    database = Database(database_url)
+    user = _user()
+    await _add_user(database, user)
+    venue = SHENZHEN_MUSEUM.model_copy(
+        update={"district": None, "business_area": None, "address": None}
+    )
+    search = SearchPoiRequest(
+        query=venue.name,
+        city=CityScope(city_code="shenzhen"),
+    )
+    matching = PlaceMatchingService(
+        map_provider=StubMapProvider(
+            search_results={
+                search: PoiSearchResult(city_code="shenzhen", pois=(venue,)),
+            }
+        ),
+        policy=PlaceMatchingPolicy(
+            unique_match_score=35,
+            minimum_score_gap=5,
+            candidate_score=30,
+        ),
+    )
+    event = EventCandidate(
+        title="周末设计展",
+        city_hint="深圳",
+        event_start_clue="周末",
+        event_end_clue="周末",
+        missing_fields=(
+            CandidateField.DISTRICT,
+            CandidateField.ADDRESS,
+            CandidateField.BUSINESS_DISTRICT,
+            CandidateField.LANDMARK,
+            CandidateField.METRO_STATION,
+            CandidateField.EVENT_START_DATE,
+            CandidateField.EVENT_END_DATE,
+            CandidateField.EVENT_START_AT,
+            CandidateField.EVENT_END_AT,
+            CandidateField.PRICE,
+            CandidateField.TAGS,
+        ),
+    )
+
+    async with database.session() as session:
+        service = _service(session)
+        saved = await service.auto_save(
+            user_id=user.id,
+            idempotency_key="unique-event-place",
+            source=_source(user.id),
+            extraction_result=ExtractionResult.with_candidates((event,)),
+        )
+        located = await service.patch(
+            user_id=user.id,
+            collection_item_id=saved.items[0].id,
+            expected_version=saved.items[0].version,
+            patch=CollectionItemPatch(address=venue.name),
+            place_matching=matching,
+        )
+        confirmed = await service.patch(
+            user_id=user.id,
+            collection_item_id=located.id,
+            expected_version=located.version,
+            patch=CollectionItemPatch(
+                event_start_date=date(2026, 8, 2),
+                event_end_date=date(2026, 8, 4),
+            ),
+            place_matching=matching,
+        )
+
+    assert located.status is CollectionStatus.PENDING_DETAILS
+    assert located.place_target is not None
+    assert located.place_target.poi is not None
+    assert (
+        located.place_target.poi.provider,
+        located.place_target.poi.poi_id,
+    ) == (venue.provider, venue.poi_id)
+    assert located.place_target.poi.city_code == venue.city_code
+    assert located.place_target.poi.coordinate == venue.coordinate
+    assert located.place_target.poi.district is None
+    assert located.place_target.poi.business_area is None
+    assert located.place_target.poi.address is None
+    located_response = CollectionItemResponse.from_domain(located)
+    assert located_response.planning_exclusion_reason == "event_time_unconfirmed"
+    assert confirmed.status is CollectionStatus.ACTIVE
+    assert confirmed.place_target == located.place_target
+    confirmed_response = CollectionItemResponse.from_domain(confirmed)
+    assert confirmed_response.planning_eligible is True
+    assert confirmed_response.planning_exclusion_reason is None
+    await database.close()
+
+
+@pytest.mark.asyncio
 async def test_date_range_event_selection_is_planning_ready_and_idempotent(
     write_database: tuple[str, Path],
 ) -> None:

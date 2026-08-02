@@ -270,7 +270,7 @@ def resolve_place_target(
 ) -> ResolvedPlaceTarget:
     """Expose a stable planning boundary without doing any planning or branch lookup."""
 
-    if collection_status != "active" or target is None:
+    if target is None or collection_status not in {"active", "pending_details"}:
         return ResolvedPlaceTarget(kind=ResolvedPlaceTargetKind.UNCONFIRMED)
     if target.scope is PlaceScope.EXACT:
         assert target.poi is not None

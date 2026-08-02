@@ -459,17 +459,16 @@ class StructuredCollectionRetrievalService:
                     item.id,
                     CollectionPlanningFacts(collection_item_id=item.id),
                 )
+                event_poi = resolved.poi
                 decisions.append(
                     assess_collection_candidate(
                         item=item,
                         constraints=constraints,
                         formal_city_code=(
-                            None
-                            if event_facts.formal_city is None
-                            else event_facts.formal_city.city_code
+                            None if event_poi is None else event_poi.city_code
                         ),
-                        location_confirmed=event_facts.location_confirmed,
-                        poi=None,
+                        location_confirmed=event_poi is not None,
+                        poi=event_poi,
                         facts=event_facts,
                         memories=effective_memories,
                     )

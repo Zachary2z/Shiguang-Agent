@@ -210,6 +210,9 @@ def test_target_resolution_blocks_pending_and_distinguishes_exact_and_any_branch
     assert resolve_place_target(exact, collection_status="pending_selection").kind is (
         ResolvedPlaceTargetKind.UNCONFIRMED
     )
+    assert resolve_place_target(exact, collection_status="pending_details").kind is (
+        ResolvedPlaceTargetKind.EXACT
+    )
     assert resolve_place_target(exact, collection_status="active").kind is (
         ResolvedPlaceTargetKind.EXACT
     )

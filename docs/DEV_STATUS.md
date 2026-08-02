@@ -9,6 +9,19 @@
 | 最近更新 | 2026-08-02 |
 | 阻塞项 | 无 P0/P1；M2-0 尚未开始 |
 
+## 2026-08-02 M1 稳定化修复 2B：Event 地点权威状态
+
+- Event 唯一高置信 POI 现在复用既有 exact `PlaceTarget` 自动确认；多候选仍待选择，
+  零候选仍待补充。区县、商圈、地址等软字段缺失不再否定已确认 target。
+- API、收藏详情、结构化检索、地图事实与计划草案统一读取 `PlaceTarget`；地点已确认但
+  时间待确认时只保留时间阻塞，地点线索修改仍通过既有原子重匹配使旧 target 失效。
+- Ruff、mypy（141 个源文件）、地点/Event 聚焦 `478 passed`、非真实 Provider/Map
+  全集 `1756 passed, 16 skipped, 2 deselected`、前端 lint/typecheck、Vitest
+  `133 passed` 与 Playwright `46 passed` 均通过；Alembic 唯一 head 仍为
+  `20260729_0017`。
+- 未新增 Provider、服务、状态机、DTO、字段、迁移或依赖；未改变 2A 时间规则、规划期
+  Event 外搜边界或 M2，真实 API 调用为 0，未读取 `.env`。
+
 ## 2026-08-02 M1 稳定化修复 2A：不完整精确场次恢复
 
 - 收藏详情确认日期范围时会原子清除历史单端精确场次；完整场次清空任意一端也会同时
