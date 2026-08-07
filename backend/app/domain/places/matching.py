@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from difflib import SequenceMatcher
 from enum import StrEnum
 from math import isfinite
@@ -344,6 +345,13 @@ def validate_place_selection(
 _PUNCTUATION_OR_SPACE = re.compile(r"[\W_]+", flags=re.UNICODE)
 _PHONE = re.compile(r"(?<!\d)(?:\+?86[- ]?)?(\d(?:[- ]?\d){6,14})(?!\d)")
 _BRANCH = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]{2,18}(?:分店|店)")
+_SUBFACILITY = re.compile(r"停车场|停车库|地下车库|入口|出口")
+_ADDRESS_NOTE = re.compile(r"[（(【[].*?[）)】]]")
+_ADDRESS_ADMIN_PREFIX = re.compile(r"^(?:[\u4e00-\u9fff]{2,12}(?:省|市|区|县)){1,4}")
+_STREET_NUMBER = re.compile(
+    r"(?P<road>[A-Za-z0-9\u4e00-\u9fff]{1,30}(?:大道|公路|街道|路|街|道|巷|弄))"
+    r"(?P<number>\d+(?:-\d+)?)号?"
+)
 
 _GENERIC_PLACE_SUFFIXES: tuple[str, ...] = (
     "咖啡店",
@@ -433,6 +441,54 @@ def _relation(left: str | None, right: str | None) -> EvidenceOutcome:
     return EvidenceOutcome.CONFLICT
 
 
+def _name_identity(value: str, city_code: str) -> str:
+    compact = _compact(value)
+    aliases = next(
+        (aliases for code, aliases in _CITY_HINT_ALIASES if code == city_code),
+        (),
+    )
+    for alias in sorted((_compact(item) for item in aliases), key=len, reverse=True):
+        if compact.startswith(alias):
+            return compact[len(alias):]
+    return compact
+
+
+def _address_identity(value: str) -> tuple[str, tuple[str, str] | None]:
+    without_notes = _ADDRESS_NOTE.sub("", normalize("NFKC", value))
+    compact = _compact(without_notes)
+    stable_core = _STREET_NUMBER.search(_ADDRESS_ADMIN_PREFIX.sub("", compact))
+    return (
+        compact,
+        (
+            stable_core.group("road"),
+            stable_core.group("number"),
+        )
+        if stable_core
+        else None,
+    )
+
+
+def _address_relation(left: str | None, right: str | None) -> EvidenceOutcome:
+    if left is None or right is None:
+        return EvidenceOutcome.MISSING
+    left_identity, left_core = _address_identity(left)
+    right_identity, right_core = _address_identity(right)
+    if left_core and right_core:
+        left_road, left_number = left_core
+        right_road, right_number = right_core
+        shorter_road, longer_road = sorted((left_road, right_road), key=len)
+        same_core = left_number == right_number and (
+            left_road == right_road
+            or (len(shorter_road) >= 3 and longer_road.endswith(shorter_road))
+        )
+        return EvidenceOutcome.MATCH if same_core else EvidenceOutcome.CONFLICT
+    return _relation(left_identity, right_identity)
+
+
+def _subfacility_clues(value: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(_SUBFACILITY.findall(normalize("NFKC", value))))
+
+
 def _reason_for_relation(outcome: EvidenceOutcome) -> EvidenceReason:
     return {
         EvidenceOutcome.MATCH: EvidenceReason.EXACT,
@@ -450,6 +506,7 @@ def _weighted_evidence(
     weight: float,
     partial_factor: float,
     hard_conflict: bool = False,
+    relation: Callable[[str | None, str | None], EvidenceOutcome] = _relation,
 ) -> MatchEvidence:
     if not source:
         return MatchEvidence(
@@ -465,7 +522,7 @@ def _weighted_evidence(
             reason=EvidenceReason.PROVIDER_MISSING,
             score_delta=0.0,
         )
-    outcome = _relation(source, provider)
+    outcome = relation(source, provider)
     delta = {
         EvidenceOutcome.MATCH: weight,
         EvidenceOutcome.PARTIAL_MATCH: weight * partial_factor,
@@ -527,6 +584,22 @@ def _branch_evidence(
     context: str,
     weight: float,
 ) -> MatchEvidence:
+    source_subfacilities = _subfacility_clues(candidate.title)
+    provider_subfacilities = _subfacility_clues(
+        " ".join(value for value in (poi.name, poi.branch_name) if value)
+    )
+    if source_subfacilities or provider_subfacilities:
+        matches = source_subfacilities == provider_subfacilities
+        return MatchEvidence(
+            field=EvidenceField.BRANCH_NAME,
+            outcome=EvidenceOutcome.MATCH if matches else EvidenceOutcome.CONFLICT,
+            reason=(
+                EvidenceReason.BRANCH_CORROBORATED
+                if matches
+                else EvidenceReason.BRANCH_CONFLICT
+            ),
+            score_delta=weight if matches else -weight,
+        )
     if poi.branch_name is None:
         return MatchEvidence(
             field=EvidenceField.BRANCH_NAME,
@@ -699,8 +772,11 @@ def score_place_candidate(
     evidence = (
         _weighted_evidence(
             field=EvidenceField.NAME,
-            source=_name_source(candidate.title, provider_name),
-            provider=provider_name,
+            source=_name_identity(
+                _name_source(candidate.title, provider_name),
+                request.city.city_code,
+            ),
+            provider=_name_identity(provider_name, request.city.city_code),
             weight=weights.name,
             partial_factor=policy.partial_match_factor,
             hard_conflict=True,
@@ -751,6 +827,7 @@ def score_place_candidate(
             provider=poi.address,
             weight=weights.address,
             partial_factor=policy.partial_match_factor,
+            relation=_address_relation,
         ),
         _weighted_evidence(
             field=EvidenceField.LANDMARK,

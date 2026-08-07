@@ -53,6 +53,7 @@ from app.domain.places import (
     PlaceSelection,
     PlaceSelectionKind,
     PoiSearchResult,
+    PoiType,
     SearchPoiRequest,
     normalize_brand_name,
 )
@@ -344,7 +345,28 @@ async def test_first_place_save_matches_once_and_replay_does_not_search(
             search_results={
                 search: PoiSearchResult(
                     city_code="shenzhen",
-                    pois=(SHENZHEN_MUSEUM,),
+                    pois=(
+                        SHENZHEN_MUSEUM.model_copy(
+                            update={
+                                "name": "深圳市当代艺术与城市规划馆",
+                                "address": "福中路184号(少年宫地铁站步行500米)",
+                            }
+                        ),
+                        SHENZHEN_MUSEUM.model_copy(
+                            update={
+                                "poi_id": "poi_sz_moca_up_parking",
+                                "name": "深圳市当代艺术与城市规划馆地下停车场",
+                                "poi_type": PoiType.TRANSIT,
+                            }
+                        ),
+                        SHENZHEN_MUSEUM.model_copy(
+                            update={
+                                "poi_id": "poi_sz_moca_up_parking_entrance",
+                                "name": "深圳市当代艺术与城市规划馆地下停车场(入口)",
+                                "poi_type": PoiType.TRANSIT,
+                            }
+                        ),
+                    ),
                 )
             },
             call_hook=record_call,
