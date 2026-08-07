@@ -148,6 +148,30 @@ class _FailingQueue:
 
 
 @pytest.mark.asyncio
+async def test_direct_plan_lifetime_uses_the_same_future_end_rule(test_settings) -> None:
+    async with _client(test_settings) as (api, client):
+        api.state.map_provider = object()
+        await _demo(client)
+        start_at = datetime.now(UTC) + timedelta(days=5)
+        end_at = start_at + timedelta(hours=4)
+        payload = _request("m15-future-lifetime")
+        payload.update(
+            start_at=start_at.isoformat(),
+            end_at=end_at.isoformat(),
+        )
+
+        created = await client.post("/api/v1/plans", json=payload)
+
+        assert created.status_code == 202
+        async with api.state.demo_database.session() as session:
+            row = await session.get(PlanModel, created.json()["plan_id"])
+            assert row is not None
+            expires_at = datetime.fromisoformat(row.constraints_json["expires_at"])
+            assert expires_at == end_at + timedelta(hours=1)
+            assert expires_at > start_at
+
+
+@pytest.mark.asyncio
 async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
     test_settings,
 ) -> None:

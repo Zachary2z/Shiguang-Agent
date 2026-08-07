@@ -5,7 +5,7 @@ import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -157,6 +157,8 @@ async def test_plan_route_asks_once_then_continues_same_session(
     test_settings: Settings,
 ) -> None:
     now = utc_now()
+    future_start = now + timedelta(days=5)
+    future_end = future_start + timedelta(hours=4)
     provider = FakeProvider(
         [
             _route(
@@ -169,8 +171,8 @@ async def test_plan_route_asks_once_then_continues_same_session(
             _route(
                 {
                     "intent": "plan",
-                    "start_at": (now + timedelta(days=1)).replace(hour=10).isoformat(),
-                    "end_at": (now + timedelta(days=1)).replace(hour=14).isoformat(),
+                    "start_at": future_start.isoformat(),
+                    "end_at": future_end.isoformat(),
                     "area": {"districts": ["南山区"], "labels": []},
                     "include": ["炸鸡", "商场"],
                 }
@@ -183,15 +185,27 @@ async def test_plan_route_asks_once_then_continues_same_session(
         first_result = (await client.get(first.json()["result_url"])).json()
         assert first_result["question"] == "你什么时候有一段连续空闲时间？"
         assert first_result["plan_id"] is None
+        async with api.state.demo_database.session() as session:
+            assert await session.scalar(select(func.count()).select_from(PlanModel)) == 0
 
-        second = await _submit(client, key="route-plan-followup", text="明天上午十点到两点")
+        second = await _submit(
+            client,
+            key="route-plan-followup",
+            text="五天后这个时间开始，我有四小时",
+        )
         await worker.run_once()
         second_result = (await client.get(second.json()["result_url"])).json()
         assert second_result["plan_id"].startswith("pln_")
         assert "pending_context" in provider.calls[1].messages[-1]["content"]
+        assert len(provider.calls) == 2
 
         async with api.state.demo_database.session() as session:
-            assert await session.scalar(select(func.count()).select_from(PlanModel)) == 1
+            plan = await session.scalar(select(PlanModel))
+            assert plan is not None
+            end_at = datetime.fromisoformat(plan.constraints_json["end_at"])
+            expires_at = datetime.fromisoformat(plan.constraints_json["expires_at"])
+            assert expires_at == end_at + timedelta(hours=1)
+            assert expires_at > datetime.fromisoformat(plan.constraints_json["start_at"])
             assert await session.scalar(select(func.count()).select_from(CollectionItemModel)) == 0
             assert await session.scalar(select(func.count()).select_from(MemoryModel)) == 0
 

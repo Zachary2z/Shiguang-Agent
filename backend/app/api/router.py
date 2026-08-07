@@ -82,7 +82,13 @@ from app.domain.collections import (
 from app.domain.identity import SESSION_COOKIE_NAME, CurrentPrincipal
 from app.domain.memories import MemorySuggestionDecision, MemoryType
 from app.domain.places import PlaceSelection
-from app.domain.plans import ActivityArea, PlanConstraints, PlanPace, PlanPaceSource
+from app.domain.plans import (
+    ActivityArea,
+    PlanConstraints,
+    PlanPace,
+    PlanPaceSource,
+    plan_constraint_expires_at,
+)
 from app.domain.sharing import PublicShareStatus, SharedPlanSnapshot
 from app.domain.time import utc_now
 from app.infrastructure.db import Database
@@ -767,7 +773,11 @@ async def create_plan(
         exclude=payload.exclude,
         collection_only=payload.collection_only,
         created_at=now,
-        expires_at=max(now + timedelta(hours=1), payload.end_at + timedelta(hours=1)),
+        expires_at=plan_constraint_expires_at(
+            now=now,
+            start_at=payload.start_at,
+            end_at=payload.end_at,
+        ),
     )
     submission = await PlanExperienceService(
         session=session,

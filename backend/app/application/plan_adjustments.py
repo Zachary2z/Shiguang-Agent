@@ -12,7 +12,12 @@ from pydantic import Field, ValidationError, model_validator
 
 from app.application.extraction_output import structured_response_format
 from app.domain.places import TransportMode
-from app.domain.plans import PlanConstraints, PlanPace, PlanPaceSource
+from app.domain.plans import (
+    PlanConstraints,
+    PlanPace,
+    PlanPaceSource,
+    plan_constraint_expires_at,
+)
 from app.domain.plans.contracts import PlanContract
 from nanobot_core.providers import (
     Message,
@@ -142,6 +147,14 @@ def apply_plan_adjustment(
         values[field_name] = getattr(patch, field_name)
     if "pace" in patch.model_fields_set:
         values["pace_source"] = PlanPaceSource.USER_REQUEST
+    values["expires_at"] = max(
+        constraints.expires_at,
+        plan_constraint_expires_at(
+            now=constraints.created_at,
+            start_at=values["start_at"],
+            end_at=values["end_at"],
+        ),
+    )
     return PlanConstraints.model_validate(values)
 
 

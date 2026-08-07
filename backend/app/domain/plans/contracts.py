@@ -20,6 +20,7 @@ _MAX_PLAN_DURATION = timedelta(hours=24)
 _MAX_BUDGET = Decimal("1000000.00")
 _MAX_AREA_VALUES = 8
 _MAX_REQUIREMENTS = 16
+_MIN_CONSTRAINT_LIFETIME = timedelta(hours=1)
 
 
 class PlanContract(BaseModel):
@@ -124,6 +125,24 @@ def _validate_time_window(start_at: datetime, end_at: datetime) -> None:
 def _validate_temporary_lifetime(created_at: datetime, expires_at: datetime) -> None:
     if expires_at <= created_at:
         raise ValueError("expires_at must be later than created_at")
+
+
+def plan_constraint_expires_at(
+    *,
+    now: datetime,
+    start_at: datetime | None,
+    end_at: datetime | None,
+) -> datetime:
+    """Return the single minimum lifetime for partial or complete plan constraints."""
+
+    created = require_aware_utc(now)
+    if start_at is None or end_at is None:
+        return created + _MIN_CONSTRAINT_LIFETIME
+    require_aware_utc(start_at)
+    return max(
+        created + _MIN_CONSTRAINT_LIFETIME,
+        require_aware_utc(end_at) + _MIN_CONSTRAINT_LIFETIME,
+    )
 
 
 class ActivityArea(PlanContract):

@@ -89,6 +89,20 @@ def test_complete_patch_is_validated_once_by_plan_constraints() -> None:
     assert adjusted.area == original.area
 
 
+def test_time_adjustment_extends_constraint_lifetime_past_new_plan_end() -> None:
+    original = _constraints()
+    start_at = original.start_at + timedelta(days=5)
+    end_at = original.end_at + timedelta(days=5)
+
+    adjusted = apply_plan_adjustment(
+        original,
+        PlanAdjustmentPatch(start_at=start_at, end_at=end_at),
+    )
+
+    assert adjusted.expires_at == end_at + timedelta(hours=1)
+    assert adjusted.is_active(start_at)
+
+
 @pytest.mark.asyncio
 async def test_invalid_or_empty_model_patch_is_rejected_without_phrase_fallback() -> None:
     provider = FakeProvider([fake_response(content="{}")])

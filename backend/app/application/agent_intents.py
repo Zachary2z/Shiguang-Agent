@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
@@ -15,7 +15,13 @@ from app.application.extraction_output import structured_response_format
 from app.domain.collections import ExtractionResult, PlanCity
 from app.domain.memories import MemoryType
 from app.domain.places import TransportMode
-from app.domain.plans import ActivityArea, PlanConstraintInput, PlanPace, PlanPaceSource
+from app.domain.plans import (
+    ActivityArea,
+    PlanConstraintInput,
+    PlanPace,
+    PlanPaceSource,
+    plan_constraint_expires_at,
+)
 from nanobot_core.providers import ModelProvider, ModelResponse, StructuredOutputMode
 
 
@@ -62,7 +68,11 @@ class PlanIntent(_Intent):
             exclude=self.exclude,
             collection_only=self.collection_only,
             created_at=now,
-            expires_at=now + timedelta(days=2),
+            expires_at=plan_constraint_expires_at(
+                now=now,
+                start_at=self.start_at,
+                end_at=self.end_at,
+            ),
         )
 
 

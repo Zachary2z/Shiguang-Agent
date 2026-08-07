@@ -14,6 +14,7 @@ from app.domain.plans.contracts import (
     parse_plan_constraint_input_json,
     parse_plan_constraints,
     parse_plan_constraints_json,
+    plan_constraint_expires_at,
     resolve_plan_constraints,
 )
 from app.domain.plans.drafts import (
@@ -92,6 +93,7 @@ __all__ = [
     "parse_plan_constraint_input_json",
     "parse_plan_constraints",
     "parse_plan_constraints_json",
+    "plan_constraint_expires_at",
     "resolve_plan_constraints",
     "ApprovalAction",
     "ApprovalStatus",

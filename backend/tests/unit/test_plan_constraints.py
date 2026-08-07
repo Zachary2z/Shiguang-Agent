@@ -29,6 +29,7 @@ from app.domain.plans import (
     parse_plan_constraint_input_json,
     parse_plan_constraints,
     parse_plan_constraints_json,
+    plan_constraint_expires_at,
     resolve_plan_constraints,
 )
 
@@ -293,6 +294,22 @@ def test_temporary_constraints_are_active_only_on_half_open_lifetime() -> None:
     assert resolve_plan_constraints(constraints, now=EXPIRES_AT) == MissingPlanConstraintInfo(
         field=MissingPlanConstraint.TIME_WINDOW
     )
+
+
+def test_constraint_lifetime_covers_complete_plan_and_only_one_partial_round() -> None:
+    future_start = CREATED_AT + timedelta(days=5)
+    future_end = future_start + timedelta(hours=4)
+
+    assert plan_constraint_expires_at(
+        now=CREATED_AT,
+        start_at=future_start,
+        end_at=future_end,
+    ) == future_end + timedelta(hours=1)
+    assert plan_constraint_expires_at(
+        now=CREATED_AT,
+        start_at=None,
+        end_at=future_end,
+    ) == CREATED_AT + timedelta(hours=1)
 
 
 def test_invalid_temporary_lifetime_and_naive_check_time_are_rejected() -> None:
