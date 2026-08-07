@@ -857,36 +857,15 @@ def score_place_candidate(
     )
 
 
-def _is_related_noncompeting_candidate(
-    top: PlaceMatchCandidate,
-    candidate: PlaceMatchCandidate,
-) -> bool:
-    top_evidence = {item.field: item.outcome for item in top.evidence}
-    candidate_evidence = {item.field: item.outcome for item in candidate.evidence}
-    distinguishing_fields = set(EvidenceField) - {
+def _has_strong_identity_evidence(candidate: PlaceMatchCandidate) -> bool:
+    matches = {
+        item.field for item in candidate.evidence if item.outcome is EvidenceOutcome.MATCH
+    }
+    return not candidate.has_hard_conflict and {
         EvidenceField.NAME,
         EvidenceField.ADDRESS,
         EvidenceField.CITY,
-    }
-    return (
-        top_evidence.get(EvidenceField.NAME) is EvidenceOutcome.MATCH
-        and top_evidence.get(EvidenceField.ADDRESS) is EvidenceOutcome.MATCH
-        and candidate_evidence.get(EvidenceField.NAME)
-        is EvidenceOutcome.PARTIAL_MATCH
-        and candidate_evidence.get(EvidenceField.ADDRESS) is EvidenceOutcome.MATCH
-        and _relation(
-            _name_identity(top.name, top.city_code),
-            _name_identity(candidate.name, candidate.city_code),
-        )
-        is EvidenceOutcome.PARTIAL_MATCH
-        and _address_relation(top.address, candidate.address) is EvidenceOutcome.MATCH
-        and not any(
-            field in distinguishing_fields
-            and outcome is EvidenceOutcome.MATCH
-            and top_evidence.get(field) is not EvidenceOutcome.MATCH
-            for field, outcome in candidate_evidence.items()
-        )
-    )
+    }.issubset(matches)
 
 
 def classify_place_matches(
@@ -914,21 +893,35 @@ def classify_place_matches(
         for candidate in ordered
         if not candidate.has_hard_conflict
     )
+    strong = tuple(
+        candidate for candidate in reasonable if _has_strong_identity_evidence(candidate)
+    )
+    public_order = (
+        (
+            strong[0],
+            *(candidate for candidate in reasonable if candidate.identity != strong[0].identity),
+        )
+        if len(strong) == 1
+        else reasonable
+    )
     selected = tuple(
         candidate.model_copy(update={"rank": index}, deep=True)
-        for index, candidate in enumerate(reasonable[:MAX_PLACE_MATCH_CANDIDATES], start=1)
+        for index, candidate in enumerate(public_order[:MAX_PLACE_MATCH_CANDIDATES], start=1)
     )
     if not ordered:
         return PlaceMatchResult(status=MatchStatus.NOT_FOUND)
     if not selected:
         return PlaceMatchResult(status=MatchStatus.NEEDS_CONTEXT)
+    if len(strong) == 1:
+        return PlaceMatchResult(status=MatchStatus.MATCHED, candidates=selected)
+    if len(strong) > 1:
+        return PlaceMatchResult(status=MatchStatus.AMBIGUOUS, candidates=selected)
 
     top = selected[0]
     competitor_scores = tuple(
         candidate.score
         for candidate in reasonable
         if candidate.identity != top.identity
-        and not _is_related_noncompeting_candidate(top, candidate)
     )
     gap = top.score - max(competitor_scores) if competitor_scores else 100.0
     if (

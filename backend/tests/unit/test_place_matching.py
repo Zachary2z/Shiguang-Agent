@@ -94,12 +94,78 @@ def test_same_address_related_candidates_do_not_block_explicit_parent() -> None:
     assert tuple(item.poi_id for item in result.candidates) == ("venue", "toilet", "wall")
     assert _evidence(scored[0], EvidenceField.NAME).outcome is EvidenceOutcome.MATCH
     assert _evidence(scored[0], EvidenceField.ADDRESS).outcome is EvidenceOutcome.MATCH
+    assert _evidence(scored[0], EvidenceField.CITY).outcome is EvidenceOutcome.MATCH
     assert all(
         _evidence(candidate, EvidenceField.NAME).outcome
         is EvidenceOutcome.PARTIAL_MATCH
         for candidate in scored[1:]
     )
     assert scored[0].score - max(item.score for item in scored[1:]) < POLICY.minimum_score_gap
+
+
+def test_multiple_strong_identity_candidates_remain_ambiguous_despite_score_gap() -> None:
+    scored = _score(
+        "同名场馆",
+        "福中路184号",
+        (
+            poi(
+                poi_id="supported",
+                name="同名场馆",
+                district="福田区",
+                address="福中路184号",
+            ),
+            poi(
+                poi_id="unsupported",
+                name="同名场馆",
+                district="南山区",
+                address="福中路184号",
+            ),
+        ),
+    )
+
+    result = classify_place_matches(scored, policy=POLICY)
+
+    assert all(
+        _evidence(candidate, field).outcome is EvidenceOutcome.MATCH
+        for candidate in scored
+        for field in (EvidenceField.NAME, EvidenceField.ADDRESS, EvidenceField.CITY)
+    )
+    assert scored[0].score - scored[1].score >= POLICY.minimum_score_gap
+    assert result.status is MatchStatus.AMBIGUOUS
+
+
+def test_unique_strong_identity_candidate_outside_top_three_is_promoted() -> None:
+    scored = _score(
+        "目标场馆",
+        "福中路184号",
+        (
+            *(
+                poi(
+                    poi_id=f"provider-{rank}",
+                    name=f"目标场馆服务点{rank}",
+                    district="福田区",
+                    address="福中路184号",
+                )
+                for rank in range(1, 4)
+            ),
+            poi(
+                poi_id="strong-fourth",
+                name="目标场馆",
+                district="南山区",
+                address="福中路184号",
+            ),
+        ),
+    )
+
+    result = classify_place_matches(scored, policy=POLICY)
+
+    assert all(candidate.score > scored[3].score for candidate in scored[:3])
+    assert result.status is MatchStatus.MATCHED
+    assert tuple(candidate.poi_id for candidate in result.candidates) == (
+        "strong-fourth",
+        "provider-1",
+        "provider-2",
+    )
 
 
 @pytest.mark.parametrize("address", ["福华路184号", "福中路185号"])

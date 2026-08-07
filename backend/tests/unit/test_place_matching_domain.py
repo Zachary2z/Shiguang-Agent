@@ -525,6 +525,9 @@ def test_provider_rank_never_overrides_stronger_evidence() -> None:
 
     result = classify_place_matches((first, second), policy=POLICY)
 
+    second_evidence = _by_field(second)
+    assert second_evidence[EvidenceField.NAME].outcome is not EvidenceOutcome.MATCH
+    assert second_evidence[EvidenceField.ADDRESS].outcome is not EvidenceOutcome.MATCH
     assert result.status is MatchStatus.MATCHED
     assert result.candidates[0].poi_id == "mstand_mixc"
     assert result.candidates[0].provider_rank == 2
