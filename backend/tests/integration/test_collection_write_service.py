@@ -354,16 +354,16 @@ async def test_first_place_save_matches_once_and_replay_does_not_search(
                         ),
                         SHENZHEN_MUSEUM.model_copy(
                             update={
-                                "poi_id": "poi_sz_moca_up_parking",
-                                "name": "深圳市当代艺术与城市规划馆地下停车场",
-                                "poi_type": PoiType.TRANSIT,
+                                "poi_id": "poi_sz_moca_up_toilet",
+                                "name": "深圳市当代艺术馆与城市规划馆无障碍卫生间",
+                                "poi_type": PoiType.OTHER,
                             }
                         ),
                         SHENZHEN_MUSEUM.model_copy(
                             update={
-                                "poi_id": "poi_sz_moca_up_parking_entrance",
-                                "name": "深圳市当代艺术与城市规划馆地下停车场(入口)",
-                                "poi_type": PoiType.TRANSIT,
+                                "poi_id": "poi_sz_moca_up_wall",
+                                "name": "深圳市当代艺术与城市规划馆-西门几何外墙（打卡点）",
+                                "poi_type": PoiType.ATTRACTION,
                             }
                         ),
                     ),

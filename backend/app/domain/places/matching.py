@@ -345,7 +345,6 @@ def validate_place_selection(
 _PUNCTUATION_OR_SPACE = re.compile(r"[\W_]+", flags=re.UNICODE)
 _PHONE = re.compile(r"(?<!\d)(?:\+?86[- ]?)?(\d(?:[- ]?\d){6,14})(?!\d)")
 _BRANCH = re.compile(r"[A-Za-z0-9\u4e00-\u9fff]{2,18}(?:分店|店)")
-_SUBFACILITY = re.compile(r"停车场|停车库|地下车库|入口|出口")
 _ADDRESS_NOTE = re.compile(r"[（(【[].*?[）)】]]")
 _ADDRESS_ADMIN_PREFIX = re.compile(r"^(?:[\u4e00-\u9fff]{2,12}(?:省|市|区|县)){1,4}")
 _STREET_NUMBER = re.compile(
@@ -485,10 +484,6 @@ def _address_relation(left: str | None, right: str | None) -> EvidenceOutcome:
     return _relation(left_identity, right_identity)
 
 
-def _subfacility_clues(value: str) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(_SUBFACILITY.findall(normalize("NFKC", value))))
-
-
 def _reason_for_relation(outcome: EvidenceOutcome) -> EvidenceReason:
     return {
         EvidenceOutcome.MATCH: EvidenceReason.EXACT,
@@ -584,22 +579,6 @@ def _branch_evidence(
     context: str,
     weight: float,
 ) -> MatchEvidence:
-    source_subfacilities = _subfacility_clues(candidate.title)
-    provider_subfacilities = _subfacility_clues(
-        " ".join(value for value in (poi.name, poi.branch_name) if value)
-    )
-    if source_subfacilities or provider_subfacilities:
-        matches = source_subfacilities == provider_subfacilities
-        return MatchEvidence(
-            field=EvidenceField.BRANCH_NAME,
-            outcome=EvidenceOutcome.MATCH if matches else EvidenceOutcome.CONFLICT,
-            reason=(
-                EvidenceReason.BRANCH_CORROBORATED
-                if matches
-                else EvidenceReason.BRANCH_CONFLICT
-            ),
-            score_delta=weight if matches else -weight,
-        )
     if poi.branch_name is None:
         return MatchEvidence(
             field=EvidenceField.BRANCH_NAME,
@@ -878,6 +857,38 @@ def score_place_candidate(
     )
 
 
+def _is_related_noncompeting_candidate(
+    top: PlaceMatchCandidate,
+    candidate: PlaceMatchCandidate,
+) -> bool:
+    top_evidence = {item.field: item.outcome for item in top.evidence}
+    candidate_evidence = {item.field: item.outcome for item in candidate.evidence}
+    distinguishing_fields = set(EvidenceField) - {
+        EvidenceField.NAME,
+        EvidenceField.ADDRESS,
+        EvidenceField.CITY,
+    }
+    return (
+        top_evidence.get(EvidenceField.NAME) is EvidenceOutcome.MATCH
+        and top_evidence.get(EvidenceField.ADDRESS) is EvidenceOutcome.MATCH
+        and candidate_evidence.get(EvidenceField.NAME)
+        is EvidenceOutcome.PARTIAL_MATCH
+        and candidate_evidence.get(EvidenceField.ADDRESS) is EvidenceOutcome.MATCH
+        and _relation(
+            _name_identity(top.name, top.city_code),
+            _name_identity(candidate.name, candidate.city_code),
+        )
+        is EvidenceOutcome.PARTIAL_MATCH
+        and _address_relation(top.address, candidate.address) is EvidenceOutcome.MATCH
+        and not any(
+            field in distinguishing_fields
+            and outcome is EvidenceOutcome.MATCH
+            and top_evidence.get(field) is not EvidenceOutcome.MATCH
+            for field, outcome in candidate_evidence.items()
+        )
+    )
+
+
 def classify_place_matches(
     scored_candidates: tuple[PlaceMatchCandidate, ...],
     *,
@@ -914,7 +925,10 @@ def classify_place_matches(
 
     top = selected[0]
     competitor_scores = tuple(
-        candidate.score for candidate in reasonable if candidate.identity != top.identity
+        candidate.score
+        for candidate in reasonable
+        if candidate.identity != top.identity
+        and not _is_related_noncompeting_candidate(top, candidate)
     )
     gap = top.score - max(competitor_scores) if competitor_scores else 100.0
     if (

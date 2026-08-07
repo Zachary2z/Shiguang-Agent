@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import SecretStr
 
 from app.application import PlaceMatchingService
 from app.config import Settings
@@ -26,9 +25,6 @@ async def test_explicit_venue_searches_once_and_selects_the_parent_poi() -> None
             address="福田区福中路184号",
         ),
         city=SHENZHEN,
-        source_context=SecretStr(
-            "请收藏深圳当代艺术与城市规划馆，地址是福田区福中路184号。"
-        ),
     )
     calls: list[object] = []
 
@@ -50,8 +46,16 @@ async def test_explicit_venue_searches_once_and_selects_the_parent_poi() -> None
         )
         for poi_id, name, poi_type in (
             ("venue", "深圳市当代艺术与城市规划馆", PoiType.MUSEUM),
-            ("parking", "深圳市当代艺术与城市规划馆地下停车场", PoiType.TRANSIT),
-            ("entrance", "深圳市当代艺术与城市规划馆地下停车场(入口)", PoiType.TRANSIT),
+            (
+                "toilet",
+                "深圳市当代艺术馆与城市规划馆无障碍卫生间",
+                PoiType.OTHER,
+            ),
+            (
+                "wall",
+                "深圳市当代艺术与城市规划馆-西门几何外墙（打卡点）",
+                PoiType.ATTRACTION,
+            ),
         )
     )
     service = PlaceMatchingService(

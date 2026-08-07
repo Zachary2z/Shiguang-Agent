@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import SecretStr
 
 from app.config import Settings
 from app.domain.places import (
@@ -27,18 +26,30 @@ from tests.fixtures.place_matching import (
 POLICY = Settings(_env_file=None, app_env="test").place_matching_policy()  # type: ignore[call-arg]
 
 
-def _venue_pois() -> tuple[Poi, ...]:
+def _related_pois() -> tuple[Poi, ...]:
     values = (
         ("venue", "深圳市当代艺术与城市规划馆", PoiType.MUSEUM),
-        ("parking", "深圳市当代艺术与城市规划馆地下停车场", PoiType.TRANSIT),
-        ("entrance", "深圳市当代艺术与城市规划馆地下停车场(入口)", PoiType.TRANSIT),
+        ("toilet", "深圳市当代艺术馆与城市规划馆无障碍卫生间", PoiType.OTHER),
+        (
+            "wall",
+            "深圳市当代艺术与城市规划馆-西门几何外墙（打卡点）",
+            PoiType.ATTRACTION,
+        ),
     )
     return tuple(
         poi(
             poi_id=poi_id,
             name=name,
             district="福田区",
-            address="福中路184号(少年宫地铁站步行500米)",
+            address=(
+                "福中路184号(少年宫地铁站步行500米)"
+                if poi_id == "venue"
+                else (
+                    "福中路184号附近的完整公开地址"
+                    if poi_id == "toilet"
+                    else "福中路184号深圳市当代艺术与城市规划馆"
+                )
+            ),
             poi_type=poi_type,
         )
         for poi_id, name, poi_type in values
@@ -58,7 +69,6 @@ def _score(
             address=address,
         ),
         city=SHENZHEN,
-        source_context=SecretStr(f"请收藏{title}，地址是{address or '未提供'}。"),
     )
     return tuple(
         score_place_candidate(
@@ -67,7 +77,7 @@ def _score(
             provider_rank=rank,
             policy=POLICY,
         )
-        for rank, candidate in enumerate(candidates or _venue_pois(), start=1)
+        for rank, candidate in enumerate(candidates or _related_pois(), start=1)
     )
 
 
@@ -75,20 +85,21 @@ def _evidence(candidate: PlaceMatchCandidate, field: EvidenceField) -> MatchEvid
     return next(item for item in candidate.evidence if item.field is field)
 
 
-def test_administrative_name_address_core_and_subfacility_evidence_select_venue() -> None:
+def test_same_address_related_candidates_do_not_block_explicit_parent() -> None:
     scored = _score("深圳当代艺术与城市规划馆", "福田区福中路184号")
     result = classify_place_matches(scored, policy=POLICY)
 
     assert result.status is MatchStatus.MATCHED
     assert result.candidates[0].poi_id == "venue"
+    assert tuple(item.poi_id for item in result.candidates) == ("venue", "toilet", "wall")
     assert _evidence(scored[0], EvidenceField.NAME).outcome is EvidenceOutcome.MATCH
     assert _evidence(scored[0], EvidenceField.ADDRESS).outcome is EvidenceOutcome.MATCH
     assert all(
-        _evidence(candidate, EvidenceField.BRANCH_NAME).outcome
-        is EvidenceOutcome.CONFLICT
+        _evidence(candidate, EvidenceField.NAME).outcome
+        is EvidenceOutcome.PARTIAL_MATCH
         for candidate in scored[1:]
     )
-    assert scored[0].score - max(item.score for item in scored[1:]) >= POLICY.minimum_score_gap
+    assert scored[0].score - max(item.score for item in scored[1:]) < POLICY.minimum_score_gap
 
 
 @pytest.mark.parametrize("address", ["福华路184号", "福中路185号"])
@@ -98,12 +109,43 @@ def test_different_road_or_street_number_remains_an_address_conflict(address: st
     assert _evidence(scored[0], EvidenceField.ADDRESS).outcome is EvidenceOutcome.CONFLICT
 
 
-def test_explicit_parking_input_matches_parking_instead_of_parent_or_entrance() -> None:
-    scored = _score("深圳当代艺术与城市规划馆地下停车场", "福中路184号")
+@pytest.mark.parametrize("poi_id", ["toilet", "wall"])
+def test_explicit_related_candidate_is_not_replaced_by_parent(poi_id: str) -> None:
+    candidates = _related_pois()
+    selected = next(item for item in candidates if item.poi_id == poi_id)
+    scored = _score(selected.name, "福中路184号", candidates)
     result = classify_place_matches(scored, policy=POLICY)
 
+    assert result.candidates[0].poi_id == poi_id
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("深圳当代艺术与城市规划馆地下停车场", "parking"),
+        ("深圳当代艺术与城市规划馆地下停车场(入口)", "entrance"),
+    ],
+)
+def test_explicit_parking_or_entrance_is_not_swapped(title: str, expected: str) -> None:
+    candidates = tuple(
+        poi(
+            poi_id=poi_id,
+            name=name,
+            district="福田区",
+            address="福中路184号",
+            poi_type=PoiType.TRANSIT,
+        )
+        for poi_id, name in (
+            ("venue", "深圳市当代艺术与城市规划馆"),
+            ("parking", "深圳市当代艺术与城市规划馆地下停车场"),
+            ("entrance", "深圳市当代艺术与城市规划馆地下停车场(入口)"),
+        )
+    )
+
+    result = classify_place_matches(_score(title, "福中路184号", candidates), policy=POLICY)
+
     assert result.status is MatchStatus.MATCHED
-    assert result.candidates[0].poi_id == "parking"
+    assert result.candidates[0].poi_id == expected
 
 
 def test_chain_branches_and_name_only_evidence_remain_unconfirmed() -> None:
