@@ -2,12 +2,29 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 当前总阶段 | M2 微信 ClawBot 完整 MVP |
-| 当前子阶段 | M2-0 ClawBot 技术 Spike |
-| 状态 | PostgreSQL 中文标签搜索漏匹配修复已通过主控验收；等待最终真实用户闭环复验，M2-0 尚未开始。 |
-| 当前分支 | main |
-| 最近更新 | 2026-08-02 |
+| 当前总阶段 | M1 核心用户闭环稳定化（M2 进入门禁） |
+| 当前子阶段 | M1 用户闭环稳定化 1：Agent 统一意图路由 |
+| 状态 | Agent 统一意图路由候选已完成，等待主控复验；M2-0 尚未开始。 |
+| 当前分支 | codex/m1-agent-intent-routing |
+| 最近更新 | 2026-08-07 |
 | 阻塞项 | 最终真实用户闭环复验尚未执行；M2-0 尚未开始 |
+
+## 2026-08-07 M1 用户闭环稳定化 1：Agent 统一意图路由
+
+- Agent 首页文字输入通过一个严格判别联合完成一次语义理解：收藏结果复用现有内容
+  导入写入，计划结果复用现有 `PlanExperienceService`、Job/SSE 和版本链，明确长期授权
+  复用现有 `MemoryService`。普通偏好只确认，当前计划限制进入计划 `exclude`，语义不明
+  只追问一个问题；同一 Session 的后续回答复用现有 Message/AgentRun 记录继续处理。
+- 纯 URL、纯截图和旧 `text` 合同仍直达原收藏链路，意图模型调用为 0；Agent 文字每次
+  只调用一次意图模型，收藏载荷同时包含既有 `ExtractionResult`，不再重复理解同一文本。
+  没有自动重试、fallback、关键词/正则路由、通用聊天状态机、迁移、依赖或第二套服务。
+- `pip check`、Ruff、strict mypy（142 个源文件）通过；收藏/计划/记忆/新路由合同
+  `48 passed`，非真实 Provider/Map 全集 `1778 passed, 18 skipped, 2 deselected`。
+  前端 lint、typecheck、指定 Vitest `64 passed`、计划快捷入口 Playwright `1 passed`
+  与 production build 通过；仓库外 DNS/socket 封锁下新路由合同 `7 passed`。
+- 全集仅观察到既有 aiosqlite 事件循环关闭后的线程收尾 P2 warning；本任务没有未关闭
+  P0/P1。未读取 `.env`，真实模型、地图、网页和其他外部/付费 API 调用为 0；未合并、
+  未推送，未实现其余稳定化修复或任何微信/M2 功能，M2-0 继续保持未开始。
 
 ## 2026-08-02 PostgreSQL 中文标签搜索主控验收
 

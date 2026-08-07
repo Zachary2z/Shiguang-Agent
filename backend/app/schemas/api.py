@@ -596,6 +596,17 @@ class TextMessageCreateRequest(ApiModel):
         return value
 
 
+class AgentTextMessageCreateRequest(ApiModel):
+    type: Literal["agent_text"]
+    idempotency_key: IdempotencyKey = Field(repr=False)
+    text: str = Field(min_length=1, max_length=20_000, repr=False)
+
+    @field_validator("text")
+    @classmethod
+    def reject_blank_text(cls, value: str) -> str:
+        return TextMessageCreateRequest.reject_blank_text(value)
+
+
 class UrlMessageCreateRequest(ApiModel):
     type: Literal["url"]
     idempotency_key: IdempotencyKey = Field(repr=False)
@@ -603,7 +614,7 @@ class UrlMessageCreateRequest(ApiModel):
 
 
 JsonMessageCreateRequest = Annotated[
-    TextMessageCreateRequest | UrlMessageCreateRequest,
+    TextMessageCreateRequest | AgentTextMessageCreateRequest | UrlMessageCreateRequest,
     Field(discriminator="type"),
 ]
 
@@ -756,6 +767,10 @@ class ContentImportResultResponse(ApiModel):
     recovery_actions: tuple[str, ...] = ()
     error_code: str | None = None
     tool_steps: tuple[ContentImportToolStepResponse, ...] = ()
+    intent: str | None = None
+    question: str | None = None
+    plan_id: str | None = None
+    memory_id: str | None = None
 
 
 class ConversationMessageResponse(ApiModel):

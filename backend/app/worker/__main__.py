@@ -7,6 +7,7 @@ import secrets
 import signal
 
 from app.application.content_import_jobs import (
+    AGENT_MESSAGE_JOB_TYPE,
     CONTENT_IMPORT_JOB_TYPE,
     ContentImportJobHandler,
 )
@@ -57,21 +58,23 @@ async def _run() -> None:
     )
     runtime_storage = build_runtime_storage_providers(settings)
     storage = runtime_storage.real
+    content_handler = ContentImportJobHandler(
+        session_factory=database.session_factory,
+        provider=provider,
+        pricing=pricing,
+        locks=locks,
+        timeout_seconds=settings.agent_timeout_seconds,
+        web_provider=web_provider,
+        storage=storage,
+        storage_config=settings.storage_provider_settings(),
+        structured_output_mode=settings.extraction_structured_output_mode(),
+        map_provider=map_provider,
+        matching_policy=settings.place_matching_policy(),
+    )
     handlers: dict[str, JobHandler] = {
         "deterministic.noop": deterministic_noop,
-        CONTENT_IMPORT_JOB_TYPE: ContentImportJobHandler(
-            session_factory=database.session_factory,
-            provider=provider,
-            pricing=pricing,
-            locks=locks,
-            timeout_seconds=settings.agent_timeout_seconds,
-            web_provider=web_provider,
-            storage=storage,
-            storage_config=settings.storage_provider_settings(),
-            structured_output_mode=settings.extraction_structured_output_mode(),
-            map_provider=map_provider,
-            matching_policy=settings.place_matching_policy(),
-        ),
+        CONTENT_IMPORT_JOB_TYPE: content_handler,
+        AGENT_MESSAGE_JOB_TYPE: content_handler,
     }
     if map_provider is not None:
         handlers[PLAN_GENERATION_JOB_TYPE] = PlanGenerationJobHandler(
@@ -110,23 +113,25 @@ async def _run() -> None:
         demo_storage = runtime_storage.demo
         if demo_storage is None:
             raise RuntimeError("demo storage must be configured with the demo database")
+        demo_content_handler = ContentImportJobHandler(
+            session_factory=demo_database.session_factory,
+            provider=provider,
+            pricing=pricing,
+            locks=locks,
+            timeout_seconds=settings.agent_timeout_seconds,
+            web_provider=web_provider,
+            storage=demo_storage,
+            storage_config=settings.demo_storage_provider_settings(),
+            structured_output_mode=(
+                settings.extraction_structured_output_mode()
+            ),
+            map_provider=map_provider,
+            matching_policy=settings.place_matching_policy(),
+        )
         demo_handlers: dict[str, JobHandler] = {
             "deterministic.noop": deterministic_noop,
-            CONTENT_IMPORT_JOB_TYPE: ContentImportJobHandler(
-                session_factory=demo_database.session_factory,
-                provider=provider,
-                pricing=pricing,
-                locks=locks,
-                timeout_seconds=settings.agent_timeout_seconds,
-                web_provider=web_provider,
-                storage=demo_storage,
-                storage_config=settings.demo_storage_provider_settings(),
-                structured_output_mode=(
-                    settings.extraction_structured_output_mode()
-                ),
-                map_provider=map_provider,
-                matching_policy=settings.place_matching_policy(),
-            ),
+            CONTENT_IMPORT_JOB_TYPE: demo_content_handler,
+            AGENT_MESSAGE_JOB_TYPE: demo_content_handler,
         }
         if map_provider is not None:
             demo_handlers[PLAN_GENERATION_JOB_TYPE] = PlanGenerationJobHandler(

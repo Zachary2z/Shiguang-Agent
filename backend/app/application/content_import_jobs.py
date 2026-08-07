@@ -12,10 +12,29 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.application.agent_intents import (
+    AgentIntentError,
+    AgentIntentParser,
+    CollectionIntent,
+    MemoryIntent,
+    PlanIntent,
+)
 from app.application.image_recognition import ORIGINAL_SCREENSHOT_RETENTION_DAYS
-from app.application.input_contracts import CollectionInput, ImageInput, TextInput, UrlInput
+from app.application.input_contracts import (
+    CollectionInput,
+    ImageInput,
+    TextInput,
+    UrlInput,
+)
+from app.application.memories import MemoryService
 from app.application.place_matching import PlaceMatchingService
+from app.application.plan_experience import PlanExperienceService
 from app.application.pricing import PricingPolicy
+from app.application.run_tracking import (
+    AgentRunService,
+    ApplicationRunFailureError,
+    ApplicationRunObserver,
+)
 from app.application.text_collection_workflow import (
     IdempotencyLockRegistry,
     TextCollectionProviderError,
@@ -26,16 +45,21 @@ from app.application.text_collection_workflow import (
 from app.config import StorageProviderSettings
 from app.domain.collections import (
     IdempotencyConflictError,
+    Message,
     MessageContentType,
+    MessageRole,
     ResourceNotFoundError,
     Source,
     SourceMetadata,
     SourceParseStatus,
     SourceType,
 )
-from app.domain.jobs import JobCreate, JobResultSummary, ScheduledJob
+from app.domain.identifiers import generate_message_id
+from app.domain.jobs import MAX_JOB_ATTEMPTS, JobCreate, JobResultSummary, ScheduledJob
+from app.domain.memories import MemoryType
 from app.domain.places import PlaceMatchingPolicy
-from app.domain.runs import AgentRunStatus
+from app.domain.plans import MissingPlanConstraintInfo, resolve_plan_constraints
+from app.domain.runs import AgentRunCreate, AgentRunStatus
 from app.domain.time import utc_now
 from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.repositories import AgentRunRepository, SqlAlchemyCollectionRepository
@@ -49,6 +73,7 @@ from app.providers.web import WebContentProvider
 from nanobot_core.providers import ModelProvider, StructuredOutputMode
 
 CONTENT_IMPORT_JOB_TYPE = "content.import"
+AGENT_MESSAGE_JOB_TYPE = "agent.message"
 
 
 class ContentImportJobPayload(BaseModel):
@@ -111,6 +136,7 @@ class ContentImportSubmissionService:
         session_id: str,
         client_idempotency_key: str,
         input: CollectionInput,
+        route_agent: bool = False,
     ) -> ContentImportSubmission:
         key = scoped_import_key(
             user_id=user_id,
@@ -136,6 +162,8 @@ class ContentImportSubmissionService:
                 session_id=session_id,
                 idempotency_key=key,
                 input=input,
+                intent="route_agent" if route_agent else "collect_content",
+                workflow="agent.intent" if route_agent else "m1_3_content_import",
             )
             if isinstance(input, ImageInput):
                 await self._stage_image(
@@ -151,11 +179,14 @@ class ContentImportSubmissionService:
             )
             request = JobCreate(
                 user_id=user_id,
-                job_type=CONTENT_IMPORT_JOB_TYPE,
+                job_type=(
+                    AGENT_MESSAGE_JOB_TYPE if route_agent else CONTENT_IMPORT_JOB_TYPE
+                ),
                 payload=payload.model_dump(mode="json"),
                 run_at=prepared.run_created_at,
                 idempotency_key=key,
                 trace_id=prepared.trace_id,
+                max_attempts=1 if route_agent else MAX_JOB_ATTEMPTS,
             )
             job = await self._queue.create(request)
         except BaseException as error:
@@ -307,6 +338,14 @@ class ContentImportJobHandler:
         self._storage = storage
         self._storage_config = storage_config
         self._structured_output_mode = structured_output_mode
+        self._intent_parser = (
+            None
+            if provider is None
+            else AgentIntentParser(
+                provider,
+                structured_output_mode=structured_output_mode,
+            )
+        )
         self._place_matching = (
             None
             if map_provider is None or matching_policy is None
@@ -332,6 +371,16 @@ class ContentImportJobHandler:
                 payload=payload,
                 content=message.content,
             )
+            if job.job_type == AGENT_MESSAGE_JOB_TYPE:
+                if not isinstance(input, TextInput):
+                    raise ApplicationRunFailureError(error_code="AGENT_INPUT_INVALID")
+                return await self._execute_agent_message(
+                    session=session,
+                    repository=repository,
+                    job=job,
+                    payload=payload,
+                    input=input,
+                )
             try:
                 result = await TextCollectionWorkflow(
                     session=session,
@@ -358,6 +407,195 @@ class ContentImportJobHandler:
             ):
                 return JobResultSummary(outcome="failed")
             return JobResultSummary(outcome=result.run_status.value)
+
+    async def _execute_agent_message(
+        self,
+        *,
+        session: AsyncSession,
+        repository: SqlAlchemyCollectionRepository,
+        job: ScheduledJob,
+        payload: ContentImportJobPayload,
+        input: TextInput,
+    ) -> JobResultSummary:
+        async def operation(observer: ApplicationRunObserver) -> JobResultSummary:
+            if self._intent_parser is None:
+                raise ApplicationRunFailureError(
+                    error_code="MODEL_PROVIDER_NOT_CONFIGURED"
+                )
+            try:
+                intent = await self._intent_parser.parse(
+                    text=input.text,
+                    now=utc_now(),
+                    pending_context=await self._pending_context(
+                        repository=repository,
+                        user_id=job.user_id,
+                        session_id=payload.session_id,
+                        current_message_id=payload.message_id,
+                    ),
+                    response_observer=observer.record_model_response,
+                )
+            except AgentIntentError:
+                raise ApplicationRunFailureError(error_code=AgentIntentError.code) from None
+            if isinstance(intent, CollectionIntent):
+                await TextCollectionWorkflow(
+                    session=session,
+                    provider=None,
+                    pricing=self._pricing,
+                    locks=self._locks,
+                    timeout_seconds=self._timeout_seconds,
+                    place_matching=self._place_matching,
+                ).save_routed_text(
+                    user_id=job.user_id,
+                    idempotency_key=job.idempotency_key,
+                    source_id=payload.source_id,
+                    input=input,
+                    extraction=intent.extraction,
+                    observer=observer,
+                )
+                return JobResultSummary(
+                    outcome="succeeded",
+                    intent="collect_content",
+                )
+            if isinstance(intent, PlanIntent):
+                now = utc_now()
+                resolved = resolve_plan_constraints(intent.constraints(now=now), now=now)
+                if isinstance(resolved, MissingPlanConstraintInfo):
+                    question = (
+                        "你什么时候有一段连续空闲时间？"
+                        if resolved.field.value == "time_window"
+                        else "你想在哪个区域活动或从哪里出发？"
+                    )
+                    await self._add_assistant_message(
+                        repository=repository,
+                        user_id=job.user_id,
+                        session_id=payload.session_id,
+                        trace_id=job.trace_id,
+                        content=question,
+                    )
+                    return JobResultSummary(
+                        outcome="waiting_user",
+                        intent="plan",
+                        question=question,
+                    )
+                submission = await PlanExperienceService(
+                    session=session,
+                    session_factory=self._session_factory,
+                    pricing=self._pricing,
+                ).create(
+                    user_id=job.user_id,
+                    constraints=resolved,
+                    client_idempotency_key=job.idempotency_key,
+                )
+                return JobResultSummary(
+                    outcome="succeeded",
+                    intent="plan",
+                    plan_id=submission.plan.id,
+                )
+            if isinstance(intent, MemoryIntent):
+                if intent.authorization != "explicit":
+                    question = "要把这条偏好记住，供以后的计划使用吗？"
+                    await self._add_assistant_message(
+                        repository=repository,
+                        user_id=job.user_id,
+                        session_id=payload.session_id,
+                        trace_id=job.trace_id,
+                        content=question,
+                    )
+                    return JobResultSummary(
+                        outcome="waiting_user",
+                        intent="memory",
+                        question=question,
+                    )
+                result = await MemoryService(session).create_explicit(
+                    user_id=job.user_id,
+                    memory_type=MemoryType(intent.type),
+                    content=intent.content,
+                    value=intent.value,
+                    expires_at=None,
+                    explicit_authorization=True,
+                    location_granularity=None,
+                    client_idempotency_key=job.idempotency_key,
+                )
+                return JobResultSummary(
+                    outcome="succeeded",
+                    intent="memory",
+                    question="已记住，可在“我的”中修改或删除。",
+                    memory_id=result.memory.id,
+                )
+            await self._add_assistant_message(
+                repository=repository,
+                user_id=job.user_id,
+                session_id=payload.session_id,
+                trace_id=job.trace_id,
+                content=intent.question,
+            )
+            return JobResultSummary(
+                outcome="waiting_user",
+                intent="clarify",
+                question=intent.question,
+            )
+
+        execution = await AgentRunService(
+            session=session,
+            runner=None,
+            pricing=self._pricing,
+            timeout_seconds=self._timeout_seconds,
+        ).execute_application(
+            AgentRunCreate(
+                trace_id=job.trace_id,
+                user_id=job.user_id,
+                session_id=payload.session_id,
+                intent="route_agent",
+                workflow="agent.intent",
+            ),
+            operation,
+            reuse_queued=True,
+        )
+        return execution.result
+
+    @staticmethod
+    async def _add_assistant_message(
+        *,
+        repository: SqlAlchemyCollectionRepository,
+        user_id: str,
+        session_id: str,
+        trace_id: str | None,
+        content: str,
+    ) -> None:
+        if trace_id is None:
+            raise ValueError("routed jobs require a trace")
+        await repository.add_message(
+            user_id=user_id,
+            message=Message(
+                id=generate_message_id(),
+                session_id=session_id,
+                role=MessageRole.ASSISTANT,
+                content_type=MessageContentType.TEXT,
+                content=content,
+                trace_id=trace_id,
+                created_at=utc_now(),
+            ),
+        )
+
+    @staticmethod
+    async def _pending_context(
+        *,
+        repository: SqlAlchemyCollectionRepository,
+        user_id: str,
+        session_id: str,
+        current_message_id: str,
+    ) -> str | None:
+        messages = [
+            item
+            for item in await repository.list_messages(
+                user_id=user_id,
+                session_id=session_id,
+            )
+            if item.id != current_message_id
+        ]
+        if not messages or messages[-1].role is not MessageRole.ASSISTANT:
+            return None
+        return "\n".join(f"{item.role.value}: {item.content}" for item in messages[-2:])
 
     async def _restore_input(
         self,
@@ -392,6 +630,7 @@ async def _single_chunk(payload: bytes) -> AsyncIterator[bytes]:
 
 
 __all__ = [
+    "AGENT_MESSAGE_JOB_TYPE",
     "CONTENT_IMPORT_JOB_TYPE",
     "ContentImportJobHandler",
     "ContentImportJobPayload",

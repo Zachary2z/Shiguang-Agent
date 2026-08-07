@@ -10,7 +10,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.domain.identifiers import validate_trace_id, validate_user_id
+from app.domain.identifiers import (
+    validate_memory_id,
+    validate_plan_id,
+    validate_trace_id,
+    validate_user_id,
+)
 from app.domain.time import required_utc
 
 MAX_JOB_ATTEMPTS = 3
@@ -108,6 +113,10 @@ class JobResultSummary(_JobModel):
 
     outcome: str
     content_sha256: str | None = None
+    intent: str | None = None
+    question: str | None = Field(default=None, max_length=200)
+    plan_id: str | None = None
+    memory_id: str | None = None
 
     @field_validator("outcome")
     @classmethod
@@ -125,6 +134,21 @@ class JobResultSummary(_JobModel):
                 "content_sha256 must be 64 lowercase hexadecimal characters"
             )
         return value
+
+    @field_validator("intent")
+    @classmethod
+    def safe_intent(cls, value: str | None) -> str | None:
+        return None if value is None else validate_safe_label(value, name="intent")
+
+    @field_validator("plan_id")
+    @classmethod
+    def valid_plan_id(cls, value: str | None) -> str | None:
+        return None if value is None else validate_plan_id(value)
+
+    @field_validator("memory_id")
+    @classmethod
+    def valid_memory_id(cls, value: str | None) -> str | None:
+        return None if value is None else validate_memory_id(value)
 
 
 class ScheduledJob(_JobModel):

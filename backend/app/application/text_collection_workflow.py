@@ -442,6 +442,27 @@ class TextCollectionWorkflow:
             replayed=True,
         )
 
+    async def save_routed_text(
+        self,
+        *,
+        user_id: str,
+        idempotency_key: str,
+        source_id: str,
+        input: TextInput,
+        extraction: ExtractionResult,
+        observer: ApplicationRunObserver,
+    ) -> None:
+        """Save an extraction already produced by the single Agent intent call."""
+
+        await self._process_text(
+            user_id=user_id,
+            idempotency_key=idempotency_key,
+            source_id=source_id,
+            input=input,
+            observer=observer,
+            extraction=extraction,
+        )
+
     async def prepare_input(
         self,
         *,
@@ -449,6 +470,8 @@ class TextCollectionWorkflow:
         session_id: str,
         idempotency_key: str,
         input: CollectionInput,
+        intent: str = "collect_content",
+        workflow: str = "m1_3_content_import",
     ) -> PreparedCollectionImport:
         """Persist the user message and queued AgentRun without doing provider work."""
 
@@ -500,8 +523,8 @@ class TextCollectionWorkflow:
                     trace_id=trace_id,
                     user_id=user_id,
                     session_id=session_id,
-                    intent="collect_content",
-                    workflow="m1_3_content_import",
+                    intent=intent,
+                    workflow=workflow,
                 )
             )
             return PreparedCollectionImport(
@@ -672,15 +695,17 @@ class TextCollectionWorkflow:
         source_id: str,
         input: TextInput,
         observer: ApplicationRunObserver,
+        extraction: ExtractionResult | None = None,
     ) -> _OperationResult:
         await observer.set_stage("place_recognition")
         timestamp = self._now()
         try:
-            extraction = await TextExtractionService(
-                self._require_provider(),
-                structured_output_mode=self._structured_output_mode,
-                response_observer=observer.record_model_response,
-            ).extract(input.text)
+            if extraction is None:
+                extraction = await TextExtractionService(
+                    self._require_provider(),
+                    structured_output_mode=self._structured_output_mode,
+                    response_observer=observer.record_model_response,
+                ).extract(input.text)
         except ProviderError:
             await self._persist_source(
                 Source(

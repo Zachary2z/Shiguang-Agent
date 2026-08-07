@@ -339,8 +339,38 @@ describe("Agent experience", () => {
     expect(submissions).toHaveLength(2);
     const first = JSON.parse(String(submissions[0][1]?.body));
     const second = JSON.parse(String(submissions[1][1]?.body));
+    expect(first.type).toBe("agent_text");
     expect(second.text).toBe(first.text);
     expect(second.idempotency_key).toBe(first.idempotency_key);
+  });
+
+  it("shows routed plan results from the authoritative run", async () => {
+    const user = userEvent.setup();
+    request
+      .mockResolvedValueOnce(accepted)
+      .mockResolvedValueOnce({
+        ...completedResult([]),
+        extraction: null,
+        intent: "plan",
+        question: null,
+        plan_id: "pln_0123456789abcdef0123456789abcdef",
+        memory_id: null,
+      });
+    connect.mockImplementationOnce((options: MockSseOptions) => {
+      window.setTimeout(() => terminalEvent(options, 4), 0);
+      return { cancel: vi.fn(), closed: new Promise<void>(() => {}) };
+    });
+
+    render(<AgentExperience />);
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    await user.type(screen.getByRole("textbox", { name: "收藏内容" }), "帮我安排时间");
+    await user.click(screen.getByRole("button", { name: "发送" }));
+
+    expect(await screen.findByRole("heading", { name: "计划任务" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "查看计划进度" })).toHaveAttribute(
+      "href",
+      "/plans?plan=pln_0123456789abcdef0123456789abcdef",
+    );
   });
 
   it("uses a new key when retrying an authoritative terminal failure", async () => {
@@ -474,10 +504,9 @@ describe("Agent experience", () => {
     await user.click(screen.getByRole("button", { name: "删除截图" }));
     expect(input).toHaveValue("保留这段文字");
     expect(screen.queryByText("place.jpg")).toBeNull();
-    expect(screen.getByRole("link", { name: "帮我安排时间" })).toHaveAttribute(
-      "href",
-      "/plans",
-    );
+    await user.click(screen.getByRole("button", { name: "帮我安排时间" }));
+    expect(input).toHaveValue("帮我安排时间");
+    expect(input).toHaveFocus();
   });
 
   it("uses a new key after deleting a screenshot from a failed prepared input", async () => {

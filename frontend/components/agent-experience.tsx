@@ -89,6 +89,10 @@ type ImportResult = {
     duration_ms: number | null;
     error_code: string | null;
   }>;
+  intent: string | null;
+  question: string | null;
+  plan_id: string | null;
+  memory_id: string | null;
 };
 
 type RunEventData = {
@@ -201,6 +205,7 @@ function resultState(result: ImportResult): AgentState {
   }
   if (result.run_status === "queued") return "queued";
   if (result.run_status === "running") return "processing";
+  if (result.intent) return "saved";
   return result.extraction?.outcome === "candidates"
     ? "pending_details"
     : "failed";
@@ -563,7 +568,7 @@ export function AgentExperience() {
             body: JSON.stringify(
               /^https?:\/\/\S+$/i.test(text.trim())
                 ? { type: "url", idempotency_key: key, url: text.trim() }
-                : { type: "text", idempotency_key: key, text: text.trim() },
+                : { type: "agent_text", idempotency_key: key, text: text.trim() },
             ),
             csrfToken: session.csrf_token,
             signal: controller.signal,
@@ -753,7 +758,16 @@ export function AgentExperience() {
         </p>
         <div className="intent-switch" aria-label="Agent 能力">
           <span aria-current="true">收藏一个地点</span>
-          <a href="/plans">帮我安排时间</a>
+          <button
+            type="button"
+            onClick={() => {
+              setText("帮我安排时间");
+              preparedSubmissionKey.current = null;
+              window.setTimeout(() => mainInput.current?.focus(), 0);
+            }}
+          >
+            帮我安排时间
+          </button>
         </div>
       </header>
 
@@ -920,6 +934,24 @@ export function AgentExperience() {
               </article>
             ))}
           </section>
+        )}
+
+        {result?.intent && result.intent !== "collect_content" && (
+          <article className="welcome-card" role="status" aria-live="polite">
+            <span className="welcome-index">✓</span>
+            <div>
+              <h2>
+                {result.intent === "plan"
+                  ? "计划任务"
+                  : result.intent === "memory"
+                    ? "记忆"
+                    : "需要补充"}
+              </h2>
+              <p>{result.question ?? "已进入对应任务。"}</p>
+              {result.plan_id && <a href={`/plans?plan=${result.plan_id}`}>查看计划进度</a>}
+              {result.memory_id && <a href="/me">在“我的”中管理</a>}
+            </div>
+          </article>
         )}
 
         {displayState === "failed" && (

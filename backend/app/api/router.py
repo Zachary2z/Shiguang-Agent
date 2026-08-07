@@ -197,6 +197,16 @@ _MESSAGE_REQUEST_BODY = {
                     {
                         "type": "object",
                         "additionalProperties": False,
+                        "required": ["type", "idempotency_key", "text"],
+                        "properties": {
+                            "type": {"const": "agent_text"},
+                            "idempotency_key": _IDEMPOTENCY_SCHEMA,
+                            "text": {"type": "string", "minLength": 1, "maxLength": 20000},
+                        },
+                    },
+                    {
+                        "type": "object",
+                        "additionalProperties": False,
                         "required": ["type", "idempotency_key", "url"],
                         "properties": {
                             "type": {"const": "url"},
@@ -316,7 +326,7 @@ async def create_message(
     timeout_seconds: AgentTimeout,
     database: CurrentDatabase,
 ) -> ContentImportAcceptedResponse:
-    idempotency_key, collection_input = await _parse_collection_input(request)
+    idempotency_key, collection_input, route_agent = await _parse_collection_input(request)
     result = await ContentImportSubmissionService(
         session=session,
         session_factory=database.session_factory,
@@ -329,6 +339,7 @@ async def create_message(
         session_id=session_id,
         client_idempotency_key=idempotency_key,
         input=collection_input,
+        route_agent=route_agent,
     )
     return ContentImportAcceptedResponse(
         message_id=result.message_id,
@@ -409,6 +420,10 @@ async def get_content_import_result(
         source_parse_status=None if result.source is None else result.source.parse_status,
         recovery_actions=result.recovery_actions,
         error_code=result.error_code,
+        intent=(None if job.result_summary is None else job.result_summary.intent),
+        question=(None if job.result_summary is None else job.result_summary.question),
+        plan_id=(None if job.result_summary is None else job.result_summary.plan_id),
+        memory_id=(None if job.result_summary is None else job.result_summary.memory_id),
         tool_steps=tuple(
             ContentImportToolStepResponse(
                 tool_name=tool.tool_name,
@@ -478,7 +493,7 @@ async def list_conversation_messages(
 
 async def _parse_collection_input(
     request: Request,
-) -> tuple[str, TextInput | UrlInput | ImageInput]:
+) -> tuple[str, TextInput | UrlInput | ImageInput, bool]:
     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if media_type == "application/json":
         raw = await _read_limited_body(request, limit=_MAX_JSON_MESSAGE_BYTES)
@@ -486,11 +501,13 @@ async def _parse_collection_input(
             decoded: Any = json.loads(raw)
             if isinstance(decoded, dict) and set(decoded) <= {"idempotency_key", "content"}:
                 legacy = MessageCreateRequest.model_validate(decoded)
-                return legacy.idempotency_key, TextInput(text=legacy.content)
+                return legacy.idempotency_key, TextInput(text=legacy.content), False
             parsed = _JSON_MESSAGE_ADAPTER.validate_python(decoded)
+            if parsed.type == "agent_text":
+                return parsed.idempotency_key, TextInput(text=parsed.text), True
             if parsed.type == "text":
-                return parsed.idempotency_key, TextInput(text=parsed.text)
-            return parsed.idempotency_key, UrlInput(url=parsed.url)
+                return parsed.idempotency_key, TextInput(text=parsed.text), False
+            return parsed.idempotency_key, UrlInput(url=parsed.url), False
         except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, TypeError):
             raise _safe_request_validation_error() from None
 
@@ -503,7 +520,11 @@ async def _parse_collection_input(
                 request,
                 limit=settings.storage_max_file_size_bytes,
             )
-            return validated_key, ImageInput.from_bytes(payload, content_type=media_type)
+            return (
+                validated_key,
+                ImageInput.from_bytes(payload, content_type=media_type),
+                False,
+            )
         except ValidationError:
             raise _safe_request_validation_error() from None
 
@@ -531,10 +552,14 @@ async def _parse_collection_input(
                 image,
                 limit=multipart_settings.storage_max_file_size_bytes,
             )
-            return validated_key, ImageInput.from_bytes(
-                payload,
-                content_type=image_media_type,
-                supplemental_text=supplemental_text,
+            return (
+                validated_key,
+                ImageInput.from_bytes(
+                    payload,
+                    content_type=image_media_type,
+                    supplemental_text=supplemental_text,
+                ),
+                False,
             )
         except (ValidationError, ValueError):
             raise _safe_request_validation_error() from None

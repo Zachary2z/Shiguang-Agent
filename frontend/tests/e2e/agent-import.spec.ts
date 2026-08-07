@@ -96,14 +96,16 @@ for (const viewport of recoveryViewports) {
   });
 }
 
-test("Agent plan shortcut reaches the authoritative plans experience", async ({
+test("Agent plan shortcut enters the unified Agent input", async ({
   page,
 }) => {
   await page.goto("/agent");
-  await page.getByRole("link", { name: "帮我安排时间" }).click();
+  await page.getByRole("button", { name: "帮我安排时间" }).click();
 
-  await expect(page).toHaveURL(/\/plans$/);
-  await expect(page.getByRole("heading", { name: "时间与范围" })).toBeVisible();
+  const input = page.getByRole("textbox", { name: "收藏内容" });
+  await expect(page).toHaveURL(/\/agent$/);
+  await expect(input).toHaveValue("帮我安排时间");
+  await expect(input).toBeFocused();
 });
 
 test("real FastAPI offline flow saves, edits, undoes, restores, and continues", async ({
