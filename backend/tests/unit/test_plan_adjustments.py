@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -39,6 +39,13 @@ def _constraints(*, budget: Decimal | None = Decimal("300")) -> PlanConstraints:
     )
 
 
+ORIGIN = Coordinate(
+    latitude=22.5431,
+    longitude=114.0579,
+    coordinate_system=CoordinateSystem.GCJ_02,
+)
+
+
 @pytest.mark.asyncio
 async def test_product_adjustment_replaces_category_and_preserves_every_other_field() -> None:
     original = _constraints()
@@ -70,6 +77,42 @@ async def test_product_adjustment_replaces_category_and_preserves_every_other_fi
     assert len(provider.calls) == 1
     assert provider.calls[0].response_format is not None
     assert provider.calls[0].response_format.mode is StructuredOutputMode.JSON_OBJECT
+
+
+@pytest.mark.asyncio
+async def test_adjustment_uses_shanghai_plan_time_and_keeps_local_three_oclock() -> None:
+    original = _constraints().model_copy(update={"origin": ORIGIN})
+    provider = FakeProvider(
+        [fake_response(content='{"start_at":"2026-07-29T15:00:00+08:00"}')]
+    )
+
+    patch = await PlanAdjustmentParser(
+        provider,
+        structured_output_mode=StructuredOutputMode.JSON_OBJECT,
+    ).parse(constraints=original, instruction="改成下午3点开始")
+    adjusted = apply_plan_adjustment(original, patch)
+    payload = provider.calls[0].messages[-1]["content"]
+
+    assert '"timezone":"Asia/Shanghai"' in payload
+    assert '"start_at":"2026-07-29T10:00:00+08:00"' in payload
+    assert '"end_at":"2026-07-29T18:00:00+08:00"' in payload
+    assert '"current_time"' in payload and "+08:00" in payload
+    assert adjusted.start_at == datetime(2026, 7, 29, 7, tzinfo=UTC)
+    assert adjusted.start_at.astimezone(timezone(timedelta(hours=8))).hour == 15
+    assert adjusted.origin == ORIGIN
+
+
+def test_pace_only_adjustment_preserves_time_and_origin() -> None:
+    original = _constraints().model_copy(update={"origin": ORIGIN})
+
+    adjusted = apply_plan_adjustment(
+        original,
+        PlanAdjustmentPatch(pace=PlanPace.RELAXED),
+    )
+
+    assert adjusted.start_at == original.start_at
+    assert adjusted.end_at == original.end_at
+    assert adjusted.origin == ORIGIN
 
 
 def test_complete_patch_is_validated_once_by_plan_constraints() -> None:
@@ -133,11 +176,7 @@ async def test_model_cannot_write_route_coordinates_and_origin_is_not_disclosed(
     )
     constraints = _constraints().model_copy(
         update={
-            "origin": Coordinate(
-                latitude=22.5431,
-                longitude=114.0579,
-                coordinate_system=CoordinateSystem.GCJ_02,
-            )
+            "origin": ORIGIN
         }
     )
 

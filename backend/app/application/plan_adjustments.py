@@ -17,8 +17,10 @@ from app.domain.plans import (
     PlanPace,
     PlanPaceSource,
     plan_constraint_expires_at,
+    plan_constraints_internal_dump,
 )
 from app.domain.plans.contracts import PlanContract
+from app.domain.time import ASIA_SHANGHAI, utc_now
 from nanobot_core.providers import (
     Message,
     ModelProvider,
@@ -65,7 +67,10 @@ _SYSTEM_PROMPT = (
     "Omitted fields must remain unchanged. include and exclude are complete replacement "
     "lists when present. When the user replaces an activity category, remove the old "
     "category from include, add the requested category to include, and add an explicit "
-    "rejection to exclude when requested. Use ISO-8601 aware datetimes and never invent "
+    "rejection to exclude when requested. The supplied timezone is Asia/Shanghai. "
+    "Interpret dates and clock times in Asia/Shanghai and output aware ISO-8601 "
+    "datetimes with +08:00, unless the user explicitly says UTC; only then may output "
+    "use UTC. Never invent "
     "times, budget, pace, transport, or collection_only. Exact place and activity-area "
     "changes are not supported in this stage: for such a request return an empty object "
     "so the product can ask the user to create a new plan. Never emit coordinates. "
@@ -106,10 +111,17 @@ class PlanAdjustmentParser:
                 "role": "user",
                 "content": json.dumps(
                     {
-                        "current_constraints": constraints.model_dump(
-                            mode="json",
-                            exclude={"origin"},
-                        ),
+                        "timezone": ASIA_SHANGHAI.key,
+                        "current_time": utc_now().astimezone(ASIA_SHANGHAI).isoformat(),
+                        "current_constraints": {
+                            **constraints.model_dump(mode="json"),
+                            "start_at": constraints.start_at.astimezone(
+                                ASIA_SHANGHAI
+                            ).isoformat(),
+                            "end_at": constraints.end_at.astimezone(
+                                ASIA_SHANGHAI
+                            ).isoformat(),
+                        },
                         "instruction": normalized,
                     },
                     ensure_ascii=False,
@@ -142,7 +154,7 @@ def apply_plan_adjustment(
 ) -> PlanConstraints:
     """Apply one strict patch and validate the complete PlanConstraints exactly once."""
 
-    values = constraints.model_dump()
+    values = plan_constraints_internal_dump(constraints, mode="python")
     for field_name in patch.model_fields_set:
         values[field_name] = getattr(patch, field_name)
     if "pace" in patch.model_fields_set:

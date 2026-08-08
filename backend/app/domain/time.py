@@ -1,6 +1,9 @@
 """UTC helpers shared by domain and persistence code."""
 
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
+
+ASIA_SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def utc_now() -> datetime:

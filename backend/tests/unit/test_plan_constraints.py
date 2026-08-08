@@ -30,6 +30,7 @@ from app.domain.plans import (
     parse_plan_constraints,
     parse_plan_constraints_json,
     plan_constraint_expires_at,
+    plan_constraints_internal_dump,
     resolve_plan_constraints,
 )
 
@@ -371,6 +372,17 @@ def test_origin_is_absent_from_repr_public_dumps_and_logs(
     assert all(value not in serialized for value in sensitive_values[:3])
     assert all(value not in rendered for value in sensitive_values)
     assert all(value not in caplog.text for value in sensitive_values)
+
+
+def test_internal_projection_round_trips_origin_without_changing_public_dump() -> None:
+    constraints = complete(origin=ORIGIN)
+
+    stored = plan_constraints_internal_dump(constraints, mode="json")
+    restored = parse_plan_constraints_json(json.dumps(stored))
+
+    assert restored.origin == ORIGIN
+    assert stored["origin"] == ORIGIN.model_dump(mode="json")
+    assert "origin" not in constraints.model_dump(mode="json")
 
 PRIVATE_AREA = "PRIVATE_AREA_SENTINEL"
 PRIVATE_REQUIREMENT = "PRIVATE_REQUIREMENT_SENTINEL"

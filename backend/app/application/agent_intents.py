@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 from app.application.extraction_output import structured_response_format
 from app.domain.collections import ExtractionResult, PlanCity
 from app.domain.memories import MemoryType
-from app.domain.places import TransportMode
+from app.domain.places import Coordinate, TransportMode
 from app.domain.plans import (
     ActivityArea,
     PlanConstraintInput,
@@ -22,6 +22,7 @@ from app.domain.plans import (
     PlanPaceSource,
     plan_constraint_expires_at,
 )
+from app.domain.time import ASIA_SHANGHAI
 from nanobot_core.providers import ModelProvider, ModelResponse, StructuredOutputMode
 
 
@@ -43,6 +44,7 @@ class PlanIntent(_Intent):
     start_at: datetime | None = None
     end_at: datetime | None = None
     area: ActivityArea | None = None
+    origin_query: str | None = Field(default=None, min_length=1, max_length=200)
     budget: Decimal | None = Field(default=None, ge=0)
     pace: PlanPace | None = None
     transport_modes: tuple[TransportMode, ...] = ()
@@ -50,12 +52,18 @@ class PlanIntent(_Intent):
     exclude: tuple[str, ...] = ()
     collection_only: bool = False
 
-    def constraints(self, *, now: datetime) -> PlanConstraintInput:
+    def constraints(
+        self,
+        *,
+        now: datetime,
+        origin: Coordinate | None = None,
+    ) -> PlanConstraintInput:
         return PlanConstraintInput(
             city_code=PlanCity.SHENZHEN,
             start_at=self.start_at,
             end_at=self.end_at,
             area=self.area,
+            origin=origin,
             budget=self.budget,
             pace=self.pace or PlanPace.BALANCED,
             pace_source=(
@@ -100,14 +108,18 @@ _SYSTEM_PROMPT = (
     "the supplied schema. Do not use keyword matching. collect_content is only for a "
     "user asking to save Place/Event content and must include the complete existing "
     "ExtractionResult. plan is for creating or continuing one Shenzhen plan; extract "
-    "only stated time, coarse activity area, activity wishes and temporary constraints, "
+    "only stated time, coarse activity area, activity wishes and temporary constraints. "
+    "Put a user-stated departure place such as 'from a metro station' in origin_query; "
+    "never emit coordinates, POI IDs, or provider fields. "
     "never invent missing required values. memory authorization is explicit only when "
     "the user clearly grants long-term storage, needs_confirmation for an unqualified "
     "preference. A preference limited to the current plan is plan.exclude, never memory. "
     "Use clarify "
     "with one necessary short question when meaning is genuinely ambiguous. A reply in "
     "pending_context continues that task. Never decide permissions or write data. Current "
-    "time is supplied for resolving relative dates. Schema:\n"
+    "time and timezone are supplied for resolving relative dates. Interpret every date "
+    "and clock time in Asia/Shanghai and output aware ISO-8601 datetimes with +08:00, "
+    "unless the user explicitly says UTC; only then may output use UTC. Schema:\n"
     + json.dumps(_SCHEMA, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 )
 
@@ -145,7 +157,8 @@ class AgentIntentParser:
                         "role": "user",
                         "content": json.dumps(
                             {
-                                "current_time": now.isoformat(),
+                                "timezone": ASIA_SHANGHAI.key,
+                                "current_time": now.astimezone(ASIA_SHANGHAI).isoformat(),
                                 "pending_context": pending_context,
                                 "message": normalized,
                             },

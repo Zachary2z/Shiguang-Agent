@@ -24,6 +24,7 @@ from app.domain.plans import (
     PlanVersion,
     PlanVersionConflictError,
     parse_plan_constraints_json,
+    plan_constraints_internal_dump,
 )
 from app.domain.time import as_utc, require_aware_utc
 from app.infrastructure.db.dml import execute_dml_rowcount
@@ -79,7 +80,7 @@ class SqlAlchemyPlanRepository:
             version=plan.version,
             operation=plan.operation.value,
             status=plan.status.value,
-            constraints_json=plan.constraints.model_dump(mode="json"),
+            constraints_json=plan_constraints_internal_dump(plan.constraints, mode="json"),
             adjustment_text=plan.adjustment_text,
             draft_json=None,
             trace_id=plan.trace_id,
@@ -274,7 +275,7 @@ class SqlAlchemyPlanRepository:
                 ),
             )
             .values(
-                constraints_json=constraints.model_dump(mode="json"),
+                constraints_json=plan_constraints_internal_dump(constraints, mode="json"),
                 updated_at=require_aware_utc(now),
             ),
         )
@@ -339,7 +340,7 @@ class SqlAlchemyPlanRepository:
                 PlanModel.operation == PlanOperation.ADJUST.value,
             )
             .values(
-                constraints_json=constraints.model_dump(mode="json"),
+                constraints_json=plan_constraints_internal_dump(constraints, mode="json"),
                 updated_at=timestamp,
             ),
         )

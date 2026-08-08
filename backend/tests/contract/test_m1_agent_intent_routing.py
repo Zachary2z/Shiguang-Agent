@@ -5,7 +5,7 @@ import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -16,7 +16,7 @@ from alembic.config import Config
 from fastapi import FastAPI
 from sqlalchemy import func, select
 
-from app.application.agent_intents import AgentIntentError, AgentIntentParser
+from app.application.agent_intents import AgentIntentError, AgentIntentParser, PlanIntent
 from app.application.content_import_jobs import (
     AGENT_MESSAGE_JOB_TYPE,
     CONTENT_IMPORT_JOB_TYPE,
@@ -25,7 +25,17 @@ from app.application.content_import_jobs import (
 from app.application.pricing import ConfiguredPricingPolicy
 from app.config import Settings
 from app.domain.collections import ExtractionResult, PlaceCandidate
-from app.domain.time import utc_now
+from app.domain.places import (
+    CityScope,
+    Coordinate,
+    CoordinateSystem,
+    Poi,
+    PoiProvider,
+    PoiSearchResult,
+    PoiType,
+    SearchPoiRequest,
+)
+from app.domain.time import ASIA_SHANGHAI, utc_now
 from app.infrastructure.db.models import (
     AgentRunModel,
     CollectionItemModel,
@@ -36,8 +46,14 @@ from app.infrastructure.db.models import (
 from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.main import create_app
+from app.providers import MapProvider, StubMapProvider
 from app.worker.service import JobWorker
-from nanobot_core.providers import ModelResponse, ProviderError, ProviderErrorCode
+from nanobot_core.providers import (
+    ModelResponse,
+    ProviderError,
+    ProviderErrorCode,
+    StructuredOutputMode,
+)
 from tests.core.fakes import FakeProvider, fake_response
 from tests.fixtures.images import PNG_SCREENSHOT
 
@@ -87,6 +103,7 @@ def _migrate(settings: Settings) -> None:
 async def _runtime(
     settings: Settings,
     provider: FakeProvider,
+    map_provider: MapProvider | None = None,
 ) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient, JobWorker]]:
     root = Path(settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
     active = settings.model_copy(
@@ -108,6 +125,10 @@ async def _runtime(
             storage=storage,
             storage_config=active.demo_storage_provider_settings(),
             structured_output_mode=active.extraction_structured_output_mode(),
+            map_provider=map_provider,
+            matching_policy=(
+                None if map_provider is None else active.place_matching_policy()
+            ),
         )
         worker = JobWorker(
             queue=PostgresJobQueue(api.state.demo_database.session_factory),
@@ -134,6 +155,218 @@ async def _submit(client: httpx.AsyncClient, *, key: str, text: str) -> httpx.Re
         f"/api/v1/sessions/{client.headers['X-Test-Session']}/messages",
         json={"type": "agent_text", "idempotency_key": key, "text": text},
     )
+
+
+@pytest.mark.asyncio
+async def test_plan_intent_context_and_output_use_shanghai_local_time() -> None:
+    provider = FakeProvider(
+        [
+            _route(
+                {
+                    "intent": "plan",
+                    "start_at": "2026-08-09T14:00:00+08:00",
+                    "end_at": "2026-08-09T18:00:00+08:00",
+                    "area": {"districts": ["福田区"], "labels": []},
+                }
+            )
+        ]
+    )
+
+    intent = await AgentIntentParser(
+        provider,
+        structured_output_mode=StructuredOutputMode.JSON_OBJECT,
+    ).parse(
+        text="明天下午2点到6点，在福田区",
+        now=datetime(2026, 8, 8, 4, tzinfo=UTC),
+    )
+
+    assert isinstance(intent, PlanIntent)
+    constraints = intent.constraints(now=datetime(2026, 8, 8, 4, tzinfo=UTC))
+    assert constraints.start_at == datetime(2026, 8, 9, 6, tzinfo=UTC)
+    assert constraints.end_at == datetime(2026, 8, 9, 10, tzinfo=UTC)
+    assert constraints.start_at.astimezone(ASIA_SHANGHAI).hour == 14
+    request = provider.calls[0]
+    assert "Asia/Shanghai" in request.messages[0]["content"]
+    assert '"timezone":"Asia/Shanghai"' in request.messages[1]["content"]
+    assert '"current_time":"2026-08-08T12:00:00+08:00"' in request.messages[1][
+        "content"
+    ]
+
+
+def _origin_poi(
+    *,
+    poi_id: str,
+    name: str = "少年宫地铁站",
+    latitude: float = 22.555,
+) -> Poi:
+    return Poi(
+        provider=PoiProvider.AMAP,
+        poi_id=poi_id,
+        name=name,
+        city_code="shenzhen",
+        district="福田区",
+        address="红荔路",
+        coordinate=Coordinate(
+            latitude=latitude,
+            longitude=114.055,
+            coordinate_system=CoordinateSystem.GCJ_02,
+        ),
+        poi_type=PoiType.TRANSIT,
+    )
+
+
+def _origin_provider(
+    pois: tuple[Poi, ...],
+    calls: list[SearchPoiRequest],
+    *,
+    timeout: bool = False,
+) -> StubMapProvider:
+    request = SearchPoiRequest(
+        query="少年宫地铁站",
+        city=CityScope(city_code="shenzhen"),
+        district="福田区",
+    )
+
+    async def record(call: object) -> None:
+        if isinstance(call, SearchPoiRequest):
+            calls.append(call)
+
+    return StubMapProvider(
+        search_results={
+            request: PoiSearchResult(city_code="shenzhen", pois=pois),
+        },
+        timeout_requests=(request,) if timeout else (),
+        call_hook=record,
+    )
+
+
+@pytest.mark.asyncio
+async def test_unique_origin_is_searched_once_persisted_and_only_exposed_as_flag(
+    test_settings: Settings,
+) -> None:
+    calls: list[SearchPoiRequest] = []
+    provider = FakeProvider(
+        [
+            _route(
+                {
+                    "intent": "plan",
+                    "start_at": "2026-08-09T14:00:00+08:00",
+                    "end_at": "2026-08-09T18:00:00+08:00",
+                    "area": {"districts": ["福田区"], "labels": []},
+                    "origin_query": "少年宫地铁站",
+                }
+            )
+        ]
+    )
+    map_provider = _origin_provider((_origin_poi(poi_id="origin"),), calls)
+
+    async with _runtime(test_settings, provider, map_provider) as (api, client, worker):
+        accepted = await _submit(
+            client,
+            key="route-plan-origin",
+            text="明天下午2点到6点，在福田区，从少年宫地铁站出发",
+        )
+        await worker.run_once()
+        result = (await client.get(accepted.json()["result_url"])).json()
+        plan = await client.get(f"/api/v1/plans/{result['plan_id']}")
+
+        assert len(calls) == 1
+        assert plan.status_code == 200
+        assert plan.json()["constraints"]["has_exact_origin"] is True
+        assert "latitude" not in plan.text and "longitude" not in plan.text
+        async with api.state.demo_database.session() as session:
+            row = await session.get(PlanModel, result["plan_id"])
+            assert row is not None
+            assert row.constraints_json["origin"] == {
+                "latitude": 22.555,
+                "longitude": 114.055,
+                "coordinate_system": "gcj_02",
+            }
+
+
+@pytest.mark.parametrize(
+    "pois",
+    [
+        (_origin_poi(poi_id="one"), _origin_poi(poi_id="two", latitude=22.556)),
+        (_origin_poi(poi_id="weak", name="少年宫"),),
+        (),
+    ],
+    ids=("ambiguous", "needs-context", "not-found"),
+)
+@pytest.mark.asyncio
+async def test_uncertain_origin_never_uses_first_candidate_and_asks_for_detail(
+    test_settings: Settings,
+    pois: tuple[Poi, ...],
+) -> None:
+    calls: list[SearchPoiRequest] = []
+    provider = FakeProvider(
+        [
+            _route(
+                {
+                    "intent": "plan",
+                    "start_at": "2026-08-09T14:00:00+08:00",
+                    "end_at": "2026-08-09T18:00:00+08:00",
+                    "area": {"districts": ["福田区"], "labels": []},
+                    "origin_query": "少年宫地铁站",
+                }
+            )
+        ]
+    )
+
+    async with _runtime(
+        test_settings,
+        provider,
+        _origin_provider(pois, calls),
+    ) as (api, client, worker):
+        accepted = await _submit(client, key=f"origin-{len(pois)}", text="安排计划")
+        await worker.run_once()
+        result = (await client.get(accepted.json()["result_url"])).json()
+
+        assert len(calls) == 1
+        assert "更准确的出发点" in result["question"]
+        assert result["plan_id"] is None
+        async with api.state.demo_database.session() as session:
+            assert await session.scalar(select(func.count()).select_from(PlanModel)) == 0
+
+
+@pytest.mark.asyncio
+async def test_origin_map_failure_creates_no_fake_origin_or_plan(
+    test_settings: Settings,
+) -> None:
+    calls: list[SearchPoiRequest] = []
+    provider = FakeProvider(
+        [
+            _route(
+                {
+                    "intent": "plan",
+                    "start_at": "2026-08-09T14:00:00+08:00",
+                    "end_at": "2026-08-09T18:00:00+08:00",
+                    "area": {"districts": ["福田区"], "labels": []},
+                    "origin_query": "少年宫地铁站",
+                }
+            )
+        ]
+    )
+
+    async with _runtime(
+        test_settings,
+        provider,
+        _origin_provider((), calls, timeout=True),
+    ) as (api, client, worker):
+        accepted = await _submit(client, key="origin-map-failure", text="安排计划")
+        failed = await worker.run_once()
+
+        assert failed is not None and failed.status.value == "failed"
+        assert len(calls) == 1
+        async with api.state.demo_database.session() as session:
+            assert await session.scalar(select(func.count()).select_from(PlanModel)) == 0
+            run = await session.scalar(
+                select(AgentRunModel).where(
+                    AgentRunModel.trace_id == accepted.json()["trace_id"]
+                )
+            )
+            assert run is not None
+            assert run.error_code == "MAP_PROVIDER_TIMEOUT"
 
 
 @pytest.mark.asyncio
@@ -206,6 +439,7 @@ async def test_plan_route_asks_once_then_continues_same_session(
             expires_at = datetime.fromisoformat(plan.constraints_json["expires_at"])
             assert expires_at == end_at + timedelta(hours=1)
             assert expires_at > datetime.fromisoformat(plan.constraints_json["start_at"])
+            assert "origin" not in plan.constraints_json
             assert await session.scalar(select(func.count()).select_from(CollectionItemModel)) == 0
             assert await session.scalar(select(func.count()).select_from(MemoryModel)) == 0
 

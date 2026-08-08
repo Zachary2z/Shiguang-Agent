@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from datetime import timedelta
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, SecretStr
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -48,6 +48,7 @@ from app.domain.collections import (
     Message,
     MessageContentType,
     MessageRole,
+    PlaceCandidate,
     ResourceNotFoundError,
     Source,
     SourceMetadata,
@@ -57,14 +58,14 @@ from app.domain.collections import (
 from app.domain.identifiers import generate_message_id
 from app.domain.jobs import MAX_JOB_ATTEMPTS, JobCreate, JobResultSummary, ScheduledJob
 from app.domain.memories import MemoryType
-from app.domain.places import PlaceMatchingPolicy
+from app.domain.places import MatchStatus, PlaceMatchingPolicy, PlaceMatchRequest
 from app.domain.plans import MissingPlanConstraintInfo, resolve_plan_constraints
 from app.domain.runs import AgentRunCreate, AgentRunStatus
 from app.domain.time import utc_now
 from app.infrastructure.jobs import PostgresJobQueue
 from app.infrastructure.repositories import AgentRunRepository, SqlAlchemyCollectionRepository
 from app.providers.jobs import JobQueue
-from app.providers.map import MapProvider
+from app.providers.map import MapProvider, MapProviderError
 from app.providers.storage import (
     RetentionPolicy,
     StorageProvider,
@@ -458,7 +459,56 @@ class ContentImportJobHandler:
                 )
             if isinstance(intent, PlanIntent):
                 now = utc_now()
-                resolved = resolve_plan_constraints(intent.constraints(now=now), now=now)
+                origin = None
+                if intent.origin_query is not None:
+                    if self._place_matching is None:
+                        raise ApplicationRunFailureError(
+                            error_code="MAP_PROVIDER_NOT_CONFIGURED"
+                        )
+                    district = (
+                        intent.area.districts[0]
+                        if intent.area is not None
+                        and len(intent.area.districts) == 1
+                        else None
+                    )
+                    try:
+                        match = await self._place_matching.match(
+                            PlaceMatchRequest(
+                                candidate=PlaceCandidate(
+                                    title=intent.origin_query,
+                                    city_hint="深圳",
+                                    district=district,
+                                ),
+                                city=intent.constraints(now=now).city_scope,
+                                search_district=district,
+                                source_context=SecretStr(input.text),
+                            )
+                        )
+                    except MapProviderError as error:
+                        raise ApplicationRunFailureError(
+                            error_code=error.code.value
+                        ) from None
+                    if match.status is not MatchStatus.MATCHED:
+                        question = (
+                            "请补充更准确的出发点，例如完整地点名称、地址或地铁站出入口。"
+                        )
+                        await self._add_assistant_message(
+                            repository=repository,
+                            user_id=job.user_id,
+                            session_id=payload.session_id,
+                            trace_id=job.trace_id,
+                            content=question,
+                        )
+                        return JobResultSummary(
+                            outcome="waiting_user",
+                            intent="plan",
+                            question=question,
+                        )
+                    origin = match.candidates[0].coordinate.model_copy(deep=True)
+                resolved = resolve_plan_constraints(
+                    intent.constraints(now=now, origin=origin),
+                    now=now,
+                )
                 if isinstance(resolved, MissingPlanConstraintInfo):
                     question = (
                         "你什么时候有一段连续空闲时间？"

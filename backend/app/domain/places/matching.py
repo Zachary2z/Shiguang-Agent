@@ -861,11 +861,14 @@ def _has_strong_identity_evidence(candidate: PlaceMatchCandidate) -> bool:
     matches = {
         item.field for item in candidate.evidence if item.outcome is EvidenceOutcome.MATCH
     }
-    return not candidate.has_hard_conflict and {
-        EvidenceField.NAME,
-        EvidenceField.ADDRESS,
-        EvidenceField.CITY,
-    }.issubset(matches)
+    return (
+        not candidate.has_hard_conflict
+        and {EvidenceField.NAME, EvidenceField.CITY}.issubset(matches)
+        and (
+            EvidenceField.ADDRESS in matches
+            or {EvidenceField.DISTRICT, EvidenceField.POI_TYPE}.issubset(matches)
+        )
+    )
 
 
 def classify_place_matches(

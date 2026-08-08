@@ -55,6 +55,7 @@ from app.domain.plans import (
     PlanVersion,
     RequiredPlanGap,
     StructuredCollectionResult,
+    plan_constraints_internal_dump,
 )
 from app.domain.plans.contracts import PlanContract
 from app.domain.runs import AgentRunCreate, AgentRunStatus
@@ -327,13 +328,16 @@ class PlanExperienceService:
         client_idempotency_key: str,
     ) -> PlanSubmission:
         key = scoped_plan_key(user_id=user_id, client_key=client_idempotency_key)
+        fingerprint_constraints = plan_constraints_internal_dump(
+            constraints,
+            mode="json",
+        )
+        fingerprint_constraints.pop("created_at")
+        fingerprint_constraints.pop("expires_at")
         fingerprint = plan_request_fingerprint(
             {
                 "operation": "generate",
-                "constraints": constraints.model_dump(
-                    mode="json",
-                    exclude={"created_at", "expires_at"},
-                ),
+                "constraints": fingerprint_constraints,
             }
         )
         existing = await self._plans.find_by_idempotency_key(
@@ -744,7 +748,10 @@ class PlanGenerationJobHandler:
                 result = await observer.run_tool(
                     tool_name="plan_draft",
                     arguments_fingerprint=plan_request_fingerprint(
-                        current_plan.constraints.model_dump(mode="json")
+                        plan_constraints_internal_dump(
+                            current_plan.constraints,
+                            mode="json",
+                        )
                     ),
                     input_summary=f"plan_version:{current_plan.version}",
                     operation=lambda: executor.execute(

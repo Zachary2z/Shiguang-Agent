@@ -7,7 +7,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import ClassVar, Self, TypeVar
+from typing import Any, ClassVar, Literal, Self, TypeVar
 from unicodedata import category
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -314,6 +314,19 @@ class PlanConstraints(_PlanConstraintValues):
     @property
     def duration(self) -> timedelta:
         return self.end_at - self.start_at
+
+
+def plan_constraints_internal_dump(
+    constraints: PlanConstraints,
+    *,
+    mode: Literal["json", "python"],
+) -> dict[str, Any]:
+    """Project complete constraints for private persistence and internal identity."""
+
+    values = constraints.model_dump(mode=mode)
+    if constraints.origin is not None:
+        values["origin"] = constraints.origin.model_dump(mode=mode)
+    return values
 
 
 _PlanContractT = TypeVar("_PlanContractT", bound=PlanContract)

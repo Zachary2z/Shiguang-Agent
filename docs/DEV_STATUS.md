@@ -3,11 +3,35 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M1 已完成；M2-0 允许开始 |
-| 当前子阶段 | M2-0 ClawBot 技术 Spike |
-| 状态 | 未开始 |
-| 当前分支 | main |
+| 当前子阶段 | M1 用户闭环稳定化 2：计划本地时间与精确出发点修复 |
+| 状态 | 生产修复完成，等待真实用户复验 |
+| 当前分支 | codex/m1-plan-time-origin |
 | 最近更新 | 2026-08-08 |
 | 阻塞项 | 无未关闭 P0/P1 |
+
+## 2026-08-08 计划本地时间与精确出发点生产修复
+
+- 根因已在现有公共边界收敛：Agent 意图与计划调整模型请求都显式携带
+  `Asia/Shanghai` 和上海本地 `current_time`；Prompt 要求未明确 UTC 时按上海日期、
+  钟点理解并输出 `+08:00` aware ISO-8601。调整模型读取的当前计划起止时间也先转换
+  为上海本地时间，领域与数据库仍统一保存 UTC，前端时间计算未改。
+- 唯一 `PlanIntent` 增加可空 `origin_query`。Agent 路由将用户明确出发地点在深圳
+  范围内交给既有 `PlaceMatchingService` 和 `MapProvider` 搜索一次；唯一可靠候选才
+  写入既有 `PlanConstraints.origin`。ambiguous、needs_context、not_found 均请求
+  更准确的出发点，地图错误沿用现有安全错误分类；没有自动采用 Provider 第一名、
+  自动重试或 fallback。
+- `PlanConstraints` 继续在普通 repr、model_dump、日志和 API 中隐藏坐标。新增唯一
+  内部投影只供计划 Repository、调整应用和内部指纹使用，使私有
+  `constraints_json`、Worker 重放、版本调整及幂等身份完整保留 origin；API 仍只公开
+  `has_exact_origin`。无数据库列、迁移、依赖或前端变化。
+- 离线验证通过：`pip check`、Ruff、strict mypy（142 个源文件）；用户指定聚焦集
+  `95 passed`，地点匹配回归 `143 passed`，非真实 Provider/Map 全集
+  `1803 passed, 18 skipped, 2 deselected`；Alembic 唯一 head 为
+  `20260729_0017`。真实模型、地图、网页和其他外部 API 调用为 0，未读取 `.env`。
+- 净复杂度审查确认仍只有现有两个模型语义边界、一个 `PlaceMatchingService`、一个
+  `PlanConstraints` 和一个 Repository 持久化链；没有关键词/正则时间解析、平行地点
+  匹配、第二套 origin DTO/持久化路径、重试、fallback 或 M2 实现。生产修复完成，
+  等待真实用户复验；真实复测仍需用户另行授权，M2-0 尚未开始。
 
 ## 2026-08-08 明确主体地点 P1 真实复验与最终集成
 

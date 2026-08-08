@@ -175,9 +175,12 @@ async def test_direct_plan_lifetime_uses_the_same_future_end_rule(test_settings)
 async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
     test_settings,
 ) -> None:
+    worker_origins: list[object] = []
+
     class DraftExecutor:
         async def execute(self, *, user_id, constraints, approval):
-            del user_id, constraints, approval
+            del user_id, approval
+            worker_origins.append(constraints.origin)
             return PlanGenerationResult(
                 outcome=PlanGenerationOutcome.DRAFT,
                 draft=_draft(),
@@ -190,8 +193,14 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
         )
         api.state.text_provider = provider
         await _demo(client)
-        created = await client.post("/api/v1/plans", json=_request("m15-create"))
-        replay = await client.post("/api/v1/plans", json=_request("m15-create"))
+        create_payload = _request("m15-create")
+        create_payload["origin"] = {
+            "latitude": 22.555,
+            "longitude": 114.055,
+            "coordinate_system": "gcj_02",
+        }
+        created = await client.post("/api/v1/plans", json=create_payload)
+        replay = await client.post("/api/v1/plans", json=create_payload)
         assert created.status_code == replay.status_code == 202
         assert replay.json()["plan_id"] == created.json()["plan_id"]
         assert replay.json()["replayed"] is True
@@ -214,12 +223,16 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
             poll_seconds=0.01,
         )
         assert await worker.run_once() is not None
+        assert worker_origins[-1] is not None
         async with database.session_factory() as session:
             repository = SqlAlchemyPlanRepository(session)
             user_id = await session.scalar(
                 select(PlanModel.user_id).where(PlanModel.id == plan_id)
             )
             assert user_id is not None
+            persisted = await repository.require(user_id=user_id, plan_id=plan_id)
+            assert persisted.constraints.origin is not None
+            assert persisted.constraints.origin.latitude == 22.555
             with pytest.raises(PlanExecutionNotAllowedError):
                 await repository.require_confirmed_for_execution(
                     user_id=user_id,
@@ -238,6 +251,7 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
         assert "plan_id" not in adjusted.json()
         assert len(provider.calls) == 0
         assert await worker.run_once() is not None
+        assert worker_origins[-1] == worker_origins[0]
         assert len(provider.calls) == 1
         listed = await client.get("/api/v1/plans")
         adjusted_id = listed.json()["items"][0]["id"]
@@ -252,6 +266,8 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
         assert body["constraints"]["include"] == ["咖啡"]
         assert body["constraints"]["exclude"] == ["商场"]
         assert body["constraints"]["budget"] is None
+        assert body["constraints"]["has_exact_origin"] is True
+        assert "latitude" not in current.text and "longitude" not in current.text
 
         assert [item["id"] for item in listed.json()["items"]] == [adjusted_id]
         async with database.session_factory() as session:
@@ -266,6 +282,34 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
             assert run.model_calls_json[0]["model_name"] == "fixture-model"
             assert run.model_calls_json[0]["latency_ms"] == 4
             assert run.model_calls_json[0]["finish_reason"] == "stop"
+            adjusted_row = await session.get(PlanModel, adjusted_id)
+            assert adjusted_row is not None
+            assert adjusted_row.constraints_json["origin"]["latitude"] == 22.555
+
+
+@pytest.mark.asyncio
+async def test_different_origins_have_different_plan_request_identity(test_settings) -> None:
+    async with _client(test_settings) as (api, client):
+        api.state.map_provider = object()
+        await _demo(client)
+        first = _request("origin-fingerprint")
+        first["origin"] = {
+            "latitude": 22.555,
+            "longitude": 114.055,
+            "coordinate_system": "gcj_02",
+        }
+        second = _request("origin-fingerprint")
+        second["origin"] = {
+            "latitude": 22.556,
+            "longitude": 114.055,
+            "coordinate_system": "gcj_02",
+        }
+
+        created = await client.post("/api/v1/plans", json=first)
+        conflict = await client.post("/api/v1/plans", json=second)
+
+        assert created.status_code == 202
+        assert conflict.status_code == 409
 
 
 @pytest.mark.asyncio
