@@ -9,6 +9,26 @@
 | 最近更新 | 2026-08-08 |
 | 阻塞项 | 无未关闭 P0/P1 |
 
+## 2026-08-08 计划起点局部匹配 P1 回归修复
+
+- 全局地点匹配已完整恢复基线语义：只有 `NAME + ADDRESS + CITY` 均为明确
+  `MATCH` 且无 hard conflict 才构成强身份；`DISTRICT + POI_TYPE` 不再替代地址。
+  unique score `75`、minimum gap `12`、收藏匹配与既有候选分类均未改变。无地址的
+  单一 M Stand 连锁候选继续返回 `NEEDS_CONTEXT`，明确名称和地址的收藏仍可正常匹配。
+- 明确 `origin_query` 的计划起点仍先且仅调用一次既有 `PlaceMatchingService.match()`：
+  正常 `MATCHED` 直接采用；除此之外，仅在最终恰好一个合理候选同时具有
+  `NAME + CITY` 明确匹配且无 hard conflict 时，局部采用为本次临时 origin。多候选、
+  名称或城市不匹配及 hard conflict 均继续追问，不读取 Provider rank、首位或 POI 类型
+  作为确认依据；该策略不进入收藏匹配。
+- `PlanAdjustmentParser` 不再自行读取实时时钟，由既有计划 Worker 传入同一次固定
+  `now` 并复用为调整版本时间；时间测试断言精确的上海本地 `current_time`。既有
+  Asia/Shanghai 时间语义、origin 私有持久化、调整保留、指纹和 API 脱敏均未改写。
+- 离线门禁通过：`pip check`、Ruff、strict mypy（142 个源文件）；指定聚焦集合
+  `140 passed`；非真实 Provider/Map 全集 `1805 passed, 18 skipped, 2 deselected`；
+  Alembic 唯一 head 仍为 `20260729_0017`。未读取 `.env`，真实模型、地图及其他外部
+  API 调用为 0；未新增 Matcher、评分器、时间解析、origin 持久化路径、重试或 fallback。
+  生产修复完成，继续等待真实用户复验。
+
 ## 2026-08-08 计划本地时间与精确出发点生产修复
 
 - 根因已在现有公共边界收敛：Agent 意图与计划调整模型请求都显式携带

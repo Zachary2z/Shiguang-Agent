@@ -14,6 +14,8 @@ from app.domain.places import (
     CityScope,
     Coordinate,
     CoordinateSystem,
+    EvidenceField,
+    EvidenceOutcome,
     GetPoiRequest,
     GetPoiResult,
     MatchStatus,
@@ -221,6 +223,51 @@ async def test_name_and_city_start_search_without_auto_confirming_weak_evidence(
     assert len(calls) == 1
     assert result.status is MatchStatus.NEEDS_CONTEXT
     assert tuple(candidate.poi_id for candidate in result.candidates) == ("lianhuashan",)
+
+
+@pytest.mark.asyncio
+async def test_single_chain_candidate_without_address_stays_unconfirmed() -> None:
+    request = _request(
+        title="M Stand",
+        city_hint="深圳",
+        district="福田区",
+        tags=("咖啡",),
+    )
+    provider = _provider_for_request(
+        request,
+        PoiSearchResult(
+            city_code="shenzhen",
+            pois=(
+                poi(
+                    poi_id="mstand_futian",
+                    name="M Stand",
+                    district="福田区",
+                    poi_type=PoiType.CAFE,
+                ),
+            ),
+        ),
+    )
+
+    result = await _service(provider).match(request)
+
+    assert POLICY.unique_match_score == 75
+    assert POLICY.minimum_score_gap == 12
+    assert result.status is MatchStatus.NEEDS_CONTEXT
+    assert len(result.candidates) == 1
+    candidate = result.candidates[0]
+    evidence = {item.field: item.outcome for item in candidate.evidence}
+    assert candidate.score == 53
+    assert candidate.score < POLICY.unique_match_score
+    assert all(
+        evidence[field] is EvidenceOutcome.MATCH
+        for field in (
+            EvidenceField.NAME,
+            EvidenceField.CITY,
+            EvidenceField.DISTRICT,
+            EvidenceField.POI_TYPE,
+        )
+    )
+    assert evidence[EvidenceField.ADDRESS] is EvidenceOutcome.MISSING
 
 
 @pytest.mark.asyncio

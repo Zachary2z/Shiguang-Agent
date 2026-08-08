@@ -289,9 +289,10 @@ async def test_unique_origin_is_searched_once_persisted_and_only_exposed_as_flag
     [
         (_origin_poi(poi_id="one"), _origin_poi(poi_id="two", latitude=22.556)),
         (_origin_poi(poi_id="weak", name="少年宫"),),
+        (_origin_poi(poi_id="wrong", name="深圳市民中心地铁站"),),
         (),
     ],
-    ids=("ambiguous", "needs-context", "not-found"),
+    ids=("ambiguous", "partial-name", "name-conflict", "not-found"),
 )
 @pytest.mark.asyncio
 async def test_uncertain_origin_never_uses_first_candidate_and_asks_for_detail(

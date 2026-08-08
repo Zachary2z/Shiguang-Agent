@@ -44,6 +44,7 @@ ORIGIN = Coordinate(
     longitude=114.0579,
     coordinate_system=CoordinateSystem.GCJ_02,
 )
+NOW = datetime(2026, 7, 28, 2, tzinfo=UTC)
 
 
 @pytest.mark.asyncio
@@ -66,6 +67,7 @@ async def test_product_adjustment_replaces_category_and_preserves_every_other_fi
     ).parse(
         constraints=original,
         instruction="不要咖啡店，换成适合散步的地方，其他不变。",
+        now=NOW,
     )
     adjusted = apply_plan_adjustment(original, patch)
 
@@ -89,14 +91,14 @@ async def test_adjustment_uses_shanghai_plan_time_and_keeps_local_three_oclock()
     patch = await PlanAdjustmentParser(
         provider,
         structured_output_mode=StructuredOutputMode.JSON_OBJECT,
-    ).parse(constraints=original, instruction="改成下午3点开始")
+    ).parse(constraints=original, instruction="改成下午3点开始", now=NOW)
     adjusted = apply_plan_adjustment(original, patch)
     payload = provider.calls[0].messages[-1]["content"]
 
     assert '"timezone":"Asia/Shanghai"' in payload
     assert '"start_at":"2026-07-29T10:00:00+08:00"' in payload
     assert '"end_at":"2026-07-29T18:00:00+08:00"' in payload
-    assert '"current_time"' in payload and "+08:00" in payload
+    assert '"current_time":"2026-07-28T10:00:00+08:00"' in payload
     assert adjusted.start_at == datetime(2026, 7, 29, 7, tzinfo=UTC)
     assert adjusted.start_at.astimezone(timezone(timedelta(hours=8))).hour == 15
     assert adjusted.origin == ORIGIN
@@ -157,6 +159,7 @@ async def test_invalid_or_empty_model_patch_is_rejected_without_phrase_fallback(
         ).parse(
             constraints=_constraints(),
             instruction="给我一个惊喜",
+            now=NOW,
         )
 
     assert len(provider.calls) == 1
@@ -187,6 +190,7 @@ async def test_model_cannot_write_route_coordinates_and_origin_is_not_disclosed(
         ).parse(
             constraints=constraints,
             instruction="换到另一个地点",
+            now=NOW,
         )
 
     request_text = str(provider.calls[0].messages)

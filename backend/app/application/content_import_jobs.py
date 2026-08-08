@@ -58,7 +58,15 @@ from app.domain.collections import (
 from app.domain.identifiers import generate_message_id
 from app.domain.jobs import MAX_JOB_ATTEMPTS, JobCreate, JobResultSummary, ScheduledJob
 from app.domain.memories import MemoryType
-from app.domain.places import MatchStatus, PlaceMatchingPolicy, PlaceMatchRequest
+from app.domain.places import (
+    Coordinate,
+    EvidenceField,
+    EvidenceOutcome,
+    MatchStatus,
+    PlaceMatchingPolicy,
+    PlaceMatchRequest,
+    PlaceMatchResult,
+)
 from app.domain.plans import MissingPlanConstraintInfo, resolve_plan_constraints
 from app.domain.runs import AgentRunCreate, AgentRunStatus
 from app.domain.time import utc_now
@@ -75,6 +83,25 @@ from nanobot_core.providers import ModelProvider, StructuredOutputMode
 
 CONTENT_IMPORT_JOB_TYPE = "content.import"
 AGENT_MESSAGE_JOB_TYPE = "agent.message"
+
+
+def _plan_origin_coordinate(match: PlaceMatchResult) -> Coordinate | None:
+    if match.status is MatchStatus.MATCHED:
+        return match.candidates[0].coordinate.model_copy(deep=True)
+    if len(match.candidates) != 1:
+        return None
+    candidate = match.candidates[0]
+    matched_fields = {
+        evidence.field
+        for evidence in candidate.evidence
+        if evidence.outcome is EvidenceOutcome.MATCH
+    }
+    if candidate.has_hard_conflict or not {
+        EvidenceField.NAME,
+        EvidenceField.CITY,
+    }.issubset(matched_fields):
+        return None
+    return candidate.coordinate.model_copy(deep=True)
 
 
 class ContentImportJobPayload(BaseModel):
@@ -488,7 +515,8 @@ class ContentImportJobHandler:
                         raise ApplicationRunFailureError(
                             error_code=error.code.value
                         ) from None
-                    if match.status is not MatchStatus.MATCHED:
+                    origin = _plan_origin_coordinate(match)
+                    if origin is None:
                         question = (
                             "请补充更准确的出发点，例如完整地点名称、地址或地铁站出入口。"
                         )
@@ -504,7 +532,6 @@ class ContentImportJobHandler:
                             intent="plan",
                             question=question,
                         )
-                    origin = match.candidates[0].coordinate.model_copy(deep=True)
                 resolved = resolve_plan_constraints(
                     intent.constraints(now=now, origin=origin),
                     now=now,

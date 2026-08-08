@@ -20,7 +20,7 @@ from app.domain.plans import (
     plan_constraints_internal_dump,
 )
 from app.domain.plans.contracts import PlanContract
-from app.domain.time import ASIA_SHANGHAI, utc_now
+from app.domain.time import ASIA_SHANGHAI
 from nanobot_core.providers import (
     Message,
     ModelProvider,
@@ -100,6 +100,7 @@ class PlanAdjustmentParser:
         *,
         constraints: PlanConstraints,
         instruction: str,
+        now: datetime,
         response_observer: Callable[[ModelResponse], None] | None = None,
     ) -> PlanAdjustmentPatch:
         normalized = " ".join(instruction.split())
@@ -112,7 +113,7 @@ class PlanAdjustmentParser:
                 "content": json.dumps(
                     {
                         "timezone": ASIA_SHANGHAI.key,
-                        "current_time": utc_now().astimezone(ASIA_SHANGHAI).isoformat(),
+                        "current_time": now.astimezone(ASIA_SHANGHAI).isoformat(),
                         "current_constraints": {
                             **constraints.model_dump(mode="json"),
                             "start_at": constraints.start_at.astimezone(

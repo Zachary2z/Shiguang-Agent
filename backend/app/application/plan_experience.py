@@ -688,10 +688,12 @@ class PlanGenerationJobHandler:
                         plan_id=adjustment_payload.base_plan_id,
                     )
                     await observer.set_stage("adjustment.parsing")
+                    adjustment_now = utc_now()
                     try:
                         patch = await parser.parse(
                             constraints=base.constraints,
                             instruction=adjustment_payload.instruction,
+                            now=adjustment_now,
                             response_observer=observer.record_model_response,
                         )
                     except PlanAdjustmentUnsupportedError:
@@ -715,7 +717,7 @@ class PlanGenerationJobHandler:
                             outcome=PlanGenerationOutcome.FAILED,
                             error_code="STALE_VERSION",
                         )
-                    timestamp = utc_now()
+                    timestamp = adjustment_now
                     plan = PlanVersion(
                         id=generate_plan_id(),
                         root_plan_id=base.root_plan_id,
