@@ -303,6 +303,7 @@ export function CollectionsExperience() {
   const [pageData, setPageData] = useState<CollectionPage | null>(null);
   const [feedback, setFeedback] = useState("");
   const [deletedItem, setDeletedItem] = useState<CollectionItem | null>(null);
+  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
   const [detail, setDetail] = useState<CollectionDetail | null>(null);
   const [candidates, setCandidates] = useState<CandidatePage | null>(null);
   const [candidateLoadState, setCandidateLoadState] =
@@ -881,15 +882,15 @@ export function CollectionsExperience() {
     );
   }
 
-  async function chooseCandidate(candidate: PlaceCandidate | null) {
+  async function chooseCandidate(candidate: PlaceCandidate | "any_branch" | null) {
     if (!candidates || !detail || !csrf) return;
     const collectionId = detail.item.id;
     const operation = detailOperation(collectionId);
     const identity = [
       collectionId,
       candidates.snapshot_fingerprint,
-      candidate?.provider ?? "none",
-      candidate?.poi_id ?? "none",
+      typeof candidate === "object" && candidate ? candidate.provider : candidate ?? "none",
+      typeof candidate === "object" && candidate ? candidate.poi_id : "none",
     ].join(":");
     if (selectionAttempt.current?.identity !== identity) {
       selectionAttempt.current = {
@@ -911,9 +912,9 @@ export function CollectionsExperience() {
           expected_version: candidates.expected_version,
           snapshot_fingerprint: candidates.snapshot_fingerprint,
           idempotency_key: selectionAttempt.current.idempotencyKey,
-          choice: candidate ? "candidate" : "none_of_above",
-          provider: candidate?.provider ?? null,
-          poi_id: candidate?.poi_id ?? null,
+          choice: candidate === "any_branch" ? "any_branch" : candidate ? "candidate" : "none_of_above",
+          provider: typeof candidate === "object" && candidate ? candidate.provider : null,
+          poi_id: typeof candidate === "object" && candidate ? candidate.poi_id : null,
         }),
       });
       const item = result.items[0];
@@ -923,7 +924,9 @@ export function CollectionsExperience() {
       setCandidates(null);
       selectionAttempt.current = null;
       setFeedback(
-        candidate
+        candidate === "any_branch"
+          ? "已保存为任意分店，生成计划时会按范围和路线选择具体分店。"
+          : candidate
           ? "准确地点已保存。"
           : "候选均未采用，原收藏已保留为待补充。",
       );
@@ -1044,6 +1047,21 @@ export function CollectionsExperience() {
       ) : null}
       {feedback ? <p className="collection-feedback" role="status">{feedback}</p> : null}
 
+      <div className="collection-plan-selection" role="status">
+        <span>已选择 {selectedItems.size} 个收藏</span>
+        <button
+          type="button"
+          disabled={selectedItems.size === 0}
+          onClick={() => {
+            const params = new URLSearchParams();
+            for (const identifier of selectedItems) params.append("collection", identifier);
+            router.push(`/plans?${params}`);
+          }}
+        >
+          用这些收藏规划
+        </button>
+      </div>
+
       {loadState === "loading" ? (
         <div className="collection-state" role="status">正在加载收藏…</div>
       ) : null}
@@ -1064,11 +1082,27 @@ export function CollectionsExperience() {
       {loadState === "ready" && pageData?.items.length ? (
         <div className="collection-grid">
           {pageData.items.map((item) => (
+            <div className="collection-select-row" key={item.id}>
+              <label className="collection-select-control">
+                <input
+                  type="checkbox"
+                  checked={selectedItems.has(item.id)}
+                  disabled={!item.planning_eligible || (selectedItems.size >= 20 && !selectedItems.has(item.id))}
+                  onChange={(event) => {
+                    setSelectedItems((current) => {
+                      const next = new Set(current);
+                      if (event.target.checked) next.add(item.id);
+                      else next.delete(item.id);
+                      return next;
+                    });
+                  }}
+                  aria-label={`选择收藏：${item.title}`}
+                />
+              </label>
             <button
               type="button"
               className="collection-card"
               data-collection-id={item.id}
-              key={item.id}
               onClick={(event) => {
                 detailReturnFocus.current = event.currentTarget;
                 detailReturnFocusId.current = item.id;
@@ -1098,6 +1132,7 @@ export function CollectionsExperience() {
                 </span>
               </span>
             </button>
+            </div>
           ))}
         </div>
       ) : null}
@@ -1242,6 +1277,14 @@ export function CollectionsExperience() {
                         </small>
                       </button>
                     ))}
+                    <button
+                      type="button"
+                      className="candidate-any-branch"
+                      onClick={() => void chooseCandidate("any_branch")}
+                    >
+                      <strong>把「{candidates.candidates[0]?.name ?? detail.item.title}」保存为任意分店</strong>
+                      <span>生成计划时再按城市、时间和路线选择具体分店</span>
+                    </button>
                     <button
                       type="button"
                       className="candidate-none"

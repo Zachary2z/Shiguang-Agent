@@ -27,6 +27,7 @@ from app.domain.identifiers import (
     validate_user_id,
 )
 from app.domain.places import (
+    BrandIdentityConfirmationSource,
     ConfirmedBrandIdentity,
     MatchConfidence,
     MatchStatus,
@@ -40,6 +41,7 @@ from app.domain.places import (
     PlaceSelectionOperation,
     PlaceTarget,
     exact_target_from_candidate,
+    normalize_brand_name,
     validate_place_selection,
 )
 from app.domain.time import require_aware_utc
@@ -58,6 +60,56 @@ class PlaceTargetSelectionService:
     def __init__(self, *, session: AsyncSession) -> None:
         self._session = session
         self._repository = SqlAlchemyCollectionRepository(session)
+
+    async def apply_user_selection(
+        self,
+        *,
+        user_id: str,
+        collection_item_id: str,
+        selections: tuple[PlaceSelection, ...],
+        queried_at: datetime | None,
+        snapshot_fingerprint: str,
+        idempotency_key: str,
+        expected_version: int,
+    ) -> PlaceSelectionResult:
+        """Apply a public user choice without accepting internal brand identity fields."""
+
+        brand = None
+        if len(selections) == 1 and selections[0].kind is PlaceSelectionKind.ANY_BRANCH:
+            owner = validate_user_id(user_id)
+            identifier = validate_collection_item_id(collection_item_id)
+            item = await self._repository.get_collection_item(
+                user_id=owner,
+                collection_item_id=identifier,
+            )
+            if item is None or item.place_candidate_snapshot is None:
+                raise ResourceNotFoundError
+            snapshot = item.place_candidate_snapshot
+            if not snapshot.candidates:
+                raise ResourceNotFoundError
+            display_name = snapshot.candidates[0].name
+            normalized_name = normalize_brand_name(display_name)
+            brand = ConfirmedBrandIdentity(
+                namespace="user_confirmed",
+                stable_id=hashlib.sha256(
+                    f"{owner}\0{normalized_name}".encode()
+                ).hexdigest(),
+                display_name=display_name,
+                normalized_name=normalized_name,
+                identity_confirmed_by=BrandIdentityConfirmationSource.USER_CONFIRMED,
+                identity_confirmed_at=snapshot.queried_at,
+            )
+            await self._session.rollback()
+        return await self.apply_selection(
+            user_id=user_id,
+            collection_item_id=collection_item_id,
+            selections=selections,
+            queried_at=queried_at,
+            snapshot_fingerprint=snapshot_fingerprint,
+            idempotency_key=idempotency_key,
+            expected_version=expected_version,
+            brand_identity=brand,
+        )
 
     async def record_candidates(
         self,

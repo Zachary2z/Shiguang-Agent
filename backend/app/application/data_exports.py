@@ -63,6 +63,9 @@ class UserDataExportService:
                         "include": list(plan.constraints.include),
                         "exclude": list(plan.constraints.exclude),
                         "collection_only": plan.constraints.collection_only,
+                        "selected_collection_item_ids": list(
+                            plan.constraints.selected_collection_item_ids
+                        ),
                     },
                     "created_at": plan.created_at.isoformat(),
                     "updated_at": plan.updated_at.isoformat(),

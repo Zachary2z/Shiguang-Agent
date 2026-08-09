@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.application.agent_intents import (
     AgentIntentError,
     AgentIntentParser,
+    AnyBranchIntent,
     CollectionIntent,
     MemoryIntent,
     PlanIntent,
@@ -28,6 +29,7 @@ from app.application.input_contracts import (
 )
 from app.application.memories import MemoryService
 from app.application.place_matching import PlaceMatchingService
+from app.application.place_targets import PlaceTargetSelectionService
 from app.application.plan_experience import PlanExperienceService
 from app.application.pricing import PricingPolicy
 from app.application.run_tracking import (
@@ -44,6 +46,7 @@ from app.application.text_collection_workflow import (
 )
 from app.config import StorageProviderSettings
 from app.domain.collections import (
+    CollectionStatus,
     IdempotencyConflictError,
     Message,
     MessageContentType,
@@ -66,6 +69,8 @@ from app.domain.places import (
     PlaceMatchingPolicy,
     PlaceMatchRequest,
     PlaceMatchResult,
+    PlaceSelection,
+    PlaceSelectionKind,
 )
 from app.domain.plans import MissingPlanConstraintInfo, resolve_plan_constraints
 from app.domain.runs import AgentRunCreate, AgentRunStatus
@@ -484,6 +489,60 @@ class ContentImportJobHandler:
                 return JobResultSummary(
                     outcome="succeeded",
                     intent="collect_content",
+                )
+            if isinstance(intent, AnyBranchIntent):
+                pending = [
+                    item
+                    for item in await repository.list_collection_items(
+                        user_id=job.user_id,
+                        include_inactive=True,
+                    )
+                    if item.status is CollectionStatus.PENDING_SELECTION
+                    and item.place_candidate_snapshot is not None
+                    and item.place_candidate_snapshot.candidates
+                ]
+                if len(pending) != 1:
+                    question = "请先说明要把哪一条待选择收藏保存为任意分店。"
+                    await self._add_assistant_message(
+                        repository=repository,
+                        user_id=job.user_id,
+                        session_id=payload.session_id,
+                        trace_id=job.trace_id,
+                        content=question,
+                    )
+                    return JobResultSummary(
+                        outcome="waiting_user",
+                        intent="select_any_branch",
+                        question=question,
+                    )
+                item = pending[0]
+                snapshot = item.place_candidate_snapshot
+                assert snapshot is not None
+                await session.rollback()
+                selection_result = await PlaceTargetSelectionService(
+                    session=session
+                ).apply_user_selection(
+                    user_id=job.user_id,
+                    collection_item_id=item.id,
+                    selections=(PlaceSelection(kind=PlaceSelectionKind.ANY_BRANCH),),
+                    queried_at=snapshot.queried_at,
+                    snapshot_fingerprint=snapshot.fingerprint,
+                    idempotency_key=job.idempotency_key,
+                    expected_version=item.version,
+                )
+                saved = selection_result.items[0]
+                message = f"已把“{saved.title}”保存为任意分店。"
+                await self._add_assistant_message(
+                    repository=repository,
+                    user_id=job.user_id,
+                    session_id=payload.session_id,
+                    trace_id=job.trace_id,
+                    content=message,
+                )
+                return JobResultSummary(
+                    outcome="succeeded",
+                    intent="select_any_branch",
+                    question=message,
                 )
             if isinstance(intent, PlanIntent):
                 now = utc_now()

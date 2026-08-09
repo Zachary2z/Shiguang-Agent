@@ -103,6 +103,13 @@ class MapPlanFactResolver:
             user_id=user_id,
             include_inactive=True,
         )
+        if constraints.selected_collection_item_ids:
+            by_id = {item.id: item for item in items}
+            items = [
+                by_id[identifier]
+                for identifier in constraints.selected_collection_item_ids
+                if identifier in by_id
+            ]
         mode = (
             constraints.transport_modes[0]
             if constraints.transport_modes

@@ -255,6 +255,12 @@ class PlanCreateRequest(ApiModel):
     include: tuple[str, ...] = ()
     exclude: tuple[str, ...] = ()
     collection_only: bool = False
+    selected_collection_item_ids: tuple[str, ...] = Field(default_factory=tuple, max_length=20)
+
+    @field_validator("selected_collection_item_ids", mode="before")
+    @classmethod
+    def json_selected_collection_items(cls, value: object) -> object:
+        return tuple(value) if isinstance(value, list) else value
 
     @field_validator("start_at", "end_at", mode="before")
     @classmethod
@@ -345,6 +351,7 @@ class PlanConstraintsResponse(ApiModel):
     include: tuple[str, ...]
     exclude: tuple[str, ...]
     collection_only: bool
+    selected_collection_item_ids: tuple[str, ...]
 
 
 class PlanApprovalResponse(ApiModel):
@@ -431,6 +438,7 @@ class PlanResponse(ApiModel):
                 include=constraints.include,
                 exclude=constraints.exclude,
                 collection_only=constraints.collection_only,
+                selected_collection_item_ids=constraints.selected_collection_item_ids,
             ),
             adjustment_text=plan.adjustment_text,
             draft=plan.draft,
@@ -875,7 +883,7 @@ class PlaceSelectionRequest(ApiModel):
     expected_version: int = Field(ge=1)
     snapshot_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
     idempotency_key: IdempotencyKey = Field(repr=False)
-    choice: Literal["candidate", "none_of_above"]
+    choice: Literal["candidate", "any_branch", "none_of_above"]
     provider: Literal["amap"] | None = None
     poi_id: str | None = Field(default=None, min_length=1, max_length=128)
 
@@ -885,18 +893,14 @@ class PlaceSelectionRequest(ApiModel):
             self.provider is None or self.poi_id is None
         ):
             raise ValueError("candidate choice requires provider and poi_id")
-        if self.choice == "none_of_above" and (
+        if self.choice != "candidate" and (
             self.provider is not None or self.poi_id is not None
         ):
-            raise ValueError("none_of_above cannot include a candidate identity")
+            raise ValueError("non-candidate choices cannot include a candidate identity")
         return self
 
     def selection_kind(self) -> PlaceSelectionKind:
-        return (
-            PlaceSelectionKind.CANDIDATE
-            if self.choice == "candidate"
-            else PlaceSelectionKind.NONE_OF_ABOVE
-        )
+        return PlaceSelectionKind(self.choice)
 
     def poi_provider(self) -> PoiProvider | None:
         return PoiProvider(self.provider) if self.provider is not None else None

@@ -115,7 +115,10 @@ class PlanAdjustmentParser:
                         "timezone": ASIA_SHANGHAI.key,
                         "current_time": now.astimezone(ASIA_SHANGHAI).isoformat(),
                         "current_constraints": {
-                            **constraints.model_dump(mode="json"),
+                            **constraints.model_dump(
+                                mode="json",
+                                exclude={"selected_collection_item_ids"},
+                            ),
                             "start_at": constraints.start_at.astimezone(
                                 ASIA_SHANGHAI
                             ).isoformat(),
@@ -157,6 +160,8 @@ def apply_plan_adjustment(
 
     values = plan_constraints_internal_dump(constraints, mode="python")
     for field_name in patch.model_fields_set:
+        if field_name == "collection_only" and constraints.selected_collection_item_ids:
+            continue
         values[field_name] = getattr(patch, field_name)
     if "pace" in patch.model_fields_set:
         values["pace_source"] = PlanPaceSource.USER_REQUEST

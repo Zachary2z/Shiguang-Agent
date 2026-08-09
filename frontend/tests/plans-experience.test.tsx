@@ -6,6 +6,11 @@ import { PlansExperience } from "@/components/plans-experience";
 import { apiClient } from "@/lib/api-client";
 import { sseClient } from "@/lib/sse-client";
 
+let currentQuery = "";
+vi.mock("next/navigation", () => ({
+  useSearchParams: () => new URLSearchParams(currentQuery),
+}));
+
 const session = { csrf_token: "csrf-token" };
 const plan = {
   id: "pln_0123456789abcdef0123456789abcdef",
@@ -171,6 +176,7 @@ const versionedPlan = {
 };
 
 beforeEach(() => {
+  currentQuery = "";
   vi.restoreAllMocks();
 });
 
@@ -184,6 +190,34 @@ function bootstrap(items: object[] = []) {
 }
 
 describe("PlansExperience", () => {
+  it("keeps selected collection IDs in the existing create request", async () => {
+    const selected = "col_0123456789abcdef0123456789abcdef";
+    currentQuery = `collection=${selected}&collection=${selected}`;
+    const request = bootstrap();
+    render(<PlansExperience />);
+
+    expect(await screen.findByText("已选择 1 个收藏，本次只围绕这些收藏规划。")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "检查生成条件" }));
+    request.mockResolvedValueOnce({
+      plan_id: plan.id,
+      trace_id: plan.trace_id,
+      events_url: plan.events_url,
+      result_url: plan.result_url,
+      replayed: false,
+    });
+    await userEvent.click(screen.getByRole("button", { name: "确认并生成" }));
+
+    await waitFor(() => {
+      const call = request.mock.calls.find(
+        ([path, options]) => path === "/api/v1/plans" && options?.method === "POST",
+      );
+      expect(call).toBeDefined();
+      const body = JSON.parse(String(call?.[1]?.body));
+      expect(body.collection_only).toBe(true);
+      expect(body.selected_collection_item_ids).toEqual([selected]);
+    });
+  });
+
   it("collects required conditions and shows a confirmation card before generation", async () => {
     bootstrap();
     render(<PlansExperience />);

@@ -21,7 +21,11 @@ from nanobot_core.providers import StructuredOutputMode
 from tests.core.fakes import FakeProvider, fake_response
 
 
-def _constraints(*, budget: Decimal | None = Decimal("300")) -> PlanConstraints:
+def _constraints(
+    *,
+    budget: Decimal | None = Decimal("300"),
+    selected_collection_item_ids: tuple[str, ...] = (),
+) -> PlanConstraints:
     created_at = datetime(2026, 7, 28, 1, tzinfo=UTC)
     return PlanConstraints(
         city_code=PlanCity.SHENZHEN,
@@ -33,7 +37,8 @@ def _constraints(*, budget: Decimal | None = Decimal("300")) -> PlanConstraints:
         transport_modes=(TransportMode.WALKING, TransportMode.TRANSIT),
         include=("咖啡店",),
         exclude=("商场",),
-        collection_only=False,
+        collection_only=bool(selected_collection_item_ids),
+        selected_collection_item_ids=selected_collection_item_ids,
         created_at=created_at,
         expires_at=created_at + timedelta(days=2),
     )
@@ -115,6 +120,36 @@ def test_pace_only_adjustment_preserves_time_and_origin() -> None:
     assert adjusted.start_at == original.start_at
     assert adjusted.end_at == original.end_at
     assert adjusted.origin == ORIGIN
+
+
+def test_adjustment_preserves_selected_collection_items() -> None:
+    selected = ("col_0123456789abcdef0123456789abcdef",)
+    original = _constraints(selected_collection_item_ids=selected)
+
+    adjusted = apply_plan_adjustment(
+        original,
+        PlanAdjustmentPatch(pace=PlanPace.RELAXED, collection_only=False),
+    )
+
+    assert adjusted.selected_collection_item_ids == selected
+    assert adjusted.collection_only is True
+
+
+@pytest.mark.asyncio
+async def test_adjustment_model_never_receives_selected_collection_ids() -> None:
+    selected = ("col_0123456789abcdef0123456789abcdef",)
+    provider = FakeProvider([fake_response(content='{"pace":"relaxed"}')])
+
+    await PlanAdjustmentParser(
+        provider,
+        structured_output_mode=StructuredOutputMode.JSON_OBJECT,
+    ).parse(
+        constraints=_constraints(selected_collection_item_ids=selected),
+        instruction="节奏轻松一点",
+        now=NOW,
+    )
+
+    assert selected[0] not in provider.calls[0].messages[-1]["content"]
 
 
 def test_complete_patch_is_validated_once_by_plan_constraints() -> None:

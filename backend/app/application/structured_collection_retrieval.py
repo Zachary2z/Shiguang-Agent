@@ -444,6 +444,14 @@ class StructuredCollectionRetrievalService:
             raise StructuredCollectionRetrievalError() from None
         if any(item.user_id != user_id for item in items):
             raise StructuredCollectionRetrievalError() from None
+        if constraints.selected_collection_item_ids:
+            by_id = {item.id: item for item in items}
+            if any(
+                identifier not in by_id
+                for identifier in constraints.selected_collection_item_ids
+            ):
+                raise StructuredCollectionRetrievalError() from None
+            items = [by_id[identifier] for identifier in constraints.selected_collection_item_ids]
         effective_memories = tuple(memory for memory in memories if memory.is_effective(now))
 
         collection_facts = {item.collection_item_id: item for item in facts.collections}

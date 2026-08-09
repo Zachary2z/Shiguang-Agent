@@ -130,6 +130,28 @@ afterEach(() => {
 });
 
 describe("CollectionsExperience", () => {
+  it("selects plannable collections and opens the existing plan page", async () => {
+    const second = {
+      ...baseItem,
+      id: "col_1123456789abcdef0123456789abcdef",
+      title: "莲花山公园",
+    };
+    mockBootstrap({ ...filledPage, items: [baseItem, second], total: 2 });
+    render(<CollectionsExperience />);
+
+    expect(await screen.findByText("已选择 0 个收藏")).toBeInTheDocument();
+    await userEvent.click(
+      await screen.findByRole("checkbox", { name: /深圳湾公园/ }),
+    );
+    await userEvent.click(screen.getByRole("checkbox", { name: /莲花山公园/ }));
+    expect(screen.getByText("已选择 2 个收藏")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "用这些收藏规划" }));
+
+    expect(push).toHaveBeenCalledWith(
+      `/plans?collection=${baseItem.id}&collection=${second.id}`,
+    );
+  });
+
   it("opens from a card and traps focus until Escape closes the detail", async () => {
     vi.spyOn(apiClient, "request").mockImplementation(
       async (path) => {
@@ -1002,9 +1024,46 @@ describe("CollectionsExperience", () => {
     expect(screen.getByText(/南山区 · 海上世界 · 太子路118号/)).toBeInTheDocument();
     expect(screen.getByText(/咖啡店/)).toBeInTheDocument();
     expect(screen.queryByText(/cafe/)).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /把「一尺花园」保存为任意分店/ }),
+    ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /以上都不是/ }));
     expect(await screen.findByText(/原收藏已保留为待补充/)).toBeInTheDocument();
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("submits any_branch without client brand identity fields", async () => {
+    currentQuery = `item=${baseItem.id}`;
+    const pending = {
+      ...baseItem,
+      title: "一尺花园",
+      status: "pending_selection",
+      planning_eligible: false,
+      planning_exclusion_reason: "location_unconfirmed",
+    };
+    const active = { ...pending, status: "active", version: 2, planning_eligible: true };
+    let requestBody = "";
+    vi.spyOn(apiClient, "request").mockImplementation(async (path, options) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path.startsWith("/api/v1/collections?")) {
+        return { ...filledPage, items: [pending] } as never;
+      }
+      if (path.endsWith("/poi-candidates")) return candidatePage(pending.id) as never;
+      if (path.endsWith("/poi-selection")) {
+        requestBody = String(options?.body);
+        return { items: [active], replayed: false } as never;
+      }
+      return { item: pending, sources: [] } as never;
+    });
+
+    render(<CollectionsExperience />);
+    await userEvent.click(
+      await screen.findByRole("button", { name: /保存为任意分店/ }),
+    );
+
+    expect(JSON.parse(requestBody)).toMatchObject({ choice: "any_branch" });
+    expect(requestBody).not.toMatch(/namespace|stable_id|collection_item_id/);
+    expect(await screen.findByText(/生成计划时会按范围和路线/)).toBeInTheDocument();
   });
 
   it("keeps a version conflict recoverable", async () => {

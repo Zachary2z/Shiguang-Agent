@@ -772,6 +772,7 @@ async def create_plan(
         include=payload.include,
         exclude=payload.exclude,
         collection_only=payload.collection_only,
+        selected_collection_item_ids=payload.selected_collection_item_ids,
         created_at=now,
         expires_at=plan_constraint_expires_at(
             now=now,
@@ -1441,7 +1442,7 @@ async def select_collection_poi(
         collection_item_id=item_id,
     )
     snapshot = detail.item.place_candidate_snapshot
-    result = await PlaceTargetSelectionService(session=session).apply_selection(
+    result = await PlaceTargetSelectionService(session=session).apply_user_selection(
         user_id=user_id,
         collection_item_id=item_id,
         selections=(

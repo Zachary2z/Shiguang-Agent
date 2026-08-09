@@ -343,6 +343,57 @@ async def test_detail_candidates_selection_none_replay_and_stale_version(
 
 
 @pytest.mark.asyncio
+async def test_web_any_branch_is_explicit_server_owned_and_idempotent(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider(
+        [
+            _response(_place(title="一尺花园", city_hint="深圳")),
+            _response(_place(title="一尺花园", city_hint="深圳")),
+        ]
+    )
+    async with _client(test_settings, provider) as (api, client):
+        session_id = await _demo(client)
+        created = [
+            await _submit(client, session_id, key=f"m14-any-{index}", content="一尺花园")
+            for index in range(2)
+        ]
+        for response in created:
+            item = response.json()["collections"][0]
+            await _record_candidates(
+                api,
+                item_id=item["id"],
+                source_id=response.json()["source_id"],
+                version=item["version"],
+                result=_ambiguous(),
+            )
+
+        results = []
+        for index, response in enumerate(created):
+            item_id = response.json()["collections"][0]["id"]
+            candidates = (
+                await client.get(f"/api/v1/collections/{item_id}/poi-candidates")
+            ).json()
+            results.append(
+                await client.post(
+                    f"/api/v1/collections/{item_id}/poi-selection",
+                    json={
+                        "expected_version": candidates["expected_version"],
+                        "snapshot_fingerprint": candidates["snapshot_fingerprint"],
+                        "idempotency_key": f"m14-any-select-{index}",
+                        "choice": "any_branch",
+                    },
+                )
+            )
+
+    assert all(result.status_code == 200 for result in results)
+    assert results[0].json()["items"][0]["status"] == "active"
+    assert results[0].json()["items"][0]["id"] == results[1].json()["items"][0]["id"]
+    assert "namespace" not in results[0].text
+    assert "stable_id" not in results[0].text
+
+
+@pytest.mark.asyncio
 async def test_collection_detail_candidates_and_sources_are_cross_user_invisible(
     test_settings: Settings,
 ) -> None:

@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useSearchParams } from "next/navigation";
 
 import { ShareManagement } from "@/components/share-management";
 import { ApiError, apiClient } from "@/lib/api-client";
@@ -80,6 +81,7 @@ type Plan = {
     include: string[];
     exclude: string[];
     collection_only: boolean;
+    selected_collection_item_ids: string[];
   };
   adjustment_text: string | null;
   draft: {
@@ -300,6 +302,11 @@ function routeLabel(route: PlanItem["inbound_route"]) {
 }
 
 export function PlansExperience() {
+  const searchParams = useSearchParams();
+  const selectedCollectionItemIds = useMemo(
+    () => Array.from(new Set(searchParams?.getAll("collection") ?? [])).slice(0, 20),
+    [searchParams],
+  );
   const [session, setSession] = useState<DemoSession | null>(null);
   const [phase, setPhase] = useState<Phase>("recovering");
   const [plan, setPlan] = useState<Plan | null>(null);
@@ -312,7 +319,7 @@ export function PlansExperience() {
   const [transport, setTransport] = useState("transit");
   const [include, setInclude] = useState("");
   const [exclude, setExclude] = useState("");
-  const [collectionOnly, setCollectionOnly] = useState(false);
+  const [collectionOnly, setCollectionOnly] = useState(selectedCollectionItemIds.length > 0);
   const [adjustment, setAdjustment] = useState("");
   const [optionIndex, setOptionIndex] = useState(0);
   const [feedback, setFeedback] = useState("");
@@ -500,9 +507,10 @@ export function PlansExperience() {
       transport_modes: [transport],
       include: include.trim() ? [include.trim()] : [],
       exclude: exclude.trim() ? [exclude.trim()] : [],
-      collection_only: collectionOnly,
+      collection_only: selectedCollectionItemIds.length > 0 || collectionOnly,
+      selected_collection_item_ids: selectedCollectionItemIds,
     }),
-    [areaLabel, budget, collectionOnly, district, endAt, exclude, include, pace, startAt, transport],
+    [areaLabel, budget, collectionOnly, district, endAt, exclude, include, pace, selectedCollectionItemIds, startAt, transport],
   );
 
   function beginReview(event: FormEvent) {
@@ -930,6 +938,9 @@ export function PlansExperience() {
         <div className="plan-compose">
           <form className="plan-form" noValidate onSubmit={beginReview}>
             <div className="plan-section-title"><span>01</span><h2>时间与范围</h2></div>
+            {selectedCollectionItemIds.length > 0 ? (
+              <p className="plan-selected-collections">已选择 {selectedCollectionItemIds.length} 个收藏，本次只围绕这些收藏规划。</p>
+            ) : null}
             <div className="plan-form-grid">
               <label>开始时间<input name="start_at" type="datetime-local" value={startAt} onChange={(event) => { setStartAt(event.target.value); setDirty(true); }} autoComplete="off" required /></label>
               <label>结束时间<input name="end_at" type="datetime-local" value={endAt} onChange={(event) => { setEndAt(event.target.value); setDirty(true); }} autoComplete="off" required /></label>
@@ -943,7 +954,7 @@ export function PlansExperience() {
               <label>主要交通<select name="transport_mode" value={transport} onChange={(event) => { setTransport(event.target.value); setDirty(true); }}><option value="walking">步行</option><option value="cycling">骑行</option><option value="transit">公共交通</option><option value="driving">驾车</option></select></label>
               <label>希望包含<input name="include" value={include} onChange={(event) => { setInclude(event.target.value); setDirty(true); }} autoComplete="off" placeholder="例如：海边咖啡" /></label>
               <label>希望避开<input name="exclude" value={exclude} onChange={(event) => { setExclude(event.target.value); setDirty(true); }} autoComplete="off" placeholder="例如：大型商场" /></label>
-              <label className="plan-check"><input name="collection_only" type="checkbox" checked={collectionOnly} onChange={(event) => { setCollectionOnly(event.target.checked); setDirty(true); }} /><span>只使用我的收藏</span></label>
+              <label className="plan-check"><input name="collection_only" type="checkbox" checked={selectedCollectionItemIds.length > 0 || collectionOnly} disabled={selectedCollectionItemIds.length > 0} onChange={(event) => { setCollectionOnly(event.target.checked); setDirty(true); }} /><span>只使用我的收藏</span></label>
             </div>
             <button className="primary-button plan-primary" type="submit">检查生成条件</button>
           </form>
@@ -958,7 +969,7 @@ export function PlansExperience() {
                 <div><dt>预算</dt><dd>{budget ? `¥${budget}` : "未设置 · 费用未知会明确标记"}</dd></div>
                 <div><dt>节奏 / 交通</dt><dd>{paceLabels[pace]} · {transportLabels[transport]}</dd></div>
                 <div><dt>包含 / 避开</dt><dd>{include || "无指定"} / {exclude || "无指定"}</dd></div>
-                <div><dt>地点来源</dt><dd>{collectionOnly ? "仅收藏" : "优先收藏；不足时先征求外部补充授权"}</dd></div>
+                <div><dt>地点来源</dt><dd>{selectedCollectionItemIds.length > 0 ? `已选择 ${selectedCollectionItemIds.length} 个收藏` : collectionOnly ? "仅收藏" : "优先收藏；不足时先征求外部补充授权"}</dd></div>
               </dl>
               <div className="constraint-actions">
                 <button type="button" onClick={() => setPhase("editing")}>返回修改</button>

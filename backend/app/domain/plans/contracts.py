@@ -13,6 +13,7 @@ from unicodedata import category
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from app.domain.collections import PlanCity
+from app.domain.identifiers import validate_collection_item_id
 from app.domain.places import CityScope, Coordinate, TransportMode
 from app.domain.time import require_aware_utc
 
@@ -20,6 +21,7 @@ _MAX_PLAN_DURATION = timedelta(hours=24)
 _MAX_BUDGET = Decimal("1000000.00")
 _MAX_AREA_VALUES = 8
 _MAX_REQUIREMENTS = 16
+_MAX_SELECTED_COLLECTION_ITEMS = 20
 _MIN_CONSTRAINT_LIFETIME = timedelta(hours=1)
 
 
@@ -225,6 +227,11 @@ class _PlanConstraintValues(PlanContract):
     include: tuple[str, ...] = Field(default_factory=tuple, repr=False)
     exclude: tuple[str, ...] = Field(default_factory=tuple, repr=False)
     collection_only: bool = False
+    selected_collection_item_ids: tuple[str, ...] = Field(
+        default_factory=tuple,
+        max_length=_MAX_SELECTED_COLLECTION_ITEMS,
+        repr=False,
+    )
     created_at: datetime
     expires_at: datetime
 
@@ -248,6 +255,13 @@ class _PlanConstraintValues(PlanContract):
             max_length=80,
         )
 
+    @field_validator("selected_collection_item_ids", mode="before")
+    @classmethod
+    def normalize_selected_collection_items(cls, value: object) -> tuple[str, ...]:
+        if not isinstance(value, (tuple, list)):
+            raise ValueError("selected collection item IDs must be a list or tuple")
+        return tuple(dict.fromkeys(validate_collection_item_id(item) for item in value))
+
     @field_validator("created_at", "expires_at")
     @classmethod
     def normalize_lifetime(cls, value: datetime) -> datetime:
@@ -260,6 +274,8 @@ class _PlanConstraintValues(PlanContract):
         exclude = {value.casefold() for value in self.exclude}
         if include & exclude:
             raise ValueError("include and exclude must not conflict")
+        if self.selected_collection_item_ids and not self.collection_only:
+            raise ValueError("selected collection items require collection_only")
         return self
 
     @property
@@ -406,6 +422,7 @@ def resolve_plan_constraints(
         include=value.include,
         exclude=value.exclude,
         collection_only=value.collection_only,
+        selected_collection_item_ids=value.selected_collection_item_ids,
         created_at=value.created_at,
         expires_at=value.expires_at,
     )

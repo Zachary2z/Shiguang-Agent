@@ -39,6 +39,10 @@ class CollectionIntent(_Intent):
     extraction: ExtractionResult
 
 
+class AnyBranchIntent(_Intent):
+    intent: Literal["select_any_branch"]
+
+
 class PlanIntent(_Intent):
     intent: Literal["plan"]
     start_at: datetime | None = None
@@ -75,6 +79,7 @@ class PlanIntent(_Intent):
             include=self.include,
             exclude=self.exclude,
             collection_only=self.collection_only,
+            selected_collection_item_ids=(),
             created_at=now,
             expires_at=plan_constraint_expires_at(
                 now=now,
@@ -98,7 +103,7 @@ class ClarifyIntent(_Intent):
 
 
 AgentIntent = Annotated[
-    CollectionIntent | PlanIntent | MemoryIntent | ClarifyIntent,
+    CollectionIntent | AnyBranchIntent | PlanIntent | MemoryIntent | ClarifyIntent,
     Field(discriminator="intent"),
 ]
 _ADAPTER: TypeAdapter[AgentIntent] = TypeAdapter(AgentIntent)
@@ -107,7 +112,10 @@ _SYSTEM_PROMPT = (
     "Understand one Shiguang Agent message and return exactly one JSON object matching "
     "the supplied schema. Do not use keyword matching. collect_content is only for a "
     "user asking to save Place/Event content and must include the complete existing "
-    "ExtractionResult. plan is for creating or continuing one Shenzhen plan; extract "
+    "ExtractionResult. select_any_branch means the user explicitly accepts any branch "
+    "for the one pending collection; emit only that action and never any collection, "
+    "brand, provider, or POI identifier. plan is for creating or continuing one Shenzhen "
+    "plan; extract "
     "only stated time, coarse activity area, activity wishes and temporary constraints. "
     "Put a user-stated departure place such as 'from a metro station' in origin_query; "
     "never emit coordinates, POI IDs, or provider fields. "
@@ -185,6 +193,7 @@ __all__ = [
     "AgentIntent",
     "AgentIntentError",
     "AgentIntentParser",
+    "AnyBranchIntent",
     "ClarifyIntent",
     "CollectionIntent",
     "MemoryIntent",

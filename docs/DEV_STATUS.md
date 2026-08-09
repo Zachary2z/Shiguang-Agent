@@ -3,11 +3,31 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M1 已完成；M2-0 允许开始 |
-| 当前子阶段 | M1 用户闭环稳定化 2：已完成 |
-| 状态 | 已集成，真实用户复验通过 |
-| 当前分支 | main |
+| 当前子阶段 | M1 任意分店与收藏多选计划入口生产修复 |
+| 状态 | 生产修复完成，等待主控验收 |
+| 当前分支 | codex/m1-any-branch-plan-selection |
 | 最近更新 | 2026-08-09 |
 | 阻塞项 | 无未关闭 P0/P1 |
+
+## 2026-08-09 任意分店与收藏多选计划入口生产修复
+
+- Web/H5 地点候选在原 `poi-selection` 请求中增加明确的 `any_branch` 动作；Agent
+  通过唯一 `ModelProvider` 返回纯动作意图，应用仅在当前用户恰好存在一条待选择
+  收藏时执行，否则请求补充。两端共同调用既有 `PlaceTargetSelectionService`。
+- `ConfirmedBrandIdentity` 只由服务端根据当前用户的权威候选快照与明确确认生成；
+  公共请求不接收 namespace、stable_id 或收藏 ID。既有同用户品牌幂等、用户隔离、
+  单条 `active + any_branch` 收藏和规划期动态分店解析保持不变。
+- 收藏页复用服务端 `planning_eligible` 增加最多 20 条多选和“用这些收藏规划”；原
+  `PlanConstraints` / `PlanCreateRequest` 增加去重的 `selected_collection_item_ids`，
+  并强制 `collection_only=true`。地图事实与结构检索在原边界只处理选中收藏；不存在、
+  其他用户和已删除 ID 被拒绝，硬约束仍按原规则执行，调整与 Worker 重放保留选择。
+- 门禁通过：`pip check`、Ruff、strict mypy（142 个源文件）；聚焦 `229 passed`；
+  非真实 Provider/Map 全集 `1817 passed, 18 skipped, 2 deselected`；Alembic 唯一
+  head 为 `20260729_0017`。前端 lint、typecheck、相关 Vitest `71 passed`、移动端
+  Playwright `2 passed` 与 production build 通过。
+- 未新增 Provider、AgentRunner、Matcher、Parser、Workflow、状态机、Repository、
+  数据库列、迁移、依赖、重试、fallback 或配置开关；未读取 `.env`，真实模型、地图、
+  网页及其他外部 API 调用为 0，M2-0 仍未开始。生产修复完成，等待主控验收。
 
 ## 2026-08-09 计划本地时间与精确出发点真实复验及收口
 

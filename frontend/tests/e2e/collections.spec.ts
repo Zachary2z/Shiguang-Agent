@@ -102,7 +102,10 @@ async function mockCollections(page: Page) {
       selectionBodies.push(body);
       item = {
         ...item,
-        status: body.choice === "candidate" ? "active" : "pending_details",
+        status:
+          body.choice === "candidate" || body.choice === "any_branch"
+            ? "active"
+            : "pending_details",
         version: item.version + 1,
       };
       await route.fulfill({ json: { items: [item], replayed: false } });
@@ -489,6 +492,32 @@ test("a concrete pending-selection candidate is reachable and sends one request"
     provider: "amap",
     poi_id: "poi-seaworld",
   });
+});
+
+test("mobile any-branch confirmation uses the existing selection request", async ({ page }) => {
+  const requests = await mockCollections(page);
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto("/collections");
+  await page.getByRole("button", { name: new RegExp("一尺花园") }).click();
+  const anyBranch = page.getByRole("dialog").getByRole("button", {
+    name: /保存为任意分店/,
+  });
+  await expectReachable(page, anyBranch);
+  await anyBranch.click();
+
+  expect(requests.selectionBodies).toHaveLength(1);
+  expect(requests.selectionBodies[0]).toMatchObject({ choice: "any_branch" });
+  expect(requests.selectionBodies[0]).not.toHaveProperty("stable_id");
+});
+
+test("mobile collection selection opens the existing plan page", async ({ page }) => {
+  await mockEventCollections(page);
+  await page.setViewportSize({ width: 320, height: 568 });
+  await page.goto("/collections");
+  await page.getByRole("checkbox", { name: new RegExp(eventItem.title) }).check();
+  await page.getByRole("button", { name: "用这些收藏规划" }).click();
+
+  await expect(page).toHaveURL(new RegExp(`/plans\\?collection=${itemId}`));
 });
 
 test("reduced motion remains disabled in collection interactions", async ({ page }) => {

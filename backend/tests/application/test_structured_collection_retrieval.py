@@ -276,6 +276,7 @@ def _constraints(
     origin: Coordinate | None = None,
     include: tuple[str, ...] = (),
     exclude: tuple[str, ...] = (),
+    selected_collection_item_ids: tuple[str, ...] = (),
 ) -> PlanConstraints:
     return PlanConstraints(
         city_code=PlanCity.SHENZHEN,
@@ -286,9 +287,92 @@ def _constraints(
         budget=budget,
         include=include,
         exclude=exclude,
+        collection_only=bool(selected_collection_item_ids),
+        selected_collection_item_ids=selected_collection_item_ids,
         created_at=NOW,
         expires_at=END + timedelta(days=1),
     )
+
+
+@pytest.mark.asyncio
+async def test_selected_collection_items_are_the_only_retrieval_candidates() -> None:
+    user_id = generate_user_id()
+    selected = _place(user_id, title="选中的收藏", poi=_poi("selected"))
+    unselected = _place(user_id, title="未选中的收藏", poi=_poi("unselected"))
+    service = StructuredCollectionRetrievalService(
+        repository=ReadOnlyRepository([unselected, selected])
+    )
+
+    result = await service.retrieve(
+        user_id=user_id,
+        constraints=_constraints(selected_collection_item_ids=(selected.id,)),
+        facts=PlanningFactSnapshot(),
+        now=NOW,
+    )
+
+    assert [decision.collection_item_ids for decision in result.decisions] == [
+        (selected.id,)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_missing_or_other_user_selected_collection_is_rejected() -> None:
+    user_id = generate_user_id()
+    other = _place(generate_user_id(), poi=_poi("private"))
+    service = StructuredCollectionRetrievalService(repository=ReadOnlyRepository([other]))
+
+    with pytest.raises(StructuredCollectionRetrievalError):
+        await service.retrieve(
+            user_id=user_id,
+            constraints=_constraints(selected_collection_item_ids=(other.id,)),
+            facts=PlanningFactSnapshot(),
+            now=NOW,
+        )
+
+
+@pytest.mark.asyncio
+async def test_deleted_selected_collection_is_not_replaced() -> None:
+    user_id = generate_user_id()
+    deleted = _place(
+        user_id,
+        title="已删除",
+        poi=_poi("deleted"),
+        status=CollectionStatus.DELETED,
+    )
+    available = _place(user_id, title="其他收藏", poi=_poi("available"))
+
+    result = await StructuredCollectionRetrievalService(
+        repository=ReadOnlyRepository([deleted, available])
+    ).retrieve(
+        user_id=user_id,
+        constraints=_constraints(selected_collection_item_ids=(deleted.id,)),
+        facts=PlanningFactSnapshot(),
+        now=NOW,
+    )
+
+    assert result.included == ()
+    assert [decision.collection_item_ids for decision in result.decisions] == [(deleted.id,)]
+
+
+@pytest.mark.asyncio
+async def test_selected_collection_still_obeys_plan_hard_constraints() -> None:
+    user_id = generate_user_id()
+    selected = _place(user_id, poi=_poi("selected-hard-rule", district="福田区"))
+
+    result = await StructuredCollectionRetrievalService(
+        repository=ReadOnlyRepository([selected])
+    ).retrieve(
+        user_id=user_id,
+        constraints=_constraints(
+            area=ActivityArea(districts=("南山区",)),
+            selected_collection_item_ids=(selected.id,),
+        ),
+        facts=PlanningFactSnapshot(),
+        now=NOW,
+    )
+
+    assert result.included == ()
+    assert CandidateReasonCode.DISTRICT_MISMATCH in result.decisions[0].reason_codes
 
 
 def _pace_memory(value: PlanPace) -> Memory:

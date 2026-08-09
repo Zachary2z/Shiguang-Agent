@@ -33,6 +33,7 @@ from app.application.run_tracking import (
 from app.application.structured_collection_retrieval import (
     StructuredCollectionRetrievalService,
 )
+from app.domain.collections import CollectionStatus, ResourceNotFoundError
 from app.domain.identifiers import generate_approval_id, generate_plan_id, generate_trace_id
 from app.domain.jobs import JobConflictError, JobCreate, JobResultSummary, ScheduledJob
 from app.domain.places import PlaceMatchingPolicy
@@ -327,6 +328,17 @@ class PlanExperienceService:
         constraints: PlanConstraints,
         client_idempotency_key: str,
     ) -> PlanSubmission:
+        if constraints.selected_collection_item_ids:
+            items = await SqlAlchemyCollectionRepository(
+                self._session
+            ).list_collection_items(user_id=user_id, include_inactive=True)
+            by_id = {item.id: item for item in items}
+            if any(
+                identifier not in by_id
+                or by_id[identifier].status is CollectionStatus.DELETED
+                for identifier in constraints.selected_collection_item_ids
+            ):
+                raise ResourceNotFoundError
         key = scoped_plan_key(user_id=user_id, client_key=client_idempotency_key)
         fingerprint_constraints = plan_constraints_internal_dump(
             constraints,

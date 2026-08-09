@@ -23,6 +23,7 @@ from app.application.content_import_jobs import (
     ContentImportJobHandler,
     _plan_origin_coordinate,
 )
+from app.application.place_targets import PlaceTargetSelectionService
 from app.application.pricing import ConfiguredPricingPolicy
 from app.config import Settings
 from app.domain.collections import ExtractionResult, PlaceCandidate
@@ -433,6 +434,77 @@ async def test_collection_route_uses_one_model_call_and_existing_import(
         assert result["intent"] == "collect_content"
         assert result["collections"][0]["title"] == "深圳天文台"
         assert len(provider.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_any_branch_intent_uses_model_and_existing_selection_service(
+    test_settings: Settings,
+) -> None:
+    from tests.contract.test_m1_4_collections import _ambiguous
+
+    provider = FakeProvider(
+        [_collection_route("一尺花园"), _route({"intent": "select_any_branch"})]
+    )
+    async with _runtime(test_settings, provider) as (api, client, worker):
+        created = await _submit(client, key="route-any-create", text="收藏一尺花园")
+        await worker.run_once()
+        created_result = (await client.get(created.json()["result_url"])).json()
+        item = created_result["collections"][0]
+        async with api.state.demo_database.session_factory() as session:
+            user_id = await session.scalar(
+                select(CollectionItemModel.user_id).where(
+                    CollectionItemModel.id == item["id"]
+                )
+            )
+            assert user_id is not None
+            await session.rollback()
+            await PlaceTargetSelectionService(session=session).record_candidates(
+                user_id=user_id,
+                collection_item_id=item["id"],
+                source_id=created_result["source_id"],
+                match_result=_ambiguous(),
+                queried_at=utc_now(),
+                expected_version=item["version"],
+            )
+
+        accepted = await _submit(
+            client,
+            key="route-any-confirm",
+            text="任意分店都可以",
+        )
+        await worker.run_once()
+        result = (await client.get(accepted.json()["result_url"])).json()
+
+        async with api.state.demo_database.session() as session:
+            stored = await session.scalar(
+                select(CollectionItemModel).where(CollectionItemModel.id == item["id"])
+            )
+            assert stored is not None
+            assert stored.status == "active"
+            assert stored.place_scope == "any_branch"
+
+    assert result["intent"] == "select_any_branch"
+    assert result["question"] == "已把“一尺花园”保存为任意分店。"
+    assert len(provider.calls) == 2
+    assert "pending_context" in provider.calls[1].messages[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_any_branch_intent_without_one_pending_collection_only_clarifies(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider([_route({"intent": "select_any_branch"})])
+    async with _runtime(test_settings, provider) as (api, client, worker):
+        accepted = await _submit(client, key="route-any-none", text="任意分店都可以")
+        await worker.run_once()
+        result = (await client.get(accepted.json()["result_url"])).json()
+        async with api.state.demo_database.session() as session:
+            assert await session.scalar(
+                select(func.count()).select_from(CollectionItemModel)
+            ) == 0
+
+    assert result["run_status"] == "succeeded"
+    assert result["question"] == "请先说明要把哪一条待选择收藏保存为任意分店。"
 
 
 @pytest.mark.asyncio
