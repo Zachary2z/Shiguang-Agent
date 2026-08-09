@@ -242,7 +242,10 @@ def assess_collection_candidate(
                 reasons.add(CandidateReasonCode.DISTRICT_UNKNOWN)
             elif _text_identity(district) not in allowed:
                 reasons.add(CandidateReasonCode.DISTRICT_MISMATCH)
-        if constraints.area.labels:
+        if (
+            constraints.area.labels
+            and item.id not in constraints.selected_collection_item_ids
+        ):
             values = _searchable_values(item, poi)
             if not any(_matches_term(label, values) for label in constraints.area.labels):
                 reasons.add(CandidateReasonCode.AREA_MISMATCH)

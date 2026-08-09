@@ -375,6 +375,76 @@ async def test_selected_collection_still_obeys_plan_hard_constraints() -> None:
     assert CandidateReasonCode.DISTRICT_MISMATCH in result.decisions[0].reason_codes
 
 
+@pytest.mark.asyncio
+async def test_selected_exact_collection_treats_area_label_as_preference() -> None:
+    user_id = generate_user_id()
+    museum_poi = _poi("museum-selected", name="深圳市当代艺术与城市规划馆").model_copy(
+        update={"business_area": "莲花山", "address": "福中路184号"}
+    )
+    library_poi = _poi("library-selected", name="深圳图书馆中心馆").model_copy(
+        update={"business_area": "莲花山", "address": "福中一路2001号"}
+    )
+    selected = (
+        _place(user_id, title=museum_poi.name, poi=museum_poi),
+        _place(user_id, title=library_poi.name, poi=library_poi),
+    )
+    constraints = _constraints(
+        area=ActivityArea(districts=("福田区",), labels=("市民中心",)),
+        selected_collection_item_ids=tuple(item.id for item in selected),
+    )
+
+    result = await StructuredCollectionRetrievalService(
+        repository=ReadOnlyRepository(list(selected))
+    ).retrieve(
+        user_id=user_id,
+        constraints=constraints,
+        facts=PlanningFactSnapshot(
+            pois=tuple(_known_poi_facts(poi) for poi in (museum_poi, library_poi))
+        ),
+        now=NOW,
+    )
+    first, second = ((item.id,) for item in selected)
+    draft = PlanDraftService().generate(
+        constraints=constraints,
+        collections=result,
+        facts=PlanDraftFactSnapshot(
+            candidates=tuple(
+                DraftCandidateFacts(
+                    collection_item_ids=(item.id,),
+                    visit_duration_seconds=3_600,
+                )
+                for item in selected
+            ),
+            routes=(
+                DraftRouteFacts(
+                    from_collection_item_ids=first,
+                    to_collection_item_ids=second,
+                    duration_seconds=600,
+                    distance_meters=1_000,
+                    transport_mode=TransportMode.TRANSIT,
+                ),
+                DraftRouteFacts(
+                    from_collection_item_ids=second,
+                    to_collection_item_ids=first,
+                    duration_seconds=600,
+                    distance_meters=1_000,
+                    transport_mode=TransportMode.TRANSIT,
+                ),
+            ),
+        ),
+    )
+
+    assert {item.title for item in result.included} == {item.title for item in selected}
+    assert all(
+        CandidateReasonCode.AREA_MISMATCH not in item.reason_codes
+        for item in result.included
+    )
+    assert draft.outcome is PlanDraftOutcome.GENERATED
+    assert {item.title for item in draft.options[0].items} == {
+        item.title for item in selected
+    }
+
+
 def _pace_memory(value: PlanPace) -> Memory:
     return Memory(
         id=generate_memory_id(),
@@ -2545,6 +2615,80 @@ async def test_map_fact_chain_resolves_any_branch_to_one_fixed_poi(
     assert result.retrieval.collections[0].resolved_poi == branch
     assert sum(isinstance(call, SearchPoiRequest) for call in calls) == 1
     assert sum(isinstance(call, RouteRequest) for call in calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_selected_any_branch_resolves_without_literal_area_label_match(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    chosen = _poi(
+        "a-nanshan",
+        district="南山区",
+        name="测试咖啡",
+        branch_name="蛇口店",
+        poi_type=PoiType.CAFE,
+    ).model_copy(update={"business_area": "蛇口", "address": "望海路1号"})
+    candidates = (
+        _poi(
+            "outside-futian",
+            name="测试咖啡",
+            branch_name="福田店",
+            poi_type=PoiType.CAFE,
+        ),
+        chosen,
+        _poi(
+            "b-nanshan",
+            district="南山区",
+            name="测试咖啡",
+            branch_name="科技园店",
+            poi_type=PoiType.CAFE,
+        ),
+    )
+    item = _place(
+        user_id,
+        title="测试咖啡",
+        target=_brand_target(),
+        tags=("咖啡",),
+    )
+    constraints = _constraints(
+        area=ActivityArea(districts=("南山区",), labels=("海上世界",)),
+        origin=ORIGIN,
+        selected_collection_item_ids=(item.id,),
+    )
+    calls: list[object] = []
+    facts = await _resolve_map_facts(
+        database_url=retrieval_database,
+        user_id=user_id,
+        items=(item,),
+        constraints=constraints,
+        provider=_map_fact_provider(
+            constraints=constraints,
+            search_pois=candidates,
+            calls=calls,
+        ),
+    )
+    retrieval, _ = _service([item])
+    collections = await retrieval.retrieve(
+        user_id=user_id,
+        constraints=constraints,
+        facts=facts.retrieval,
+        now=NOW,
+    )
+    draft = PlanDraftService().generate(
+        constraints=constraints,
+        collections=collections,
+        facts=facts.draft,
+    )
+
+    assert collections.included[0].poi == chosen
+    assert CandidateReasonCode.AREA_MISMATCH not in collections.included[0].reason_codes
+    assert sum(isinstance(call, SearchPoiRequest) for call in calls) == 1
+    assert draft.outcome is PlanDraftOutcome.GENERATED
+    source = draft.options[0].items[0].source
+    assert source.concrete_poi == chosen
+    assert source.any_branch_collection_item_ids == (item.id,)
+    assert source.poi_queried_at is not None
 
 
 @pytest.mark.asyncio
