@@ -3,11 +3,25 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M1 已完成；M2-0 允许开始 |
-| 当前子阶段 | M1 收藏多选触控尺寸 P1 修复 |
-| 状态 | 触控尺寸修复完成，等待主控复验 |
-| 当前分支 | codex/m1-any-branch-plan-selection |
+| 当前子阶段 | M1 任意分店与收藏多选计划最终集成 |
+| 状态 | 已完成 |
+| 当前分支 | main |
 | 最近更新 | 2026-08-10 |
 | 阻塞项 | 无未关闭 P0/P1 |
+
+## 2026-08-10 任意分店与收藏多选计划最终集成
+
+- `codex/m1-any-branch-plan-selection` 以 `--ff-only` 集成到 `main`，最终生产提交为
+  `3133d90bf9861ccf63b352f99067475140ff1433`；三条提交保持线性，合并前后 tree
+  一致，没有冲突、merge commit、squash 或历史改写。
+- 合并后 `pip check`、Ruff、strict mypy（142 个源文件）、后端聚焦 `173 passed`、
+  前端 lint/typecheck、Vitest `145 passed`、收藏页完整 Playwright `23 passed`；
+  Alembic 唯一 head 仍为 `20260729_0017`。合并前 production build 与后端非真实
+  Provider/Map 全集 `1821 passed, 18 skipped, 2 deselected` 已通过。
+- 任意分店只适用于 Place；多条待选择收藏由明确标题定位；收藏多选规划继续复用既有
+  计划服务。触控目标均至少 `44×44px`。未新增 Provider、Matcher、状态机、重试、
+  fallback、迁移或依赖，当前无未关闭 P0/P1，M2-0 允许开始但尚未开始。
+- 本次最终集成未读取 `.env`，真实模型、地图、网页及其他外部 API 调用为 0。
 
 ## 2026-08-10 收藏多选触控尺寸 P1 修复
 
