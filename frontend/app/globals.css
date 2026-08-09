@@ -210,13 +210,10 @@ a {
   gap: var(--space-2);
 }
 
-.collection-select-control {
-  padding-top: var(--space-4);
-}
-
 .collection-select-control input {
-  width: 1.25rem;
-  height: 1.25rem;
+  width: var(--touch-target);
+  height: var(--touch-target);
+  margin: 0;
 }
 
 .collection-plan-selection {
@@ -228,6 +225,7 @@ a {
 }
 
 .collection-plan-selection button {
+  min-height: var(--touch-target);
   color: var(--color-surface);
   background: var(--color-bay-deep);
 }
