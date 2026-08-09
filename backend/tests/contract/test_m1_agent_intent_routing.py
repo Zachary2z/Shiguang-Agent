@@ -21,6 +21,7 @@ from app.application.content_import_jobs import (
     AGENT_MESSAGE_JOB_TYPE,
     CONTENT_IMPORT_JOB_TYPE,
     ContentImportJobHandler,
+    _plan_origin_coordinate,
 )
 from app.application.pricing import ConfiguredPricingPolicy
 from app.config import Settings
@@ -29,11 +30,15 @@ from app.domain.places import (
     CityScope,
     Coordinate,
     CoordinateSystem,
+    MatchStatus,
+    PlaceMatchRequest,
     Poi,
     PoiProvider,
     PoiSearchResult,
     PoiType,
     SearchPoiRequest,
+    classify_place_matches,
+    score_place_candidate,
 )
 from app.domain.time import ASIA_SHANGHAI, utc_now
 from app.infrastructure.db.models import (
@@ -240,9 +245,22 @@ def _origin_provider(
     )
 
 
+@pytest.mark.parametrize(
+    "pois",
+    [
+        (_origin_poi(poi_id="origin"),),
+        (
+            _origin_poi(poi_id="station", name="少年宫(地铁站)"),
+            _origin_poi(poi_id="exit-f1", name="少年宫地铁站F1口", latitude=22.556),
+            _origin_poi(poi_id="exit-c2", name="少年宫地铁站C2口", latitude=22.557),
+        ),
+    ],
+    ids=("single", "station-with-partial-name-exits"),
+)
 @pytest.mark.asyncio
 async def test_unique_origin_is_searched_once_persisted_and_only_exposed_as_flag(
     test_settings: Settings,
+    pois: tuple[Poi, ...],
 ) -> None:
     calls: list[SearchPoiRequest] = []
     provider = FakeProvider(
@@ -258,12 +276,12 @@ async def test_unique_origin_is_searched_once_persisted_and_only_exposed_as_flag
             )
         ]
     )
-    map_provider = _origin_provider((_origin_poi(poi_id="origin"),), calls)
+    map_provider = _origin_provider(pois, calls)
 
     async with _runtime(test_settings, provider, map_provider) as (api, client, worker):
         accepted = await _submit(
             client,
-            key="route-plan-origin",
+            key=f"route-plan-origin-{len(pois)}",
             text="明天下午2点到6点，在福田区，从少年宫地铁站出发",
         )
         await worker.run_once()
@@ -292,7 +310,12 @@ async def test_unique_origin_is_searched_once_persisted_and_only_exposed_as_flag
         (_origin_poi(poi_id="wrong", name="深圳市民中心地铁站"),),
         (),
     ],
-    ids=("ambiguous", "partial-name", "name-conflict", "not-found"),
+    ids=(
+        "two-exact",
+        "partial-name",
+        "name-conflict",
+        "not-found",
+    ),
 )
 @pytest.mark.asyncio
 async def test_uncertain_origin_never_uses_first_candidate_and_asks_for_detail(
@@ -328,6 +351,32 @@ async def test_uncertain_origin_never_uses_first_candidate_and_asks_for_detail(
         assert result["plan_id"] is None
         async with api.state.demo_database.session() as session:
             assert await session.scalar(select(func.count()).select_from(PlanModel)) == 0
+
+
+def test_plan_origin_rejects_city_hard_conflict() -> None:
+    settings = Settings(_env_file=None, app_env="test")  # type: ignore[call-arg]
+    candidate = score_place_candidate(
+        request=PlaceMatchRequest(
+            candidate=PlaceCandidate(
+                title="少年宫地铁站",
+                city_hint="广州",
+                district="福田区",
+            ),
+            city=CityScope(city_code="shenzhen"),
+        ),
+        poi=_origin_poi(poi_id="wrong-city"),
+        provider_rank=1,
+        policy=settings.place_matching_policy(),
+    )
+    result = classify_place_matches(
+        (candidate,),
+        policy=settings.place_matching_policy(),
+    )
+
+    assert candidate.has_hard_conflict is True
+    assert result.status is MatchStatus.NEEDS_CONTEXT
+    assert result.candidates == ()
+    assert _plan_origin_coordinate(result) is None
 
 
 @pytest.mark.asyncio

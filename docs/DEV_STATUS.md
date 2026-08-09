@@ -6,8 +6,26 @@
 | 当前子阶段 | M1 用户闭环稳定化 2：计划本地时间与精确出发点修复 |
 | 状态 | 生产修复完成，等待真实用户复验 |
 | 当前分支 | codex/m1-plan-time-origin |
-| 最近更新 | 2026-08-08 |
-| 阻塞项 | 无未关闭 P0/P1 |
+| 最近更新 | 2026-08-09 |
+| 阻塞项 | 计划起点主体候选 P1 等待真实用户复验 |
+
+## 2026-08-09 计划起点主体候选收敛修复
+
+- 真实复验确认“少年宫(地铁站)”主体与 F1、C2 出入口同时成为合理候选，导致原先
+  按候选总数判断的计划临时起点边界返回 ambiguous。修复只收敛既有
+  `_plan_origin_coordinate`：正常 `MATCHED` 仍直接采用；否则仅统计同时具有
+  `NAME + CITY` 明确 `MATCH` 且无 hard conflict 的候选，恰好一个时采用其坐标，
+  零个或多个时继续追问。部分名称匹配候选不阻塞唯一精确主体，选择不读取 Provider
+  rank、候选顺序、POI 类型或名称关键词。
+- 全局 `app.domain.places.matching` 与基线保持一致，unique score `75`、minimum gap
+  `12`、收藏地点匹配和 M Stand 无地址 `53` 分的 `NEEDS_CONTEXT` 行为均未改变。
+  没有新增正则、关键词、白名单、评分器、候选层级、Provider、重试或 fallback；时间、
+  origin 私有持久化、数据库、迁移和前端未修改。
+- 离线门禁通过：`pip check`、Ruff、strict mypy（142 个源文件）；用户指定聚焦集合
+  `72 passed`；非真实 Provider/Map 全集 `1807 passed, 18 skipped, 2 deselected`；
+  Alembic 唯一 head 为 `20260729_0017`。未读取 `.env`，真实模型、高德及其他外部 API
+  调用为 0。生产修复完成，等待使用原输入和原调整语句进行真实用户复验；本轮不关闭
+  P1。
 
 ## 2026-08-08 计划起点局部匹配 P1 回归修复
 

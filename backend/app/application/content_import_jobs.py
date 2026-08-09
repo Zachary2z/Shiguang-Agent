@@ -88,20 +88,21 @@ AGENT_MESSAGE_JOB_TYPE = "agent.message"
 def _plan_origin_coordinate(match: PlaceMatchResult) -> Coordinate | None:
     if match.status is MatchStatus.MATCHED:
         return match.candidates[0].coordinate.model_copy(deep=True)
-    if len(match.candidates) != 1:
+    exact_candidates = tuple(
+        candidate
+        for candidate in match.candidates
+        if not candidate.has_hard_conflict
+        and {EvidenceField.NAME, EvidenceField.CITY}.issubset(
+            {
+                evidence.field
+                for evidence in candidate.evidence
+                if evidence.outcome is EvidenceOutcome.MATCH
+            }
+        )
+    )
+    if len(exact_candidates) != 1:
         return None
-    candidate = match.candidates[0]
-    matched_fields = {
-        evidence.field
-        for evidence in candidate.evidence
-        if evidence.outcome is EvidenceOutcome.MATCH
-    }
-    if candidate.has_hard_conflict or not {
-        EvidenceField.NAME,
-        EvidenceField.CITY,
-    }.issubset(matched_fields):
-        return None
-    return candidate.coordinate.model_copy(deep=True)
+    return exact_candidates[0].coordinate.model_copy(deep=True)
 
 
 class ContentImportJobPayload(BaseModel):
