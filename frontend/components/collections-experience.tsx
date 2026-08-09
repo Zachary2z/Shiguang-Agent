@@ -1277,14 +1277,16 @@ export function CollectionsExperience() {
                         </small>
                       </button>
                     ))}
-                    <button
-                      type="button"
-                      className="candidate-any-branch"
-                      onClick={() => void chooseCandidate("any_branch")}
-                    >
-                      <strong>把「{candidates.candidates[0]?.name ?? detail.item.title}」保存为任意分店</strong>
-                      <span>生成计划时再按城市、时间和路线选择具体分店</span>
-                    </button>
+                    {detail.item.kind === "place" ? (
+                      <button
+                        type="button"
+                        className="candidate-any-branch"
+                        onClick={() => void chooseCandidate("any_branch")}
+                      >
+                        <strong>把「{candidates.candidates[0]?.name ?? detail.item.title}」保存为任意分店</strong>
+                        <span>生成计划时再按城市、时间和路线选择具体分店</span>
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className="candidate-none"

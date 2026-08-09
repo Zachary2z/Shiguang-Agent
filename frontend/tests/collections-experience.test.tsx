@@ -1066,6 +1066,30 @@ describe("CollectionsExperience", () => {
     expect(await screen.findByText(/生成计划时会按范围和路线/)).toBeInTheDocument();
   });
 
+  it("does not offer any_branch for an Event candidate", async () => {
+    currentQuery = `item=${eventItem.id}`;
+    const pendingEvent = {
+      ...eventItem,
+      status: "pending_selection",
+      planning_eligible: false,
+      planning_exclusion_reason: "location_unconfirmed",
+    };
+    vi.spyOn(apiClient, "request").mockImplementation(async (path) => {
+      if (path === "/api/v1/demo/sessions") return session as never;
+      if (path.startsWith("/api/v1/collections?")) {
+        return { ...filledPage, items: [pendingEvent] } as never;
+      }
+      if (path.endsWith("/poi-candidates")) return candidatePage(pendingEvent.id) as never;
+      return { item: pendingEvent, sources: [] } as never;
+    });
+
+    render(<CollectionsExperience />);
+
+    expect(await screen.findByText(/海上世界店/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /保存为任意分店/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /以上都不是/ })).toBeInTheDocument();
+  });
+
   it("keeps a version conflict recoverable", async () => {
     currentQuery = `item=${baseItem.id}`;
     vi.spyOn(apiClient, "request").mockImplementation(

@@ -41,6 +41,7 @@ class CollectionIntent(_Intent):
 
 class AnyBranchIntent(_Intent):
     intent: Literal["select_any_branch"]
+    target_title: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class PlanIntent(_Intent):
@@ -113,8 +114,9 @@ _SYSTEM_PROMPT = (
     "the supplied schema. Do not use keyword matching. collect_content is only for a "
     "user asking to save Place/Event content and must include the complete existing "
     "ExtractionResult. select_any_branch means the user explicitly accepts any branch "
-    "for the one pending collection; emit only that action and never any collection, "
-    "brand, provider, or POI identifier. plan is for creating or continuing one Shenzhen "
+    "for a pending Place collection. target_title is only the collection or brand name "
+    "explicitly stated by the user; never emit a collection ID, provider, POI ID, namespace, "
+    "or stable ID. plan is for creating or continuing one Shenzhen "
     "plan; extract "
     "only stated time, coarse activity area, activity wishes and temporary constraints. "
     "Put a user-stated departure place such as 'from a metro station' in origin_query; "

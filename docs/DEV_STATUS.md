@@ -3,11 +3,28 @@
 | 项目 | 当前值 |
 |---|---|
 | 当前总阶段 | M1 已完成；M2-0 允许开始 |
-| 当前子阶段 | M1 任意分店与收藏多选计划入口生产修复 |
-| 状态 | 生产修复完成，等待主控验收 |
+| 当前子阶段 | M1 任意分店目标定位 P1 修复 |
+| 状态 | 修复完成，等待主控复验 |
 | 当前分支 | codex/m1-any-branch-plan-selection |
-| 最近更新 | 2026-08-09 |
+| 最近更新 | 2026-08-10 |
 | 阻塞项 | 无未关闭 P0/P1 |
+
+## 2026-08-10 任意分店目标定位 P1 修复
+
+- Web/H5 仅对 `Place` 候选显示“保存为任意分店”；`Event` 仍只允许选择一个 exact
+  POI 或“以上都不是”。公共 API 的非法 Event `any_branch` 请求复用已有 422 请求
+  校验错误映射，领域服务拒绝后数据保持不变。
+- 唯一 `AnyBranchIntent` 只新增可空、最长 200 字符的 `target_title`。现有
+  `ModelProvider` 仅返回用户明确说出的标题；应用层只读取当前用户的待选择 Place，
+  复用 `normalize_brand_name` 对收藏标题和候选显示名称做精确规范化匹配。无目标且仅
+  一条时沿用原流程；零条、多条或规范化同名冲突继续追问，补充唯一名称后会调用原
+  `PlaceTargetSelectionService` 完成选择。
+- 未修改收藏多选计划行为，未增加关键词、正则、模糊评分、Matcher、Parser、Workflow、
+  状态机、Repository、Provider、Runner、迁移、依赖、重试或 fallback。指定后端聚焦
+  回归 `173 passed`，非真实 Provider/Map 全集 `1821 passed, 18 skipped, 2 deselected`；
+  前端相关 Vitest `72 passed`，pip check、Ruff、mypy（142 个源文件）、Alembic 唯一
+  head `20260729_0017`、前端 lint/typecheck/build 均通过。修复完成，等待主控复验；
+  M2-0 仍未开始，真实 API 调用为 0。
 
 ## 2026-08-09 任意分店与收藏多选计划入口生产修复
 

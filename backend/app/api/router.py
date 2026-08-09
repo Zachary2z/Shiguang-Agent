@@ -1442,25 +1442,28 @@ async def select_collection_poi(
         collection_item_id=item_id,
     )
     snapshot = detail.item.place_candidate_snapshot
-    result = await PlaceTargetSelectionService(session=session).apply_user_selection(
-        user_id=user_id,
-        collection_item_id=item_id,
-        selections=(
-            PlaceSelection(
-                kind=request.selection_kind(),
-                provider=request.poi_provider(),
-                poi_id=request.poi_id,
+    try:
+        result = await PlaceTargetSelectionService(session=session).apply_user_selection(
+            user_id=user_id,
+            collection_item_id=item_id,
+            selections=(
+                PlaceSelection(
+                    kind=request.selection_kind(),
+                    provider=request.poi_provider(),
+                    poi_id=request.poi_id,
+                ),
             ),
-        ),
-        queried_at=(
-            None
-            if snapshot is None or not snapshot.candidates
-            else snapshot.queried_at
-        ),
-        snapshot_fingerprint=request.snapshot_fingerprint,
-        idempotency_key=request.idempotency_key,
-        expected_version=request.expected_version,
-    )
+            queried_at=(
+                None
+                if snapshot is None or not snapshot.candidates
+                else snapshot.queried_at
+            ),
+            snapshot_fingerprint=request.snapshot_fingerprint,
+            idempotency_key=request.idempotency_key,
+            expected_version=request.expected_version,
+        )
+    except ValueError:
+        raise _safe_request_validation_error() from None
     return PlaceSelectionResponse(
         items=tuple(CollectionItemResponse.from_domain(item) for item in result.items),
         replayed=result.replayed,

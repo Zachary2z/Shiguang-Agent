@@ -46,6 +46,7 @@ from app.application.text_collection_workflow import (
 )
 from app.config import StorageProviderSettings
 from app.domain.collections import (
+    CollectionKind,
     CollectionStatus,
     IdempotencyConflictError,
     Message,
@@ -71,6 +72,7 @@ from app.domain.places import (
     PlaceMatchResult,
     PlaceSelection,
     PlaceSelectionKind,
+    normalize_brand_name,
 )
 from app.domain.plans import MissingPlanConstraintInfo, resolve_plan_constraints
 from app.domain.runs import AgentRunCreate, AgentRunStatus
@@ -497,11 +499,34 @@ class ContentImportJobHandler:
                         user_id=job.user_id,
                         include_inactive=True,
                     )
-                    if item.status is CollectionStatus.PENDING_SELECTION
+                    if item.kind is CollectionKind.PLACE
+                    and item.status is CollectionStatus.PENDING_SELECTION
                     and item.place_candidate_snapshot is not None
                     and item.place_candidate_snapshot.candidates
                 ]
-                if len(pending) != 1:
+                matches = pending
+                if intent.target_title is not None:
+                    try:
+                        target_title = normalize_brand_name(intent.target_title)
+                    except ValueError:
+                        matches = []
+                    else:
+                        matches = []
+                        for item in pending:
+                            snapshot = item.place_candidate_snapshot
+                            assert snapshot is not None
+                            for title in (
+                                item.title,
+                                *(candidate.name for candidate in snapshot.candidates),
+                            ):
+                                try:
+                                    matched = target_title == normalize_brand_name(title)
+                                except ValueError:
+                                    continue
+                                if matched:
+                                    matches.append(item)
+                                    break
+                if len(matches) != 1:
                     question = "请先说明要把哪一条待选择收藏保存为任意分店。"
                     await self._add_assistant_message(
                         repository=repository,
@@ -515,7 +540,7 @@ class ContentImportJobHandler:
                         intent="select_any_branch",
                         question=question,
                     )
-                item = pending[0]
+                item = matches[0]
                 snapshot = item.place_candidate_snapshot
                 assert snapshot is not None
                 await session.rollback()

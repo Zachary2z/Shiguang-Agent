@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -89,6 +90,56 @@ def _collection_route(title: str = "深圳天文台") -> ModelResponse:
             "extraction": extraction.model_dump(mode="json"),
         }
     )
+
+
+def _event_collection_route(title: str) -> ModelResponse:
+    from tests.contract.test_m0_2d_api import _event
+
+    return _route(
+        {
+            "intent": "collect_content",
+            "extraction": ExtractionResult.with_candidates(
+                (_event(title=title, city_hint="深圳"),)
+            ).model_dump(mode="json"),
+        }
+    )
+
+
+async def _record_pending_candidates(
+    api: FastAPI,
+    payload: dict[str, Any],
+    *,
+    candidate_name: str,
+) -> str:
+    from tests.contract.test_m1_4_collections import _ambiguous
+
+    item = payload["collections"][0]
+    result = _ambiguous()
+    result = result.model_copy(
+        update={
+            "candidates": tuple(
+                candidate.model_copy(update={"name": candidate_name})
+                for candidate in result.candidates
+            )
+        }
+    )
+    async with api.state.demo_database.session_factory() as session:
+        user_id = await session.scalar(
+            select(CollectionItemModel.user_id).where(
+                CollectionItemModel.id == item["id"]
+            )
+        )
+        assert user_id is not None
+        await session.rollback()
+        await PlaceTargetSelectionService(session=session).record_candidates(
+            user_id=user_id,
+            collection_item_id=item["id"],
+            source_id=payload["source_id"],
+            match_result=result,
+            queried_at=utc_now(),
+            expected_version=item["version"],
+        )
+    return str(item["id"])
 
 
 def _migrate(settings: Settings) -> None:
@@ -487,6 +538,155 @@ async def test_any_branch_intent_uses_model_and_existing_selection_service(
     assert result["question"] == "已把“一尺花园”保存为任意分店。"
     assert len(provider.calls) == 2
     assert "pending_context" in provider.calls[1].messages[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_any_branch_intent_selects_exact_named_place_among_multiple(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider(
+        [
+            _collection_route("一尺花园"),
+            _collection_route("蓝瓶咖啡"),
+            _route({"intent": "select_any_branch", "target_title": None}),
+            _route({"intent": "select_any_branch", "target_title": "蓝瓶咖啡"}),
+        ]
+    )
+    async with _runtime(test_settings, provider) as (api, client, worker):
+        first = await _submit(client, key="route-any-first", text="收藏一尺花园")
+        await worker.run_once()
+        first_payload = (await client.get(first.json()["result_url"])).json()
+        first_id = await _record_pending_candidates(
+            api,
+            first_payload,
+            candidate_name="一尺花园",
+        )
+        second = await _submit(client, key="route-any-second", text="收藏蓝瓶咖啡")
+        await worker.run_once()
+        second_payload = (await client.get(second.json()["result_url"])).json()
+        second_id = await _record_pending_candidates(
+            api,
+            second_payload,
+            candidate_name="蓝瓶咖啡",
+        )
+
+        ambiguous = await _submit(
+            client,
+            key="route-any-needs-name",
+            text="任意分店都可以",
+        )
+        await worker.run_once()
+        ambiguous_result = (
+            await client.get(ambiguous.json()["result_url"])
+        ).json()
+        assert "哪一条待选择收藏" in ambiguous_result["question"]
+
+        accepted = await _submit(
+            client,
+            key="route-any-named",
+            text="蓝瓶咖啡",
+        )
+        await worker.run_once()
+        result = await client.get(accepted.json()["result_url"])
+
+        async with api.state.demo_database.session() as session:
+            first_row = await session.get(CollectionItemModel, first_id)
+            second_row = await session.get(CollectionItemModel, second_id)
+            assert first_row is not None and first_row.status == "pending_selection"
+            assert second_row is not None and second_row.place_scope == "any_branch"
+
+    assert result.json()["question"] == "已把“蓝瓶咖啡”保存为任意分店。"
+    assert "pending_context" in provider.calls[3].messages[-1]["content"]
+    assert first_id not in provider.calls[3].messages[-1]["content"]
+    assert second_id not in provider.calls[3].messages[-1]["content"]
+    assert first_id not in result.text and second_id not in result.text
+
+
+@pytest.mark.asyncio
+async def test_any_branch_intent_clarifies_unknown_or_normalized_title_conflict(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider(
+        [
+            _collection_route("一尺花园"),
+            _collection_route("一尺 花园"),
+            _route({"intent": "select_any_branch", "target_title": "一尺花园"}),
+            _route({"intent": "select_any_branch", "target_title": "不存在的品牌"}),
+        ]
+    )
+    async with _runtime(test_settings, provider) as (api, client, worker):
+        for index, title in enumerate(("一尺花园", "一尺 花园")):
+            created = await _submit(
+                client,
+                key=f"route-any-conflict-create-{index}",
+                text=f"收藏{title}",
+            )
+            await worker.run_once()
+            payload = (await client.get(created.json()["result_url"])).json()
+            await _record_pending_candidates(api, payload, candidate_name=title)
+
+        questions = []
+        for key, text in (
+            ("route-any-conflict", "把一尺花园保存为任意分店"),
+            ("route-any-unknown", "把不存在的品牌保存为任意分店"),
+        ):
+            accepted = await _submit(client, key=key, text=text)
+            await worker.run_once()
+            questions.append(
+                (await client.get(accepted.json()["result_url"])).json()["question"]
+            )
+
+        async with api.state.demo_database.session() as session:
+            rows = (await session.scalars(select(CollectionItemModel))).all()
+            assert {row.status for row in rows} == {"pending_selection"}
+
+    assert questions == [
+        "请先说明要把哪一条待选择收藏保存为任意分店。",
+        "请先说明要把哪一条待选择收藏保存为任意分店。",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pending_event_does_not_participate_in_any_branch_resolution(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider(
+        [
+            _event_collection_route("深圳设计展"),
+            _collection_route("一尺花园"),
+            _route({"intent": "select_any_branch", "target_title": None}),
+        ]
+    )
+    async with _runtime(test_settings, provider) as (api, client, worker):
+        event = await _submit(client, key="route-any-event", text="收藏深圳设计展")
+        await worker.run_once()
+        event_payload = (await client.get(event.json()["result_url"])).json()
+        event_id = await _record_pending_candidates(
+            api,
+            event_payload,
+            candidate_name="深圳设计展",
+        )
+        place = await _submit(client, key="route-any-place", text="收藏一尺花园")
+        await worker.run_once()
+        place_payload = (await client.get(place.json()["result_url"])).json()
+        place_id = await _record_pending_candidates(
+            api,
+            place_payload,
+            candidate_name="一尺花园",
+        )
+
+        accepted = await _submit(client, key="route-any-place-only", text="任意分店都可以")
+        await worker.run_once()
+        result = (await client.get(accepted.json()["result_url"])).json()
+
+        async with api.state.demo_database.session() as session:
+            event_row = await session.get(CollectionItemModel, event_id)
+            place_row = await session.get(CollectionItemModel, place_id)
+            assert event_row is not None and event_row.status == "pending_selection"
+            assert event_row.place_scope is None
+            assert place_row is not None and place_row.place_scope == "any_branch"
+
+    assert result["question"] == "已把“一尺花园”保存为任意分店。"
 
 
 @pytest.mark.asyncio

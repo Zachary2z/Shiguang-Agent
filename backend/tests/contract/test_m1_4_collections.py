@@ -394,6 +394,49 @@ async def test_web_any_branch_is_explicit_server_owned_and_idempotent(
 
 
 @pytest.mark.asyncio
+async def test_event_any_branch_returns_safe_4xx_without_mutation(
+    test_settings: Settings,
+) -> None:
+    provider = FakeProvider([_response(_event(title="深圳设计展", city_hint="深圳"))])
+    async with _client(test_settings, provider) as (api, client):
+        session_id = await _demo(client)
+        created = await _submit(
+            client,
+            session_id,
+            key="m14-event-any-create",
+            content="深圳设计展",
+        )
+        item = created.json()["collections"][0]
+        await _record_candidates(
+            api,
+            item_id=item["id"],
+            source_id=created.json()["source_id"],
+            version=item["version"],
+            result=_ambiguous(),
+        )
+        candidates = (
+            await client.get(f"/api/v1/collections/{item['id']}/poi-candidates")
+        ).json()
+        before = (await client.get(f"/api/v1/collections/{item['id']}")).json()
+        rejected = await client.post(
+            f"/api/v1/collections/{item['id']}/poi-selection",
+            json={
+                "expected_version": candidates["expected_version"],
+                "snapshot_fingerprint": candidates["snapshot_fingerprint"],
+                "idempotency_key": "m14-event-any-select",
+                "choice": "any_branch",
+            },
+        )
+        after = (await client.get(f"/api/v1/collections/{item['id']}")).json()
+
+    assert rejected.status_code == 422
+    assert rejected.json()["error_code"] == "REQUEST_VALIDATION_ERROR"
+    assert after == before
+    assert after["item"]["kind"] == "event"
+    assert after["item"]["status"] == "pending_selection"
+
+
+@pytest.mark.asyncio
 async def test_collection_detail_candidates_and_sources_are_cross_user_invisible(
     test_settings: Settings,
 ) -> None:
