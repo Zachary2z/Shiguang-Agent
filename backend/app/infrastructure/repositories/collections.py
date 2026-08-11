@@ -163,20 +163,34 @@ class SqlAlchemyCollectionRepository:
         )
         return None if row is None else self._message(row)
 
-    async def list_messages(self, *, user_id: str, session_id: str) -> list[Message]:
+    async def list_messages(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        limit: int | None = None,
+    ) -> list[Message]:
         owner = validate_user_id(user_id)
         identifier = validate_session_id(session_id)
-        rows = (
-            await self._session.scalars(
-                select(MessageModel)
-                .join(SessionModel, MessageModel.session_id == SessionModel.id)
-                .where(
-                    MessageModel.session_id == identifier,
-                    SessionModel.user_id == owner,
-                )
-                .order_by(MessageModel.created_at, MessageModel.id)
-            )
-        ).all()
+        if limit is not None and limit < 1:
+            raise ValueError("message limit must be positive")
+        statement = select(MessageModel).join(
+            SessionModel,
+            MessageModel.session_id == SessionModel.id,
+        ).where(
+            MessageModel.session_id == identifier,
+            SessionModel.user_id == owner,
+        )
+        if limit is not None:
+            statement = statement.order_by(
+                MessageModel.created_at.desc(),
+                MessageModel.id.desc(),
+            ).limit(limit)
+        else:
+            statement = statement.order_by(MessageModel.created_at, MessageModel.id)
+        rows = list((await self._session.scalars(statement)).all())
+        if limit is not None:
+            rows.reverse()
         return [self._message(row) for row in rows]
 
     async def delete_message(self, *, user_id: str, message_id: str) -> bool:

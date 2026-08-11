@@ -458,16 +458,24 @@ class ContentImportJobHandler:
                 raise ApplicationRunFailureError(
                     error_code="MODEL_PROVIDER_NOT_CONFIGURED"
                 )
+            pending_messages = await self._pending_messages(
+                repository=repository,
+                user_id=job.user_id,
+                session_id=payload.session_id,
+                current_message_id=payload.message_id,
+            )
+            pending_context = (
+                "\n".join(
+                    f"{message.role.value}: {message.content}"
+                    for message in pending_messages
+                )
+                or None
+            )
             try:
                 intent = await self._intent_parser.parse(
                     text=input.text,
                     now=utc_now(),
-                    pending_context=await self._pending_context(
-                        repository=repository,
-                        user_id=job.user_id,
-                        session_id=payload.session_id,
-                        current_message_id=payload.message_id,
-                    ),
+                    pending_context=pending_context,
                     response_observer=observer.record_model_response,
                 )
             except AgentIntentError:
@@ -571,6 +579,14 @@ class ContentImportJobHandler:
                 )
             if isinstance(intent, PlanIntent):
                 now = utc_now()
+                original_request = "\n".join(
+                    [
+                        message.content
+                        for message in pending_messages
+                        if message.role is MessageRole.USER
+                    ]
+                    + [input.text]
+                )
                 origin = None
                 if intent.origin_query is not None:
                     if self._place_matching is None:
@@ -621,7 +637,7 @@ class ContentImportJobHandler:
                     intent.constraints(
                         now=now,
                         origin=origin,
-                        original_request=input.text,
+                        original_request=original_request,
                     ),
                     now=now,
                 )
@@ -744,24 +760,25 @@ class ContentImportJobHandler:
         )
 
     @staticmethod
-    async def _pending_context(
+    async def _pending_messages(
         *,
         repository: SqlAlchemyCollectionRepository,
         user_id: str,
         session_id: str,
         current_message_id: str,
-    ) -> str | None:
+    ) -> tuple[Message, ...]:
         messages = [
             item
             for item in await repository.list_messages(
                 user_id=user_id,
                 session_id=session_id,
+                limit=3,
             )
             if item.id != current_message_id
         ]
         if not messages or messages[-1].role is not MessageRole.ASSISTANT:
-            return None
-        return "\n".join(f"{item.role.value}: {item.content}" for item in messages[-2:])
+            return ()
+        return tuple(messages[-2:])
 
     async def _restore_input(
         self,

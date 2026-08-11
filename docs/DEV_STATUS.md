@@ -4,10 +4,24 @@
 |---|---|
 | 当前总阶段 | 模型驱动计划生成：开发中 |
 | 当前子阶段 | 模型驱动计划生成第二批：唯一计划主链路生产接线 |
-| 状态 | 第二批修复完成，等待主控复验；M2-0 未开始 |
+| 状态 | 多轮计划原始需求修复完成，等待主控复验；M2-0 未开始 |
 | 当前分支 | codex/m1-model-driven-planning |
 | 最近更新 | 2026-08-11 |
-| 阻塞项 | 第二批修复等待主控复验；不得开始第三批或 M2-0 |
+| 阻塞项 | 多轮计划原始需求 P1 等待主控复验；不得开始第三批或 M2-0 |
+
+## 2026-08-11 多轮计划追问原始需求 P1 修复
+
+- 生产修复已完成，状态为“等待主控复验”，不据此宣布 P1 关闭。唯一 Agent pending
+  context 读取现在返回同一组带角色的 `Message`：一次查询结果同时供
+  `AgentIntentParser` 上下文和计划 `original_request` 使用。
+- 单轮计划仍只保存当前用户原句；正常追问只按顺序组合前一条 `USER` 计划要求和当前
+  `USER` 补充，不包含 Agent 追问，也不解析消息文本中的角色前缀。既有 user/session
+  过滤、幂等结果复用和私有 constraints JSON 持久化边界保持不变。
+- 回归通过生产 Session、Message、ContentImportJob、PlanProposalService 和计划 Worker
+  主链路验证单轮、追问、跨 Session/用户隔离和幂等；聚焦集合 `125 passed`，非真实
+  Provider/Map 全集 `1773 passed, 18 skipped, 2 deselected`。pip check、Ruff 和
+  strict mypy（143 个源文件）通过。未新增 Parser、Provider、Runner、Repository、
+  状态机、迁移、依赖、重试、fallback 或通用上下文系统；第三批和 M2-0 均未开始。
 
 ## 2026-08-11 模型驱动计划生成第二批生产接线
 

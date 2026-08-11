@@ -24,16 +24,38 @@ from app.application.content_import_jobs import (
     ContentImportJobHandler,
     _plan_origin_coordinate,
 )
+from app.application.map_plan_facts import MapPlanFactResolver
 from app.application.place_targets import PlaceTargetSelectionService
+from app.application.plan_experience import (
+    PLAN_GENERATION_JOB_TYPE,
+    ExistingPlanServicesExecutor,
+    PlanGenerationJobHandler,
+)
+from app.application.plan_proposals import PlanProposalService
 from app.application.pricing import ConfiguredPricingPolicy
 from app.config import Settings
-from app.domain.collections import ExtractionResult, PlaceCandidate
+from app.domain.collections import (
+    CollectionItem,
+    CollectionKind,
+    CollectionStatus,
+    ExtractionResult,
+    PlaceCandidate,
+)
+from app.domain.identifiers import generate_collection_item_id
 from app.domain.places import (
     CityScope,
     Coordinate,
     CoordinateSystem,
+    EvidenceField,
+    EvidenceOutcome,
+    EvidenceReason,
+    MatchConfidence,
+    MatchEvidence,
     MatchStatus,
+    PlaceConfirmationSource,
     PlaceMatchRequest,
+    PlaceScope,
+    PlaceTarget,
     Poi,
     PoiProvider,
     PoiSearchResult,
@@ -49,8 +71,10 @@ from app.infrastructure.db.models import (
     MemoryModel,
     PlanModel,
     ScheduledJobModel,
+    UserModel,
 )
 from app.infrastructure.jobs import PostgresJobQueue
+from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.main import create_app
 from app.providers import MapProvider, StubMapProvider
@@ -69,6 +93,33 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 def _route(intent: dict[str, object]) -> ModelResponse:
     return fake_response(content=json.dumps(intent, ensure_ascii=False, default=str))
+
+
+def _proposal() -> ModelResponse:
+    return fake_response(
+        content=json.dumps(
+            {
+                "options": [
+                    {
+                        "role": role,
+                        "items": [
+                            {
+                                "candidate_key": "candidate_0",
+                                "visit_duration_seconds": duration,
+                            }
+                        ],
+                        "reason": "符合用户要求",
+                    }
+                    for role, duration in (
+                        ("main", 3600),
+                        ("alternative", 2700),
+                        ("alternative", 4500),
+                    )
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 def _collection_route(title: str = "深圳天文台") -> ModelResponse:
@@ -187,13 +238,33 @@ async def _runtime(
                 None if map_provider is None else active.place_matching_policy()
             ),
         )
+        handlers: dict[str, Any] = {
+            AGENT_MESSAGE_JOB_TYPE: handler,
+            CONTENT_IMPORT_JOB_TYPE: handler,
+        }
+        if map_provider is not None:
+            handlers[PLAN_GENERATION_JOB_TYPE] = PlanGenerationJobHandler(
+                session_factory=api.state.demo_database.session_factory,
+                pricing=ConfiguredPricingPolicy.from_settings(active),
+                executor_factory=lambda session: ExistingPlanServicesExecutor(
+                    session=session,
+                    map_provider=map_provider,
+                    matching_policy=active.place_matching_policy(),
+                    facts=MapPlanFactResolver(
+                        session=session,
+                        map_provider=map_provider,
+                        matching_policy=active.place_matching_policy(),
+                    ),
+                    proposals=PlanProposalService(
+                        provider,
+                        structured_output_mode=active.extraction_structured_output_mode(),
+                    ),
+                ),
+            )
         worker = JobWorker(
             queue=PostgresJobQueue(api.state.demo_database.session_factory),
             worker_id="worker_agent_intent_contract",
-            handlers={
-                AGENT_MESSAGE_JOB_TYPE: handler,
-                CONTENT_IMPORT_JOB_TYPE: handler,
-            },
+            handlers=handlers,
             poll_seconds=0.01,
         )
         async with httpx.AsyncClient(
@@ -212,6 +283,49 @@ async def _submit(client: httpx.AsyncClient, *, key: str, text: str) -> httpx.Re
         f"/api/v1/sessions/{client.headers['X-Test-Session']}/messages",
         json={"type": "agent_text", "idempotency_key": key, "text": text},
     )
+
+
+async def _seed_plan_collection(api: FastAPI) -> None:
+    now = utc_now()
+    poi = _origin_poi(poi_id="poi_plan_request", name="南山展览馆").model_copy(
+        update={"district": "南山区", "address": "南山大道"}
+    )
+    async with api.state.demo_database.session() as session:
+        user_id = await session.scalar(select(UserModel.id))
+        assert user_id is not None
+        await SqlAlchemyCollectionRepository(session).add_collection_item(
+            user_id=user_id,
+            item=CollectionItem(
+                id=generate_collection_item_id(),
+                user_id=user_id,
+                kind=CollectionKind.PLACE,
+                title=poi.name,
+                city_hint="深圳",
+                district=poi.district,
+                address=poi.address,
+                tags=("展览", "安静"),
+                place_target=PlaceTarget(
+                    scope=PlaceScope.EXACT,
+                    poi=poi,
+                    match_status=MatchStatus.MATCHED,
+                    confidence=MatchConfidence.HIGH,
+                    confirmed_by=PlaceConfirmationSource.USER_SELECTION,
+                    confirmed_at=now,
+                    evidence_summary=(
+                        MatchEvidence(
+                            field=EvidenceField.NAME,
+                            outcome=EvidenceOutcome.MATCH,
+                            reason=EvidenceReason.EXACT,
+                            score_delta=30,
+                        ),
+                    ),
+                ),
+                status=CollectionStatus.ACTIVE,
+                created_at=now,
+                updated_at=now,
+            ),
+        )
+        await session.commit()
 
 
 @pytest.mark.asyncio
@@ -720,7 +834,6 @@ async def test_plan_route_asks_once_then_continues_same_session(
                 {
                     "intent": "plan",
                     "area": {"districts": ["南山区"], "labels": []},
-                    "include": ["炸鸡", "商场"],
                 }
             ),
             _route(
@@ -729,13 +842,16 @@ async def test_plan_route_asks_once_then_continues_same_session(
                     "start_at": future_start.isoformat(),
                     "end_at": future_end.isoformat(),
                     "area": {"districts": ["南山区"], "labels": []},
-                    "include": ["炸鸡", "商场"],
                 }
             ),
+            _proposal(),
         ]
     )
-    async with _runtime(test_settings, provider) as (api, client, worker):
-        first = await _submit(client, key="route-plan-missing", text="帮我安排时间，在南山")
+    async with _runtime(test_settings, provider, StubMapProvider()) as (api, client, worker):
+        await _seed_plan_collection(api)
+        original = "周六下午想在南山看展，然后找一家安静的咖啡店"
+        followup = "下午两点到六点"
+        first = await _submit(client, key="route-plan-missing", text=original)
         await worker.run_once()
         first_result = (await client.get(first.json()["result_url"])).json()
         assert first_result["question"] == "你什么时候有一段连续空闲时间？"
@@ -746,20 +862,29 @@ async def test_plan_route_asks_once_then_continues_same_session(
         second = await _submit(
             client,
             key="route-plan-followup",
-            text="五天后这个时间开始，我有四小时",
+            text=followup,
         )
         await worker.run_once()
         second_result = (await client.get(second.json()["result_url"])).json()
         assert second_result["plan_id"].startswith("pln_")
         assert "pending_context" in provider.calls[1].messages[-1]["content"]
-        assert len(provider.calls) == 2
+        generation = await worker.run_once()
+        assert generation is not None, "plan generation job was not claimed"
+        assert len(provider.calls) == 3, (
+            generation.status,
+            generation.last_error_code,
+            generation.result_summary,
+        )
+        proposal_input = json.loads(provider.calls[2].messages[-1]["content"])
+        assert proposal_input["original_request"] == f"{original} {followup}"
+        assert "你什么时候有一段连续空闲时间？" not in proposal_input["original_request"]
         replay = await _submit(
             client,
             key="route-plan-followup",
-            text="五天后这个时间开始，我有四小时",
+            text=followup,
         )
         assert replay.json()["trace_id"] == second.json()["trace_id"]
-        assert len(provider.calls) == 2
+        assert len(provider.calls) == 3
 
         async with api.state.demo_database.session() as session:
             plan = await session.scalar(select(PlanModel))
@@ -769,9 +894,51 @@ async def test_plan_route_asks_once_then_continues_same_session(
             assert expires_at == end_at + timedelta(hours=1)
             assert expires_at > datetime.fromisoformat(plan.constraints_json["start_at"])
             assert "origin" not in plan.constraints_json
-            assert plan.constraints_json["original_request"] == "五天后这个时间开始，我有四小时"
-            assert await session.scalar(select(func.count()).select_from(CollectionItemModel)) == 0
+            assert plan.constraints_json["original_request"] == f"{original} {followup}"
+            assert await session.scalar(select(func.count()).select_from(PlanModel)) == 1
             assert await session.scalar(select(func.count()).select_from(MemoryModel)) == 0
+
+
+@pytest.mark.asyncio
+async def test_single_turn_plan_preserves_request_through_proposal(
+    test_settings: Settings,
+) -> None:
+    original = "周六下午两点到六点在南山看展，再喝咖啡"
+    start = utc_now() + timedelta(days=5)
+    provider = FakeProvider(
+        [
+            _route(
+                {
+                    "intent": "plan",
+                    "start_at": start.isoformat(),
+                    "end_at": (start + timedelta(hours=4)).isoformat(),
+                    "area": {"districts": ["南山区"], "labels": []},
+                }
+            ),
+            _proposal(),
+        ]
+    )
+    async with _runtime(test_settings, provider, StubMapProvider()) as (api, client, worker):
+        await _seed_plan_collection(api)
+        submitted = await _submit(client, key="route-plan-single", text=original)
+        await worker.run_once()
+        result = (await client.get(submitted.json()["result_url"])).json()
+        assert result["plan_id"].startswith("pln_")
+
+        generation = await worker.run_once()
+        assert generation is not None, "plan generation job was not claimed"
+        assert len(provider.calls) == 2, (
+            generation.status,
+            generation.last_error_code,
+            generation.result_summary,
+        )
+        proposal_input = json.loads(provider.calls[1].messages[-1]["content"])
+        assert proposal_input["original_request"] == original
+
+        async with api.state.demo_database.session() as session:
+            plan = await session.scalar(select(PlanModel))
+            assert plan is not None
+            assert plan.constraints_json["original_request"] == original
 
 
 @pytest.mark.asyncio
@@ -980,13 +1147,21 @@ async def test_pending_context_does_not_cross_sessions(
     test_settings: Settings,
 ) -> None:
     question = "你是想收藏地点，还是安排计划？"
+    start = utc_now() + timedelta(days=5)
     provider = FakeProvider(
         [
             _route({"intent": "clarify", "question": question}),
-            _route({"intent": "clarify", "question": "请再说明一下你的目标。"}),
+            _route(
+                {
+                    "intent": "plan",
+                    "start_at": start.isoformat(),
+                    "end_at": (start + timedelta(hours=4)).isoformat(),
+                    "area": {"districts": ["南山区"], "labels": []},
+                }
+            ),
         ]
     )
-    async with _runtime(test_settings, provider) as (_api, client, worker):
+    async with _runtime(test_settings, provider) as (api, client, worker):
         await _submit(client, key="session-one", text="帮我处理一下")
         await worker.run_once()
 
@@ -1001,3 +1176,7 @@ async def test_pending_context_does_not_cross_sessions(
         second_input = provider.calls[1].messages[-1]["content"]
         assert '"pending_context":null' in second_input
         assert question not in second_input
+        async with api.state.demo_database.session() as database_session:
+            plan = await database_session.scalar(select(PlanModel))
+            assert plan is not None
+            assert plan.constraints_json["original_request"] == "继续"
