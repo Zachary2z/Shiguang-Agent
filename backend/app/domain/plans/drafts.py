@@ -154,6 +154,76 @@ class PlanOptionRole(StrEnum):
     ALTERNATIVE = "alternative"
 
 
+class PlanProposalCandidate(PlanContract):
+    """One desensitized candidate carrying only facts the model may inspect."""
+
+    candidate_key: str = Field(
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    title: str = Field(min_length=1, max_length=200, repr=False)
+    kind: CollectionKind
+    district: str | None = Field(default=None, min_length=1, max_length=80, repr=False)
+    tags: tuple[str, ...] = Field(default_factory=tuple, max_length=16, repr=False)
+    preferred: bool = False
+    required: bool = False
+
+    @field_validator("tags")
+    @classmethod
+    def require_unique_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("candidate tags must be unique")
+        return value
+
+
+class PlanProposalItem(PlanContract):
+    candidate_key: str = Field(
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    visit_duration_seconds: int = Field(gt=0, le=24 * 60 * 60)
+
+
+class PlanOptionProposal(PlanContract):
+    role: PlanOptionRole
+    items: tuple[PlanProposalItem, ...] = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=240)
+    external_gap_description: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=240,
+    )
+
+    @model_validator(mode="after")
+    def require_unique_candidates(self) -> Self:
+        keys = tuple(item.candidate_key for item in self.items)
+        if len(set(keys)) != len(keys):
+            raise ValueError("proposal candidates must be unique")
+        return self
+
+
+class PlanProposalSet(PlanContract):
+    options: tuple[PlanOptionProposal, ...] = Field(min_length=3, max_length=3)
+
+    @model_validator(mode="after")
+    def validate_initial_options(self) -> Self:
+        if tuple(option.role for option in self.options) != (
+            PlanOptionRole.MAIN,
+            PlanOptionRole.ALTERNATIVE,
+            PlanOptionRole.ALTERNATIVE,
+        ):
+            raise ValueError("proposal roles must be main, alternative, alternative")
+        identities = tuple(
+            tuple((item.candidate_key, item.visit_duration_seconds) for item in option.items)
+            for option in self.options
+        )
+        if len(set(identities)) == 1:
+            raise ValueError("all three proposals cannot be identical")
+        return self
+
+
 class PlanItemRole(StrEnum):
     CORE = "core"
     AUXILIARY = "auxiliary"
