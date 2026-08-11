@@ -335,6 +335,7 @@ class CollectionCandidateDecision(RetrievalContract):
     collection_item_ids: tuple[str, ...] = Field(min_length=1)
     kind: CollectionKind
     title: str = Field(min_length=1, max_length=200)
+    tags: tuple[str, ...] = Field(default_factory=tuple, max_length=16, repr=False)
     poi: Poi | None = None
     price_amount: Decimal | None = None
     price_currency: str | None = None
@@ -359,6 +360,13 @@ class CollectionCandidateDecision(RetrievalContract):
         if tuple(sorted(set(validated))) != validated:
             raise ValueError("memory ids must be unique and sorted")
         return validated
+
+    @field_validator("tags")
+    @classmethod
+    def validate_tags(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("candidate tags must be unique")
+        return value
 
     @model_validator(mode="after")
     def validate_decision(self) -> Self:

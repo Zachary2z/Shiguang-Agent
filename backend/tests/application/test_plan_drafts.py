@@ -255,14 +255,15 @@ def test_external_candidate_keeps_uncollected_source_label() -> None:
                 poi=external_poi,
                 queried_at=NOW,
                 supplement_reason="明确缺少咖啡环节",
-                visit_duration_seconds=2400,
-                inbound_route=PlanRouteLeg(
-                    from_collection_item_ids=decisions[0].collection_item_ids,
-                    to_external_provider=external_poi.provider,
-                    to_external_poi_id=external_poi.poi_id,
-                    duration_seconds=600,
-                    distance_meters=800,
-                    transport_mode=TransportMode.TRANSIT,
+                inbound_routes=(
+                    PlanRouteLeg(
+                        from_collection_item_ids=decisions[0].collection_item_ids,
+                        to_external_provider=external_poi.provider,
+                        to_external_poi_id=external_poi.poi_id,
+                        duration_seconds=600,
+                        distance_meters=800,
+                        transport_mode=TransportMode.TRANSIT,
+                    ),
                 ),
                 price_amount=Decimal("10"),
                 price_currency="CNY",
@@ -272,3 +273,91 @@ def test_external_candidate_keeps_uncollected_source_label() -> None:
     source = draft.options[0].items[1].source
     assert source.source_label == "高德补充 · 未收藏"
     assert source.collection_item_ids == ()
+
+
+def test_one_external_candidate_uses_each_proposal_inbound_edge() -> None:
+    decisions = (_decision(1), _decision(2))
+    external_poi = _decision(3).poi
+    assert external_poi is not None
+    proposals = _proposals(
+        (
+            (("external_0", 1800),),
+            (("candidate_0", 1800), ("external_0", 2400)),
+            (("candidate_1", 1800), ("external_0", 3000)),
+        )
+    )
+    keys = {
+        f"candidate_{index}": decision.collection_item_ids
+        for index, decision in enumerate(decisions)
+    }
+    inbound_routes = tuple(
+        PlanRouteLeg(
+            from_collection_item_ids=from_ids,
+            to_external_provider=external_poi.provider,
+            to_external_poi_id=external_poi.poi_id,
+            duration_seconds=None if not from_ids else 600,
+            distance_meters=None if not from_ids else 800,
+            transport_mode=TransportMode.TRANSIT,
+        )
+        for from_ids in ((), *(decision.collection_item_ids for decision in decisions))
+    )
+    draft = PlanDraftService().generate(
+        constraints=_constraints(origin=False),
+        collections=StructuredCollectionResult(decisions=decisions),
+        facts=_facts(decisions, origin=False),
+        proposals=proposals,
+        candidate_keys=keys,
+        external_candidates={
+            "external_0": ExternalDraftCandidate(
+                poi=external_poi,
+                queried_at=NOW,
+                supplement_reason="补充咖啡店",
+                inbound_routes=inbound_routes,
+            )
+        },
+    )
+
+    assert draft.outcome is PlanDraftOutcome.GENERATED
+    assert len(draft.options) == 3
+    assert tuple(
+        next(
+            item for item in option.items if item.source.collection_item_ids == ()
+        ).inbound_route.from_collection_item_ids
+        for option in draft.options
+    ) == ((), decisions[0].collection_item_ids, decisions[1].collection_item_ids)
+
+
+def test_authorized_pure_external_place_generates_with_unknown_first_route() -> None:
+    external_poi = _decision(1).poi
+    assert external_poi is not None
+    draft = PlanDraftService().generate(
+        constraints=_constraints(origin=False),
+        collections=StructuredCollectionResult(),
+        facts=PlanDraftFactSnapshot(),
+        proposals=_proposals(
+            (
+                (("external_0", 1800),),
+                (("external_0", 2400),),
+                (("external_0", 3000),),
+            )
+        ),
+        candidate_keys={},
+        external_candidates={
+            "external_0": ExternalDraftCandidate(
+                poi=external_poi,
+                queried_at=NOW,
+                supplement_reason="用户授权补充",
+                inbound_routes=(
+                    PlanRouteLeg(
+                        to_external_provider=external_poi.provider,
+                        to_external_poi_id=external_poi.poi_id,
+                        transport_mode=TransportMode.TRANSIT,
+                    ),
+                ),
+            )
+        },
+    )
+
+    assert draft.outcome is PlanDraftOutcome.GENERATED
+    assert len(draft.options) == 3
+    assert all(option.items[0].inbound_route.duration_seconds is None for option in draft.options)

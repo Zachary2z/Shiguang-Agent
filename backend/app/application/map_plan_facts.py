@@ -53,14 +53,14 @@ from app.providers.map import MapProvider, MapProviderError
 MAX_PLAN_ROUTE_CALLS = 48
 
 
-def proposal_route_edges(proposals: PlanProposalSet) -> tuple[tuple[str, str], ...]:
-    """Return adjacent proposal edges once, preserving first-seen order."""
+def proposal_route_edges(proposals: PlanProposalSet) -> tuple[tuple[str | None, str], ...]:
+    """Return actual origin and adjacent proposal edges once."""
 
     return tuple(
         dict.fromkeys(
-            (left.candidate_key, right.candidate_key)
+            (None if index == 0 else option.items[index - 1].candidate_key, item.candidate_key)
             for option in proposals.options
-            for left, right in zip(option.items, option.items[1:], strict=False)
+            for index, item in enumerate(option.items)
         )
     )
 
@@ -163,7 +163,7 @@ class MapPlanFactResolver:
                         resolved_poi=candidate.poi,
                         route=_route_assessment(
                             route,
-                            origin_known=constraints.origin is not None,
+                            origin_known=False,
                         ),
                         route_duration_seconds=None if route is None else route[0],
                         route_distance_meters=None if route is None else route[1],
@@ -185,7 +185,7 @@ class MapPlanFactResolver:
                     self._poi_facts(
                         candidate,
                         self._weather_assessment or WeatherAssessment.UNKNOWN,
-                        origin_known=constraints.origin is not None,
+                        origin_known=False,
                     )
                 )
             elif resolved.brand_identity is not None:
@@ -240,7 +240,7 @@ class MapPlanFactResolver:
                     event_end_at=(item.event_end_at if item.kind is CollectionKind.EVENT else None),
                 )
             )
-            if candidate.route is not None:
+            if candidate.resolved_from_any_branch and candidate.route is not None:
                 origin_routes.append(
                     DraftRouteFacts(
                         to_collection_item_ids=(item.id,),
@@ -249,7 +249,6 @@ class MapPlanFactResolver:
                         transport_mode=mode,
                     )
                 )
-
         self._selected = {(candidate.item.id,): candidate for candidate in selected}
 
         return PlanGenerationFacts(
@@ -279,45 +278,71 @@ class MapPlanFactResolver:
         constraints = self._constraints
         if constraints is None:
             raise RuntimeError("candidate facts must be resolved before proposal routes")
+        await self._ensure_weather(constraints)
         routes: list[DraftRouteFacts] = []
-        identities: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
-        for option in proposals.options:
-            keys = tuple(item.candidate_key for item in option.items)
-            for index, key in enumerate(keys):
-                if key not in candidate_keys or (
-                    index > 0 and keys[index - 1] not in candidate_keys
-                ):
-                    continue
-                target_ids = candidate_keys[key]
-                target = self._selected[target_ids]
-                source_ids = () if index == 0 else candidate_keys[keys[index - 1]]
-                identity = (source_ids, target_ids)
-                if identity in identities:
-                    continue
-                identities.add(identity)
-                if index == 0:
-                    route = target.route
-                else:
-                    source = self._selected[source_ids]
-                    route = await self._route(
-                        constraints=constraints,
-                        origin=source.poi.coordinate,
-                        destination=target.poi.coordinate,
-                        mode=self._mode,
-                    )
-                if route is not None:
-                    routes.append(
-                        DraftRouteFacts(
-                            from_collection_item_ids=source_ids,
-                            to_collection_item_ids=target_ids,
-                            duration_seconds=route[0],
-                            distance_meters=route[1],
-                            transport_mode=self._mode,
+        known_routes = {route.identity: route for route in base.routes}
+        for source_key, target_key in proposal_route_edges(proposals):
+            if target_key not in candidate_keys or (
+                source_key is not None and source_key not in candidate_keys
+            ):
+                continue
+            target_ids = candidate_keys[target_key]
+            target = self._candidate(target_ids)
+            source_ids = () if source_key is None else candidate_keys[source_key]
+            known = known_routes.get((source_ids, target_ids))
+            if known is None and not source_ids:
+                for item_id in target_ids:
+                    stored = known_routes.get(((), (item_id,)))
+                    if stored is not None:
+                        known = stored.model_copy(
+                            update={"to_collection_item_ids": target_ids}
                         )
+                        break
+            if known is not None:
+                routes.append(known)
+                continue
+            origin = (
+                constraints.origin
+                if source_key is None
+                else self._candidate(source_ids).poi.coordinate
+            )
+            route = await self._route(
+                constraints=constraints,
+                origin=origin,
+                destination=target.poi.coordinate,
+                mode=self._mode,
+            )
+            if route is not None:
+                routes.append(
+                    DraftRouteFacts(
+                        from_collection_item_ids=source_ids,
+                        to_collection_item_ids=target_ids,
+                        duration_seconds=route[0],
+                        distance_meters=route[1],
+                        transport_mode=self._mode,
                     )
-        return base.model_copy(update={"routes": tuple(routes)})
+                )
+        facts_by_id = {
+            item.collection_item_ids[0]: item
+            for item in base.candidates
+            if len(item.collection_item_ids) == 1
+        }
+        candidates = tuple(
+            _merged_candidate_facts(ids, facts_by_id)
+            for ids in dict.fromkeys(candidate_keys.values())
+        )
+        return base.model_copy(
+            update={
+                "candidates": candidates,
+                "routes": tuple(routes),
+                "weather_status": self._weather_assessment,
+                "weather_source": "amap",
+                "weather_queried_at": self._weather_queried_at,
+                "weather_summary": self._weather_summary,
+            }
+        )
 
-    async def resolve_external_route(
+    async def resolve_external_routes(
         self,
         *,
         proposals: PlanProposalSet,
@@ -325,50 +350,56 @@ class MapPlanFactResolver:
         candidate: ExternalPlaceCandidate,
         candidate_keys: dict[str, tuple[str, ...]],
     ) -> ExternalDraftCandidate:
-        """Resolve the first actual inbound edge for the one supplemented Place."""
+        """Resolve every actual inbound edge for the one supplemented Place."""
 
         constraints = self._constraints
         if constraints is None:
             raise RuntimeError("candidate facts must be resolved before proposal routes")
-        previous_key: str | None = None
-        for option in proposals.options:
-            keys = tuple(item.candidate_key for item in option.items)
-            if external_key in keys:
-                index = keys.index(external_key)
-                previous_key = None if index == 0 else keys[index - 1]
-                break
-        origin = constraints.origin
-        from_ids: tuple[str, ...] = ()
-        if previous_key is not None:
-            from_ids = candidate_keys[previous_key]
-            origin = self._selected[from_ids].poi.coordinate
-        route = await self._route(
-            constraints=constraints,
-            origin=origin,
-            destination=candidate.poi.coordinate,
-            mode=self._mode,
-        )
+        routes: list[PlanRouteLeg] = []
+        for source_key, target_key in proposal_route_edges(proposals):
+            if target_key != external_key:
+                continue
+            from_ids = () if source_key is None else candidate_keys[source_key]
+            origin = (
+                constraints.origin
+                if source_key is None
+                else self._candidate(from_ids).poi.coordinate
+            )
+            route = await self._route(
+                constraints=constraints,
+                origin=origin,
+                destination=candidate.poi.coordinate,
+                mode=self._mode,
+            )
+            routes.append(
+                PlanRouteLeg(
+                    from_collection_item_ids=from_ids,
+                    to_external_provider=candidate.poi.provider,
+                    to_external_poi_id=candidate.poi.poi_id,
+                    duration_seconds=None if route is None else route[0],
+                    distance_meters=None if route is None else route[1],
+                    transport_mode=self._mode,
+                )
+            )
         return ExternalDraftCandidate(
             poi=candidate.poi,
             queried_at=candidate.queried_at,
             supplement_reason=candidate.supplement_reason,
-            visit_duration_seconds=next(
-                item.visit_duration_seconds
-                for option in proposals.options
-                for item in option.items
-                if item.candidate_key == external_key
-            ),
             price_amount=candidate.price_amount,
             price_currency=candidate.price_currency,
-            inbound_route=PlanRouteLeg(
-                from_collection_item_ids=from_ids,
-                to_external_provider=candidate.poi.provider,
-                to_external_poi_id=candidate.poi.poi_id,
-                duration_seconds=None if route is None else route[0],
-                distance_meters=None if route is None else route[1],
-                transport_mode=self._mode,
-            ),
+            inbound_routes=tuple(routes),
         )
+
+    def _candidate(self, collection_item_ids: tuple[str, ...]) -> _ExecutableCandidate:
+        candidates = tuple(
+            self._selected[(item_id,)]
+            for item_id in collection_item_ids
+            if (item_id,) in self._selected
+        )
+        identities = {(item.poi.provider, item.poi.poi_id) for item in candidates}
+        if not candidates or len(identities) != 1:
+            raise RuntimeError("proposal collection sources do not resolve to one POI")
+        return candidates[0]
 
     async def _qualify_concrete(
         self,
@@ -378,6 +409,7 @@ class MapPlanFactResolver:
         constraints: PlanConstraints,
         mode: TransportMode,
         resolved_from_any_branch: bool = False,
+        resolve_route: bool = False,
     ) -> _ExecutableCandidate | None:
         static = assess_collection_candidate(
             item=item,
@@ -391,12 +423,15 @@ class MapPlanFactResolver:
         )
         if static.outcome is not CandidateOutcome.INCLUDED:
             return None
-        await self._ensure_weather(constraints)
-        route = await self._route(
-            constraints=constraints,
-            origin=constraints.origin,
-            destination=poi.coordinate,
-            mode=mode,
+        route = (
+            await self._route(
+                constraints=constraints,
+                origin=constraints.origin,
+                destination=poi.coordinate,
+                mode=mode,
+            )
+            if resolve_route
+            else None
         )
         return _ExecutableCandidate(
             item=item,
@@ -454,6 +489,7 @@ class MapPlanFactResolver:
                 constraints=constraints,
                 mode=mode,
                 resolved_from_any_branch=True,
+                resolve_route=True,
             )
             if candidate is None:
                 continue
@@ -552,6 +588,23 @@ def _route_assessment(
     if route is not None:
         return RouteAssessment.REACHABLE
     return RouteAssessment.PROVIDER_FAILED if origin_known else RouteAssessment.UNKNOWN
+
+
+def _merged_candidate_facts(
+    collection_item_ids: tuple[str, ...],
+    facts_by_id: dict[str, DraftCandidateFacts],
+) -> DraftCandidateFacts:
+    facts = tuple(facts_by_id[item_id] for item_id in collection_item_ids)
+    first = facts[0]
+    return first.model_copy(
+        update={
+            "collection_item_ids": collection_item_ids,
+            "poi_queried_at": next(
+                (item.poi_queried_at for item in facts if item.poi_queried_at is not None),
+                None,
+            ),
+        }
+    )
 
 
 def _unique_poi_facts(

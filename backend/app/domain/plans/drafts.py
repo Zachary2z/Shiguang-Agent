@@ -367,8 +367,7 @@ class ExternalDraftCandidate(PlanContract):
     poi: Poi
     queried_at: datetime
     supplement_reason: str = Field(min_length=1, max_length=240)
-    visit_duration_seconds: int = Field(gt=0, le=24 * 60 * 60)
-    inbound_route: PlanRouteLeg
+    inbound_routes: tuple[PlanRouteLeg, ...] = Field(min_length=1)
     price_amount: Decimal | None = None
     price_currency: str | None = None
 
@@ -379,10 +378,13 @@ class ExternalDraftCandidate(PlanContract):
 
     @model_validator(mode="after")
     def validate_external_route(self) -> Self:
-        if (
-            self.inbound_route.to_collection_item_ids
-            or self.inbound_route.to_external_provider is not self.poi.provider
-            or self.inbound_route.to_external_poi_id != self.poi.poi_id
+        if len({route.from_collection_item_ids for route in self.inbound_routes}) != len(
+            self.inbound_routes
+        ) or any(
+            route.to_collection_item_ids
+            or route.to_external_provider is not self.poi.provider
+            or route.to_external_poi_id != self.poi.poi_id
+            for route in self.inbound_routes
         ):
             raise ValueError("external inbound routes cannot target a collection id")
         validate_cny_price_pair(self.price_amount, self.price_currency)

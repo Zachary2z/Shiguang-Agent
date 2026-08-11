@@ -99,7 +99,7 @@ class PlanDraftService:
         external_candidates: dict[str, ExternalDraftCandidate] | None = None,
     ) -> PlanDraftResult:
         exclusions = self._exclusions(collections)
-        if not collections.included or proposals is None:
+        if (not collections.included and not external_candidates) or proposals is None:
             return self._failure(PlanDraftFailureCode.NO_INCLUDED_CANDIDATES, exclusions)
 
         included = {item.collection_item_ids: item for item in collections.included}
@@ -120,11 +120,8 @@ class PlanDraftService:
                         None
                         if external is None
                         else self._schedule_external_item(
-                            candidate=external.model_copy(
-                                update={
-                                    "visit_duration_seconds": proposal_item.visit_duration_seconds
-                                }
-                            ),
+                            candidate=external,
+                            visit_duration_seconds=proposal_item.visit_duration_seconds,
                             role=(PlanItemRole.CORE if index == 0 else PlanItemRole.AUXILIARY),
                             earliest_departure=previous_end
                             + timedelta(seconds=switch_buffer if index else 0),
@@ -294,6 +291,7 @@ class PlanDraftService:
                         previous_end=previous_end,
                         previous_ids=previous_ids,
                         item_index=item_index,
+                        visit_duration_seconds=item.visit_duration_seconds,
                         constraints=constraints,
                         expected_switch=expected_switch,
                         expected_end=expected_end,
@@ -434,6 +432,7 @@ class PlanDraftService:
     @staticmethod
     def _external_risks(
         candidate: ExternalDraftCandidate,
+        route: PlanRouteLeg,
         constraints: PlanConstraints,
     ) -> tuple[PlanRiskCode, ...]:
         risks = (
@@ -445,7 +444,7 @@ class PlanDraftService:
             if candidate.price_amount is None
             else []
         )
-        if candidate.inbound_route.duration_seconds is None:
+        if route.duration_seconds is None:
             risks.append(PlanRiskCode.ROUTE_UNKNOWN)
         if candidate.poi.opening_hours_summary is None:
             risks.append(PlanRiskCode.OPENING_HOURS_UNKNOWN)
@@ -455,6 +454,7 @@ class PlanDraftService:
         self,
         *,
         candidate: ExternalDraftCandidate,
+        visit_duration_seconds: int,
         role: PlanItemRole,
         earliest_departure: datetime,
         from_ids: tuple[str, ...],
@@ -462,18 +462,25 @@ class PlanDraftService:
         end_buffer_seconds: int,
         existing_items: tuple[PlanItem, ...],
     ) -> PlanItem | None:
-        route = candidate.inbound_route
-        if route.from_collection_item_ids != from_ids:
+        route = next(
+            (
+                route
+                for route in candidate.inbound_routes
+                if route.from_collection_item_ids == from_ids
+            ),
+            None,
+        )
+        if route is None:
             return None
         if (from_ids or constraints.origin is not None) and route.duration_seconds is None:
             return None
-        risks = self._external_risks(candidate, constraints)
+        risks = self._external_risks(candidate, route, constraints)
         reason = PlanSelectionReasonCode.MODEL_PROPOSAL
         return self._schedule_known_item(
             role=role,
             title=candidate.poi.name,
             kind=CollectionKind.PLACE,
-            visit_duration_seconds=candidate.visit_duration_seconds,
+            visit_duration_seconds=visit_duration_seconds,
             event_start_at=None,
             event_end_at=None,
             route=route,
@@ -501,6 +508,7 @@ class PlanDraftService:
         previous_end: datetime,
         previous_ids: tuple[str, ...],
         item_index: int,
+        visit_duration_seconds: int,
         constraints: PlanConstraints,
         expected_switch: int,
         expected_end: int,
@@ -513,6 +521,7 @@ class PlanDraftService:
         expected_role = PlanItemRole.CORE if item_index == 0 else PlanItemRole.AUXILIARY
         expected = self._schedule_external_item(
             candidate=candidate,
+            visit_duration_seconds=visit_duration_seconds,
             role=expected_role,
             earliest_departure=previous_end
             + timedelta(seconds=expected_switch if item_index > 0 else 0),

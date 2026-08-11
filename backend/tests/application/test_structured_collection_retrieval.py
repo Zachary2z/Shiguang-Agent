@@ -2333,7 +2333,91 @@ async def test_map_fact_chain_includes_exact_event_with_precise_time_window(
     assert result.retrieval.collections[0].collection_item_id == event.id
     assert result.draft.candidates[0].event_start_at == event.event_start_at
     assert result.draft.candidates[0].event_end_at == event.event_end_at
+    assert sum(isinstance(call, RouteRequest) for call in calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_one_hundred_exact_collections_do_not_prefetch_origin_routes(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    items = tuple(
+        _place(user_id, title=f"准确收藏 {index}", poi=_poi(f"exact-{index}"))
+        for index in range(100)
+    )
+    constraints = _constraints(origin=ORIGIN)
+    calls: list[object] = []
+
+    facts = await _resolve_map_facts(
+        database_url=retrieval_database,
+        user_id=user_id,
+        items=items,
+        constraints=constraints,
+        provider=_map_fact_provider(constraints=constraints, calls=calls),
+    )
+
+    assert len(facts.draft.candidates) == 100
+    assert not any(isinstance(call, RouteRequest) for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_proposal_routes_fetch_only_the_deduplicated_used_edge(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    item = _place(user_id, poi=_poi("used-exact"))
+    constraints = _constraints(origin=ORIGIN)
+    calls: list[object] = []
+    provider = _map_fact_provider(
+        constraints=constraints,
+        weather_timeout=True,
+        calls=calls,
+    )
+    database = Database(retrieval_database)
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        await repository.add_user(
+            user_id=user_id,
+            user=User(id=user_id, mode=UserMode.REAL, created_at=NOW),
+        )
+        await repository.add_collection_item(user_id=user_id, item=item)
+        await session.commit()
+    proposals = PlanProposalSet(
+        options=tuple(
+            PlanOptionProposal(
+                role=PlanOptionRole.MAIN if index == 0 else PlanOptionRole.ALTERNATIVE,
+                items=(
+                    PlanProposalItem(
+                        candidate_key="candidate_0",
+                        visit_duration_seconds=1800 + index * 600,
+                    ),
+                ),
+                reason=f"方案 {index}",
+            )
+            for index in range(3)
+        )
+    )
+    async with database.session() as session:
+        resolver = MapPlanFactResolver(
+            session=session,
+            map_provider=provider,
+            matching_policy=Settings(_env_file=None, app_env="test").place_matching_policy(),
+        )
+        base = await resolver.resolve(user_id=user_id, constraints=constraints)
+        assert not any(isinstance(call, RouteRequest) for call in calls)
+        resolved = await resolver.resolve_proposal_routes(
+            proposals=proposals,
+            candidate_keys={"candidate_0": (item.id,)},
+            base=base.draft,
+        )
+    await database.close()
+
     assert sum(isinstance(call, RouteRequest) for call in calls) == 1
+    assert len(resolved.routes) == 1
+    assert resolved.weather_status is WeatherAssessment.PROVIDER_FAILED
+    assert resolved.weather_source == "amap"
+    assert resolved.weather_queried_at is not None
+    assert resolved.weather_summary == "The map provider request timed out."
 
 
 @pytest.mark.asyncio
@@ -2366,12 +2450,12 @@ async def test_map_fact_chain_includes_date_range_event_with_visit_duration(
     assert result.draft.candidates[0].collection_item_ids == (event.id,)
     assert result.draft.candidates[0].event_start_at is None
     assert result.draft.candidates[0].event_end_at is None
-    assert sum(isinstance(call, RouteRequest) for call in calls) == 1
-    assert sum(isinstance(call, WeatherRequest) for call in calls) == 1
-    assert result.draft.weather_status is WeatherAssessment.COMPATIBLE
-    assert result.draft.weather_source == "amap"
-    assert result.draft.weather_queried_at is not None
-    assert result.draft.weather_summary == "晴"
+    assert sum(isinstance(call, RouteRequest) for call in calls) == 0
+    assert sum(isinstance(call, WeatherRequest) for call in calls) == 0
+    assert result.draft.weather_status is None
+    assert result.draft.weather_source is None
+    assert result.draft.weather_queried_at is None
+    assert result.draft.weather_summary is None
 
     retrieval_service, _ = _service([event])
     retrieval = await retrieval_service.retrieve(
@@ -2386,13 +2470,11 @@ async def test_map_fact_chain_includes_date_range_event_with_visit_duration(
         facts=result.draft,
     )
 
-    assert draft.outcome is PlanDraftOutcome.GENERATED
-    assert draft.options[0].items[0].start_at == START + timedelta(minutes=10)
-    assert draft.options[0].items[0].end_at == START + timedelta(minutes=70)
+    assert draft.outcome is PlanDraftOutcome.NOT_GENERATED
 
 
 @pytest.mark.asyncio
-async def test_weather_provider_failure_is_frozen_as_non_blocking_plan_risk(
+async def test_weather_is_not_queried_before_model_proposal(
     retrieval_database: str,
 ) -> None:
     user_id = generate_user_id()
@@ -2423,12 +2505,8 @@ async def test_weather_provider_failure_is_frozen_as_non_blocking_plan_risk(
     )
 
     assert collections.decisions[0].outcome is CandidateOutcome.INCLUDED
-    assert draft.outcome is PlanDraftOutcome.GENERATED
-    assert draft.weather_status is WeatherAssessment.PROVIDER_FAILED
-    assert draft.weather_source == "amap"
-    assert draft.weather_queried_at is not None
-    assert draft.weather_summary == "The map provider request timed out."
-    assert PlanRiskCode.WEATHER_PROVIDER_FAILED in draft.options[0].risk_codes
+    assert draft.outcome is PlanDraftOutcome.NOT_GENERATED
+    assert facts.draft.weather_status is None
 
 
 @pytest.mark.asyncio
@@ -2461,7 +2539,10 @@ async def test_area_only_plan_never_queries_or_fakes_an_origin_route(
     )
 
     assert not any(isinstance(call, RouteRequest) for call in calls)
-    assert collections.decisions[0].reason_codes == (CandidateReasonCode.ROUTE_UNKNOWN,)
+    assert collections.decisions[0].reason_codes == (
+        CandidateReasonCode.ROUTE_UNKNOWN,
+        CandidateReasonCode.WEATHER_UNKNOWN,
+    )
     assert draft.outcome is PlanDraftOutcome.GENERATED
     route = draft.options[0].items[0].inbound_route
     assert route.duration_seconds is None
@@ -2548,10 +2629,10 @@ async def test_one_failed_origin_route_excludes_only_that_candidate(
         facts=facts.draft,
     )
 
-    assert collections.included[0].title == "路线成功"
-    assert collections.excluded[0].reason_codes == (CandidateReasonCode.ROUTE_PROVIDER_FAILED,)
-    assert draft.outcome is PlanDraftOutcome.GENERATED
-    assert draft.options[0].items[0].title == "路线成功"
+    assert {candidate.title for candidate in collections.included} == {"路线失败", "路线成功"}
+    assert collections.excluded == ()
+    assert facts.draft.routes == ()
+    assert draft.outcome is PlanDraftOutcome.NOT_GENERATED
 
 
 @pytest.mark.asyncio
@@ -2598,7 +2679,8 @@ async def test_all_failed_origin_routes_report_the_route_reason(
     )
 
     assert draft.outcome is PlanDraftOutcome.NOT_GENERATED
-    assert draft.exclusions[0].reason_codes == (CandidateReasonCode.ROUTE_PROVIDER_FAILED,)
+    assert collections.included[0].title == item.title
+    assert draft.exclusions == ()
 
 
 @pytest.mark.asyncio
@@ -2797,10 +2879,7 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
         target=_brand_target(),
         tags=("咖啡",),
     )
-    exact_poi = _poi(
-        "poi_executor_exact",
-        name="城市展览馆",
-    ).model_copy(update={"opening_hours_summary": "10:00-18:00"})
+    exact_poi = branch
     exact = _place(user_id, title="城市展览馆", poi=exact_poi)
     current = datetime.now(UTC)
     constraints = _constraints(area=None, origin=ORIGIN).model_copy(
@@ -2810,6 +2889,8 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
             "created_at": current,
             "expires_at": current + timedelta(days=1),
             "pace": PlanPace.PACKED,
+            "include": ("测试咖啡",),
+            "original_request": "周六从前海出发，先看展再找一家安静咖啡店",
         }
     )
     calls: list[object] = []
@@ -2857,8 +2938,11 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
             async def resolve_proposal_routes(self, **kwargs):
                 return await delegate.resolve_proposal_routes(**kwargs)
 
+        proposal_inputs: list[dict[str, Any]] = []
+
         class FixedProposals:
             async def propose(self, **kwargs):
+                proposal_inputs.append(kwargs)
                 keys = tuple(item.candidate_key for item in kwargs["candidates"])
                 return PlanProposalSet(
                     options=(
@@ -2907,6 +2991,9 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
             proposals=FixedProposals(),  # type: ignore[arg-type]
         ).execute(user_id=user_id, constraints=constraints, approval=None)
     assert result.outcome is PlanGenerationOutcome.DRAFT
+    assert proposal_inputs[0]["request"] == constraints.original_request
+    proposal_tags = tuple(candidate.tags for candidate in proposal_inputs[0]["candidates"])
+    assert any("咖啡" in tags for tags in proposal_tags), proposal_tags
     assert resolved_constraints == [constraints]
     assert resolved_constraints[0].pace is PlanPace.PACKED
     assert result.memory_usages == {}
@@ -2919,6 +3006,10 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
     )
     assert planned, result.draft.model_dump(mode="json")
     assert all(draft_item.source.concrete_poi == branch for draft_item in planned)
+    assert all(
+        draft_item.source.collection_item_ids == tuple(sorted((item.id, exact.id)))
+        for draft_item in planned
+    )
     assert sum(isinstance(call, SearchPoiRequest) for call in calls) == 1
 
     calls.clear()

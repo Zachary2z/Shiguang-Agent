@@ -62,6 +62,7 @@ class PlanIntent(_Intent):
         *,
         now: datetime,
         origin: Coordinate | None = None,
+        original_request: str | None = None,
     ) -> PlanConstraintInput:
         return PlanConstraintInput(
             city_code=PlanCity.SHENZHEN,
@@ -69,6 +70,7 @@ class PlanIntent(_Intent):
             end_at=self.end_at,
             area=self.area,
             origin=origin,
+            original_request=original_request,
             budget=self.budget,
             pace=self.pace or PlanPace.BALANCED,
             pace_source=(

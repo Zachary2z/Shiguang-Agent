@@ -307,6 +307,7 @@ def assess_collection_candidate(
         collection_item_ids=(item.id,),
         kind=item.kind,
         title=item.title,
+        tags=item.tags[:16],
         poi=(
             poi.model_copy(deep=True)
             if poi is not None and item.kind is CollectionKind.PLACE
@@ -389,6 +390,7 @@ def _merge_duplicate_pois(
             update={
                 "collection_item_ids": source_ids,
                 "any_branch_collection_item_ids": branch_source_ids,
+                "tags": tuple(dict.fromkeys((*previous.tags, *decision.tags)))[:16],
                 "preference_score": preference_score,
                 "applied_memory_ids": contributing_ids[:1],
             },

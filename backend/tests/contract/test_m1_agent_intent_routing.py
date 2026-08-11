@@ -753,6 +753,13 @@ async def test_plan_route_asks_once_then_continues_same_session(
         assert second_result["plan_id"].startswith("pln_")
         assert "pending_context" in provider.calls[1].messages[-1]["content"]
         assert len(provider.calls) == 2
+        replay = await _submit(
+            client,
+            key="route-plan-followup",
+            text="五天后这个时间开始，我有四小时",
+        )
+        assert replay.json()["trace_id"] == second.json()["trace_id"]
+        assert len(provider.calls) == 2
 
         async with api.state.demo_database.session() as session:
             plan = await session.scalar(select(PlanModel))
@@ -762,6 +769,7 @@ async def test_plan_route_asks_once_then_continues_same_session(
             assert expires_at == end_at + timedelta(hours=1)
             assert expires_at > datetime.fromisoformat(plan.constraints_json["start_at"])
             assert "origin" not in plan.constraints_json
+            assert plan.constraints_json["original_request"] == "五天后这个时间开始，我有四小时"
             assert await session.scalar(select(func.count()).select_from(CollectionItemModel)) == 0
             assert await session.scalar(select(func.count()).select_from(MemoryModel)) == 0
 

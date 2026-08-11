@@ -97,6 +97,27 @@ _PUBLIC_FAILURE_REASON_PRIORITY = (
 )
 
 
+def _proposal_request(constraints: PlanConstraints) -> str:
+    if constraints.original_request is not None:
+        return constraints.original_request
+    facts = [
+        f"时间 {constraints.start_at.isoformat()} 至 {constraints.end_at.isoformat()}",
+        f"城市 {constraints.city_code.value}",
+    ]
+    if constraints.area is not None:
+        facts.append("区域 " + "、".join((*constraints.area.districts, *constraints.area.labels)))
+    elif constraints.origin is not None:
+        facts.append("已提供精确起点")
+    if constraints.include:
+        facts.append("希望包含 " + "、".join(constraints.include))
+    if constraints.exclude:
+        facts.append("明确排除 " + "、".join(constraints.exclude))
+    if constraints.budget is not None:
+        facts.append(f"预算 {constraints.budget} 元")
+    facts.append(f"节奏 {constraints.pace.value}")
+    return "计划条件：" + "；".join(facts)
+
+
 def plan_failure_code_for_retrieval(
     *,
     recovery_code: ExternalRecoveryCode | None,
@@ -141,7 +162,7 @@ class PlanFactResolver(Protocol):
         base: PlanDraftFactSnapshot,
     ) -> PlanDraftFactSnapshot: ...
 
-    async def resolve_external_route(
+    async def resolve_external_routes(
         self,
         *,
         proposals: PlanProposalSet,
@@ -243,6 +264,7 @@ class ExistingPlanServicesExecutor:
                 title=decision.title,
                 kind=decision.kind,
                 district=None if decision.poi is None else decision.poi.district,
+                tags=decision.tags,
                 preferred=bool(
                     set(decision.collection_item_ids)
                     & set(effective_constraints.selected_collection_item_ids)
@@ -250,7 +272,7 @@ class ExistingPlanServicesExecutor:
             )
             for key, decision in zip(candidate_keys, collections.included, strict=True)
         )
-        request = "、".join(effective_constraints.include) or "按当前约束生成计划"
+        request = _proposal_request(effective_constraints)
         proposals = (
             None
             if not candidates
@@ -335,6 +357,7 @@ class ExistingPlanServicesExecutor:
                         title=supplement.candidate.poi.name,
                         kind=CollectionKind.PLACE,
                         district=supplement.candidate.poi.district,
+                        required=True,
                     ),
                 )
                 proposals = await self._proposals.propose(
@@ -343,7 +366,7 @@ class ExistingPlanServicesExecutor:
                     candidates=candidates,
                     now=now,
                 )
-                external_candidates[external_key] = await self._facts.resolve_external_route(
+                external_candidates[external_key] = await self._facts.resolve_external_routes(
                     proposals=proposals,
                     external_key=external_key,
                     candidate=supplement.candidate,

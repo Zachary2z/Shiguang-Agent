@@ -39,4 +39,9 @@ def test_only_distinct_proposal_edges_are_requested() -> None:
             ),
         )
     )
-    assert proposal_route_edges(proposals) == (("a", "b"), ("b", "c"), ("a", "c"))
+    assert proposal_route_edges(proposals) == (
+        (None, "a"),
+        ("a", "b"),
+        ("b", "c"),
+        ("a", "c"),
+    )

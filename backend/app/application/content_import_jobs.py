@@ -618,7 +618,11 @@ class ContentImportJobHandler:
                             question=question,
                         )
                 resolved = resolve_plan_constraints(
-                    intent.constraints(now=now, origin=origin),
+                    intent.constraints(
+                        now=now,
+                        origin=origin,
+                        original_request=input.text,
+                    ),
                     now=now,
                 )
                 if isinstance(resolved, MissingPlanConstraintInfo):

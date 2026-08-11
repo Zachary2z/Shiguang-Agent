@@ -666,9 +666,13 @@ async def test_worker_approval_decisions_resume_and_repeat_existing_state(
     expected_status,
     expected_error,
 ) -> None:
+    original_request = "周六想去海上世界喝咖啡，再沿海边散步"
+    observed_requests: list[str | None] = []
+
     class ApprovalExecutor:
         async def execute(self, *, user_id, constraints, approval):
-            del user_id, constraints
+            del user_id
+            observed_requests.append(constraints.original_request)
             if approval is None:
                 return PlanGenerationResult(
                     outcome=PlanGenerationOutcome.WAITING_APPROVAL,
@@ -693,6 +697,14 @@ async def test_worker_approval_decisions_resume_and_repeat_existing_state(
         accepted = await client.post("/api/v1/plans", json=_request("m15-approval"))
         plan_id = accepted.json()["plan_id"]
         database = api.state.demo_database
+        async with database.session() as session:
+            row = await session.get(PlanModel, plan_id)
+            assert row is not None
+            row.constraints_json = {
+                **row.constraints_json,
+                "original_request": original_request,
+            }
+            await session.commit()
         handler = PlanGenerationJobHandler(
             session_factory=database.session_factory,
             pricing=ConfiguredPricingPolicy.from_settings(test_settings),
@@ -732,6 +744,7 @@ async def test_worker_approval_decisions_resume_and_repeat_existing_state(
         )
         assert repeated.status_code == 202
         assert repeated.json()["replayed"] is True
+        assert observed_requests == [original_request, original_request]
 
 
 @pytest.mark.asyncio

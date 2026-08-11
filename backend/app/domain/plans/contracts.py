@@ -214,6 +214,7 @@ class _PlanConstraintValues(PlanContract):
     city_code: PlanCity
     area: ActivityArea | None = Field(default=None, repr=False)
     origin: Coordinate | None = Field(default=None, repr=False, exclude=True)
+    original_request: str | None = Field(default=None, repr=False, exclude=True)
     budget: Decimal | None = Field(
         default=None,
         ge=0,
@@ -253,6 +254,15 @@ class _PlanConstraintValues(PlanContract):
             field_name=str(field_name),
             max_count=_MAX_REQUIREMENTS,
             max_length=80,
+        )
+
+    @field_validator("original_request")
+    @classmethod
+    def normalize_original_request(cls, value: str | None) -> str | None:
+        return (
+            None
+            if value is None
+            else _normalize_text(value, field_name="original_request", max_length=4000)
         )
 
     @field_validator("selected_collection_item_ids", mode="before")
@@ -342,6 +352,8 @@ def plan_constraints_internal_dump(
     values = constraints.model_dump(mode=mode)
     if constraints.origin is not None:
         values["origin"] = constraints.origin.model_dump(mode=mode)
+    if constraints.original_request is not None:
+        values["original_request"] = constraints.original_request
     return values
 
 
@@ -415,6 +427,7 @@ def resolve_plan_constraints(
         end_at=value.end_at,
         area=value.area,
         origin=value.origin,
+        original_request=value.original_request,
         budget=value.budget,
         pace=value.pace,
         pace_source=value.pace_source,
