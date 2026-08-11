@@ -65,7 +65,6 @@ class CandidateReasonCode(StrEnum):
     DISTRICT_UNKNOWN = "DISTRICT_UNKNOWN"
     DISTRICT_MISMATCH = "DISTRICT_MISMATCH"
     AREA_MISMATCH = "AREA_MISMATCH"
-    INCLUDE_NOT_MATCHED = "INCLUDE_NOT_MATCHED"
     EXCLUDED_BY_USER = "EXCLUDED_BY_USER"
     BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
     PRICE_UNKNOWN = "PRICE_UNKNOWN"
@@ -209,7 +208,6 @@ REASON_SUMMARIES: dict[CandidateReasonCode, str] = {
     CandidateReasonCode.DISTRICT_UNKNOWN: "The item district needs confirmation.",
     CandidateReasonCode.DISTRICT_MISMATCH: "The item is outside the requested district.",
     CandidateReasonCode.AREA_MISMATCH: "The item is outside the requested activity area.",
-    CandidateReasonCode.INCLUDE_NOT_MATCHED: "The item does not match every required term.",
     CandidateReasonCode.EXCLUDED_BY_USER: "The item matches an explicit exclusion.",
     CandidateReasonCode.BUDGET_EXCEEDED: "The known price exceeds the budget.",
     CandidateReasonCode.PRICE_UNKNOWN: "The price needs confirmation.",
@@ -242,7 +240,7 @@ def external_poi_scope_reasons(
     poi: Poi,
     constraints: PlanConstraints,
 ) -> tuple[CandidateReasonCode, ...]:
-    """Apply explicit plan city/area/include/exclude rules to an external POI."""
+    """Apply explicit plan city, area, and exclude rules to an external POI."""
 
     def identity(value: str) -> str:
         return "".join(normalize("NFKC", value).casefold().split())
@@ -278,8 +276,6 @@ def external_poi_scope_reasons(
             matches(label) for label in constraints.area.labels
         ):
             reasons.add(CandidateReasonCode.AREA_MISMATCH)
-    if any(not matches(term) for term in constraints.include):
-        reasons.add(CandidateReasonCode.INCLUDE_NOT_MATCHED)
     if any(matches(term) for term in constraints.exclude):
         reasons.add(CandidateReasonCode.EXCLUDED_BY_USER)
     return tuple(code for code in CandidateReasonCode if code in reasons)
@@ -292,7 +288,6 @@ _EXCLUSION_REASONS = frozenset(
         CandidateReasonCode.TIME_WINDOW_CONFLICT,
         CandidateReasonCode.DISTRICT_MISMATCH,
         CandidateReasonCode.AREA_MISMATCH,
-        CandidateReasonCode.INCLUDE_NOT_MATCHED,
         CandidateReasonCode.EXCLUDED_BY_USER,
         CandidateReasonCode.BUDGET_EXCEEDED,
         CandidateReasonCode.ROUTE_UNREACHABLE,

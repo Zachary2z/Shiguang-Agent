@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 
@@ -114,6 +115,8 @@ async def test_initial_generation_returns_exactly_three_role_ordered_options() -
     assert provider.calls[0].tools is None
     assert provider.calls[0].response_format is not None
     assert provider.calls[0].response_format.mode is StructuredOutputMode.JSON_SCHEMA
+    payload = json.loads(provider.calls[0].messages[1]["content"])
+    assert payload["constraints"]["include"] == ["看展", "喝咖啡"]
 
 
 @pytest.mark.asyncio

@@ -24,6 +24,9 @@ from app.domain.plans.retrieval import (
     StructuredCollectionResult,
 )
 from app.domain.plans.supplement import (
+    ExternalApprovalDecision,
+    ExternalPlaceApprovalDecision,
+    ExternalPlaceApprovalRequirement,
     ExternalSupplementOutcome,
     RequiredGapKind,
     RequiredPlanGap,
@@ -47,13 +50,18 @@ POI = Poi(
 )
 
 
-def _constraints(*, collection_only: bool = False) -> PlanConstraints:
+def _constraints(
+    *,
+    collection_only: bool = False,
+    include: tuple[str, ...] = (),
+) -> PlanConstraints:
     return PlanConstraints(
         city_code=PlanCity.SHENZHEN,
         start_at=NOW + timedelta(days=1),
         end_at=NOW + timedelta(days=1, hours=4),
         area=ActivityArea(districts=("福田区",)),
         collection_only=collection_only,
+        include=include,
         created_at=NOW,
         expires_at=NOW + timedelta(hours=1),
     )
@@ -161,6 +169,26 @@ async def test_collection_core_allows_one_read_only_search_and_returns_uncollect
         approval_decision=None,
         queried_at=NOW,
     )
+    assert result.outcome is ExternalSupplementOutcome.CANDIDATE
+    assert result.candidate is not None
+    assert result.candidate.poi == POI
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_external_place_does_not_have_to_match_every_plan_include_goal() -> None:
+    calls: list[object] = []
+    result = await _service(calls).generate(
+        constraints=_constraints(include=("看展", "逛公园", "喝咖啡")),
+        collections=StructuredCollectionResult(),
+        required_gap=_gap(),
+        approval_decision=ExternalPlaceApprovalDecision(
+            approval_id=ExternalPlaceApprovalRequirement.for_gap(_gap()).approval_id,
+            decision=ExternalApprovalDecision.APPROVED,
+        ),
+        queried_at=NOW,
+    )
+
     assert result.outcome is ExternalSupplementOutcome.CANDIDATE
     assert result.candidate is not None
     assert result.candidate.poi == POI

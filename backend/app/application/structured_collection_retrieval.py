@@ -248,8 +248,6 @@ def assess_collection_candidate(
                 reasons.add(CandidateReasonCode.AREA_MISMATCH)
 
     searchable = _searchable_values(item, poi)
-    if any(not _matches_term(term, searchable) for term in constraints.include):
-        reasons.add(CandidateReasonCode.INCLUDE_NOT_MATCHED)
     if any(_matches_term(term, searchable) for term in constraints.exclude):
         reasons.add(CandidateReasonCode.EXCLUDED_BY_USER)
 

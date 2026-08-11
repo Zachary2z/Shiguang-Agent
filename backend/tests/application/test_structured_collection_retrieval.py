@@ -1393,7 +1393,7 @@ async def test_date_range_event_outside_plan_date_is_conflict_or_ended() -> None
 
 
 @pytest.mark.asyncio
-async def test_district_area_tags_keywords_include_and_exclude_are_hard_rules() -> None:
+async def test_plan_include_is_not_a_candidate_rule_but_exclude_remains_hard() -> None:
     user_id = generate_user_id()
     poi = _poi("poi_keywords", district="南山区", name="安静咖啡馆", poi_type=PoiType.CAFE)
     item = _place(user_id, poi=poi, tags=("室内", "咖啡"))
@@ -1414,7 +1414,6 @@ async def test_district_area_tags_keywords_include_and_exclude_are_hard_rules() 
     assert decision.outcome is CandidateOutcome.EXCLUDED
     assert CandidateReasonCode.DISTRICT_MISMATCH in decision.reason_codes
     assert CandidateReasonCode.AREA_MISMATCH in decision.reason_codes
-    assert CandidateReasonCode.INCLUDE_NOT_MATCHED in decision.reason_codes
     assert CandidateReasonCode.EXCLUDED_BY_USER in decision.reason_codes
 
 
@@ -2889,9 +2888,14 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
         target=_brand_target(),
         tags=("咖啡",),
     )
-    exact_poi = branch
-    exact = _place(user_id, title="城市展览馆", poi=exact_poi)
-    park = _place(user_id, title="莲花山公园", poi=_poi("executor-park"))
+    exact_poi = _poi("executor-museum", name="深圳市当代艺术与城市规划馆")
+    exact = _place(user_id, title=exact_poi.name, poi=exact_poi, tags=("看展",))
+    park = _place(
+        user_id,
+        title="莲花山公园",
+        poi=_poi("executor-park"),
+        tags=("逛公园",),
+    )
     current = datetime.now(UTC)
     constraints = _constraints(area=None, origin=ORIGIN).model_copy(
         update={
@@ -2900,7 +2904,7 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
             "created_at": current,
             "expires_at": current + timedelta(days=1),
             "pace": PlanPace.PACKED,
-            "include": (),
+            "include": ("看展", "逛公园", "喝咖啡"),
             "selected_collection_item_ids": (item.id,),
             "original_request": "周六从前海出发，先看展再找一家安静咖啡店",
         }
@@ -3004,14 +3008,21 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
             proposals=FixedProposals(),  # type: ignore[arg-type]
         ).execute(user_id=user_id, constraints=constraints, approval=None)
     assert result.outcome is PlanGenerationOutcome.DRAFT
+    assert len(proposal_inputs) == 1
     assert proposal_inputs[0]["request"] == constraints.original_request
+    assert proposal_inputs[0]["constraints"].include == constraints.include
+    assert {candidate.title for candidate in proposal_inputs[0]["candidates"]} == {
+        "A测试咖啡",
+        "深圳市当代艺术与城市规划馆",
+        "莲花山公园",
+    }
     proposal_tags = tuple(candidate.tags for candidate in proposal_inputs[0]["candidates"])
     assert any("咖啡" in tags for tags in proposal_tags), proposal_tags
     assert [candidate.preferred for candidate in proposal_inputs[0]["candidates"]].count(
         True
     ) == 1
     assert all(not candidate.required for candidate in proposal_inputs[0]["candidates"])
-    assert len(proposal_inputs[0]["candidates"]) == 2
+    assert len(proposal_inputs[0]["candidates"]) == 3
     assert resolved_constraints == [constraints]
     assert resolved_constraints[0].pace is PlanPace.PACKED
     assert result.memory_usages == {}
@@ -3024,10 +3035,7 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
     )
     assert planned, result.draft.model_dump(mode="json")
     assert all(draft_item.source.concrete_poi == branch for draft_item in planned)
-    assert all(
-        draft_item.source.collection_item_ids == tuple(sorted((item.id, exact.id)))
-        for draft_item in planned
-    )
+    assert all(draft_item.source.collection_item_ids == (item.id,) for draft_item in planned)
     assert sum(isinstance(call, SearchPoiRequest) for call in calls) == 1
 
     calls.clear()
