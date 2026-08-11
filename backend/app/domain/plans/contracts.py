@@ -293,8 +293,6 @@ class _PlanConstraintValues(PlanContract):
         exclude = {value.casefold() for value in self.exclude}
         if include & exclude:
             raise ValueError("include and exclude must not conflict")
-        if self.selected_collection_item_ids and not self.collection_only:
-            raise ValueError("selected collection items require collection_only")
         if not set(self.required_collection_item_ids).issubset(
             self.selected_collection_item_ids
         ):

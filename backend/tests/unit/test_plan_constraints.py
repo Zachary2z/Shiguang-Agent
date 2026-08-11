@@ -90,23 +90,32 @@ def test_complete_constraints_are_explicit_strict_and_provider_neutral() -> None
     assert constraints.collection_only is False
 
 
-def test_selected_collection_items_are_bounded_deduplicated_and_collection_only() -> None:
+def test_selected_collection_items_are_bounded_deduplicated_and_independent() -> None:
     first = "col_0123456789abcdef0123456789abcdef"
     second = "col_1123456789abcdef0123456789abcdef"
     constraints = complete(
-        collection_only=True,
         selected_collection_item_ids=(first, second, first),
     )
 
     assert constraints.selected_collection_item_ids == (first, second)
-    with pytest.raises(ValidationError, match="collection_only"):
-        complete(selected_collection_item_ids=(first,))
+    assert constraints.collection_only is False
     with pytest.raises(ValidationError):
         complete(
             collection_only=True,
             selected_collection_item_ids=tuple(
                 f"col_{index:032x}" for index in range(21)
             ),
+        )
+
+
+def test_required_collection_items_must_be_selected() -> None:
+    selected = "col_0123456789abcdef0123456789abcdef"
+    required = "col_1123456789abcdef0123456789abcdef"
+
+    with pytest.raises(ValidationError, match="must also be selected"):
+        complete(
+            selected_collection_item_ids=(selected,),
+            required_collection_item_ids=(required,),
         )
 
 

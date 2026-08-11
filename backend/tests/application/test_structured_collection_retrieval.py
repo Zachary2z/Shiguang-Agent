@@ -281,7 +281,9 @@ def _constraints(
     origin: Coordinate | None = None,
     include: tuple[str, ...] = (),
     exclude: tuple[str, ...] = (),
+    collection_only: bool = False,
     selected_collection_item_ids: tuple[str, ...] = (),
+    required_collection_item_ids: tuple[str, ...] = (),
 ) -> PlanConstraints:
     return PlanConstraints(
         city_code=PlanCity.SHENZHEN,
@@ -292,15 +294,16 @@ def _constraints(
         budget=budget,
         include=include,
         exclude=exclude,
-        collection_only=bool(selected_collection_item_ids),
+        collection_only=collection_only,
         selected_collection_item_ids=selected_collection_item_ids,
+        required_collection_item_ids=required_collection_item_ids,
         created_at=NOW,
         expires_at=END + timedelta(days=1),
     )
 
 
 @pytest.mark.asyncio
-async def test_selected_collection_items_are_the_only_retrieval_candidates() -> None:
+async def test_preferred_selection_keeps_other_executable_candidates() -> None:
     user_id = generate_user_id()
     selected = _place(user_id, title="选中的收藏", poi=_poi("selected"))
     unselected = _place(user_id, title="未选中的收藏", poi=_poi("unselected"))
@@ -315,7 +318,53 @@ async def test_selected_collection_items_are_the_only_retrieval_candidates() -> 
         now=NOW,
     )
 
+    assert {decision.collection_item_ids for decision in result.included} == {
+        (selected.id,),
+        (unselected.id,),
+    }
+
+
+@pytest.mark.asyncio
+async def test_collection_only_selection_excludes_unselected_candidates() -> None:
+    user_id = generate_user_id()
+    selected = _place(user_id, title="选中的收藏", poi=_poi("selected-only"))
+    unselected = _place(user_id, title="未选中的收藏", poi=_poi("unselected-only"))
+
+    result = await StructuredCollectionRetrievalService(
+        repository=ReadOnlyRepository([unselected, selected])
+    ).retrieve(
+        user_id=user_id,
+        constraints=_constraints(
+            collection_only=True,
+            selected_collection_item_ids=(selected.id,),
+        ),
+        facts=PlanningFactSnapshot(),
+        now=NOW,
+    )
+
     assert [decision.collection_item_ids for decision in result.decisions] == [(selected.id,)]
+
+
+@pytest.mark.asyncio
+async def test_collection_only_without_selection_uses_the_collection_library() -> None:
+    user_id = generate_user_id()
+    items = [
+        _place(user_id, title="收藏一", poi=_poi("library-one")),
+        _place(user_id, title="收藏二", poi=_poi("library-two")),
+    ]
+
+    result = await StructuredCollectionRetrievalService(
+        repository=ReadOnlyRepository(items)
+    ).retrieve(
+        user_id=user_id,
+        constraints=_constraints(collection_only=True),
+        facts=PlanningFactSnapshot(),
+        now=NOW,
+    )
+
+    assert {decision.collection_item_ids for decision in result.included} == {
+        (item.id,) for item in items
+    }
 
 
 @pytest.mark.asyncio
@@ -348,7 +397,10 @@ async def test_deleted_selected_collection_is_not_replaced() -> None:
         repository=ReadOnlyRepository([deleted, available])
     ).retrieve(
         user_id=user_id,
-        constraints=_constraints(selected_collection_item_ids=(deleted.id,)),
+        constraints=_constraints(
+            collection_only=True,
+            selected_collection_item_ids=(deleted.id,),
+        ),
         facts=PlanningFactSnapshot(),
         now=NOW,
     )
@@ -379,7 +431,7 @@ async def test_selected_collection_still_obeys_plan_hard_constraints() -> None:
 
 
 @pytest.mark.asyncio
-async def test_selected_exact_collection_treats_area_label_as_preference() -> None:
+async def test_selected_exact_collection_does_not_bypass_area_label() -> None:
     user_id = generate_user_id()
     museum_poi = _poi("museum-selected", name="深圳市当代艺术与城市规划馆").model_copy(
         update={"business_area": "莲花山", "address": "福中路184号"}
@@ -406,42 +458,11 @@ async def test_selected_exact_collection_treats_area_label_as_preference() -> No
         ),
         now=NOW,
     )
-    first, second = ((item.id,) for item in selected)
-    draft = PlanDraftService().generate(
-        constraints=constraints,
-        collections=result,
-        facts=PlanDraftFactSnapshot(
-            candidates=tuple(
-                DraftCandidateFacts(
-                    collection_item_ids=(item.id,),
-                )
-                for item in selected
-            ),
-            routes=(
-                DraftRouteFacts(
-                    from_collection_item_ids=first,
-                    to_collection_item_ids=second,
-                    duration_seconds=600,
-                    distance_meters=1_000,
-                    transport_mode=TransportMode.TRANSIT,
-                ),
-                DraftRouteFacts(
-                    from_collection_item_ids=second,
-                    to_collection_item_ids=first,
-                    duration_seconds=600,
-                    distance_meters=1_000,
-                    transport_mode=TransportMode.TRANSIT,
-                ),
-            ),
-        ),
-    )
-
-    assert {item.title for item in result.included} == {item.title for item in selected}
+    assert result.included == ()
     assert all(
-        CandidateReasonCode.AREA_MISMATCH not in item.reason_codes for item in result.included
+        CandidateReasonCode.AREA_MISMATCH in item.reason_codes
+        for item in result.decisions
     )
-    assert draft.outcome is PlanDraftOutcome.GENERATED
-    assert {item.title for item in draft.options[0].items} == {item.title for item in selected}
 
 
 def _pace_memory(value: PlanPace) -> Memory:
@@ -2722,7 +2743,7 @@ async def test_map_fact_chain_resolves_any_branch_to_one_fixed_poi(
 
 
 @pytest.mark.asyncio
-async def test_selected_any_branch_resolves_without_literal_area_label_match(
+async def test_selected_any_branch_does_not_bypass_area_label(
     retrieval_database: str,
 ) -> None:
     user_id = generate_user_id()
@@ -2779,20 +2800,9 @@ async def test_selected_any_branch_resolves_without_literal_area_label_match(
         facts=facts.retrieval,
         now=NOW,
     )
-    draft = PlanDraftService().generate(
-        constraints=constraints,
-        collections=collections,
-        facts=facts.draft,
-    )
-
-    assert collections.included[0].poi == chosen
-    assert CandidateReasonCode.AREA_MISMATCH not in collections.included[0].reason_codes
-    assert sum(isinstance(call, SearchPoiRequest) for call in calls) == 1
-    assert draft.outcome is PlanDraftOutcome.GENERATED
-    source = draft.options[0].items[0].source
-    assert source.concrete_poi == chosen
-    assert source.any_branch_collection_item_ids == (item.id,)
-    assert source.poi_queried_at is not None
+    assert collections.included == ()
+    assert CandidateReasonCode.AREA_MISMATCH in collections.decisions[0].reason_codes
+    assert sum(isinstance(call, SearchPoiRequest) for call in calls) == 0
 
 
 @pytest.mark.asyncio
@@ -2881,6 +2891,7 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
     )
     exact_poi = branch
     exact = _place(user_id, title="城市展览馆", poi=exact_poi)
+    park = _place(user_id, title="莲花山公园", poi=_poi("executor-park"))
     current = datetime.now(UTC)
     constraints = _constraints(area=None, origin=ORIGIN).model_copy(
         update={
@@ -2889,7 +2900,8 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
             "created_at": current,
             "expires_at": current + timedelta(days=1),
             "pace": PlanPace.PACKED,
-            "include": ("测试咖啡",),
+            "include": (),
+            "selected_collection_item_ids": (item.id,),
             "original_request": "周六从前海出发，先看展再找一家安静咖啡店",
         }
     )
@@ -2908,6 +2920,7 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
         )
         await repository.add_collection_item(user_id=user_id, item=item)
         await repository.add_collection_item(user_id=user_id, item=exact)
+        await repository.add_collection_item(user_id=user_id, item=park)
         await MemoryService(session).create_explicit(
             user_id=user_id,
             memory_type=MemoryType.PACE_PREFERENCE,
@@ -2994,6 +3007,11 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
     assert proposal_inputs[0]["request"] == constraints.original_request
     proposal_tags = tuple(candidate.tags for candidate in proposal_inputs[0]["candidates"])
     assert any("咖啡" in tags for tags in proposal_tags), proposal_tags
+    assert [candidate.preferred for candidate in proposal_inputs[0]["candidates"]].count(
+        True
+    ) == 1
+    assert all(not candidate.required for candidate in proposal_inputs[0]["candidates"])
+    assert len(proposal_inputs[0]["candidates"]) == 2
     assert resolved_constraints == [constraints]
     assert resolved_constraints[0].pace is PlanPace.PACKED
     assert result.memory_usages == {}
@@ -3055,6 +3073,67 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
     assert default_resolved[0].pace_source is PlanPaceSource.MEMORY_DEFAULT
     assert len(default_result.memory_usages) == 1
     assert default_result.effective_constraints == default_resolved[0]
+
+
+@pytest.mark.asyncio
+async def test_required_selected_candidate_rejected_by_hard_rule_returns_conflict(
+    retrieval_database: str,
+) -> None:
+    user_id = generate_user_id()
+    required = _place(
+        user_id,
+        title="已归档必选收藏",
+        poi=_poi("required-archived"),
+        status=CollectionStatus.ARCHIVED,
+    )
+    current = datetime.now(UTC)
+    constraints = _constraints(
+        area=None,
+        origin=ORIGIN,
+        selected_collection_item_ids=(required.id,),
+        required_collection_item_ids=(required.id,),
+    ).model_copy(
+        update={
+            "start_at": current + timedelta(hours=1),
+            "end_at": current + timedelta(hours=5),
+            "created_at": current,
+            "expires_at": current + timedelta(days=1),
+        }
+    )
+    calls: list[object] = []
+    provider = _map_fact_provider(constraints=constraints, calls=calls)
+    database = Database(retrieval_database)
+    async with database.session() as session:
+        repository = SqlAlchemyCollectionRepository(session)
+        await repository.add_user(
+            user_id=user_id,
+            user=User(id=user_id, mode=UserMode.REAL, created_at=NOW),
+        )
+        await repository.add_collection_item(user_id=user_id, item=required)
+        await session.commit()
+    async with database.session() as session:
+        facts = MapPlanFactResolver(
+            session=session,
+            map_provider=provider,
+            matching_policy=Settings(_env_file=None, app_env="test").place_matching_policy(),
+        )
+
+        class UnexpectedProposals:
+            async def propose(self, **kwargs):
+                del kwargs
+                raise AssertionError("hard-conflicting required items must not reach the model")
+
+        result = await ExistingPlanServicesExecutor(
+            session=session,
+            map_provider=provider,
+            matching_policy=Settings(_env_file=None, app_env="test").place_matching_policy(),
+            facts=facts,
+            proposals=UnexpectedProposals(),  # type: ignore[arg-type]
+        ).execute(user_id=user_id, constraints=constraints, approval=None)
+    await database.close()
+
+    assert result.outcome is PlanGenerationOutcome.FAILED
+    assert result.error_code == "REQUIRED_COLLECTION_CONFLICT"
 
 
 @pytest.mark.asyncio

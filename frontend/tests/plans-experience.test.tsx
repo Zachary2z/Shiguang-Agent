@@ -193,13 +193,15 @@ function bootstrap(items: object[] = []) {
 }
 
 describe("PlansExperience", () => {
-  it("keeps selected collection IDs in the existing create request", async () => {
+  it("sends selected collections as preferred without forcing collection-only", async () => {
     const selected = "col_0123456789abcdef0123456789abcdef";
     currentQuery = `collection=${selected}&collection=${selected}&required=${selected}`;
     const request = bootstrap();
     render(<PlansExperience />);
 
     expect(await screen.findByText("已选择 1 个收藏，其中 1 个必须安排；其余由模型按条件取舍。")).toBeInTheDocument();
+    expect(screen.getByLabelText("只使用我的收藏")).not.toBeChecked();
+    expect(screen.getByLabelText("只使用我的收藏")).toBeEnabled();
     await userEvent.click(screen.getByRole("button", { name: "检查生成条件" }));
     request.mockResolvedValueOnce({
       plan_id: plan.id,
@@ -216,9 +218,38 @@ describe("PlansExperience", () => {
       );
       expect(call).toBeDefined();
       const body = JSON.parse(String(call?.[1]?.body));
-      expect(body.collection_only).toBe(true);
+      expect(body.collection_only).toBe(false);
       expect(body.selected_collection_item_ids).toEqual([selected]);
       expect(body.required_collection_item_ids).toEqual([selected]);
+    });
+  });
+
+  it("sends collection-only only after the user explicitly selects it", async () => {
+    const selected = "col_0123456789abcdef0123456789abcdef";
+    currentQuery = `collection=${selected}`;
+    const request = bootstrap();
+    render(<PlansExperience />);
+
+    await screen.findByText("已选择 1 个收藏，其中 0 个必须安排；其余由模型按条件取舍。");
+    await userEvent.click(screen.getByLabelText("只使用我的收藏"));
+    await userEvent.click(screen.getByRole("button", { name: "检查生成条件" }));
+    request.mockResolvedValueOnce({
+      plan_id: plan.id,
+      trace_id: plan.trace_id,
+      events_url: plan.events_url,
+      result_url: plan.result_url,
+      replayed: false,
+    });
+    await userEvent.click(screen.getByRole("button", { name: "确认并生成" }));
+
+    await waitFor(() => {
+      const call = request.mock.calls.find(
+        ([path, options]) => path === "/api/v1/plans" && options?.method === "POST",
+      );
+      const body = JSON.parse(String(call?.[1]?.body));
+      expect(body.collection_only).toBe(true);
+      expect(body.selected_collection_item_ids).toEqual([selected]);
+      expect(body.required_collection_item_ids).toEqual([]);
     });
   });
 

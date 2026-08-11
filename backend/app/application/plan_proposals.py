@@ -346,8 +346,6 @@ def _apply_constraint_changes(
         return constraints
     values = plan_constraints_internal_dump(constraints, mode="python")
     for field_name in changes.model_fields_set:
-        if field_name == "collection_only" and constraints.selected_collection_item_ids:
-            continue
         values[field_name] = getattr(changes, field_name)
     if "area" in changes.model_fields_set:
         values["origin"] = None

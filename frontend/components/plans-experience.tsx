@@ -338,7 +338,7 @@ export function PlansExperience() {
   const [transport, setTransport] = useState("transit");
   const [include, setInclude] = useState("");
   const [exclude, setExclude] = useState("");
-  const [collectionOnly, setCollectionOnly] = useState(selectedCollectionItemIds.length > 0);
+  const [collectionOnly, setCollectionOnly] = useState(false);
   const [adjustment, setAdjustment] = useState("");
   const [optionIndex, setOptionIndex] = useState(0);
   const [feedback, setFeedback] = useState("");
@@ -539,7 +539,7 @@ export function PlansExperience() {
       transport_modes: [transport],
       include: include.trim() ? [include.trim()] : [],
       exclude: exclude.trim() ? [exclude.trim()] : [],
-      collection_only: selectedCollectionItemIds.length > 0 || collectionOnly,
+      collection_only: collectionOnly,
       selected_collection_item_ids: selectedCollectionItemIds,
       required_collection_item_ids: requiredCollectionItemIds,
     }),
@@ -998,7 +998,7 @@ export function PlansExperience() {
               <label>主要交通<select name="transport_mode" value={transport} onChange={(event) => { setTransport(event.target.value); setDirty(true); }}><option value="walking">步行</option><option value="cycling">骑行</option><option value="transit">公共交通</option><option value="driving">驾车</option></select></label>
               <label>希望包含<input name="include" value={include} onChange={(event) => { setInclude(event.target.value); setDirty(true); }} autoComplete="off" placeholder="例如：海边咖啡" /></label>
               <label>希望避开<input name="exclude" value={exclude} onChange={(event) => { setExclude(event.target.value); setDirty(true); }} autoComplete="off" placeholder="例如：大型商场" /></label>
-              <label className="plan-check"><input name="collection_only" type="checkbox" checked={selectedCollectionItemIds.length > 0 || collectionOnly} disabled={selectedCollectionItemIds.length > 0} onChange={(event) => { setCollectionOnly(event.target.checked); setDirty(true); }} /><span>只使用我的收藏</span></label>
+              <label className="plan-check"><input name="collection_only" type="checkbox" checked={collectionOnly} onChange={(event) => { setCollectionOnly(event.target.checked); setDirty(true); }} /><span>只使用我的收藏</span></label>
             </div>
             <button className="primary-button plan-primary" type="submit">检查生成条件</button>
           </form>
@@ -1013,7 +1013,7 @@ export function PlansExperience() {
                 <div><dt>预算</dt><dd>{budget ? `¥${budget}` : "未设置 · 费用未知会明确标记"}</dd></div>
                 <div><dt>节奏 / 交通</dt><dd>{paceLabels[pace]} · {transportLabels[transport]}</dd></div>
                 <div><dt>包含 / 避开</dt><dd>{include || "无指定"} / {exclude || "无指定"}</dd></div>
-                <div><dt>地点来源</dt><dd>{selectedCollectionItemIds.length > 0 ? `已选择 ${selectedCollectionItemIds.length} 个收藏` : collectionOnly ? "仅收藏" : "优先收藏；不足时先征求外部补充授权"}</dd></div>
+                <div><dt>地点来源</dt><dd>{collectionOnly ? (selectedCollectionItemIds.length > 0 ? `仅使用已选择的 ${selectedCollectionItemIds.length} 个收藏` : "仅收藏") : selectedCollectionItemIds.length > 0 ? `优先 ${selectedCollectionItemIds.length} 个已选择收藏；其他候选仍可参与` : "优先收藏；不足时先征求外部补充授权"}</dd></div>
               </dl>
               <div className="constraint-actions">
                 <button type="button" onClick={() => setPhase("editing")}>返回修改</button>

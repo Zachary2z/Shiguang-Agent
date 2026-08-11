@@ -4,10 +4,28 @@
 |---|---|
 | 当前总阶段 | 模型驱动计划生成：开发中 |
 | 当前子阶段 | 模型驱动计划生成第三批：方案调整、版本与确认交互 |
-| 状态 | 第三批开发完成，等待主控验收；M2-0 未开始 |
+| 状态 | 第三批 selected / collection_only P1 修复完成，等待主控复验；M2-0 未开始 |
 | 当前分支 | codex/m1-model-driven-plan-interactions |
 | 最近更新 | 2026-08-11 |
-| 阻塞项 | 无未关闭 P0/P1；第三批等待主控验收，不得开始 M2-0 |
+| 阻塞项 | 第三批 selected / collection_only P1 等待主控复验；不得开始 M2-0 |
+
+## 2026-08-11 第三批 selected / collection_only 语义 P1 修复
+
+- P1 修复完成，等待主控复验；M2-0 未开始。`selected_collection_item_ids` 仅表示
+  preferred，`required_collection_item_ids` 仍必须是 selected 子集且仅表示用户明确
+  勾选的硬要求，`collection_only` 恢复为独立开关。
+- 唯一事实与结构化检索链路仅在 `collection_only=true` 且存在 selected 时缩减为所选
+  收藏；否则检索全部符合城市、状态、Event 时间、范围、预算、排除和可达性硬约束的
+  收藏。已删除 selected 绕过活动范围的旧特例，required 被硬过滤时继续返回
+  `REQUIRED_COLLECTION_CONFLICT`。
+- Web/H5 不再因收藏页带入 selected 自动勾选、锁定或发送 `collection_only=true`；默认
+  为 false，只有用户明确勾选才为 true。既有 required 选择、三个方案、调整、确认、
+  版本、执行和分享行为未修改。
+- 验证通过：pip check、Ruff、strict mypy（142 个源文件）；指定后端聚焦
+  `174 passed`；非真实 Provider/Map 全集 `1783 passed, 18 skipped, 2 deselected`；
+  Alembic 唯一 head `20260729_0017`；前端 lint、typecheck、production build、指定
+  Vitest `73 passed` 及 Playwright `3 passed`。未读取 `.env`，真实模型、地图及其他
+  外部 API 调用为 0；未新增迁移、依赖、服务、fallback 或重试，未合并、未推送。
 
 ## 2026-08-11 模型驱动计划生成第三批：方案调整、版本与确认交互
 

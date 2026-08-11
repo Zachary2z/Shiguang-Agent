@@ -130,14 +130,14 @@ async def test_each_explicit_action_only_changes_the_selected_option(
 
 
 @pytest.mark.asyncio
-async def test_constraint_change_preserves_private_collection_contract() -> None:
+async def test_constraint_change_preserves_private_collection_ids() -> None:
     _, constraints, _, provider = await _adjust(
         '{"constraint_changes":{"pace":"relaxed","collection_only":false},'
         '"change_summary":"节奏放松"}'
     )
 
     assert constraints.pace is PlanPace.RELAXED
-    assert constraints.collection_only is True
+    assert constraints.collection_only is False
     assert constraints.required_collection_item_ids == _constraints().required_collection_item_ids
     request = str(provider.calls[0].messages)
     assert "required_collection_item_ids" not in request

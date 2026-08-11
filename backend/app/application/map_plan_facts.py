@@ -112,7 +112,7 @@ class MapPlanFactResolver:
             user_id=user_id,
             include_inactive=True,
         )
-        if constraints.selected_collection_item_ids:
+        if constraints.collection_only and constraints.selected_collection_item_ids:
             by_id = {item.id: item for item in items}
             items = [
                 by_id[identifier]

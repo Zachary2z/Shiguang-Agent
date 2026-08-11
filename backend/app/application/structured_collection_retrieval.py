@@ -242,10 +242,7 @@ def assess_collection_candidate(
                 reasons.add(CandidateReasonCode.DISTRICT_UNKNOWN)
             elif _text_identity(district) not in allowed:
                 reasons.add(CandidateReasonCode.DISTRICT_MISMATCH)
-        if (
-            constraints.area.labels
-            and item.id not in constraints.selected_collection_item_ids
-        ):
+        if constraints.area.labels:
             values = _searchable_values(item, poi)
             if not any(_matches_term(label, values) for label in constraints.area.labels):
                 reasons.add(CandidateReasonCode.AREA_MISMATCH)
@@ -456,7 +453,11 @@ class StructuredCollectionRetrievalService:
                 for identifier in constraints.selected_collection_item_ids
             ):
                 raise StructuredCollectionRetrievalError() from None
-            items = [by_id[identifier] for identifier in constraints.selected_collection_item_ids]
+            if constraints.collection_only:
+                items = [
+                    by_id[identifier]
+                    for identifier in constraints.selected_collection_item_ids
+                ]
         effective_memories = tuple(memory for memory in memories if memory.is_effective(now))
 
         collection_facts = {item.collection_item_id: item for item in facts.collections}
