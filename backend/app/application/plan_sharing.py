@@ -441,7 +441,9 @@ class PlanShareService:
             from app.domain.plans import PlanExecutionNotAllowedError
 
             raise PlanExecutionNotAllowedError
-        option = plan.draft.options[0]
+        from app.domain.plans import plan_option_index
+
+        option = plan.draft.options[plan_option_index(plan.draft)]
         shared_items: list[SharedPlanItem] = []
         for index, item in enumerate(option.items):
             poi = item.source.concrete_poi

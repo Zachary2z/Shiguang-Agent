@@ -25,6 +25,7 @@ from app.domain.plans import (
     PlanVersionConflictError,
     parse_plan_constraints_json,
     plan_constraints_internal_dump,
+    plan_option_index,
 )
 from app.domain.time import as_utc, require_aware_utc
 from app.infrastructure.db.dml import execute_dml_rowcount
@@ -471,6 +472,7 @@ class SqlAlchemyPlanRepository:
         *,
         user_id: str,
         plan_id: str,
+        option_index: int,
         idempotency_key: str,
         request_fingerprint: str,
         now: datetime,
@@ -501,9 +503,20 @@ class SqlAlchemyPlanRepository:
             raise PlanVersionConflictError
         target = versions[-1]
         if target.status is PlanStatus.CONFIRMED:
+            if target.draft is None or plan_option_index(target.draft) != option_index:
+                raise PlanVersionConflictError
             return target, True
         if target.status is not PlanStatus.DRAFT:
             raise PlanNotReadyError
+        if (
+            target.draft is None
+            or option_index < 0
+            or option_index >= len(target.draft.options)
+        ):
+            raise PlanNotReadyError
+        confirmed_draft = target.draft.model_copy(
+            update={"confirmed_option_index": option_index}
+        )
         await self._session.execute(
             update(PlanModel)
             .where(
@@ -518,6 +531,7 @@ class SqlAlchemyPlanRepository:
             .where(PlanModel.id == plan_id, PlanModel.user_id == user_id)
             .values(
                 status=PlanStatus.CONFIRMED.value,
+                draft_json=confirmed_draft.model_dump(mode="json"),
                 confirmed_at=timestamp,
                 updated_at=timestamp,
             )
@@ -529,7 +543,9 @@ class SqlAlchemyPlanRepository:
                 action=ApprovalAction.CONFIRM_PLAN.value,
                 target_plan_id=plan_id,
                 external_requirement_id=None,
-                display_text=f"Confirm plan version {target.version}.",
+                display_text=(
+                    f"Confirm plan version {target.version}, option {option_index}."
+                ),
                 status=ApprovalStatus.APPROVED.value,
                 idempotency_key=idempotency_key,
                 request_fingerprint=request_fingerprint,

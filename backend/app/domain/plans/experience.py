@@ -200,6 +200,10 @@ class PlanNotReadyError(RuntimeError):
     """The requested plan has not reached a confirmable draft state."""
 
 
+class PlanOriginRequiredError(RuntimeError):
+    """An exact origin is required before confirmation or navigation."""
+
+
 class PlanExecutionNotAllowedError(RuntimeError):
     """Execution surfaces are unavailable until a version is confirmed."""
 
@@ -210,6 +214,7 @@ __all__ = [
     "PlanApproval",
     "PlanExecutionNotAllowedError",
     "PlanNotReadyError",
+    "PlanOriginRequiredError",
     "PlanOperation",
     "PlanStatus",
     "PlanVersion",

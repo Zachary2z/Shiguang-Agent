@@ -18,7 +18,7 @@ from app.domain.identifiers import (
     generate_plan_id,
     generate_trace_id,
 )
-from app.domain.places import PoiProvider, TransportMode
+from app.domain.places import Coordinate, CoordinateSystem, PoiProvider, TransportMode
 from app.domain.plans import (
     ActivityArea,
     PlanCompletionStatus,
@@ -70,6 +70,11 @@ def _constraints() -> PlanConstraints:
         start_at=datetime(2026, 7, 29, 2, tzinfo=UTC),
         end_at=datetime(2026, 7, 29, 7, tzinfo=UTC),
         area=ActivityArea(districts=("福田区",), labels=("市民中心",)),
+        origin=Coordinate(
+            latitude=22.5431,
+            longitude=114.0579,
+            coordinate_system=CoordinateSystem.GCJ_02,
+        ),
         pace=PlanPace.BALANCED,
         transport_modes=(TransportMode.WALKING,),
         created_at=created,
@@ -195,6 +200,7 @@ async def _seed_plan(
             await repository.confirm(
                 user_id=user_id,
                 plan_id=plan_id,
+                option_index=0,
                 idempotency_key=f"confirm-{plan_id}",
                 request_fingerprint=plan_request_fingerprint("confirm"),
                 now=now,
@@ -257,6 +263,7 @@ async def _seed_adjusted_plan(
             await repository.confirm(
                 user_id=user_id,
                 plan_id=adjusted_id,
+                option_index=0,
                 idempotency_key=f"confirm-{adjusted_id}",
                 request_fingerprint=plan_request_fingerprint("confirm-adjusted"),
                 now=now + timedelta(hours=1),
@@ -336,6 +343,30 @@ async def test_calendar_and_navigation_are_stable_safe_and_parseable(test_settin
 
 
 @pytest.mark.asyncio
+async def test_navigation_requires_an_exact_origin_even_for_a_confirmed_plan(
+    test_settings,
+) -> None:
+    async with _client(test_settings) as (api, client):
+        api.state.map_provider = make_stub_map_provider()
+        await _demo(client)
+        plan_id, _collection_id, _item_ids = await _seed_plan(api, confirmed=True)
+        async with api.state.demo_database.session_factory() as session:
+            row = await session.get(PlanModel, plan_id)
+            assert row is not None
+            constraints = dict(row.constraints_json)
+            constraints.pop("origin")
+            row.constraints_json = constraints
+            await session.commit()
+
+        calendar = await client.get(f"/api/v1/plans/{plan_id}/calendar.ics")
+        navigation = await client.get(f"/api/v1/plans/{plan_id}/execution")
+
+        assert calendar.status_code == 200
+        assert navigation.status_code == 409
+        assert navigation.json()["error_code"] == "PLAN_ORIGIN_REQUIRED"
+
+
+@pytest.mark.asyncio
 async def test_calendar_and_navigation_follow_latest_confirmed_version(
     test_settings,
 ) -> None:
@@ -363,6 +394,7 @@ async def test_calendar_and_navigation_follow_latest_confirmed_version(
             await SqlAlchemyPlanRepository(session).confirm(
                 user_id=user_id,
                 plan_id=adjusted_id,
+                option_index=0,
                 idempotency_key=f"confirm-{adjusted_id}",
                 request_fingerprint=plan_request_fingerprint("confirm-adjusted"),
                 now=datetime(2026, 7, 28, 4, tzinfo=UTC),

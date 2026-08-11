@@ -12,7 +12,7 @@ from pydantic import Field, field_validator, model_validator
 from app.domain.collections import CollectionKind, validate_cny_price_pair
 from app.domain.identifiers import validate_collection_item_id
 from app.domain.places import Poi, PoiProvider, TransportMode
-from app.domain.plans.contracts import PlanContract
+from app.domain.plans.contracts import ActivityArea, PlanContract, PlanPace
 from app.domain.plans.retrieval import CandidateReasonCode, WeatherAssessment
 from app.domain.time import require_aware_utc
 
@@ -210,10 +210,14 @@ class PlanOptionProposal(PlanContract):
 
 
 class PlanProposalSet(PlanContract):
-    options: tuple[PlanOptionProposal, ...] = Field(min_length=3, max_length=3)
+    options: tuple[PlanOptionProposal, ...] = Field(min_length=1, max_length=3)
 
     @model_validator(mode="after")
     def validate_initial_options(self) -> Self:
+        if len(self.options) == 1:
+            if self.options[0].role is not PlanOptionRole.MAIN:
+                raise ValueError("a single adjusted proposal must use the main role")
+            return self
         if tuple(option.role for option in self.options) != (
             PlanOptionRole.MAIN,
             PlanOptionRole.ALTERNATIVE,
@@ -226,6 +230,122 @@ class PlanProposalSet(PlanContract):
         )
         if len(set(identities)) == 1:
             raise ValueError("all three proposals cannot be identical")
+        return self
+
+
+class PlanAdjustmentActionKind(StrEnum):
+    ADD = "add"
+    REMOVE = "remove"
+    REPLACE = "replace"
+    REORDER = "reorder"
+    CHANGE_DURATION = "change_duration"
+
+
+class PlanAdjustmentAction(PlanContract):
+    """One explicit edit against the selected immutable option."""
+
+    kind: PlanAdjustmentActionKind
+    candidate_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    target_candidate_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    after_candidate_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=80,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    candidate_keys: tuple[str, ...] = Field(default_factory=tuple)
+    visit_duration_seconds: int | None = Field(default=None, gt=0, le=24 * 60 * 60)
+
+    @model_validator(mode="after")
+    def validate_action(self) -> Self:
+        if self.kind is PlanAdjustmentActionKind.ADD:
+            valid = (
+                self.candidate_key is not None
+                and self.target_candidate_key is None
+                and not self.candidate_keys
+                and self.visit_duration_seconds is not None
+            )
+        elif self.kind is PlanAdjustmentActionKind.REMOVE:
+            valid = (
+                self.candidate_key is None
+                and self.target_candidate_key is not None
+                and self.after_candidate_key is None
+                and not self.candidate_keys
+                and self.visit_duration_seconds is None
+            )
+        elif self.kind is PlanAdjustmentActionKind.REPLACE:
+            valid = (
+                self.candidate_key is not None
+                and self.target_candidate_key is not None
+                and self.after_candidate_key is None
+                and not self.candidate_keys
+                and self.visit_duration_seconds is not None
+            )
+        elif self.kind is PlanAdjustmentActionKind.REORDER:
+            valid = (
+                self.candidate_key is None
+                and self.target_candidate_key is None
+                and self.after_candidate_key is None
+                and bool(self.candidate_keys)
+                and self.visit_duration_seconds is None
+                and len(set(self.candidate_keys)) == len(self.candidate_keys)
+            )
+        else:
+            valid = (
+                self.candidate_key is None
+                and self.target_candidate_key is not None
+                and self.after_candidate_key is None
+                and not self.candidate_keys
+                and self.visit_duration_seconds is not None
+            )
+        if not valid:
+            raise ValueError("adjustment action fields do not match its kind")
+        return self
+
+
+class PlanConstraintChanges(PlanContract):
+    """Only explicitly returned fields change the existing plan constraints."""
+
+    start_at: datetime | None = None
+    end_at: datetime | None = None
+    area: ActivityArea | None = None
+    budget: Decimal | None = Field(default=None, ge=0, max_digits=12, decimal_places=2)
+    pace: PlanPace | None = None
+    transport_modes: tuple[TransportMode, ...] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=4,
+    )
+    include: tuple[str, ...] | None = Field(default=None, max_length=20)
+    exclude: tuple[str, ...] | None = Field(default=None, max_length=20)
+    collection_only: bool | None = None
+
+    @model_validator(mode="after")
+    def require_change(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("constraint changes cannot be empty")
+        return self
+
+
+class PlanAdjustmentProposal(PlanContract):
+    actions: tuple[PlanAdjustmentAction, ...] = Field(default_factory=tuple, max_length=20)
+    constraint_changes: PlanConstraintChanges | None = None
+    change_summary: str = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def require_adjustment(self) -> Self:
+        if not self.actions and self.constraint_changes is None:
+            raise ValueError("an adjustment must contain an action or constraint change")
         return self
 
 
@@ -462,6 +582,9 @@ class PlanDraftResult(PlanContract):
     weather_source: str | None = Field(default=None, min_length=1, max_length=80)
     weather_queried_at: datetime | None = None
     weather_summary: str | None = Field(default=None, min_length=1, max_length=240)
+    base_option_index: int | None = Field(default=None, ge=0, le=2)
+    change_summary: str | None = Field(default=None, min_length=1, max_length=500)
+    confirmed_option_index: int | None = Field(default=None, ge=0, le=2)
 
     @field_validator("weather_queried_at")
     @classmethod
@@ -488,12 +611,29 @@ class PlanDraftResult(PlanContract):
                 or self.failure_summary is not None
             ):
                 raise ValueError("generated drafts require options and no failure")
+            if self.confirmed_option_index is not None and self.confirmed_option_index >= len(
+                self.options
+            ):
+                raise ValueError("confirmed option index is outside the draft")
+            if (self.base_option_index is None) is not (self.change_summary is None):
+                raise ValueError("adjusted drafts require source option and change summary")
+            if self.base_option_index is not None and len(self.options) != 1:
+                raise ValueError("adjusted drafts contain exactly one option")
         else:
             if self.options or self.failure_code is None:
                 raise ValueError("non-generated drafts require one failure and no options")
             if self.failure_summary != FAILURE_SUMMARIES[self.failure_code]:
                 raise ValueError("failure summary does not match its code")
         return self
+
+
+def plan_option_index(draft: PlanDraftResult) -> int:
+    """Resolve old confirmed JSON to option zero and new JSON to its explicit choice."""
+
+    index = draft.confirmed_option_index or 0
+    if draft.outcome is not PlanDraftOutcome.GENERATED or index >= len(draft.options):
+        raise ValueError("the draft has no executable confirmed option")
+    return index
 
 
 class PlanDraftViolationCode(StrEnum):

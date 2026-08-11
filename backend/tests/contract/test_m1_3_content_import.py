@@ -23,7 +23,6 @@ from app.application.content_import_jobs import (
     CONTENT_IMPORT_JOB_TYPE,
     ContentImportJobHandler,
 )
-from app.application.plan_adjustments import PlanAdjustmentParser
 from app.application.plan_experience import (
     PLAN_GENERATION_JOB_TYPE,
     PlanGenerationJobHandler,
@@ -34,6 +33,7 @@ from app.application.pricing import ConfiguredPricingPolicy
 from app.config import Settings
 from app.domain.collections import CandidateField, ExtractionResult, PlaceCandidate
 from app.domain.jobs import JobCreate
+from app.domain.plans import PlanPace
 from app.domain.plans.drafts import PlanItemSource
 from app.infrastructure.db.models import (
     AgentRunModel,
@@ -46,7 +46,6 @@ from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.infrastructure.storage import LocalPrivateStorageProvider
 from app.main import create_app
 from app.worker.service import JobWorker
-from nanobot_core.providers import StructuredOutputMode
 from tests.contract.test_m1_5_plans import _draft, _request
 from tests.core.fakes import FakeProvider, fake_response
 from tests.fixtures.images import PNG_SCREENSHOT
@@ -591,11 +590,33 @@ async def test_offline_text_details_selection_plan_adjust_confirm_core_loop(
         )
 
         class DraftExecutor:
-            async def execute(self, *, user_id, constraints, approval):
-                del user_id, constraints, approval
+            async def execute(
+                self,
+                *,
+                user_id,
+                constraints,
+                approval,
+                adjustment=None,
+                response_observer=None,
+            ):
+                del user_id, approval, response_observer
                 return PlanGenerationResult(
                     outcome=PlanGenerationOutcome.DRAFT,
-                    draft=linked_draft,
+                    draft=(
+                        linked_draft
+                        if adjustment is None
+                        else linked_draft.model_copy(
+                            update={
+                                "base_option_index": adjustment.base_option_index,
+                                "change_summary": "节奏轻松一点",
+                            }
+                        )
+                    ),
+                    effective_constraints=(
+                        None
+                        if adjustment is None
+                        else constraints.model_copy(update={"pace": PlanPace.RELAXED})
+                    ),
                 )
 
         plan_worker = JobWorker(
@@ -606,10 +627,6 @@ async def test_offline_text_details_selection_plan_adjust_confirm_core_loop(
                     session_factory=api.state.demo_database.session_factory,
                     pricing=ConfiguredPricingPolicy.from_settings(test_settings),
                     executor_factory=lambda session: DraftExecutor(),
-                    adjustment_parser=PlanAdjustmentParser(
-                        provider,
-                        structured_output_mode=StructuredOutputMode.JSON_OBJECT,
-                    ),
                 )
             },
             poll_seconds=0.01,
@@ -622,6 +639,11 @@ async def test_offline_text_details_selection_plan_adjust_confirm_core_loop(
         plan_request["end_at"] = plan_day.replace(
             hour=18, minute=0, second=0, microsecond=0
         ).isoformat()
+        plan_request["origin"] = {
+            "latitude": 22.5431,
+            "longitude": 114.0579,
+            "coordinate_system": "gcj_02",
+        }
         created = await client.post("/api/v1/plans", json=plan_request)
         assert created.status_code == 202, created.text
         assert await plan_worker.run_once() is not None
@@ -630,6 +652,7 @@ async def test_offline_text_details_selection_plan_adjust_confirm_core_loop(
             f"/api/v1/plans/{created.json()['plan_id']}/adjustments",
             json={
                 "idempotency_key": "offline-core-adjust",
+                "base_option_index": 0,
                 "instruction": "节奏轻松一点",
             },
         )
@@ -642,7 +665,7 @@ async def test_offline_text_details_selection_plan_adjust_confirm_core_loop(
 
         confirmed = await client.post(
             f"/api/v1/plans/{current['id']}/confirm",
-            json={"idempotency_key": "offline-core-confirm"},
+            json={"idempotency_key": "offline-core-confirm", "option_index": 0},
         )
         assert confirmed.status_code == 200, confirmed.text
         assert confirmed.json()["plan"]["status"] == "confirmed"

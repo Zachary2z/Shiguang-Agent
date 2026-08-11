@@ -101,6 +101,7 @@ async def _seed_confirmed_plan(
         await plans.confirm(
             user_id=owner,
             plan_id=plan_id,
+            option_index=0,
             idempotency_key=f"confirm-{plan_id}",
             request_fingerprint=plan_request_fingerprint("confirm"),
             now=now,

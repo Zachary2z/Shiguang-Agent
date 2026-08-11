@@ -12,7 +12,6 @@ from app.application.content_import_jobs import (
     ContentImportJobHandler,
 )
 from app.application.map_plan_facts import MapPlanFactResolver
-from app.application.plan_adjustments import PlanAdjustmentParser
 from app.application.plan_experience import (
     PLAN_GENERATION_JOB_TYPE,
     ExistingPlanServicesExecutor,
@@ -93,14 +92,6 @@ async def _run() -> None:
                     structured_output_mode=settings.extraction_structured_output_mode(),
                 ),
             ),
-            adjustment_parser=(
-                None
-                if provider is None
-                else PlanAdjustmentParser(
-                    provider,
-                    structured_output_mode=(settings.extraction_structured_output_mode()),
-                )
-            ),
         )
     workers = [
         JobWorker(
@@ -149,14 +140,6 @@ async def _run() -> None:
                         provider,
                         structured_output_mode=settings.extraction_structured_output_mode(),
                     ),
-                ),
-                adjustment_parser=(
-                    None
-                    if provider is None
-                    else PlanAdjustmentParser(
-                        provider,
-                        structured_output_mode=(settings.extraction_structured_output_mode()),
-                    )
                 ),
             )
         workers.append(

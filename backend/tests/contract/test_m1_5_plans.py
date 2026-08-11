@@ -10,7 +10,6 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 
-from app.application.plan_adjustments import PlanAdjustmentParser
 from app.application.plan_experience import (
     PLAN_GENERATION_JOB_TYPE,
     PlanExperienceService,
@@ -56,7 +55,6 @@ from app.worker.service import JobWorker
 from nanobot_core.providers import (
     ProviderError,
     ProviderErrorCode,
-    StructuredOutputMode,
 )
 from tests.contract.test_m0_2d_api import _client, _demo
 from tests.core.fakes import FakeProvider, fake_response
@@ -120,6 +118,34 @@ def _draft(
     )
 
 
+def _three_option_draft(*, start_at: datetime | None = None) -> PlanDraftResult:
+    draft = _draft(start_at=start_at)
+    base = draft.options[0]
+    return draft.model_copy(
+        update={
+            "options": (
+                base,
+                base.model_copy(
+                    update={
+                        "role": PlanOptionRole.ALTERNATIVE,
+                        "items": (
+                            base.items[0].model_copy(update={"title": "备选一地点"}),
+                        ),
+                    }
+                ),
+                base.model_copy(
+                    update={
+                        "role": PlanOptionRole.ALTERNATIVE,
+                        "items": (
+                            base.items[0].model_copy(update={"title": "备选二地点"}),
+                        ),
+                    }
+                ),
+            )
+        }
+    )
+
+
 def _constraints() -> PlanConstraints:
     created_at = datetime(2026, 7, 28, 1, tzinfo=UTC)
     return PlanConstraints(
@@ -178,12 +204,38 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
     worker_origins: list[object] = []
 
     class DraftExecutor:
-        async def execute(self, *, user_id, constraints, approval):
+        async def execute(
+            self,
+            *,
+            user_id,
+            constraints,
+            approval,
+            adjustment=None,
+            response_observer=None,
+        ):
             del user_id, approval
             worker_origins.append(constraints.origin)
+            if adjustment is not None:
+                response = await provider.chat(messages=[], tools=None)
+                if response_observer is not None:
+                    response_observer(response)
             return PlanGenerationResult(
                 outcome=PlanGenerationOutcome.DRAFT,
-                draft=_draft(),
+                draft=(
+                    _draft()
+                    if adjustment is None
+                    else _draft().model_copy(
+                        update={
+                            "base_option_index": adjustment.base_option_index,
+                            "change_summary": "节奏轻松一点",
+                        }
+                    )
+                ),
+                effective_constraints=(
+                    None
+                    if adjustment is None
+                    else constraints.model_copy(update={"pace": PlanPace.RELAXED})
+                ),
             )
 
     async with _client(test_settings) as (api, client):
@@ -211,10 +263,6 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
             session_factory=database.session_factory,
             pricing=ConfiguredPricingPolicy.from_settings(test_settings),
             executor_factory=lambda session: DraftExecutor(),
-            adjustment_parser=PlanAdjustmentParser(
-                provider,
-                structured_output_mode=StructuredOutputMode.JSON_OBJECT,
-            ),
         )
         worker = JobWorker(
             queue=PostgresJobQueue(database.session_factory),
@@ -243,6 +291,7 @@ async def test_plan_api_preserves_constraints_versions_and_authoritative_state(
             f"/api/v1/plans/{plan_id}/adjustments",
             json={
                 "idempotency_key": "m15-adjust",
+                "base_option_index": 0,
                 "instruction": "节奏轻松一点",
             },
         )
@@ -317,8 +366,18 @@ async def test_location_adjustment_is_recoverable_without_creating_a_version(
     test_settings,
 ) -> None:
     class DraftExecutor:
-        async def execute(self, *, user_id, constraints, approval):
+        async def execute(
+            self, *, user_id, constraints, approval, adjustment=None, response_observer=None
+        ):
             del user_id, constraints, approval
+            if adjustment is not None:
+                response = await provider.chat(messages=[], tools=None)
+                if response_observer is not None:
+                    response_observer(response)
+                return PlanGenerationResult(
+                    outcome=PlanGenerationOutcome.FAILED,
+                    error_code="PLAN_ADJUSTMENT_NOT_UNDERSTOOD",
+                )
             return PlanGenerationResult(
                 outcome=PlanGenerationOutcome.DRAFT,
                 draft=_draft(),
@@ -335,10 +394,6 @@ async def test_location_adjustment_is_recoverable_without_creating_a_version(
             session_factory=api.state.demo_database.session_factory,
             pricing=ConfiguredPricingPolicy.from_settings(test_settings),
             executor_factory=lambda session: DraftExecutor(),
-            adjustment_parser=PlanAdjustmentParser(
-                provider,
-                structured_output_mode=StructuredOutputMode.JSON_OBJECT,
-            ),
         )
         worker = JobWorker(
             queue=PostgresJobQueue(api.state.demo_database.session_factory),
@@ -352,6 +407,7 @@ async def test_location_adjustment_is_recoverable_without_creating_a_version(
             f"/api/v1/plans/{plan_id}/adjustments",
             json={
                 "idempotency_key": "location-unsupported",
+                "base_option_index": 0,
                 "instruction": "把地点换成广州塔",
             },
         )
@@ -377,7 +433,7 @@ async def test_location_adjustment_is_recoverable_without_creating_a_version(
     assert len(provider.calls) == 1
     assert run is not None
     assert run.status == "failed"
-    assert run.error_code == "PLAN_ADJUSTMENT_UNSUPPORTED"
+    assert run.error_code == "PLAN_ADJUSTMENT_NOT_UNDERSTOOD"
     assert len(run.model_calls_json) == 1
     assert "location_intent" not in str(provider.calls[0].response_format)
 
@@ -387,11 +443,31 @@ async def test_adjustment_concurrent_and_serial_replay_runs_model_and_version_on
     test_settings,
 ) -> None:
     class DraftExecutor:
-        async def execute(self, *, user_id, constraints, approval):
-            del user_id, constraints, approval
+        async def execute(
+            self, *, user_id, constraints, approval, adjustment=None, response_observer=None
+        ):
+            del user_id, approval
+            if adjustment is not None:
+                response = await provider.chat(messages=[], tools=None)
+                if response_observer is not None:
+                    response_observer(response)
             return PlanGenerationResult(
                 outcome=PlanGenerationOutcome.DRAFT,
-                draft=_draft(),
+                draft=(
+                    _draft()
+                    if adjustment is None
+                    else _draft().model_copy(
+                        update={
+                            "base_option_index": adjustment.base_option_index,
+                            "change_summary": "节奏轻松一点",
+                        }
+                    )
+                ),
+                effective_constraints=(
+                    None
+                    if adjustment is None
+                    else constraints.model_copy(update={"pace": PlanPace.RELAXED})
+                ),
             )
 
     provider = FakeProvider([fake_response(content='{"pace":"relaxed"}')])
@@ -406,10 +482,6 @@ async def test_adjustment_concurrent_and_serial_replay_runs_model_and_version_on
             session_factory=database.session_factory,
             pricing=ConfiguredPricingPolicy.from_settings(test_settings),
             executor_factory=lambda session: DraftExecutor(),
-            adjustment_parser=PlanAdjustmentParser(
-                provider,
-                structured_output_mode=StructuredOutputMode.JSON_OBJECT,
-            ),
         )
         worker = JobWorker(
             queue=PostgresJobQueue(database.session_factory),
@@ -421,6 +493,7 @@ async def test_adjustment_concurrent_and_serial_replay_runs_model_and_version_on
 
         request = {
             "idempotency_key": "same-adjustment",
+            "base_option_index": 0,
             "instruction": "节奏轻松一点",
         }
         first, concurrent_replay = await asyncio.gather(
@@ -455,6 +528,7 @@ async def test_adjustment_concurrent_and_serial_replay_runs_model_and_version_on
             f"/api/v1/plans/{plan_id}/adjustments",
             json={
                 "idempotency_key": "same-adjustment",
+                "base_option_index": 0,
                 "instruction": "改成紧凑节奏",
             },
         )
@@ -463,6 +537,7 @@ async def test_adjustment_concurrent_and_serial_replay_runs_model_and_version_on
             f"/api/v1/plans/{plan_id}/adjustments",
             json={
                 "idempotency_key": "stale-adjustment",
+                "base_option_index": 0,
                 "instruction": "改成紧凑节奏",
             },
         )
@@ -520,11 +595,31 @@ async def test_adjustment_worker_failures_never_create_a_version_or_live_job(
     cancelled,
 ) -> None:
     class DraftExecutor:
-        async def execute(self, *, user_id, constraints, approval):
+        async def execute(
+            self, *, user_id, constraints, approval, adjustment=None, response_observer=None
+        ):
             del user_id, constraints, approval
+            if adjustment is not None:
+                response = await provider.chat(messages=[], tools=None)
+                if response_observer is not None:
+                    response_observer(response)
+                if response.content == "not-json":
+                    return PlanGenerationResult(
+                        outcome=PlanGenerationOutcome.FAILED,
+                        error_code="PLAN_ADJUSTMENT_NOT_UNDERSTOOD",
+                    )
             return PlanGenerationResult(
                 outcome=PlanGenerationOutcome.DRAFT,
-                draft=_draft(),
+                draft=(
+                    _draft()
+                    if adjustment is None
+                    else _draft().model_copy(
+                        update={
+                            "base_option_index": adjustment.base_option_index,
+                            "change_summary": "节奏轻松一点",
+                        }
+                    )
+                ),
             )
 
     provider = FakeProvider([provider_outcome])
@@ -539,10 +634,6 @@ async def test_adjustment_worker_failures_never_create_a_version_or_live_job(
             session_factory=database.session_factory,
             pricing=ConfiguredPricingPolicy.from_settings(test_settings),
             executor_factory=lambda session: DraftExecutor(),
-            adjustment_parser=PlanAdjustmentParser(
-                provider,
-                structured_output_mode=StructuredOutputMode.JSON_OBJECT,
-            ),
         )
         worker = JobWorker(
             queue=PostgresJobQueue(database.session_factory),
@@ -555,15 +646,12 @@ async def test_adjustment_worker_failures_never_create_a_version_or_live_job(
             f"/api/v1/plans/{plan_id}/adjustments",
             json={
                 "idempotency_key": "failing-adjustment",
+                "base_option_index": 0,
                 "instruction": "节奏轻松一点",
             },
         )
         assert accepted.status_code == 202
-        if cancelled:
-            with pytest.raises(asyncio.CancelledError):
-                await worker.run_once()
-        else:
-            assert await worker.run_once() is not None
+        assert await worker.run_once() is not None
         async with database.session_factory() as session:
             assert await session.scalar(select(func.count()).select_from(PlanModel)) == 1
             run = await session.scalar(
@@ -586,13 +674,20 @@ async def test_adjustment_worker_failures_never_create_a_version_or_live_job(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("option_index", [0, 1, 2])
 async def test_confirmation_is_explicit_idempotent_current_version_only_and_owned(
     test_settings,
+    option_index,
 ) -> None:
     reference_now = datetime.now(UTC)
     plan_start = reference_now + timedelta(days=1)
     plan_end = plan_start + timedelta(hours=8)
     request = _request("m15-confirm")
+    request["origin"] = {
+        "latitude": 22.5431,
+        "longitude": 114.0579,
+        "coordinate_system": "gcj_02",
+    }
     request["start_at"] = plan_start.isoformat()
     request["end_at"] = plan_end.isoformat()
 
@@ -612,21 +707,33 @@ async def test_confirmation_is_explicit_idempotent_current_version_only_and_owne
             await repository.complete_generation(
                 user_id=user_id,
                 plan_id=plan_id,
-                draft=_draft(start_at=plan_start + timedelta(minutes=15)),
+                draft=_three_option_draft(
+                    start_at=plan_start + timedelta(minutes=15)
+                ),
                 now=datetime.now(UTC),
             )
             await session.commit()
 
         confirmed = await client.post(
             f"/api/v1/plans/{plan_id}/confirm",
-            json={"idempotency_key": "m15-confirm-action"},
+            json={
+                "idempotency_key": "m15-confirm-action",
+                "option_index": option_index,
+            },
         )
         replay = await client.post(
             f"/api/v1/plans/{plan_id}/confirm",
-            json={"idempotency_key": "m15-confirm-action"},
+            json={
+                "idempotency_key": "m15-confirm-action",
+                "option_index": option_index,
+            },
         )
         assert confirmed.status_code == replay.status_code == 200
         assert confirmed.json()["plan"]["status"] == "confirmed"
+        assert (
+            confirmed.json()["plan"]["draft"]["confirmed_option_index"]
+            == option_index
+        )
         assert replay.json()["replayed"] is True
 
         async with database.session_factory() as session:
@@ -647,9 +754,44 @@ async def test_confirmation_is_explicit_idempotent_current_version_only_and_owne
             assert (await other.get(f"/api/v1/plans/{plan_id}")).status_code == 404
             isolated_confirm = await other.post(
                 f"/api/v1/plans/{plan_id}/confirm",
-                json={"idempotency_key": "other-user-confirm"},
+                json={"idempotency_key": "other-user-confirm", "option_index": 0},
             )
             assert isolated_confirm.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_draft_without_exact_origin_is_viewable_but_not_confirmable(
+    test_settings,
+) -> None:
+    async with _client(test_settings) as (api, client):
+        api.state.map_provider = object()
+        await _demo(client)
+        created = await client.post("/api/v1/plans", json=_request("origin-required"))
+        plan_id = created.json()["plan_id"]
+        async with api.state.demo_database.session_factory() as session:
+            repository = SqlAlchemyPlanRepository(session)
+            user_id = await session.scalar(
+                select(PlanModel.user_id).where(PlanModel.id == plan_id)
+            )
+            assert user_id is not None
+            await repository.complete_generation(
+                user_id=user_id,
+                plan_id=plan_id,
+                draft=_three_option_draft(),
+                now=datetime.now(UTC),
+            )
+            await session.commit()
+
+        viewed = await client.get(f"/api/v1/plans/{plan_id}")
+        blocked = await client.post(
+            f"/api/v1/plans/{plan_id}/confirm",
+            json={"idempotency_key": "origin-required-confirm", "option_index": 1},
+        )
+
+        assert viewed.status_code == 200
+        assert viewed.json()["constraints"]["has_exact_origin"] is False
+        assert blocked.status_code == 409
+        assert blocked.json()["error_code"] == "PLAN_ORIGIN_REQUIRED"
 
 
 @pytest.mark.asyncio

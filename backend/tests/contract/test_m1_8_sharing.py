@@ -440,6 +440,7 @@ async def test_latest_confirmation_updates_share_while_draft_stays_private(
             confirmed_result = await repository.confirm(
                 user_id=version_two.user_id,
                 plan_id=version_two_id,
+                option_index=0,
                 idempotency_key=f"confirm-{version_two_id}",
                 request_fingerprint=plan_request_fingerprint("confirm-v2"),
                 now=utc_now(),

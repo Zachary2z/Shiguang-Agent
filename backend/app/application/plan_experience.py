@@ -16,12 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.application.external_place_supplement import ExternalPlaceSupplementService
 from app.application.memories import MemoryPlanningService
 from app.application.place_matching import PlaceMatchingService
-from app.application.plan_adjustments import (
-    PlanAdjustmentNotUnderstoodError,
-    PlanAdjustmentParser,
-    PlanAdjustmentUnsupportedError,
-    apply_plan_adjustment,
-)
 from app.application.plan_drafts import PlanDraftService
 from app.application.plan_proposals import PlanProposalService
 from app.application.plan_sharing import PlanShareService
@@ -61,7 +55,9 @@ from app.domain.plans import (
     PlanDraftResult,
     PlanningFactSnapshot,
     PlanOperation,
+    PlanOption,
     PlanProposalCandidate,
+    PlanProposalItem,
     PlanProposalSet,
     PlanStatus,
     PlanVersion,
@@ -82,6 +78,7 @@ from app.infrastructure.repositories import (
 )
 from app.providers.jobs import JobQueue
 from app.providers.map import MapProvider
+from nanobot_core.providers import ModelResponse
 
 PLAN_GENERATION_JOB_TYPE = "plan.generate"
 _APPROVAL_TTL = timedelta(minutes=15)
@@ -206,7 +203,15 @@ class PlanDraftExecutor(Protocol):
         user_id: str,
         constraints: PlanConstraints,
         approval: PlanApproval | None,
+        adjustment: PlanAdjustmentContext | None = None,
+        response_observer: Callable[[ModelResponse], None] | None = None,
     ) -> PlanGenerationResult: ...
+
+
+class PlanAdjustmentContext(PlanContract):
+    instruction: str
+    base_option_index: int = Field(ge=0, le=2)
+    base_option: PlanOption
 
 
 class ExistingPlanServicesExecutor:
@@ -236,6 +241,8 @@ class ExistingPlanServicesExecutor:
         user_id: str,
         constraints: PlanConstraints,
         approval: PlanApproval | None,
+        adjustment: PlanAdjustmentContext | None = None,
+        response_observer: Callable[[ModelResponse], None] | None = None,
     ) -> PlanGenerationResult:
         now = utc_now()
         memory_service = MemoryPlanningService(self._session)
@@ -269,20 +276,96 @@ class ExistingPlanServicesExecutor:
                     set(decision.collection_item_ids)
                     & set(effective_constraints.selected_collection_item_ids)
                 ),
+                required=bool(
+                    set(decision.collection_item_ids)
+                    & set(effective_constraints.required_collection_item_ids)
+                ),
             )
             for key, decision in zip(candidate_keys, collections.included, strict=True)
         )
-        request = _proposal_request(effective_constraints)
-        proposals = (
-            None
-            if not candidates
-            else await self._proposals.propose(
-                request=request,
-                constraints=effective_constraints,
-                candidates=candidates,
-                now=now,
+        included_ids = {
+            collection_id
+            for decision in collections.included
+            for collection_id in decision.collection_item_ids
+        }
+        if not set(effective_constraints.required_collection_item_ids).issubset(included_ids):
+            return PlanGenerationResult(
+                outcome=PlanGenerationOutcome.FAILED,
+                error_code="REQUIRED_COLLECTION_CONFLICT",
+                effective_constraints=effective_constraints,
             )
-        )
+        request = _proposal_request(effective_constraints)
+        change_summary: str | None = None
+        if adjustment is None:
+            proposals = (
+                None
+                if not candidates
+                else await self._proposals.propose(
+                    request=request,
+                    constraints=effective_constraints,
+                    candidates=candidates,
+                    now=now,
+                )
+            )
+        else:
+            key_by_ids = {ids: key for key, ids in candidate_keys.items()}
+            try:
+                base_items = tuple(
+                    PlanProposalItem(
+                        candidate_key=key_by_ids[item.source.collection_item_ids],
+                        visit_duration_seconds=item.visit_duration_seconds,
+                    )
+                    for item in adjustment.base_option.items
+                )
+            except KeyError:
+                return PlanGenerationResult(
+                    outcome=PlanGenerationOutcome.FAILED,
+                    error_code="PLAN_ADJUSTMENT_UNSUPPORTED",
+                    effective_constraints=effective_constraints,
+                )
+            try:
+                proposals, effective_constraints, change_summary = (
+                    await self._proposals.adjust(
+                        instruction=adjustment.instruction,
+                        constraints=effective_constraints,
+                        base_items=base_items,
+                        candidates=candidates,
+                        now=now,
+                        response_observer=response_observer,
+                    )
+                )
+            except ValueError:
+                return PlanGenerationResult(
+                    outcome=PlanGenerationOutcome.FAILED,
+                    error_code="PLAN_ADJUSTMENT_NOT_UNDERSTOOD",
+                    effective_constraints=effective_constraints,
+                )
+            if effective_constraints != constraints:
+                facts = await self._facts.resolve(
+                    user_id=user_id,
+                    constraints=effective_constraints,
+                )
+                collections = await StructuredCollectionRetrievalService(
+                    repository=SqlAlchemyCollectionRepository(self._session),
+                ).retrieve(
+                    user_id=user_id,
+                    constraints=effective_constraints,
+                    facts=facts.retrieval,
+                    now=now,
+                    memories=memories,
+                )
+                available_ids = {
+                    decision.collection_item_ids for decision in collections.included
+                }
+                if any(
+                    candidate_keys[item.candidate_key] not in available_ids
+                    for item in proposals.options[0].items
+                ):
+                    return PlanGenerationResult(
+                        outcome=PlanGenerationOutcome.FAILED,
+                        error_code="PLAN_ADJUSTMENT_CONFLICT",
+                        effective_constraints=effective_constraints,
+                    )
         gap = next(
             (
                 (option.external_gap_description, option.external_gap_kind)
@@ -395,6 +478,14 @@ class ExistingPlanServicesExecutor:
             external_candidates=external_candidates,
         )
         if draft.outcome.value == "generated":
+            if adjustment is not None:
+                assert change_summary is not None
+                draft = draft.model_copy(
+                    update={
+                        "base_option_index": adjustment.base_option_index,
+                        "change_summary": change_summary,
+                    }
+                )
             selected_ids = {
                 collection_id
                 for option in draft.options
@@ -414,7 +505,11 @@ class ExistingPlanServicesExecutor:
             )
         return PlanGenerationResult(
             outcome=PlanGenerationOutcome.FAILED,
-            error_code="PLAN_GENERATION_FAILED",
+            error_code=(
+                "PLAN_GENERATION_FAILED"
+                if draft.failure_code is None
+                else draft.failure_code.value
+            ),
             effective_constraints=effective_constraints,
         )
 
@@ -427,6 +522,7 @@ class PlanJobPayload(PlanContract):
 class PlanAdjustmentJobPayload(PlanContract):
     operation: Literal["adjust"] = "adjust"
     base_plan_id: str
+    base_option_index: int = Field(ge=0, le=2)
     instruction: str
 
 
@@ -541,14 +637,25 @@ class PlanExperienceService:
         *,
         user_id: str,
         base_plan_id: str,
+        base_option_index: int,
         instruction: str,
         client_idempotency_key: str,
     ) -> PlanAdjustmentSubmission:
         key = scoped_plan_key(user_id=user_id, client_key=client_idempotency_key)
         base = await self._plans.require(user_id=user_id, plan_id=base_plan_id)
+        if (
+            base.draft is None
+            or base_option_index < 0
+            or base_option_index >= len(base.draft.options)
+            or base.status not in {PlanStatus.DRAFT, PlanStatus.CONFIRMED}
+        ):
+            from app.domain.plans import PlanNotReadyError
+
+            raise PlanNotReadyError
         trace_id = f"trc_{hashlib.sha256(key.encode()).hexdigest()[:32]}"
         payload = PlanAdjustmentJobPayload(
             base_plan_id=base_plan_id,
+            base_option_index=base_option_index,
             instruction=instruction,
         )
         request = JobCreate(
@@ -640,13 +747,22 @@ class PlanExperienceService:
         *,
         user_id: str,
         plan_id: str,
+        option_index: int,
         client_idempotency_key: str,
     ) -> tuple[PlanVersion, bool]:
+        target = await self._plans.require(user_id=user_id, plan_id=plan_id)
+        if target.constraints.origin is None:
+            from app.domain.plans import PlanOriginRequiredError
+
+            raise PlanOriginRequiredError
         key = scoped_plan_key(user_id=user_id, client_key=client_idempotency_key)
-        fingerprint = plan_request_fingerprint({"operation": "confirm", "plan_id": plan_id})
+        fingerprint = plan_request_fingerprint(
+            {"operation": "confirm", "plan_id": plan_id, "option_index": option_index}
+        )
         result = await self._plans.confirm(
             user_id=user_id,
             plan_id=plan_id,
+            option_index=option_index,
             idempotency_key=key,
             request_fingerprint=fingerprint,
             now=utc_now(),
@@ -791,12 +907,10 @@ class PlanGenerationJobHandler:
         session_factory: async_sessionmaker[AsyncSession],
         pricing: PricingPolicy,
         executor_factory: Callable[[AsyncSession], PlanDraftExecutor],
-        adjustment_parser: PlanAdjustmentParser | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._pricing = pricing
         self._executor_factory = executor_factory
-        self._adjustment_parser = adjustment_parser
 
     async def __call__(self, job: ScheduledJob) -> JobResultSummary:
         trace_id = job.trace_id
@@ -832,34 +946,21 @@ class PlanGenerationJobHandler:
 
             async def generate(observer: ApplicationRunObserver) -> PlanGenerationResult:
                 nonlocal plan
+                adjustment_context: PlanAdjustmentContext | None = None
                 if adjustment_payload is not None:
-                    parser = self._adjustment_parser
-                    if parser is None:
-                        raise RuntimeError("plan adjustment parser is not configured")
                     base = await plans.require(
                         user_id=job.user_id,
                         plan_id=adjustment_payload.base_plan_id,
                     )
-                    await observer.set_stage("adjustment.parsing")
                     adjustment_now = utc_now()
-                    try:
-                        patch = await parser.parse(
-                            constraints=base.constraints,
-                            instruction=adjustment_payload.instruction,
-                            now=adjustment_now,
-                            response_observer=observer.record_model_response,
-                        )
-                    except PlanAdjustmentUnsupportedError:
+                    if (
+                        base.draft is None
+                        or adjustment_payload.base_option_index >= len(base.draft.options)
+                    ):
                         return PlanGenerationResult(
                             outcome=PlanGenerationOutcome.FAILED,
-                            error_code="PLAN_ADJUSTMENT_UNSUPPORTED",
+                            error_code="PLAN_ADJUSTMENT_CONFLICT",
                         )
-                    except PlanAdjustmentNotUnderstoodError:
-                        return PlanGenerationResult(
-                            outcome=PlanGenerationOutcome.FAILED,
-                            error_code="PLAN_ADJUSTMENT_NOT_UNDERSTOOD",
-                        )
-                    adjusted_constraints = apply_plan_adjustment(base.constraints, patch)
                     versions = await plans.list_versions(
                         user_id=job.user_id,
                         root_plan_id=base.root_plan_id,
@@ -879,20 +980,19 @@ class PlanGenerationJobHandler:
                         version=base.version + 1,
                         operation=PlanOperation.ADJUST,
                         status=PlanStatus.GENERATING,
-                        constraints=adjusted_constraints,
+                        constraints=base.constraints,
                         adjustment_text=adjustment_payload.instruction,
                         trace_id=trace_id,
                         idempotency_key=job.idempotency_key,
                         created_at=timestamp,
                         updated_at=timestamp,
                     )
-                    await plans.add(
-                        plan,
-                        request_fingerprint=plan_request_fingerprint(
-                            adjustment_payload.model_dump(mode="json")
-                        ),
-                    )
                     await session.commit()
+                    adjustment_context = PlanAdjustmentContext(
+                        instruction=adjustment_payload.instruction,
+                        base_option_index=adjustment_payload.base_option_index,
+                        base_option=base.draft.options[adjustment_payload.base_option_index],
+                    )
                 assert plan is not None
                 current_plan = plan
                 approval = await plans.get_external_approval(
@@ -900,6 +1000,22 @@ class PlanGenerationJobHandler:
                     plan_id=current_plan.id,
                 )
                 await observer.set_stage("collections.filtered")
+
+                async def execute_draft() -> PlanGenerationResult:
+                    if adjustment_context is None:
+                        return await executor.execute(
+                            user_id=job.user_id,
+                            constraints=current_plan.constraints,
+                            approval=approval,
+                        )
+                    return await executor.execute(
+                        user_id=job.user_id,
+                        constraints=current_plan.constraints,
+                        approval=approval,
+                        adjustment=adjustment_context,
+                        response_observer=observer.record_model_response,
+                    )
+
                 result = await observer.run_tool(
                     tool_name="plan_draft",
                     arguments_fingerprint=plan_request_fingerprint(
@@ -909,11 +1025,7 @@ class PlanGenerationJobHandler:
                         )
                     ),
                     input_summary=f"plan_version:{current_plan.version}",
-                    operation=lambda: executor.execute(
-                        user_id=job.user_id,
-                        constraints=current_plan.constraints,
-                        approval=approval,
-                    ),
+                    operation=execute_draft,
                     summarize=lambda value: ApplicationToolOutcome(
                         succeeded=value.outcome is not PlanGenerationOutcome.FAILED,
                         output_summary=value.outcome.value,
@@ -921,6 +1033,15 @@ class PlanGenerationJobHandler:
                     ),
                 )
                 assert plan is not None
+                if adjustment_payload is not None:
+                    if result.outcome is PlanGenerationOutcome.FAILED:
+                        return result
+                    await plans.add(
+                        plan,
+                        request_fingerprint=plan_request_fingerprint(
+                            adjustment_payload.model_dump(mode="json")
+                        ),
+                    )
                 if (
                     result.effective_constraints is not None
                     and result.effective_constraints != plan.constraints
@@ -1056,6 +1177,7 @@ __all__ = [
     "PLAN_GENERATION_JOB_TYPE",
     "PlanDraftExecutor",
     "PlanApprovalSubmission",
+    "PlanAdjustmentContext",
     "PlanAdjustmentJobPayload",
     "PlanAdjustmentSubmission",
     "PlanExperienceService",

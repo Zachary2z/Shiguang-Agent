@@ -66,6 +66,9 @@ class UserDataExportService:
                         "selected_collection_item_ids": list(
                             plan.constraints.selected_collection_item_ids
                         ),
+                        "required_collection_item_ids": list(
+                            plan.constraints.required_collection_item_ids
+                        ),
                     },
                     "created_at": plan.created_at.isoformat(),
                     "updated_at": plan.updated_at.isoformat(),

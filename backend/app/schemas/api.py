@@ -256,8 +256,13 @@ class PlanCreateRequest(ApiModel):
     exclude: tuple[str, ...] = ()
     collection_only: bool = False
     selected_collection_item_ids: tuple[str, ...] = Field(default_factory=tuple, max_length=20)
+    required_collection_item_ids: tuple[str, ...] = Field(default_factory=tuple, max_length=20)
 
-    @field_validator("selected_collection_item_ids", mode="before")
+    @field_validator(
+        "selected_collection_item_ids",
+        "required_collection_item_ids",
+        mode="before",
+    )
     @classmethod
     def json_selected_collection_items(cls, value: object) -> object:
         return tuple(value) if isinstance(value, list) else value
@@ -317,6 +322,7 @@ class PlanCreateRequest(ApiModel):
 
 class PlanAdjustmentRequest(ApiModel):
     idempotency_key: IdempotencyKey = Field(repr=False)
+    base_option_index: int = Field(ge=0, le=2)
     instruction: str = Field(min_length=1, max_length=1000, repr=False)
 
     @field_validator("instruction")
@@ -330,6 +336,7 @@ class PlanAdjustmentRequest(ApiModel):
 
 class PlanConfirmRequest(ApiModel):
     idempotency_key: IdempotencyKey = Field(repr=False)
+    option_index: int = Field(ge=0, le=2)
 
 
 class ApprovalDecisionRequest(ApiModel):
@@ -352,6 +359,7 @@ class PlanConstraintsResponse(ApiModel):
     exclude: tuple[str, ...]
     collection_only: bool
     selected_collection_item_ids: tuple[str, ...]
+    required_collection_item_ids: tuple[str, ...]
 
 
 class PlanApprovalResponse(ApiModel):
@@ -439,6 +447,7 @@ class PlanResponse(ApiModel):
                 exclude=constraints.exclude,
                 collection_only=constraints.collection_only,
                 selected_collection_item_ids=constraints.selected_collection_item_ids,
+                required_collection_item_ids=constraints.required_collection_item_ids,
             ),
             adjustment_text=plan.adjustment_text,
             draft=plan.draft,

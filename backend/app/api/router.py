@@ -773,6 +773,7 @@ async def create_plan(
         exclude=payload.exclude,
         collection_only=payload.collection_only,
         selected_collection_item_ids=payload.selected_collection_item_ids,
+        required_collection_item_ids=payload.required_collection_item_ids,
         created_at=now,
         expires_at=plan_constraint_expires_at(
             now=now,
@@ -873,6 +874,7 @@ async def adjust_plan(
     ).adjust(
         user_id=user_id,
         base_plan_id=plan_id,
+        base_option_index=payload.base_option_index,
         instruction=payload.instruction,
         client_idempotency_key=payload.idempotency_key,
     )
@@ -903,6 +905,7 @@ async def confirm_plan(
     ).confirm(
         user_id=user_id,
         plan_id=plan_id,
+        option_index=payload.option_index,
         client_idempotency_key=payload.idempotency_key,
     )
     versions = await SqlAlchemyPlanRepository(session).list_versions(

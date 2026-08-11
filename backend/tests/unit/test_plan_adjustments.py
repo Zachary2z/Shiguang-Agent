@@ -1,234 +1,159 @@
-"""M1-5 structured PlanConstraints patch boundary."""
+"""Selected-option adjustments use the sole model proposal boundary."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta, timezone
-from decimal import Decimal
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from app.application.plan_adjustments import (
-    PlanAdjustmentNotUnderstoodError,
-    PlanAdjustmentParser,
-    PlanAdjustmentPatch,
-    PlanAdjustmentUnsupportedError,
-    apply_plan_adjustment,
+from app.application.plan_proposals import PlanProposalError, PlanProposalService
+from app.domain.collections import CollectionKind, PlanCity
+from app.domain.places import TransportMode
+from app.domain.plans import (
+    ActivityArea,
+    PlanConstraints,
+    PlanPace,
+    PlanProposalCandidate,
+    PlanProposalItem,
 )
-from app.domain.collections import PlanCity
-from app.domain.places import Coordinate, CoordinateSystem, TransportMode
-from app.domain.plans import ActivityArea, PlanConstraints, PlanPace
 from nanobot_core.providers import StructuredOutputMode
 from tests.core.fakes import FakeProvider, fake_response
 
+NOW = datetime(2026, 8, 11, 2, tzinfo=UTC)
 
-def _constraints(
-    *,
-    budget: Decimal | None = Decimal("300"),
-    selected_collection_item_ids: tuple[str, ...] = (),
-) -> PlanConstraints:
-    created_at = datetime(2026, 7, 28, 1, tzinfo=UTC)
+
+def _constraints() -> PlanConstraints:
     return PlanConstraints(
         city_code=PlanCity.SHENZHEN,
-        start_at=datetime(2026, 7, 29, 2, tzinfo=UTC),
-        end_at=datetime(2026, 7, 29, 10, tzinfo=UTC),
-        area=ActivityArea(districts=("南山区",), labels=("海上世界",)),
-        budget=budget,
+        start_at=datetime(2026, 8, 12, 6, tzinfo=UTC),
+        end_at=datetime(2026, 8, 12, 12, tzinfo=UTC),
+        area=ActivityArea(districts=("南山区",)),
         pace=PlanPace.BALANCED,
-        transport_modes=(TransportMode.WALKING, TransportMode.TRANSIT),
-        include=("咖啡店",),
+        transport_modes=(TransportMode.WALKING,),
+        include=("咖啡",),
         exclude=("商场",),
-        collection_only=bool(selected_collection_item_ids),
-        selected_collection_item_ids=selected_collection_item_ids,
-        created_at=created_at,
-        expires_at=created_at + timedelta(days=2),
-    )
-
-
-ORIGIN = Coordinate(
-    latitude=22.5431,
-    longitude=114.0579,
-    coordinate_system=CoordinateSystem.GCJ_02,
-)
-NOW = datetime(2026, 7, 28, 2, tzinfo=UTC)
-
-
-@pytest.mark.asyncio
-async def test_product_adjustment_replaces_category_and_preserves_every_other_field() -> None:
-    original = _constraints()
-    provider = FakeProvider(
-        [
-            fake_response(
-                content=(
-                    '{"include":["适合散步的地方"],'
-                    '"exclude":["商场","咖啡店"]}'
-                )
-            )
-        ]
-    )
-
-    patch = await PlanAdjustmentParser(
-        provider,
-        structured_output_mode=StructuredOutputMode.JSON_OBJECT,
-    ).parse(
-        constraints=original,
-        instruction="不要咖啡店，换成适合散步的地方，其他不变。",
-        now=NOW,
-    )
-    adjusted = apply_plan_adjustment(original, patch)
-
-    assert adjusted.include == ("适合散步的地方",)
-    assert adjusted.exclude == ("商场", "咖啡店")
-    assert adjusted.model_copy(
-        update={"include": original.include, "exclude": original.exclude}
-    ) == original
-    assert len(provider.calls) == 1
-    assert provider.calls[0].response_format is not None
-    assert provider.calls[0].response_format.mode is StructuredOutputMode.JSON_OBJECT
-
-
-@pytest.mark.asyncio
-async def test_adjustment_uses_shanghai_plan_time_and_keeps_local_three_oclock() -> None:
-    original = _constraints().model_copy(update={"origin": ORIGIN})
-    provider = FakeProvider(
-        [fake_response(content='{"start_at":"2026-07-29T15:00:00+08:00"}')]
-    )
-
-    patch = await PlanAdjustmentParser(
-        provider,
-        structured_output_mode=StructuredOutputMode.JSON_OBJECT,
-    ).parse(constraints=original, instruction="改成下午3点开始", now=NOW)
-    adjusted = apply_plan_adjustment(original, patch)
-    payload = provider.calls[0].messages[-1]["content"]
-
-    assert '"timezone":"Asia/Shanghai"' in payload
-    assert '"start_at":"2026-07-29T10:00:00+08:00"' in payload
-    assert '"end_at":"2026-07-29T18:00:00+08:00"' in payload
-    assert '"current_time":"2026-07-28T10:00:00+08:00"' in payload
-    assert adjusted.start_at == datetime(2026, 7, 29, 7, tzinfo=UTC)
-    assert adjusted.start_at.astimezone(timezone(timedelta(hours=8))).hour == 15
-    assert adjusted.origin == ORIGIN
-
-
-def test_pace_only_adjustment_preserves_time_and_origin() -> None:
-    original = _constraints().model_copy(update={"origin": ORIGIN})
-
-    adjusted = apply_plan_adjustment(
-        original,
-        PlanAdjustmentPatch(pace=PlanPace.RELAXED),
-    )
-
-    assert adjusted.start_at == original.start_at
-    assert adjusted.end_at == original.end_at
-    assert adjusted.origin == ORIGIN
-
-
-def test_adjustment_preserves_selected_collection_items() -> None:
-    selected = ("col_0123456789abcdef0123456789abcdef",)
-    original = _constraints(selected_collection_item_ids=selected)
-
-    adjusted = apply_plan_adjustment(
-        original,
-        PlanAdjustmentPatch(pace=PlanPace.RELAXED, collection_only=False),
-    )
-
-    assert adjusted.selected_collection_item_ids == selected
-    assert adjusted.collection_only is True
-
-
-@pytest.mark.asyncio
-async def test_adjustment_model_never_receives_selected_collection_ids() -> None:
-    selected = ("col_0123456789abcdef0123456789abcdef",)
-    provider = FakeProvider([fake_response(content='{"pace":"relaxed"}')])
-
-    await PlanAdjustmentParser(
-        provider,
-        structured_output_mode=StructuredOutputMode.JSON_OBJECT,
-    ).parse(
-        constraints=_constraints(selected_collection_item_ids=selected),
-        instruction="节奏轻松一点",
-        now=NOW,
-    )
-
-    assert selected[0] not in provider.calls[0].messages[-1]["content"]
-
-
-def test_complete_patch_is_validated_once_by_plan_constraints() -> None:
-    original = _constraints(budget=None)
-    patch = PlanAdjustmentPatch(
-        pace=PlanPace.RELAXED,
-        transport_modes=(TransportMode.TRANSIT,),
+        selected_collection_item_ids=("col_0123456789abcdef0123456789abcdef",),
+        required_collection_item_ids=("col_0123456789abcdef0123456789abcdef",),
         collection_only=True,
+        created_at=NOW,
+        expires_at=NOW + timedelta(days=2),
     )
 
-    adjusted = apply_plan_adjustment(original, patch)
 
-    assert adjusted.pace is PlanPace.RELAXED
-    assert adjusted.transport_modes == (TransportMode.TRANSIT,)
-    assert adjusted.collection_only is True
-    assert adjusted.budget is None
-    assert adjusted.area == original.area
-
-
-def test_time_adjustment_extends_constraint_lifetime_past_new_plan_end() -> None:
-    original = _constraints()
-    start_at = original.start_at + timedelta(days=5)
-    end_at = original.end_at + timedelta(days=5)
-
-    adjusted = apply_plan_adjustment(
-        original,
-        PlanAdjustmentPatch(start_at=start_at, end_at=end_at),
+def _candidates() -> tuple[PlanProposalCandidate, ...]:
+    return (
+        PlanProposalCandidate(
+            candidate_key="museum", title="美术馆", kind=CollectionKind.PLACE, required=True
+        ),
+        PlanProposalCandidate(
+            candidate_key="coffee", title="咖啡店", kind=CollectionKind.PLACE
+        ),
+        PlanProposalCandidate(
+            candidate_key="park", title="公园", kind=CollectionKind.PLACE
+        ),
     )
 
-    assert adjusted.expires_at == end_at + timedelta(hours=1)
-    assert adjusted.is_active(start_at)
+
+def _base() -> tuple[PlanProposalItem, ...]:
+    return (
+        PlanProposalItem(candidate_key="museum", visit_duration_seconds=3600),
+        PlanProposalItem(candidate_key="coffee", visit_duration_seconds=1800),
+    )
+
+
+async def _adjust(content: str):
+    provider = FakeProvider([fake_response(content=content)])
+    result = await PlanProposalService(
+        provider, structured_output_mode=StructuredOutputMode.JSON_SCHEMA
+    ).adjust(
+        instruction="只修改我说的部分",
+        constraints=_constraints(),
+        base_items=_base(),
+        candidates=_candidates(),
+        now=NOW,
+    )
+    return (*result, provider)
 
 
 @pytest.mark.asyncio
-async def test_invalid_or_empty_model_patch_is_rejected_without_phrase_fallback() -> None:
-    provider = FakeProvider([fake_response(content="{}")])
+async def test_add_preserves_all_existing_places() -> None:
+    proposals, constraints, summary, provider = await _adjust(
+        '{"actions":[{"kind":"add","candidate_key":"park",'
+        '"after_candidate_key":"coffee","visit_duration_seconds":2400}],'
+        '"change_summary":"新增公园，保留原地点"}'
+    )
 
-    with pytest.raises(PlanAdjustmentUnsupportedError):
-        await PlanAdjustmentParser(
-            provider,
-            structured_output_mode=StructuredOutputMode.JSON_OBJECT,
-        ).parse(
-            constraints=_constraints(),
-            instruction="给我一个惊喜",
-            now=NOW,
-        )
-
+    assert [item.candidate_key for item in proposals.options[0].items] == [
+        "museum",
+        "coffee",
+        "park",
+    ]
+    assert constraints == _constraints()
+    assert summary == "新增公园，保留原地点"
     assert len(provider.calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_model_cannot_write_route_coordinates_and_origin_is_not_disclosed() -> None:
-    provider = FakeProvider(
-        [
-            fake_response(
-                content=(
-                    '{"origin":{"latitude":22.5431,"longitude":114.0579,'
-                    '"coordinate_system":"gcj_02"}}'
-                )
-            )
-        ]
-    )
-    constraints = _constraints().model_copy(
-        update={
-            "origin": ORIGIN
-        }
+@pytest.mark.parametrize(
+    ("actions", "expected", "durations"),
+    [
+        ('[{"kind":"remove","target_candidate_key":"coffee"}]', ["museum"], [3600]),
+        (
+            '[{"kind":"replace","target_candidate_key":"coffee",'
+            '"candidate_key":"park","visit_duration_seconds":2400}]',
+            ["museum", "park"],
+            [3600, 2400],
+        ),
+        (
+            '[{"kind":"reorder","candidate_keys":["coffee","museum"]}]',
+            ["coffee", "museum"],
+            [1800, 3600],
+        ),
+        (
+            '[{"kind":"change_duration","target_candidate_key":"coffee",'
+            '"visit_duration_seconds":3600}]',
+            ["museum", "coffee"],
+            [3600, 3600],
+        ),
+    ],
+)
+async def test_each_explicit_action_only_changes_the_selected_option(
+    actions: str, expected: list[str], durations: list[int]
+) -> None:
+    proposals, _, _, _ = await _adjust(
+        f'{{"actions":{actions},"change_summary":"按要求调整"}}'
     )
 
-    with pytest.raises(PlanAdjustmentNotUnderstoodError):
-        await PlanAdjustmentParser(
-            provider,
-            structured_output_mode=StructuredOutputMode.JSON_OBJECT,
-        ).parse(
-            constraints=constraints,
-            instruction="换到另一个地点",
-            now=NOW,
+    assert [item.candidate_key for item in proposals.options[0].items] == expected
+    assert [item.visit_duration_seconds for item in proposals.options[0].items] == durations
+    assert len(proposals.options) == 1
+
+
+@pytest.mark.asyncio
+async def test_constraint_change_preserves_private_collection_contract() -> None:
+    _, constraints, _, provider = await _adjust(
+        '{"constraint_changes":{"pace":"relaxed","collection_only":false},'
+        '"change_summary":"节奏放松"}'
+    )
+
+    assert constraints.pace is PlanPace.RELAXED
+    assert constraints.collection_only is True
+    assert constraints.required_collection_item_ids == _constraints().required_collection_item_ids
+    request = str(provider.calls[0].messages)
+    assert "required_collection_item_ids" not in request
+    assert "selected_collection_item_ids" not in request
+
+
+@pytest.mark.asyncio
+async def test_required_candidate_cannot_be_removed() -> None:
+    with pytest.raises(PlanProposalError):
+        await _adjust(
+            '{"actions":[{"kind":"remove","target_candidate_key":"museum"}],'
+            '"change_summary":"删除美术馆"}'
         )
 
-    request_text = str(provider.calls[0].messages)
-    assert "22.5431" not in request_text
-    assert "114.0579" not in request_text
-    assert '"origin"' not in request_text
+
+@pytest.mark.asyncio
+async def test_empty_or_unknown_adjustment_has_no_rule_fallback() -> None:
+    with pytest.raises(PlanProposalError):
+        await _adjust('{"actions":[],"change_summary":"不明确"}')

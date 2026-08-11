@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import tempfile
 from collections.abc import AsyncIterator
@@ -18,16 +19,17 @@ from fastapi import FastAPI
 from sqlalchemy import func, select
 
 from app.application.content_import_jobs import (
+    AGENT_MESSAGE_JOB_TYPE,
     CONTENT_IMPORT_JOB_TYPE,
     ContentImportJobHandler,
 )
 from app.application.map_plan_facts import MapPlanFactResolver
-from app.application.plan_adjustments import PlanAdjustmentParser
 from app.application.plan_experience import (
     PLAN_GENERATION_JOB_TYPE,
     ExistingPlanServicesExecutor,
     PlanGenerationJobHandler,
 )
+from app.application.plan_proposals import PlanProposalService
 from app.application.pricing import ConfiguredPricingPolicy
 from app.config import Settings
 from app.domain.collections import (
@@ -93,7 +95,15 @@ def _candidate_response():
         tags=("观星", "周末"),
     )
     return fake_response(
-        content=ExtractionResult.with_candidates((candidate,)).model_dump_json()
+        content=json.dumps(
+            {
+                "intent": "collect_content",
+                "extraction": ExtractionResult.with_candidates((candidate,)).model_dump(
+                    mode="json"
+                ),
+            },
+            ensure_ascii=False,
+        )
     )
 
 
@@ -242,9 +252,11 @@ def build_app() -> FastAPI:
     assert settings.demo_database_url is not None
     _migrate(settings.demo_database_url)
     provider = FakeProvider([_candidate_response() for _ in range(8)])
-    adjustment_provider = FakeProvider(
+    plan_provider = FakeProvider(
         [
-            fake_response(content='{"pace":"relaxed"}'),
+            fake_response(content='{"options":[{"role":"main","items":[{"candidate_key":"candidate_0","visit_duration_seconds":3600},{"candidate_key":"candidate_1","visit_duration_seconds":3600}],"reason":"海边散步与看展"},{"role":"alternative","items":[{"candidate_key":"candidate_1","visit_duration_seconds":3600},{"candidate_key":"candidate_0","visit_duration_seconds":3000}],"reason":"先看展再散步"},{"role":"alternative","items":[{"candidate_key":"candidate_0","visit_duration_seconds":3000},{"candidate_key":"candidate_1","visit_duration_seconds":4200}],"reason":"延长看展时间"}]}'),
+            fake_response(content='{"actions":[{"kind":"change_duration","target_candidate_key":"candidate_0","visit_duration_seconds":3000}],"change_summary":"缩短首个地点停留时间"}'),
+            fake_response(content='{"options":[{"role":"main","items":[{"candidate_key":"candidate_0","visit_duration_seconds":3600},{"candidate_key":"candidate_1","visit_duration_seconds":3600}],"reason":"海边散步与看展"},{"role":"alternative","items":[{"candidate_key":"candidate_1","visit_duration_seconds":3600},{"candidate_key":"candidate_0","visit_duration_seconds":3000}],"reason":"先看展再散步"},{"role":"alternative","items":[{"candidate_key":"candidate_0","visit_duration_seconds":3000},{"candidate_key":"candidate_1","visit_duration_seconds":4200}],"reason":"延长看展时间"}]}'),
             fake_response(content="{}"),
         ]
     )
@@ -254,7 +266,7 @@ def build_app() -> FastAPI:
     )
     api = create_app(
         settings,
-        text_provider=adjustment_provider,
+        text_provider=plan_provider,
         map_provider=map_provider,
         demo_storage_provider=storage,
     )
@@ -336,11 +348,11 @@ def build_app() -> FastAPI:
                         map_provider=map_provider,
                         matching_policy=settings.place_matching_policy(),
                     ),
-                ),
-                adjustment_parser=PlanAdjustmentParser(
-                    adjustment_provider,
-                    structured_output_mode=(
-                        settings.extraction_structured_output_mode()
+                    proposals=PlanProposalService(
+                        plan_provider,
+                        structured_output_mode=(
+                            settings.extraction_structured_output_mode()
+                        ),
                     ),
                 ),
             )
@@ -352,6 +364,7 @@ def build_app() -> FastAPI:
                 worker_id="worker_browser_e2e",
                 handlers={
                     CONTENT_IMPORT_JOB_TYPE: handler,
+                    AGENT_MESSAGE_JOB_TYPE: handler,
                     PLAN_GENERATION_JOB_TYPE: plan_handler,
                 },
                 poll_seconds=0.02,

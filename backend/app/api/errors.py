@@ -36,6 +36,7 @@ from app.domain.plans import (
     PlanExecutionNotAllowedError,
     PlanFeedbackSelectionError,
     PlanNotReadyError,
+    PlanOriginRequiredError,
     PlanVersionConflictError,
 )
 from app.providers.map import MapProviderError, MapProviderErrorCode
@@ -56,6 +57,7 @@ def install_error_handlers(api: FastAPI) -> None:
     api.add_exception_handler(VersionConflictError, _version_conflict)
     api.add_exception_handler(PlanVersionConflictError, _plan_version_conflict)
     api.add_exception_handler(PlanNotReadyError, _plan_not_ready)
+    api.add_exception_handler(PlanOriginRequiredError, _plan_origin_required)
     api.add_exception_handler(
         PlanExecutionNotAllowedError,
         _plan_execution_not_allowed,
@@ -213,6 +215,15 @@ async def _plan_version_conflict(request: Request, exc: Exception) -> JSONRespon
 async def _plan_not_ready(request: Request, exc: Exception) -> JSONResponse:
     del request, exc
     return _error(409, "PLAN_NOT_READY", "The plan version is not ready to confirm.")
+
+
+async def _plan_origin_required(request: Request, exc: Exception) -> JSONResponse:
+    del request, exc
+    return _error(
+        409,
+        "PLAN_ORIGIN_REQUIRED",
+        "Add an exact starting point before confirming or navigating this plan.",
+    )
 
 
 async def _plan_execution_not_allowed(

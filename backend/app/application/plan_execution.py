@@ -17,6 +17,7 @@ from app.domain.identifiers import generate_feedback_id
 from app.domain.places import CityScope, NavigationRequest
 from app.domain.plans import (
     PlanCompletionStatus,
+    PlanDraftResult,
     PlanExecutionItem,
     PlanExecutionNotAllowedError,
     PlanFeedback,
@@ -24,6 +25,7 @@ from app.domain.plans import (
     PlanItem,
     PlanItemExecutionStatus,
     PreferenceSuggestion,
+    plan_option_index,
 )
 from app.domain.time import as_utc, utc_now
 from app.infrastructure.db.models import (
@@ -81,16 +83,26 @@ async def _require_execution_plan(
     return row
 
 
-async def _main_rows(
-    session: AsyncSession, *, user_id: str, plan_id: str
+def _selected_option_index(plan: PlanModel) -> int:
+    if plan.draft_json is None:
+        raise PlanExecutionNotAllowedError
+    return plan_option_index(
+        PlanDraftResult.model_validate_json(
+            json.dumps(plan.draft_json, ensure_ascii=False, separators=(",", ":"))
+        )
+    )
+
+
+async def _execution_rows(
+    session: AsyncSession, *, plan: PlanModel
 ) -> tuple[PlanItemModel, ...]:
     rows = (
         await session.scalars(
             select(PlanItemModel)
             .where(
-                PlanItemModel.plan_id == plan_id,
-                PlanItemModel.user_id == user_id,
-                PlanItemModel.option_index == 0,
+                PlanItemModel.plan_id == plan.id,
+                PlanItemModel.user_id == plan.user_id,
+                PlanItemModel.option_index == _selected_option_index(plan),
             )
             .order_by(PlanItemModel.item_index, PlanItemModel.id)
         )
@@ -105,9 +117,9 @@ class PlanCalendarService:
         self, *, session: AsyncSession, user_id: str, plan_id: str
     ) -> bytes:
         row = await _require_execution_plan(session, user_id=user_id, plan_id=plan_id)
-        items = tuple(_parse_item(item) for item in await _main_rows(
-            session, user_id=user_id, plan_id=row.id
-        ))
+        items = tuple(
+            _parse_item(item) for item in await _execution_rows(session, plan=row)
+        )
         if not items:
             raise PlanExecutionNotAllowedError
         constraints = json.loads(json.dumps(row.constraints_json))
@@ -173,8 +185,12 @@ class PlanNavigationService:
         map_provider: MapProvider,
     ) -> tuple[str, tuple[PlanExecutionItem, ...]]:
         plan = await _require_execution_plan(session, user_id=user_id, plan_id=plan_id)
+        if "origin" not in plan.constraints_json:
+            from app.domain.plans import PlanOriginRequiredError
+
+            raise PlanOriginRequiredError
         result: list[PlanExecutionItem] = []
-        for row in await _main_rows(session, user_id=user_id, plan_id=plan.id):
+        for row in await _execution_rows(session, plan=plan):
             item = _parse_item(row)
             poi = item.source.concrete_poi
             uri = None
@@ -258,7 +274,7 @@ class PlanFeedbackService:
         ):
             stored_candidate = None
 
-        item_rows = await _main_rows(session, user_id=user_id, plan_id=plan_id)
+        item_rows = await _execution_rows(session, plan=plan)
         if not item_rows:
             raise PlanExecutionNotAllowedError
         allowed = {item.id for item in item_rows}
@@ -427,7 +443,7 @@ class PlanFeedbackService:
             .where(
                 PlanItemModel.plan_id == plan_id,
                 PlanItemModel.user_id == user_id,
-                PlanItemModel.option_index == 0,
+                PlanItemModel.option_index == _selected_option_index(plan),
             )
             .values(execution_status=PlanItemExecutionStatus.NOT_VISITED.value)
         )

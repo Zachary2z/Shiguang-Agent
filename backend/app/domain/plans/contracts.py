@@ -233,6 +233,11 @@ class _PlanConstraintValues(PlanContract):
         max_length=_MAX_SELECTED_COLLECTION_ITEMS,
         repr=False,
     )
+    required_collection_item_ids: tuple[str, ...] = Field(
+        default_factory=tuple,
+        max_length=_MAX_SELECTED_COLLECTION_ITEMS,
+        repr=False,
+    )
     created_at: datetime
     expires_at: datetime
 
@@ -265,7 +270,11 @@ class _PlanConstraintValues(PlanContract):
             else _normalize_text(value, field_name="original_request", max_length=4000)
         )
 
-    @field_validator("selected_collection_item_ids", mode="before")
+    @field_validator(
+        "selected_collection_item_ids",
+        "required_collection_item_ids",
+        mode="before",
+    )
     @classmethod
     def normalize_selected_collection_items(cls, value: object) -> tuple[str, ...]:
         if not isinstance(value, (tuple, list)):
@@ -286,6 +295,10 @@ class _PlanConstraintValues(PlanContract):
             raise ValueError("include and exclude must not conflict")
         if self.selected_collection_item_ids and not self.collection_only:
             raise ValueError("selected collection items require collection_only")
+        if not set(self.required_collection_item_ids).issubset(
+            self.selected_collection_item_ids
+        ):
+            raise ValueError("required collection items must also be selected")
         return self
 
     @property
@@ -436,6 +449,7 @@ def resolve_plan_constraints(
         exclude=value.exclude,
         collection_only=value.collection_only,
         selected_collection_item_ids=value.selected_collection_item_ids,
+        required_collection_item_ids=value.required_collection_item_ids,
         created_at=value.created_at,
         expires_at=value.expires_at,
     )
