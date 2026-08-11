@@ -39,9 +39,12 @@ from app.domain.collections import (
     CollectionKind,
     CollectionStatus,
     ExtractionResult,
+    Message,
+    MessageContentType,
+    MessageRole,
     PlaceCandidate,
 )
-from app.domain.identifiers import generate_collection_item_id
+from app.domain.identifiers import generate_collection_item_id, generate_message_id
 from app.domain.places import (
     CityScope,
     Coordinate,
@@ -93,6 +96,18 @@ BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 def _route(intent: dict[str, object]) -> ModelResponse:
     return fake_response(content=json.dumps(intent, ensure_ascii=False, default=str))
+
+
+def _complete_plan_route() -> ModelResponse:
+    start = utc_now() + timedelta(days=5)
+    return _route(
+        {
+            "intent": "plan",
+            "start_at": start.isoformat(),
+            "end_at": (start + timedelta(hours=4)).isoformat(),
+            "area": {"districts": ["南山区"], "labels": []},
+        }
+    )
 
 
 def _proposal() -> ModelResponse:
@@ -589,8 +604,9 @@ async def test_origin_map_failure_creates_no_fake_origin_or_plan(
 async def test_collection_route_uses_one_model_call_and_existing_import(
     test_settings: Settings,
 ) -> None:
-    provider = FakeProvider([_collection_route()])
-    async with _runtime(test_settings, provider) as (_api, client, worker):
+    plan_request = "周六下午两点到六点在南山看展，再喝咖啡"
+    provider = FakeProvider([_collection_route(), _complete_plan_route()])
+    async with _runtime(test_settings, provider) as (api, client, worker):
         accepted = await _submit(client, key="route-collection", text="收藏一下深圳天文台")
         assert accepted.status_code == 202
         await worker.run_once()
@@ -598,7 +614,17 @@ async def test_collection_route_uses_one_model_call_and_existing_import(
 
         assert result["intent"] == "collect_content"
         assert result["collections"][0]["title"] == "深圳天文台"
-        assert len(provider.calls) == 1
+
+        plan = await _submit(client, key="route-after-collection", text=plan_request)
+        await worker.run_once()
+        assert (await client.get(plan.json()["result_url"])).json()["plan_id"]
+        assert '"pending_context":null' in provider.calls[1].messages[-1]["content"]
+        async with api.state.demo_database.session() as session:
+            stored = await session.scalar(select(PlanModel))
+            assert stored is not None
+            assert stored.constraints_json["original_request"] == plan_request
+
+    assert len(provider.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -607,8 +633,13 @@ async def test_any_branch_intent_uses_model_and_existing_selection_service(
 ) -> None:
     from tests.contract.test_m1_4_collections import _ambiguous
 
+    plan_request = "周六下午两点到六点在南山看展，再喝咖啡"
     provider = FakeProvider(
-        [_collection_route("一尺花园"), _route({"intent": "select_any_branch"})]
+        [
+            _collection_route("一尺花园"),
+            _route({"intent": "select_any_branch"}),
+            _complete_plan_route(),
+        ]
     )
     async with _runtime(test_settings, provider) as (api, client, worker):
         created = await _submit(client, key="route-any-create", text="收藏一尺花园")
@@ -640,6 +671,11 @@ async def test_any_branch_intent_uses_model_and_existing_selection_service(
         await worker.run_once()
         result = (await client.get(accepted.json()["result_url"])).json()
 
+        plan = await _submit(client, key="route-after-any-branch", text=plan_request)
+        await worker.run_once()
+        assert (await client.get(plan.json()["result_url"])).json()["plan_id"]
+        assert '"pending_context":null' in provider.calls[2].messages[-1]["content"]
+
         async with api.state.demo_database.session() as session:
             stored = await session.scalar(
                 select(CollectionItemModel).where(CollectionItemModel.id == item["id"])
@@ -647,11 +683,14 @@ async def test_any_branch_intent_uses_model_and_existing_selection_service(
             assert stored is not None
             assert stored.status == "active"
             assert stored.place_scope == "any_branch"
+            plan_row = await session.scalar(select(PlanModel))
+            assert plan_row is not None
+            assert plan_row.constraints_json["original_request"] == plan_request
 
     assert result["intent"] == "select_any_branch"
     assert result["question"] == "已把“一尺花园”保存为任意分店。"
-    assert len(provider.calls) == 2
-    assert "pending_context" in provider.calls[1].messages[-1]["content"]
+    assert len(provider.calls) == 3
+    assert '"pending_context":null' in provider.calls[1].messages[-1]["content"]
 
 
 @pytest.mark.asyncio
@@ -1011,6 +1050,7 @@ async def test_memory_authorization_temporary_constraint_and_clarification(
         confirmed_result = (await client.get(confirmed.json()["result_url"])).json()
         assert confirmed_result["memory_id"].startswith("mem_")
         assert "pending_context" in provider.calls[2].messages[-1]["content"]
+        assert "我不喜欢吃日料" in provider.calls[2].messages[-1]["content"]
 
         temporary = await _submit(client, key="memory-temporary", text="这次不要日料")
         await worker.run_once()
@@ -1035,6 +1075,76 @@ async def test_memory_authorization_temporary_constraint_and_clarification(
             ).all()
             assert all(job.max_attempts == 1 for job in jobs)
         assert len(provider.calls) == 5
+
+
+@pytest.mark.asyncio
+async def test_completed_memory_does_not_pollute_new_plan(
+    test_settings: Settings,
+) -> None:
+    plan_request = "周六下午两点到六点在南山看展，再喝咖啡"
+    provider = FakeProvider(
+        [
+            _route(
+                {
+                    "intent": "memory",
+                    "authorization": "explicit",
+                    "type": "negative_preference",
+                    "content": "不吃日料",
+                    "value": "日料",
+                }
+            ),
+            _complete_plan_route(),
+        ]
+    )
+    async with _runtime(test_settings, provider) as (api, client, worker):
+        memory = await _submit(client, key="memory-before-plan", text="记住我不吃日料")
+        await worker.run_once()
+        assert (await client.get(memory.json()["result_url"])).json()["memory_id"]
+
+        plan = await _submit(client, key="plan-after-memory", text=plan_request)
+        await worker.run_once()
+        assert (await client.get(plan.json()["result_url"])).json()["plan_id"]
+        assert '"pending_context":null' in provider.calls[1].messages[-1]["content"]
+        async with api.state.demo_database.session() as session:
+            stored = await session.scalar(select(PlanModel))
+            assert stored is not None
+            assert stored.constraints_json["original_request"] == plan_request
+
+
+@pytest.mark.asyncio
+async def test_waiting_memory_context_reaches_parser_but_not_plan_request(
+    test_settings: Settings,
+) -> None:
+    memory_request = "我不喜欢吃日料"
+    plan_request = "周六下午两点到六点在南山看展，再喝咖啡"
+    provider = FakeProvider(
+        [
+            _route(
+                {
+                    "intent": "memory",
+                    "authorization": "needs_confirmation",
+                    "type": "negative_preference",
+                    "content": "不喜欢日料",
+                    "value": "日料",
+                }
+            ),
+            _complete_plan_route(),
+        ]
+    )
+    async with _runtime(test_settings, provider) as (api, client, worker):
+        memory = await _submit(client, key="waiting-memory", text=memory_request)
+        await worker.run_once()
+        assert "记住" in (await client.get(memory.json()["result_url"])).json()["question"]
+
+        plan = await _submit(client, key="plan-after-waiting-memory", text=plan_request)
+        await worker.run_once()
+        assert (await client.get(plan.json()["result_url"])).json()["plan_id"]
+        parser_input = provider.calls[1].messages[-1]["content"]
+        assert memory_request in parser_input
+        async with api.state.demo_database.session() as session:
+            stored = await session.scalar(select(PlanModel))
+            assert stored is not None
+            assert stored.constraints_json["original_request"] == plan_request
 
 
 @pytest.mark.asyncio
@@ -1180,3 +1290,49 @@ async def test_pending_context_does_not_cross_sessions(
             plan = await database_session.scalar(select(PlanModel))
             assert plan is not None
             assert plan.constraints_json["original_request"] == "继续"
+
+
+@pytest.mark.asyncio
+async def test_assistant_without_authoritative_job_is_not_pending(
+    test_settings: Settings,
+) -> None:
+    plan_request = "周六下午两点到六点在南山看展，再喝咖啡"
+    provider = FakeProvider([_complete_plan_route()])
+    async with _runtime(test_settings, provider) as (api, client, worker):
+        session_id = client.headers["X-Test-Session"]
+        now = utc_now()
+        async with api.state.demo_database.session() as session:
+            user_id = await session.scalar(select(UserModel.id))
+            assert user_id is not None
+            repository = SqlAlchemyCollectionRepository(session)
+            for role, content, trace_id, created_at in (
+                (MessageRole.USER, "已经结束的旧任务", None, now - timedelta(seconds=2)),
+                (
+                    MessageRole.ASSISTANT,
+                    "这段文案看起来像追问，但没有权威任务。",
+                    "trc_00000000000000000000000000000000",
+                    now - timedelta(seconds=1),
+                ),
+            ):
+                await repository.add_message(
+                    user_id=user_id,
+                    message=Message(
+                        id=generate_message_id(),
+                        session_id=session_id,
+                        role=role,
+                        content_type=MessageContentType.TEXT,
+                        content=content,
+                        trace_id=trace_id,
+                        created_at=created_at,
+                    ),
+                )
+            await session.commit()
+
+        plan = await _submit(client, key="plan-after-orphan-message", text=plan_request)
+        await worker.run_once()
+        assert (await client.get(plan.json()["result_url"])).json()["plan_id"]
+        assert '"pending_context":null' in provider.calls[0].messages[-1]["content"]
+        async with api.state.demo_database.session() as session:
+            stored = await session.scalar(select(PlanModel))
+            assert stored is not None
+            assert stored.constraints_json["original_request"] == plan_request

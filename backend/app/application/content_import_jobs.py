@@ -458,7 +458,7 @@ class ContentImportJobHandler:
                 raise ApplicationRunFailureError(
                     error_code="MODEL_PROVIDER_NOT_CONFIGURED"
                 )
-            pending_messages = await self._pending_messages(
+            pending_messages, pending_intent = await self._pending_messages(
                 repository=repository,
                 user_id=job.user_id,
                 session_id=payload.session_id,
@@ -583,7 +583,8 @@ class ContentImportJobHandler:
                     [
                         message.content
                         for message in pending_messages
-                        if message.role is MessageRole.USER
+                        if pending_intent in {"plan", "clarify"}
+                        and message.role is MessageRole.USER
                     ]
                     + [input.text]
                 )
@@ -759,14 +760,14 @@ class ContentImportJobHandler:
             ),
         )
 
-    @staticmethod
     async def _pending_messages(
+        self,
         *,
         repository: SqlAlchemyCollectionRepository,
         user_id: str,
         session_id: str,
         current_message_id: str,
-    ) -> tuple[Message, ...]:
+    ) -> tuple[tuple[Message, ...], str | None]:
         messages = [
             item
             for item in await repository.list_messages(
@@ -777,8 +778,21 @@ class ContentImportJobHandler:
             if item.id != current_message_id
         ]
         if not messages or messages[-1].role is not MessageRole.ASSISTANT:
-            return ()
-        return tuple(messages[-2:])
+            return (), None
+        trace_id = messages[-1].trace_id
+        if trace_id is None:
+            return (), None
+        previous_job = await PostgresJobQueue(self._session_factory).get_by_trace(
+            user_id=user_id,
+            trace_id=trace_id,
+        )
+        if (
+            previous_job is None
+            or previous_job.result_summary is None
+            or previous_job.result_summary.outcome != "waiting_user"
+        ):
+            return (), None
+        return tuple(messages[-2:]), previous_job.result_summary.intent
 
     async def _restore_input(
         self,

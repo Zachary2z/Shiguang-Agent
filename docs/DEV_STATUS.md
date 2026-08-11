@@ -4,10 +4,26 @@
 |---|---|
 | 当前总阶段 | 模型驱动计划生成：开发中 |
 | 当前子阶段 | 模型驱动计划生成第二批：唯一计划主链路生产接线 |
-| 状态 | 多轮计划原始需求修复完成，等待主控复验；M2-0 未开始 |
+| 状态 | 已完成任务污染新计划上下文修复完成，等待主控复验；M2-0 未开始 |
 | 当前分支 | codex/m1-model-driven-planning |
 | 最近更新 | 2026-08-11 |
-| 阻塞项 | 多轮计划原始需求 P1 等待主控复验；不得开始第三批或 M2-0 |
+| 阻塞项 | 已完成任务污染新计划上下文 P1 等待主控复验；不得开始第三批或 M2-0 |
+
+## 2026-08-11 已完成任务污染新计划上下文 P1 修复
+
+- 生产修复完成，等待主控复验，不据此宣布 P1 关闭。上一条 Assistant 只在其
+  `trace_id` 能通过既有 `PostgresJobQueue.get_by_trace` 找到当前用户的权威 Job，且
+  `JobResultSummary.outcome == waiting_user` 时建立 pending context；成功、失败、取消、
+  Job 缺失或没有结果摘要均安全视为无待续任务。
+- Memory、任意分店和通用澄清等真实等待上下文继续交给唯一 `AgentIntentParser`；生成
+  新计划时，只有上一等待结果 intent 为 `plan` 或 `clarify` 才组合上一条 USER 原文，
+  Assistant 文案始终不进入 `original_request`。已删除只凭 Assistant 角色判断待续的旧
+  旁路，没有文案、关键词或正则判断。
+- 生产链路回归覆盖正常计划追问、已完成任意分店/收藏/Memory 后的新计划、Memory 等待
+  上下文、Job 缺失、跨 Session/用户和幂等；指定聚焦集合 `142 passed, 1 skipped`，
+  非真实 Provider/Map 全集 `1776 passed, 18 skipped, 2 deselected`。pip check、Ruff、
+  strict mypy（143 个源文件）通过；未新增 Repository、Parser、Runner、状态表、迁移、
+  依赖、重试或 fallback，第三批和 M2-0 均未开始。
 
 ## 2026-08-11 多轮计划追问原始需求 P1 修复
 
