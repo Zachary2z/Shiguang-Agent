@@ -2,12 +2,25 @@
 
 | 项目 | 当前值 |
 |---|---|
-| 当前总阶段 | 模型驱动计划生成：开发中 |
-| 当前子阶段 | 模型驱动计划生成第三批：方案调整、版本与确认交互 |
-| 状态 | 第三批 selected / collection_only P1 修复完成，等待主控复验；M2-0 未开始 |
-| 当前分支 | codex/m1-model-driven-plan-interactions |
+| 当前总阶段 | 模型驱动计划生成第三批：已集成 |
+| 当前子阶段 | PRD 核心计划主链路真实用户验收 |
+| 状态 | 第三批已通过主控验收并集成；M2-0 未开始 |
+| 当前分支 | main |
 | 最近更新 | 2026-08-11 |
-| 阻塞项 | 第三批 selected / collection_only P1 等待主控复验；不得开始 M2-0 |
+| 阻塞项 | 无未关闭 P0/P1；完成真实用户验收前不得开始 M2-0 |
+
+## 2026-08-11 模型驱动计划生成第三批最终集成
+
+- `codex/m1-model-driven-plan-interactions` 已以 `--ff-only` 纯快进集成到 `main`，最终
+  代码提交为 `9563538a04eae9bf9c6c71bfca3e2421d00b0c9c`；没有冲突、merge commit、
+  历史改写或额外代码变化。
+- 主控复验确认 selected 只表示 preferred、required 只表示用户明确必选，
+  `collection_only` 是独立硬开关；selected 不再绕过范围等计划硬约束。该 P1 已关闭，
+  当前无未关闭 P0/P1。
+- 候选验收通过后，合并后最小检查再次通过 Ruff、strict mypy（142 个源文件）、计划聚焦
+  `174 passed`、前端 lint/typecheck 与 Vitest `73 passed`，Alembic 唯一 head 为
+  `20260729_0017`。未读取 `.env`，真实模型、地图和网页 API 调用为 0。
+- 下一步只允许执行 PRD 核心计划主链路真实用户验收；M2-0 尚未开始。
 
 ## 2026-08-11 第三批 selected / collection_only 语义 P1 修复
 
