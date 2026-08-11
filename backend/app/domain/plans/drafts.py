@@ -35,7 +35,6 @@ class DraftCandidateFacts(PlanContract):
     """Known visit and query facts for one already retrieved candidate."""
 
     collection_item_ids: tuple[str, ...]
-    visit_duration_seconds: int = Field(gt=0, le=24 * 60 * 60)
     event_start_at: datetime | None = None
     event_end_at: datetime | None = None
     poi_queried_at: datetime | None = None
@@ -116,13 +115,16 @@ class PlanDraftFactSnapshot(PlanContract):
             raise ValueError("candidate facts must be unique")
         if len(set(route_ids)) != len(route_ids):
             raise ValueError("route facts must be unique")
-        if len(
-            {
-                self.weather_status is None,
-                self.weather_source is None,
-                self.weather_queried_at is None,
-            }
-        ) != 1:
+        if (
+            len(
+                {
+                    self.weather_status is None,
+                    self.weather_source is None,
+                    self.weather_queried_at is None,
+                }
+            )
+            != 1
+        ):
             raise ValueError("weather status, source, and query time must be present together")
         return self
 
@@ -195,12 +197,15 @@ class PlanOptionProposal(PlanContract):
         min_length=1,
         max_length=240,
     )
+    external_gap_kind: CollectionKind | None = None
 
     @model_validator(mode="after")
     def require_unique_candidates(self) -> Self:
         keys = tuple(item.candidate_key for item in self.items)
         if len(set(keys)) != len(keys):
             raise ValueError("proposal candidates must be unique")
+        if (self.external_gap_description is None) is not (self.external_gap_kind is None):
+            raise ValueError("external gap description and kind must be provided together")
         return self
 
 
@@ -235,21 +240,11 @@ class PlanItemSourceKind(StrEnum):
 
 
 class PlanSelectionReasonCode(StrEnum):
-    PRIMARY_STABLE_RANK = "PRIMARY_STABLE_RANK"
-    STABLE_ALTERNATIVE = "STABLE_ALTERNATIVE"
-    AUXILIARY_FITS_KNOWN_ROUTE = "AUXILIARY_FITS_KNOWN_ROUTE"
+    MODEL_PROPOSAL = "MODEL_PROPOSAL"
 
 
 SELECTION_REASON_SUMMARIES: dict[PlanSelectionReasonCode, str] = {
-    PlanSelectionReasonCode.PRIMARY_STABLE_RANK: (
-        "Selected first by known route duration and stable candidate fields."
-    ),
-    PlanSelectionReasonCode.STABLE_ALTERNATIVE: (
-        "Selected as a deterministic alternative from the remaining candidates."
-    ),
-    PlanSelectionReasonCode.AUXILIARY_FITS_KNOWN_ROUTE: (
-        "Added because its visit and inter-place route fit the remaining window."
-    ),
+    PlanSelectionReasonCode.MODEL_PROPOSAL: "Selected by the model proposal.",
 }
 
 
@@ -308,9 +303,7 @@ class PlanRouteLeg(PlanContract):
 
     @model_validator(mode="after")
     def validate_target(self) -> Self:
-        has_external = (
-            self.to_external_provider is not None and self.to_external_poi_id is not None
-        )
+        has_external = self.to_external_provider is not None and self.to_external_poi_id is not None
         if (not self.to_collection_item_ids) is not has_external:
             raise ValueError("route requires exactly one collection or external target")
         if (self.duration_seconds is None) is not (self.distance_meters is None):
@@ -433,7 +426,7 @@ class PlanItem(PlanContract):
 
 class PlanOption(PlanContract):
     role: PlanOptionRole
-    items: tuple[PlanItem, ...] = Field(min_length=1, max_length=2)
+    items: tuple[PlanItem, ...] = Field(min_length=1)
     switch_buffer_seconds: int | None = Field(
         default=None,
         ge=MIN_SWITCH_BUFFER_SECONDS,
@@ -449,8 +442,8 @@ class PlanOption(PlanContract):
     def validate_option_shape(self) -> Self:
         if len(self.items) == 1 and self.switch_buffer_seconds is not None:
             raise ValueError("single-item options do not have a switch buffer")
-        if len(self.items) == 2 and self.switch_buffer_seconds is None:
-            raise ValueError("two-item options require a switch buffer")
+        if len(self.items) > 1 and self.switch_buffer_seconds is None:
+            raise ValueError("multi-item options require a switch buffer")
         validate_cny_price_pair(self.total_cost_amount, self.total_cost_currency)
         if self.risks != tuple(RISK_SUMMARIES[code] for code in self.risk_codes):
             raise ValueError("option risk summaries do not match their codes")
@@ -475,13 +468,16 @@ class PlanDraftResult(PlanContract):
 
     @model_validator(mode="after")
     def validate_result_shape(self) -> Self:
-        if len(
-            {
-                self.weather_status is None,
-                self.weather_source is None,
-                self.weather_queried_at is None,
-            }
-        ) != 1:
+        if (
+            len(
+                {
+                    self.weather_status is None,
+                    self.weather_source is None,
+                    self.weather_queried_at is None,
+                }
+            )
+            != 1
+        ):
             raise ValueError("weather status, source, and query time must be present together")
         if self.outcome is PlanDraftOutcome.GENERATED:
             if (
@@ -501,7 +497,6 @@ class PlanDraftResult(PlanContract):
 class PlanDraftViolationCode(StrEnum):
     RESULT_SHAPE_INVALID = "RESULT_SHAPE_INVALID"
     OPTION_ROLE_INVALID = "OPTION_ROLE_INVALID"
-    OPTION_DUPLICATED = "OPTION_DUPLICATED"
     ITEM_ROLE_INVALID = "ITEM_ROLE_INVALID"
     SOURCE_NOT_INCLUDED = "SOURCE_NOT_INCLUDED"
     FACTS_MISSING_OR_MISMATCHED = "FACTS_MISSING_OR_MISMATCHED"

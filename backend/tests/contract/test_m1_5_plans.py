@@ -99,9 +99,9 @@ def _draft(
             transport_mode=TransportMode.TRANSIT,
         ),
         source=PlanItemSource(collection_item_ids=(COLLECTION_ID,)),
-        selection_reason_code=PlanSelectionReasonCode.PRIMARY_STABLE_RANK,
+        selection_reason_code=PlanSelectionReasonCode.MODEL_PROPOSAL,
         selection_reason=SELECTION_REASON_SUMMARIES[
-            PlanSelectionReasonCode.PRIMARY_STABLE_RANK
+            PlanSelectionReasonCode.MODEL_PROPOSAL
         ],
         risk_codes=risk_codes,
         risks=tuple(RISK_SUMMARIES[code] for code in risk_codes),

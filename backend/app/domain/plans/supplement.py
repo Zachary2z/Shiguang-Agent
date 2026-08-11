@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from hashlib import sha256
 from typing import Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.domain.collections import PlaceCandidate
-from app.domain.places import PlaceMatchCandidate
+from app.domain.places import PlaceMatchCandidate, Poi
 from app.domain.plans.contracts import PlanContract
-from app.domain.plans.drafts import PlanDraftResult
 from app.domain.runs import AgentRunStatus
+from app.domain.time import require_aware_utc
 
 
 class RequiredGapKind(StrEnum):
@@ -27,7 +29,7 @@ class ExternalApprovalDecision(StrEnum):
 
 
 class ExternalSupplementOutcome(StrEnum):
-    DRAFT = "draft"
+    CANDIDATE = "candidate"
     WAITING_APPROVAL = "waiting_approval"
     NEEDS_SELECTION = "needs_selection"
     RECOVERY_REQUIRED = "recovery_required"
@@ -102,9 +104,7 @@ class RequiredPlanGap(PlanContract):
 class ExternalPlaceApprovalRequirement(PlanContract):
     approval_id: str = Field(pattern=r"^approval_[0-9a-f]{32}$")
     action: str = "use_external_place_recommendation"
-    display_text: str = (
-        "Allow one read-only external Place recommendation search in Shenzhen."
-    )
+    display_text: str = "Allow one read-only external Place recommendation search in Shenzhen."
 
     @classmethod
     def for_gap(cls, gap: RequiredPlanGap) -> ExternalPlaceApprovalRequirement:
@@ -132,10 +132,23 @@ class ExternalPlaceApprovalDecision(PlanContract):
     decision: ExternalApprovalDecision
 
 
+class ExternalPlaceCandidate(PlanContract):
+    poi: Poi
+    queried_at: datetime
+    supplement_reason: str = Field(min_length=1, max_length=240)
+    price_amount: Decimal | None = None
+    price_currency: str | None = None
+
+    @field_validator("queried_at")
+    @classmethod
+    def normalize_time(cls, value: datetime) -> datetime:
+        return require_aware_utc(value)
+
+
 class ExternalPlaceSupplementResult(PlanContract):
     outcome: ExternalSupplementOutcome
     run_status: AgentRunStatus
-    draft: PlanDraftResult | None = None
+    candidate: ExternalPlaceCandidate | None = None
     approval: ExternalPlaceApprovalRequirement | None = None
     candidates: tuple[PlaceMatchCandidate, ...] = Field(default_factory=tuple, max_length=3)
     recovery_code: ExternalRecoveryCode | None = None
@@ -147,7 +160,7 @@ class ExternalPlaceSupplementResult(PlanContract):
             if (
                 self.run_status is not AgentRunStatus.WAITING_USER
                 or self.approval is None
-                or self.draft is not None
+                or self.candidate is not None
                 or self.candidates
                 or self.recovery_code is not None
             ):
@@ -160,8 +173,10 @@ class ExternalPlaceSupplementResult(PlanContract):
                 raise ValueError("recovery summary does not match its code")
         elif self.recovery_summary is not None:
             raise ValueError("recovery summary requires a recovery code")
-        if self.outcome is ExternalSupplementOutcome.DRAFT and self.draft is None:
-            raise ValueError("draft outcomes require a draft")
+        if self.outcome is ExternalSupplementOutcome.CANDIDATE and self.candidate is None:
+            raise ValueError("candidate outcomes require a candidate")
+        if self.outcome is not ExternalSupplementOutcome.CANDIDATE and self.candidate is not None:
+            raise ValueError("only candidate outcomes can carry a candidate")
         if self.outcome is ExternalSupplementOutcome.NEEDS_SELECTION and not self.candidates:
             raise ValueError("selection outcomes require candidates")
         return self

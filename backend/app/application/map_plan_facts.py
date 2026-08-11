@@ -14,13 +14,7 @@ from app.application.structured_collection_retrieval import (
     assess_collection_candidate,
     branch_match_candidate,
 )
-from app.domain.collections import (
-    CandidateField,
-    CollectionItem,
-    CollectionKind,
-    PlaceCandidate,
-    event_schedule_is_confirmed,
-)
+from app.domain.collections import CollectionItem, CollectionKind, event_schedule_is_confirmed
 from app.domain.places import (
     Coordinate,
     MatchStatus,
@@ -41,22 +35,34 @@ from app.domain.plans import (
     CollectionPlanningFacts,
     DraftCandidateFacts,
     DraftRouteFacts,
+    ExternalDraftCandidate,
+    ExternalPlaceCandidate,
     PlanConstraints,
     PlanDraftFactSnapshot,
     PlanningFactSnapshot,
+    PlanProposalSet,
     PoiPlanningFacts,
-    RequiredGapKind,
-    RequiredPlanGap,
     RouteAssessment,
     WeatherAssessment,
 )
+from app.domain.plans.drafts import PlanRouteLeg
 from app.domain.time import utc_now
 from app.infrastructure.repositories import SqlAlchemyCollectionRepository
 from app.providers.map import MapProvider, MapProviderError
 
-MAX_PLAN_FACT_CANDIDATES = 6
 MAX_PLAN_ROUTE_CALLS = 48
-_VISIT_SECONDS = 60 * 60
+
+
+def proposal_route_edges(proposals: PlanProposalSet) -> tuple[tuple[str, str], ...]:
+    """Return adjacent proposal edges once, preserving first-seen order."""
+
+    return tuple(
+        dict.fromkeys(
+            (left.candidate_key, right.candidate_key)
+            for option in proposals.options
+            for left, right in zip(option.items, option.items[1:], strict=False)
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +93,9 @@ class MapPlanFactResolver:
         self._weather_assessment: WeatherAssessment | None = None
         self._weather_queried_at: datetime | None = None
         self._weather_summary: str | None = None
+        self._selected: dict[tuple[str, ...], _ExecutableCandidate] = {}
+        self._constraints: PlanConstraints | None = None
+        self._mode = TransportMode.TRANSIT
 
     async def resolve(
         self,
@@ -111,10 +120,10 @@ class MapPlanFactResolver:
                 if identifier in by_id
             ]
         mode = (
-            constraints.transport_modes[0]
-            if constraints.transport_modes
-            else TransportMode.TRANSIT
+            constraints.transport_modes[0] if constraints.transport_modes else TransportMode.TRANSIT
         )
+        self._constraints = constraints
+        self._mode = mode
         selected: list[_ExecutableCandidate] = []
         collection_facts: list[CollectionPlanningFacts] = []
         poi_facts: list[PoiPlanningFacts] = []
@@ -122,22 +131,17 @@ class MapPlanFactResolver:
         origin_routes: list[DraftRouteFacts] = []
 
         for item in items:
-            if len(selected) >= MAX_PLAN_FACT_CANDIDATES:
-                break
             resolved = resolve_place_target(
                 item.place_target,
                 collection_status=item.status.value,
             )
             if item.kind is CollectionKind.EVENT:
-                if (
-                    resolved.poi is None
-                    or not event_schedule_is_confirmed(
-                        event_start_date=item.event_start_date,
-                        event_end_date=item.event_end_date,
-                        event_start_at=item.event_start_at,
-                        event_end_at=item.event_end_at,
-                        uncertainties=item.uncertainties,
-                    )
+                if resolved.poi is None or not event_schedule_is_confirmed(
+                    event_start_date=item.event_start_date,
+                    event_end_date=item.event_end_date,
+                    event_start_at=item.event_start_at,
+                    event_end_at=item.event_end_at,
+                    uncertainties=item.uncertainties,
                 ):
                     continue
                 candidate = await self._qualify_concrete(
@@ -163,10 +167,7 @@ class MapPlanFactResolver:
                         ),
                         route_duration_seconds=None if route is None else route[0],
                         route_distance_meters=None if route is None else route[1],
-                        weather=(
-                            self._weather_assessment
-                            or WeatherAssessment.UNKNOWN
-                        ),
+                        weather=(self._weather_assessment or WeatherAssessment.UNKNOWN),
                         availability=AvailabilityAssessment.AVAILABLE,
                     )
                 )
@@ -232,20 +233,11 @@ class MapPlanFactResolver:
             candidate_facts.append(
                 DraftCandidateFacts(
                     collection_item_ids=(item.id,),
-                    visit_duration_seconds=_VISIT_SECONDS,
-                    poi_queried_at=(
-                        queried_at if candidate.resolved_from_any_branch else None
-                    ),
+                    poi_queried_at=(queried_at if candidate.resolved_from_any_branch else None),
                     event_start_at=(
-                        item.event_start_at
-                        if item.kind is CollectionKind.EVENT
-                        else None
+                        item.event_start_at if item.kind is CollectionKind.EVENT else None
                     ),
-                    event_end_at=(
-                        item.event_end_at
-                        if item.kind is CollectionKind.EVENT
-                        else None
-                    ),
+                    event_end_at=(item.event_end_at if item.kind is CollectionKind.EVENT else None),
                 )
             )
             if candidate.route is not None:
@@ -258,17 +250,8 @@ class MapPlanFactResolver:
                     )
                 )
 
-        pair_routes = await self._pair_routes(
-            selected=selected,
-            constraints=constraints,
-            mode=mode,
-        )
-        required_gap = None
-        if len(selected) == 1 and constraints.include:
-            required_gap = _required_place_gap(
-                constraints=constraints,
-                title=constraints.include[0],
-            )
+        self._selected = {(candidate.item.id,): candidate for candidate in selected}
+
         return PlanGenerationFacts(
             retrieval=PlanningFactSnapshot(
                 collections=tuple(collection_facts),
@@ -276,15 +259,115 @@ class MapPlanFactResolver:
             ),
             draft=PlanDraftFactSnapshot(
                 candidates=tuple(candidate_facts),
-                routes=tuple((*origin_routes, *pair_routes)),
+                routes=tuple(origin_routes),
                 weather_status=self._weather_assessment,
-                weather_source=(
-                    "amap" if self._weather_assessment is not None else None
-                ),
+                weather_source=("amap" if self._weather_assessment is not None else None),
                 weather_queried_at=self._weather_queried_at,
                 weather_summary=self._weather_summary,
             ),
-            required_gap=required_gap,
+        )
+
+    async def resolve_proposal_routes(
+        self,
+        *,
+        proposals: PlanProposalSet,
+        candidate_keys: dict[str, tuple[str, ...]],
+        base: PlanDraftFactSnapshot,
+    ) -> PlanDraftFactSnapshot:
+        """Fetch only origin and adjacent edges referenced by model proposals."""
+
+        constraints = self._constraints
+        if constraints is None:
+            raise RuntimeError("candidate facts must be resolved before proposal routes")
+        routes: list[DraftRouteFacts] = []
+        identities: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+        for option in proposals.options:
+            keys = tuple(item.candidate_key for item in option.items)
+            for index, key in enumerate(keys):
+                if key not in candidate_keys or (
+                    index > 0 and keys[index - 1] not in candidate_keys
+                ):
+                    continue
+                target_ids = candidate_keys[key]
+                target = self._selected[target_ids]
+                source_ids = () if index == 0 else candidate_keys[keys[index - 1]]
+                identity = (source_ids, target_ids)
+                if identity in identities:
+                    continue
+                identities.add(identity)
+                if index == 0:
+                    route = target.route
+                else:
+                    source = self._selected[source_ids]
+                    route = await self._route(
+                        constraints=constraints,
+                        origin=source.poi.coordinate,
+                        destination=target.poi.coordinate,
+                        mode=self._mode,
+                    )
+                if route is not None:
+                    routes.append(
+                        DraftRouteFacts(
+                            from_collection_item_ids=source_ids,
+                            to_collection_item_ids=target_ids,
+                            duration_seconds=route[0],
+                            distance_meters=route[1],
+                            transport_mode=self._mode,
+                        )
+                    )
+        return base.model_copy(update={"routes": tuple(routes)})
+
+    async def resolve_external_route(
+        self,
+        *,
+        proposals: PlanProposalSet,
+        external_key: str,
+        candidate: ExternalPlaceCandidate,
+        candidate_keys: dict[str, tuple[str, ...]],
+    ) -> ExternalDraftCandidate:
+        """Resolve the first actual inbound edge for the one supplemented Place."""
+
+        constraints = self._constraints
+        if constraints is None:
+            raise RuntimeError("candidate facts must be resolved before proposal routes")
+        previous_key: str | None = None
+        for option in proposals.options:
+            keys = tuple(item.candidate_key for item in option.items)
+            if external_key in keys:
+                index = keys.index(external_key)
+                previous_key = None if index == 0 else keys[index - 1]
+                break
+        origin = constraints.origin
+        from_ids: tuple[str, ...] = ()
+        if previous_key is not None:
+            from_ids = candidate_keys[previous_key]
+            origin = self._selected[from_ids].poi.coordinate
+        route = await self._route(
+            constraints=constraints,
+            origin=origin,
+            destination=candidate.poi.coordinate,
+            mode=self._mode,
+        )
+        return ExternalDraftCandidate(
+            poi=candidate.poi,
+            queried_at=candidate.queried_at,
+            supplement_reason=candidate.supplement_reason,
+            visit_duration_seconds=next(
+                item.visit_duration_seconds
+                for option in proposals.options
+                for item in option.items
+                if item.candidate_key == external_key
+            ),
+            price_amount=candidate.price_amount,
+            price_currency=candidate.price_currency,
+            inbound_route=PlanRouteLeg(
+                from_collection_item_ids=from_ids,
+                to_external_provider=candidate.poi.provider,
+                to_external_poi_id=candidate.poi.poi_id,
+                duration_seconds=None if route is None else route[0],
+                distance_meters=None if route is None else route[1],
+                transport_mode=self._mode,
+            ),
         )
 
     async def _qualify_concrete(
@@ -349,8 +432,7 @@ class MapPlanFactResolver:
                     city=constraints.city_scope,
                     search_district=(
                         constraints.area.districts[0]
-                        if constraints.area is not None
-                        and len(constraints.area.districts) == 1
+                        if constraints.area is not None and len(constraints.area.districts) == 1
                         else None
                     ),
                     search_location=constraints.origin,
@@ -411,37 +493,6 @@ class MapPlanFactResolver:
                 else AvailabilityAssessment.UNKNOWN
             ),
         )
-
-    async def _pair_routes(
-        self,
-        *,
-        selected: list[_ExecutableCandidate],
-        constraints: PlanConstraints,
-        mode: TransportMode,
-    ) -> list[DraftRouteFacts]:
-        routes: list[DraftRouteFacts] = []
-        for source in selected:
-            for target in selected:
-                if source.item.id == target.item.id:
-                    continue
-                route = await self._route(
-                    constraints=constraints,
-                    origin=source.poi.coordinate,
-                    destination=target.poi.coordinate,
-                    mode=mode,
-                )
-                if route is None:
-                    continue
-                routes.append(
-                    DraftRouteFacts(
-                        from_collection_item_ids=(source.item.id,),
-                        to_collection_item_ids=(target.item.id,),
-                        duration_seconds=route[0],
-                        distance_meters=route[1],
-                        transport_mode=mode,
-                    )
-                )
-        return routes
 
     async def _weather(self, constraints: PlanConstraints) -> WeatherAssessment:
         self._weather_queried_at = utc_now()
@@ -512,41 +563,8 @@ def _unique_poi_facts(
     return tuple(selected[key] for key in sorted(selected, key=lambda item: str(item)))
 
 
-def _required_place_gap(
-    *,
-    constraints: PlanConstraints,
-    title: str,
-) -> RequiredPlanGap:
-    district = (
-        constraints.area.districts[0]
-        if constraints.area is not None and len(constraints.area.districts) == 1
-        else None
-    )
-    missing = [
-        CandidateField.ADDRESS,
-        CandidateField.BUSINESS_DISTRICT,
-        CandidateField.LANDMARK,
-        CandidateField.METRO_STATION,
-        CandidateField.PRICE,
-        CandidateField.TAGS,
-    ]
-    if district is None:
-        missing.append(CandidateField.DISTRICT)
-    return RequiredPlanGap(
-        kind=RequiredGapKind.PLACE,
-        place_candidate=PlaceCandidate(
-            title=title,
-            city_hint="深圳",
-            district=district,
-            missing_fields=tuple(missing),
-        ),
-        supplement_reason="The requested included Place is not covered by one collection.",
-        visit_duration_seconds=_VISIT_SECONDS,
-    )
-
-
 __all__ = [
-    "MAX_PLAN_FACT_CANDIDATES",
     "MAX_PLAN_ROUTE_CALLS",
     "MapPlanFactResolver",
+    "proposal_route_edges",
 ]

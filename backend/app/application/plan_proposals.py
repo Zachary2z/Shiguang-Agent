@@ -40,7 +40,8 @@ _SYSTEM_PROMPT = (
     "candidate combinations, order, and positive suggested visit durations. Every "
     "required candidate must appear in every option; preferred candidates have priority "
     "but are not mandatory. Reference only supplied candidate_key values. Describe a "
-    "necessary missing external step only in external_gap_description. Never create or "
+    "necessary missing external step only in external_gap_description and classify its "
+    "external_gap_kind as place or event. Never create or "
     "guess collections, POIs, database IDs, coordinates, routes, distances, prices, "
     "weather, opening hours, Event time facts, or provider internals. Schema:\n"
     + json.dumps(_SCHEMA, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
@@ -128,14 +129,10 @@ class PlanProposalService:
             raise PlanProposalError from None
 
         allowed_keys = set(keys)
-        required_keys = {
-            candidate.candidate_key for candidate in candidates if candidate.required
-        }
+        required_keys = {candidate.candidate_key for candidate in candidates if candidate.required}
         if any(
             not {item.candidate_key for item in option.items}.issubset(allowed_keys)
-            or not required_keys.issubset(
-                {item.candidate_key for item in option.items}
-            )
+            or not required_keys.issubset({item.candidate_key for item in option.items})
             for option in proposal.options
         ):
             raise PlanProposalError

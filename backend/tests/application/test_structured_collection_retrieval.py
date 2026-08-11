@@ -14,12 +14,13 @@ from alembic import command
 from alembic.config import Config
 
 from app.application import (
-    PlanDraftService,
+    PlanDraftService as ProductionPlanDraftService,
+)
+from app.application import (
     StructuredCollectionRetrievalError,
     StructuredCollectionRetrievalService,
 )
 from app.application.map_plan_facts import (
-    MAX_PLAN_FACT_CANDIDATES,
     MAX_PLAN_ROUTE_CALLS,
     MapPlanFactResolver,
 )
@@ -88,6 +89,10 @@ from app.domain.plans.drafts import (
     DraftRouteFacts,
     PlanDraftFactSnapshot,
     PlanDraftOutcome,
+    PlanOptionProposal,
+    PlanOptionRole,
+    PlanProposalItem,
+    PlanProposalSet,
     PlanRiskCode,
 )
 from app.domain.plans.retrieval import (
@@ -310,9 +315,7 @@ async def test_selected_collection_items_are_the_only_retrieval_candidates() -> 
         now=NOW,
     )
 
-    assert [decision.collection_item_ids for decision in result.decisions] == [
-        (selected.id,)
-    ]
+    assert [decision.collection_item_ids for decision in result.decisions] == [(selected.id,)]
 
 
 @pytest.mark.asyncio
@@ -411,7 +414,6 @@ async def test_selected_exact_collection_treats_area_label_as_preference() -> No
             candidates=tuple(
                 DraftCandidateFacts(
                     collection_item_ids=(item.id,),
-                    visit_duration_seconds=3_600,
                 )
                 for item in selected
             ),
@@ -436,13 +438,10 @@ async def test_selected_exact_collection_treats_area_label_as_preference() -> No
 
     assert {item.title for item in result.included} == {item.title for item in selected}
     assert all(
-        CandidateReasonCode.AREA_MISMATCH not in item.reason_codes
-        for item in result.included
+        CandidateReasonCode.AREA_MISMATCH not in item.reason_codes for item in result.included
     )
     assert draft.outcome is PlanDraftOutcome.GENERATED
-    assert {item.title for item in draft.options[0].items} == {
-        item.title for item in selected
-    }
+    assert {item.title for item in draft.options[0].items} == {item.title for item in selected}
 
 
 def _pace_memory(value: PlanPace) -> Memory:
@@ -587,7 +586,6 @@ def _draft_facts(
         candidates=(
             DraftCandidateFacts(
                 collection_item_ids=collection_item_ids,
-                visit_duration_seconds=60 * 60,
             ),
         ),
         routes=(
@@ -599,6 +597,67 @@ def _draft_facts(
             ),
         ),
     )
+
+
+class PlanDraftService(ProductionPlanDraftService):
+    """Adapt legacy retrieval fixtures to the now-required model proposal input."""
+
+    def generate(self, *, constraints, collections, facts, **kwargs):
+        included = collections.included
+        keys = {
+            f"candidate_{index}": decision.collection_item_ids
+            for index, decision in enumerate(included)
+        }
+        if included:
+            all_items = tuple(
+                PlanProposalItem(candidate_key=key, visit_duration_seconds=3600) for key in keys
+            )
+            proposals = PlanProposalSet(
+                options=(
+                    PlanOptionProposal(
+                        role=PlanOptionRole.MAIN,
+                        items=all_items,
+                        reason="retrieval integration fixture",
+                    ),
+                    PlanOptionProposal(
+                        role=PlanOptionRole.ALTERNATIVE,
+                        items=(
+                            PlanProposalItem(
+                                candidate_key=next(iter(keys)),
+                                visit_duration_seconds=2700,
+                            ),
+                        ),
+                        reason="retrieval integration fixture alternative 1",
+                    ),
+                    PlanOptionProposal(
+                        role=PlanOptionRole.ALTERNATIVE,
+                        items=(
+                            PlanProposalItem(
+                                candidate_key=next(reversed(keys)),
+                                visit_duration_seconds=4500,
+                            ),
+                        ),
+                        reason="retrieval integration fixture alternative 2",
+                    ),
+                )
+            )
+        else:
+            proposals = None
+        self._fixture_proposals = proposals
+        self._fixture_keys = keys
+        return super().generate(
+            constraints=constraints,
+            collections=collections,
+            facts=facts,
+            proposals=proposals,
+            candidate_keys=keys,
+            **kwargs,
+        )
+
+    def validate(self, **kwargs):
+        kwargs.setdefault("proposals", self._fixture_proposals)
+        kwargs.setdefault("candidate_keys", self._fixture_keys)
+        return super().validate(**kwargs)
 
 
 def _service(
@@ -678,9 +737,7 @@ async def test_active_exact_place_with_only_core_poi_facts_is_planning_retrievab
         now=NOW,
     )
 
-    assert tuple(decision.collection_item_ids for decision in result.included) == (
-        (place.id,),
-    )
+    assert tuple(decision.collection_item_ids for decision in result.included) == ((place.id,),)
 
 
 @pytest.mark.asyncio
@@ -742,9 +799,7 @@ async def test_thousand_matching_memories_use_one_bounded_stable_ranking_basis()
     park_poi = _poi("poi_many_memories_park", name="城市公园", poi_type=PoiType.PARK)
     indoor = _place(user_id, poi=indoor_poi)
     park = _place(user_id, poi=park_poi)
-    service = StructuredCollectionRetrievalService(
-        repository=ReadOnlyRepository([indoor, park])
-    )
+    service = StructuredCollectionRetrievalService(repository=ReadOnlyRepository([indoor, park]))
     memories = tuple(
         Memory(
             id=generate_memory_id(),
@@ -766,9 +821,7 @@ async def test_thousand_matching_memories_use_one_bounded_stable_ranking_basis()
     result = await service.retrieve(
         user_id=user_id,
         constraints=_constraints(),
-        facts=PlanningFactSnapshot(
-            pois=(_known_poi_facts(indoor_poi), _known_poi_facts(park_poi))
-        ),
+        facts=PlanningFactSnapshot(pois=(_known_poi_facts(indoor_poi), _known_poi_facts(park_poi))),
         now=NOW + timedelta(hours=1),
         memories=memories,
     )
@@ -818,9 +871,7 @@ async def test_negative_memory_stably_wins_conflicting_positive_memory() -> None
     ).retrieve(
         user_id=user_id,
         constraints=_constraints(),
-        facts=PlanningFactSnapshot(
-            pois=(_known_poi_facts(indoor_poi), _known_poi_facts(park_poi))
-        ),
+        facts=PlanningFactSnapshot(pois=(_known_poi_facts(indoor_poi), _known_poi_facts(park_poi))),
         now=NOW + timedelta(hours=1),
         memories=(base, negative),
     )
@@ -947,9 +998,7 @@ async def test_constraints_expiry_boundary_stops_before_repository_and_map() -> 
         tags=("咖啡",),
         price=Decimal("35"),
     )
-    constraints = _constraints(origin=ORIGIN).model_copy(
-        update={"expires_at": expiry}
-    )
+    constraints = _constraints(origin=ORIGIN).model_copy(update={"expires_at": expiry})
 
     valid_service, valid_repository = _service(
         [brand],
@@ -1055,9 +1104,7 @@ async def test_retrieval_preserves_repository_and_map_cancellation() -> None:
         facts=PlanningFactSnapshot(),
         now=NOW,
     )
-    assert CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT in (
-        result.decisions[0].reason_codes
-    )
+    assert CandidateReasonCode.BRANCH_EVIDENCE_INSUFFICIENT in (result.decisions[0].reason_codes)
     assert repository.calls == [(user_id, True)]
 
 
@@ -1079,9 +1126,7 @@ async def test_formal_city_controls_eligibility_and_city_hint_never_substitutes(
         user_id,
         title="广州活动",
         city_hint="深圳",
-        target=_exact_target(
-            _poi("guangzhou_event", city_code="guangzhou", district="天河区")
-        ),
+        target=_exact_target(_poi("guangzhou_event", city_code="guangzhou", district="天河区")),
     )
     service, repository = _service([other_city, pending_city, other_city_event])
 
@@ -1106,8 +1151,7 @@ async def test_formal_city_controls_eligibility_and_city_hint_never_substitutes(
     )
 
     reasons = {
-        decision.collection_item_ids[0]: decision.reason_codes
-        for decision in result.decisions
+        decision.collection_item_ids[0]: decision.reason_codes for decision in result.decisions
     }
     assert CandidateReasonCode.CITY_MISMATCH in reasons[other_city.id]
     assert CandidateReasonCode.CITY_UNCONFIRMED in reasons[pending_city.id]
@@ -1323,12 +1367,8 @@ async def test_date_range_event_outside_plan_date_is_conflict_or_ended() -> None
     )
     by_title = {item.title: item for item in result.decisions}
 
-    assert by_title["尚未开始"].reason_codes == (
-        CandidateReasonCode.TIME_WINDOW_CONFLICT,
-    )
-    assert by_title["已经结束"].reason_codes == (
-        CandidateReasonCode.EVENT_ENDED,
-    )
+    assert by_title["尚未开始"].reason_codes == (CandidateReasonCode.TIME_WINDOW_CONFLICT,)
+    assert by_title["已经结束"].reason_codes == (CandidateReasonCode.EVENT_ENDED,)
 
 
 @pytest.mark.asyncio
@@ -1421,9 +1461,7 @@ async def test_unknown_price_flows_from_retrieval_into_draft_by_budget_state() -
     assert decision.price_amount is None
     assert decision.price_currency is None
     assert decision.reason_codes == ()
-    assert with_budget.included[0].reason_codes == (
-        CandidateReasonCode.PRICE_UNKNOWN,
-    )
+    assert with_budget.included[0].reason_codes == (CandidateReasonCode.PRICE_UNKNOWN,)
     budget_draft = PlanDraftService().generate(
         constraints=budget_constraints,
         collections=with_budget,
@@ -1618,9 +1656,9 @@ async def test_event_route_must_arrive_strictly_before_event_end(
 
     decision = result.decisions[0]
     assert decision.outcome is expected_outcome
-    assert (
-        CandidateReasonCode.ROUTE_EXCEEDS_TIME_WINDOW in decision.reason_codes
-    ) is (expected_outcome is CandidateOutcome.EXCLUDED)
+    assert (CandidateReasonCode.ROUTE_EXCEEDS_TIME_WINDOW in decision.reason_codes) is (
+        expected_outcome is CandidateOutcome.EXCLUDED
+    )
 
 
 @pytest.mark.asyncio
@@ -1636,9 +1674,7 @@ async def test_started_event_remains_eligible_when_arrival_precedes_end() -> Non
     result = await service.retrieve(
         user_id=user_id,
         constraints=_constraints(),
-        facts=PlanningFactSnapshot(
-            collections=(_known_event_facts(event, duration=600),)
-        ),
+        facts=PlanningFactSnapshot(collections=(_known_event_facts(event, duration=600),)),
         now=NOW,
     )
 
@@ -1947,9 +1983,7 @@ async def test_resolved_any_branch_still_applies_candidate_hard_rules(
     if failed_rule == "weather":
         dynamic = dynamic.model_copy(update={"weather": WeatherAssessment.CONFLICT})
     elif failed_rule == "availability":
-        dynamic = dynamic.model_copy(
-            update={"availability": AvailabilityAssessment.UNAVAILABLE}
-        )
+        dynamic = dynamic.model_copy(update={"availability": AvailabilityAssessment.UNAVAILABLE})
     constraints = _constraints(
         area=None,
         origin=ORIGIN,
@@ -1968,9 +2002,7 @@ async def test_resolved_any_branch_still_applies_candidate_hard_rules(
     )
 
     assert result.decisions[0].outcome is (
-        CandidateOutcome.INCLUDED
-        if failed_rule == "weather"
-        else CandidateOutcome.EXCLUDED
+        CandidateOutcome.INCLUDED if failed_rule == "weather" else CandidateOutcome.EXCLUDED
     )
     expected_reason = {
         "weather": CandidateReasonCode.WEATHER_CONFLICT,
@@ -2067,7 +2099,7 @@ async def test_any_branch_with_only_unreachable_candidates_is_excluded() -> None
                     weather=WeatherAssessment.COMPATIBLE,
                     availability=AvailabilityAssessment.AVAILABLE,
                 ),
-            )
+            ),
         ),
         now=NOW,
     )
@@ -2191,9 +2223,7 @@ def _map_fact_provider(
         origin=constraints.origin or SHENZHEN_COORDINATE,
         destination=SHENZHEN_COORDINATE,
         mode=(
-            constraints.transport_modes[0]
-            if constraints.transport_modes
-            else TransportMode.TRANSIT
+            constraints.transport_modes[0] if constraints.transport_modes else TransportMode.TRANSIT
         ),
     )
     weather_request = WeatherRequest(
@@ -2366,9 +2396,7 @@ async def test_weather_provider_failure_is_frozen_as_non_blocking_plan_risk(
     retrieval_database: str,
 ) -> None:
     user_id = generate_user_id()
-    poi = _poi("poi_weather_failure").model_copy(
-        update={"opening_hours_summary": "开放时间已确认"}
-    )
+    poi = _poi("poi_weather_failure").model_copy(update={"opening_hours_summary": "开放时间已确认"})
     item = _place(user_id, poi=poi)
     constraints = _constraints(origin=ORIGIN)
     facts = await _resolve_map_facts(
@@ -2408,9 +2436,7 @@ async def test_area_only_plan_never_queries_or_fakes_an_origin_route(
     retrieval_database: str,
 ) -> None:
     user_id = generate_user_id()
-    poi = _poi("poi_area_only").model_copy(
-        update={"opening_hours_summary": "开放时间已确认"}
-    )
+    poi = _poi("poi_area_only").model_copy(update={"opening_hours_summary": "开放时间已确认"})
     item = _place(user_id, poi=poi)
     constraints = _constraints(origin=None)
     calls: list[object] = []
@@ -2455,7 +2481,7 @@ async def test_one_failed_origin_route_excludes_only_that_candidate(
                 latitude=22.54,
                 longitude=114.04,
                 coordinate_system=CoordinateSystem.GCJ_02,
-            )
+            ),
         }
     )
     working_poi = _poi("poi_route_working").model_copy(
@@ -2465,7 +2491,7 @@ async def test_one_failed_origin_route_excludes_only_that_candidate(
                 latitude=22.55,
                 longitude=114.05,
                 coordinate_system=CoordinateSystem.GCJ_02,
-            )
+            ),
         }
     )
     failed = _place(user_id, title="路线失败", poi=failed_poi)
@@ -2523,9 +2549,7 @@ async def test_one_failed_origin_route_excludes_only_that_candidate(
     )
 
     assert collections.included[0].title == "路线成功"
-    assert collections.excluded[0].reason_codes == (
-        CandidateReasonCode.ROUTE_PROVIDER_FAILED,
-    )
+    assert collections.excluded[0].reason_codes == (CandidateReasonCode.ROUTE_PROVIDER_FAILED,)
     assert draft.outcome is PlanDraftOutcome.GENERATED
     assert draft.options[0].items[0].title == "路线成功"
 
@@ -2574,9 +2598,7 @@ async def test_all_failed_origin_routes_report_the_route_reason(
     )
 
     assert draft.outcome is PlanDraftOutcome.NOT_GENERATED
-    assert draft.exclusions[0].reason_codes == (
-        CandidateReasonCode.ROUTE_PROVIDER_FAILED,
-    )
+    assert draft.exclusions[0].reason_codes == (CandidateReasonCode.ROUTE_PROVIDER_FAILED,)
 
 
 @pytest.mark.asyncio
@@ -2832,6 +2854,48 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
                 resolved_constraints.append(constraints)
                 return await delegate.resolve(user_id=user_id, constraints=constraints)
 
+            async def resolve_proposal_routes(self, **kwargs):
+                return await delegate.resolve_proposal_routes(**kwargs)
+
+        class FixedProposals:
+            async def propose(self, **kwargs):
+                keys = tuple(item.candidate_key for item in kwargs["candidates"])
+                return PlanProposalSet(
+                    options=(
+                        PlanOptionProposal(
+                            role=PlanOptionRole.MAIN,
+                            items=tuple(
+                                PlanProposalItem(
+                                    candidate_key=key,
+                                    visit_duration_seconds=3600,
+                                )
+                                for key in keys
+                            ),
+                            reason="executor integration",
+                        ),
+                        PlanOptionProposal(
+                            role=PlanOptionRole.ALTERNATIVE,
+                            items=(
+                                PlanProposalItem(
+                                    candidate_key=keys[0],
+                                    visit_duration_seconds=2700,
+                                ),
+                            ),
+                            reason="executor alternative 1",
+                        ),
+                        PlanOptionProposal(
+                            role=PlanOptionRole.ALTERNATIVE,
+                            items=(
+                                PlanProposalItem(
+                                    candidate_key=keys[-1],
+                                    visit_duration_seconds=4500,
+                                ),
+                            ),
+                            reason="executor alternative 2",
+                        ),
+                    )
+                )
+
         result = await ExistingPlanServicesExecutor(
             session=session,
             map_provider=provider,
@@ -2840,6 +2904,7 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
                 app_env="test",
             ).place_matching_policy(),
             facts=CapturingFacts(),  # type: ignore[arg-type]
+            proposals=FixedProposals(),  # type: ignore[arg-type]
         ).execute(user_id=user_id, constraints=constraints, approval=None)
     assert result.outcome is PlanGenerationOutcome.DRAFT
     assert resolved_constraints == [constraints]
@@ -2879,6 +2944,9 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
                 default_resolved.append(constraints)
                 return await delegate.resolve(user_id=user_id, constraints=constraints)
 
+            async def resolve_proposal_routes(self, **kwargs):
+                return await delegate.resolve_proposal_routes(**kwargs)
+
         default_result = await ExistingPlanServicesExecutor(
             session=session,
             map_provider=provider,
@@ -2887,6 +2955,7 @@ async def test_existing_plan_executor_reuses_one_frozen_any_branch_match(
                 app_env="test",
             ).place_matching_policy(),
             facts=CapturingDefaultFacts(),  # type: ignore[arg-type]
+            proposals=FixedProposals(),  # type: ignore[arg-type]
         ).execute(user_id=user_id, constraints=default_constraints, approval=None)
     await database.close()
 
@@ -2949,8 +3018,7 @@ async def test_high_cardinality_map_fact_routes_are_bounded(
 ) -> None:
     user_id = generate_user_id()
     items = tuple(
-        _place(user_id, title=f"地点 {index}", poi=_poi(f"poi_{index:03d}"))
-        for index in range(100)
+        _place(user_id, title=f"地点 {index}", poi=_poi(f"poi_{index:03d}")) for index in range(100)
     )
     constraints = _constraints(origin=ORIGIN)
     calls: list[object] = []
@@ -2964,5 +3032,5 @@ async def test_high_cardinality_map_fact_routes_are_bounded(
     )
 
     route_calls = sum(isinstance(call, RouteRequest) for call in calls)
-    assert len(result.draft.candidates) == MAX_PLAN_FACT_CANDIDATES
+    assert len(result.draft.candidates) == len(items)
     assert route_calls <= MAX_PLAN_ROUTE_CALLS

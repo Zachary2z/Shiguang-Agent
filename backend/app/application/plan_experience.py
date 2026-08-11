@@ -23,6 +23,7 @@ from app.application.plan_adjustments import (
     apply_plan_adjustment,
 )
 from app.application.plan_drafts import PlanDraftService
+from app.application.plan_proposals import PlanProposalService
 from app.application.plan_sharing import PlanShareService
 from app.application.pricing import PricingPolicy
 from app.application.run_tracking import (
@@ -33,7 +34,13 @@ from app.application.run_tracking import (
 from app.application.structured_collection_retrieval import (
     StructuredCollectionRetrievalService,
 )
-from app.domain.collections import CollectionStatus, ResourceNotFoundError
+from app.domain.collections import (
+    CandidateField,
+    CollectionKind,
+    CollectionStatus,
+    PlaceCandidate,
+    ResourceNotFoundError,
+)
 from app.domain.identifiers import generate_approval_id, generate_plan_id, generate_trace_id
 from app.domain.jobs import JobConflictError, JobCreate, JobResultSummary, ScheduledJob
 from app.domain.places import PlaceMatchingPolicy
@@ -42,8 +49,10 @@ from app.domain.plans import (
     ApprovalStatus,
     CandidateReasonCode,
     ExternalApprovalDecision,
+    ExternalDraftCandidate,
     ExternalPlaceApprovalDecision,
     ExternalPlaceApprovalRequirement,
+    ExternalPlaceCandidate,
     ExternalRecoveryCode,
     ExternalSupplementOutcome,
     PlanApproval,
@@ -52,8 +61,11 @@ from app.domain.plans import (
     PlanDraftResult,
     PlanningFactSnapshot,
     PlanOperation,
+    PlanProposalCandidate,
+    PlanProposalSet,
     PlanStatus,
     PlanVersion,
+    RequiredGapKind,
     RequiredPlanGap,
     StructuredCollectionResult,
     plan_constraints_internal_dump,
@@ -92,11 +104,7 @@ def plan_failure_code_for_retrieval(
 ) -> str:
     """Preserve an existing retrieval cause when no candidate can be planned."""
 
-    fallback = (
-        "PLAN_GENERATION_FAILED"
-        if recovery_code is None
-        else recovery_code.value
-    )
+    fallback = "PLAN_GENERATION_FAILED" if recovery_code is None else recovery_code.value
     if recovery_code is not ExternalRecoveryCode.NO_EXECUTABLE_DRAFT:
         return fallback
     if collections.included:
@@ -107,11 +115,7 @@ def plan_failure_code_for_retrieval(
     for decision in collections.decisions[1:]:
         common_reasons.intersection_update(decision.reason_codes)
     return next(
-        (
-            reason.value
-            for reason in _PUBLIC_FAILURE_REASON_PRIORITY
-            if reason in common_reasons
-        ),
+        (reason.value for reason in _PUBLIC_FAILURE_REASON_PRIORITY if reason in common_reasons),
         fallback,
     )
 
@@ -119,7 +123,6 @@ def plan_failure_code_for_retrieval(
 class PlanGenerationFacts(PlanContract):
     retrieval: PlanningFactSnapshot
     draft: PlanDraftFactSnapshot
-    required_gap: RequiredPlanGap | None = None
 
 
 class PlanFactResolver(Protocol):
@@ -129,6 +132,23 @@ class PlanFactResolver(Protocol):
         user_id: str,
         constraints: PlanConstraints,
     ) -> PlanGenerationFacts: ...
+
+    async def resolve_proposal_routes(
+        self,
+        *,
+        proposals: PlanProposalSet,
+        candidate_keys: dict[str, tuple[str, ...]],
+        base: PlanDraftFactSnapshot,
+    ) -> PlanDraftFactSnapshot: ...
+
+    async def resolve_external_route(
+        self,
+        *,
+        proposals: PlanProposalSet,
+        external_key: str,
+        candidate: ExternalPlaceCandidate,
+        candidate_keys: dict[str, tuple[str, ...]],
+    ) -> ExternalDraftCandidate: ...
 
 
 class PlanGenerationOutcome(StrEnum):
@@ -178,6 +198,7 @@ class ExistingPlanServicesExecutor:
         map_provider: MapProvider,
         matching_policy: PlaceMatchingPolicy,
         facts: PlanFactResolver,
+        proposals: PlanProposalService,
     ) -> None:
         self._session = session
         self._map_provider = map_provider
@@ -186,6 +207,7 @@ class ExistingPlanServicesExecutor:
             policy=matching_policy,
         )
         self._facts = facts
+        self._proposals = proposals
 
     async def execute(
         self,
@@ -201,9 +223,7 @@ class ExistingPlanServicesExecutor:
             constraints=constraints,
             memories=memories,
         )
-        facts = await self._facts.resolve(
-            user_id=user_id, constraints=effective_constraints
-        )
+        facts = await self._facts.resolve(user_id=user_id, constraints=effective_constraints)
         collections = await StructuredCollectionRetrievalService(
             repository=SqlAlchemyCollectionRepository(self._session),
         ).retrieve(
@@ -213,11 +233,76 @@ class ExistingPlanServicesExecutor:
             now=now,
             memories=memories,
         )
-        decision: ExternalPlaceApprovalDecision | None = None
-        if approval is not None and facts.required_gap is not None:
-            if approval.status in {ApprovalStatus.APPROVED, ApprovalStatus.REJECTED}:
+        candidate_keys = {
+            f"candidate_{index}": decision.collection_item_ids
+            for index, decision in enumerate(collections.included)
+        }
+        candidates = tuple(
+            PlanProposalCandidate(
+                candidate_key=key,
+                title=decision.title,
+                kind=decision.kind,
+                district=None if decision.poi is None else decision.poi.district,
+                preferred=bool(
+                    set(decision.collection_item_ids)
+                    & set(effective_constraints.selected_collection_item_ids)
+                ),
+            )
+            for key, decision in zip(candidate_keys, collections.included, strict=True)
+        )
+        request = "、".join(effective_constraints.include) or "按当前约束生成计划"
+        proposals = (
+            None
+            if not candidates
+            else await self._proposals.propose(
+                request=request,
+                constraints=effective_constraints,
+                candidates=candidates,
+                now=now,
+            )
+        )
+        gap = next(
+            (
+                (option.external_gap_description, option.external_gap_kind)
+                for option in (() if proposals is None else proposals.options)
+                if option.external_gap_description is not None
+            ),
+            None,
+        )
+        if not candidates and effective_constraints.include:
+            gap = (effective_constraints.include[0], CollectionKind.PLACE)
+        external_candidates: dict[str, ExternalDraftCandidate] = {}
+        if gap is not None:
+            gap_description, gap_kind = gap
+            assert gap_description is not None and gap_kind is not None
+            required_gap = RequiredPlanGap(
+                kind=(
+                    RequiredGapKind.PLACE
+                    if gap_kind is CollectionKind.PLACE
+                    else RequiredGapKind.EVENT
+                ),
+                place_candidate=(
+                    PlaceCandidate(
+                        title=gap_description,
+                        city_hint="深圳",
+                        missing_fields=(
+                            CandidateField.ADDRESS,
+                            CandidateField.PRICE,
+                        ),
+                    )
+                    if gap_kind is CollectionKind.PLACE
+                    else None
+                ),
+                supplement_reason=gap_description,
+                visit_duration_seconds=1,
+            )
+            approval_decision = None
+            if approval is not None and approval.status in {
+                ApprovalStatus.APPROVED,
+                ApprovalStatus.REJECTED,
+            }:
                 assert approval.external_requirement_id is not None
-                decision = ExternalPlaceApprovalDecision(
+                approval_decision = ExternalPlaceApprovalDecision(
                     approval_id=approval.external_requirement_id,
                     decision=(
                         ExternalApprovalDecision.APPROVED
@@ -225,50 +310,88 @@ class ExistingPlanServicesExecutor:
                         else ExternalApprovalDecision.REJECTED
                     ),
                 )
-        result = await ExternalPlaceSupplementService(
-            map_provider=self._map_provider,
-            place_matching=self._matching,
-            plan_drafts=PlanDraftService(),
-        ).generate(
-            constraints=effective_constraints,
-            collections=collections,
-            facts=facts.draft,
-            required_gap=facts.required_gap,
-            approval_decision=decision,
-            queried_at=utc_now(),
-        )
-        if result.outcome is ExternalSupplementOutcome.WAITING_APPROVAL:
+            supplement = await ExternalPlaceSupplementService(
+                place_matching=self._matching,
+            ).generate(
+                constraints=effective_constraints,
+                collections=collections,
+                required_gap=required_gap,
+                approval_decision=approval_decision,
+                queried_at=utc_now(),
+            )
+            if supplement.outcome is ExternalSupplementOutcome.WAITING_APPROVAL:
+                return PlanGenerationResult(
+                    outcome=PlanGenerationOutcome.WAITING_APPROVAL,
+                    approval_requirement=supplement.approval,
+                    memory_usages=memory_usages,
+                    effective_constraints=effective_constraints,
+                )
+            if supplement.candidate is not None:
+                external_key = "external_0"
+                candidates = (
+                    *candidates,
+                    PlanProposalCandidate(
+                        candidate_key=external_key,
+                        title=supplement.candidate.poi.name,
+                        kind=CollectionKind.PLACE,
+                        district=supplement.candidate.poi.district,
+                    ),
+                )
+                proposals = await self._proposals.propose(
+                    request=request,
+                    constraints=effective_constraints,
+                    candidates=candidates,
+                    now=now,
+                )
+                external_candidates[external_key] = await self._facts.resolve_external_route(
+                    proposals=proposals,
+                    external_key=external_key,
+                    candidate=supplement.candidate,
+                    candidate_keys=candidate_keys,
+                )
+        if proposals is None:
             return PlanGenerationResult(
-                outcome=PlanGenerationOutcome.WAITING_APPROVAL,
-                approval_requirement=result.approval,
-                memory_usages=memory_usages,
+                outcome=PlanGenerationOutcome.FAILED,
+                error_code=plan_failure_code_for_retrieval(
+                    recovery_code=ExternalRecoveryCode.NO_EXECUTABLE_DRAFT,
+                    collections=collections,
+                ),
                 effective_constraints=effective_constraints,
             )
-        if result.draft is not None:
+        draft_facts = await self._facts.resolve_proposal_routes(
+            proposals=proposals,
+            candidate_keys=candidate_keys,
+            base=facts.draft,
+        )
+        draft = PlanDraftService().generate(
+            constraints=effective_constraints,
+            collections=collections,
+            facts=draft_facts,
+            proposals=proposals,
+            candidate_keys=candidate_keys,
+            external_candidates=external_candidates,
+        )
+        if draft.outcome.value == "generated":
             selected_ids = {
                 collection_id
-                for item in result.draft.options[0].items
+                for option in draft.options
+                for item in option.items
                 for collection_id in item.source.collection_item_ids
             }
             for decision_item in collections.included:
                 if not selected_ids.intersection(decision_item.collection_item_ids):
                     continue
                 for memory_id in decision_item.applied_memory_ids:
-                    memory_usages[memory_id] = (
-                        f"该偏好影响了计划地点排序：{decision_item.title}"
-                    )
+                    memory_usages[memory_id] = f"该偏好影响了计划地点选择：{decision_item.title}"
             return PlanGenerationResult(
                 outcome=PlanGenerationOutcome.DRAFT,
-                draft=result.draft,
+                draft=draft,
                 memory_usages=memory_usages,
                 effective_constraints=effective_constraints,
             )
         return PlanGenerationResult(
             outcome=PlanGenerationOutcome.FAILED,
-            error_code=plan_failure_code_for_retrieval(
-                recovery_code=result.recovery_code,
-                collections=collections,
-            ),
+            error_code="PLAN_GENERATION_FAILED",
             effective_constraints=effective_constraints,
         )
 
@@ -329,13 +452,12 @@ class PlanExperienceService:
         client_idempotency_key: str,
     ) -> PlanSubmission:
         if constraints.selected_collection_item_ids:
-            items = await SqlAlchemyCollectionRepository(
-                self._session
-            ).list_collection_items(user_id=user_id, include_inactive=True)
+            items = await SqlAlchemyCollectionRepository(self._session).list_collection_items(
+                user_id=user_id, include_inactive=True
+            )
             by_id = {item.id: item for item in items}
             if any(
-                identifier not in by_id
-                or by_id[identifier].status is CollectionStatus.DELETED
+                identifier not in by_id or by_id[identifier].status is CollectionStatus.DELETED
                 for identifier in constraints.selected_collection_item_ids
             ):
                 raise ResourceNotFoundError
@@ -498,9 +620,7 @@ class PlanExperienceService:
         client_idempotency_key: str,
     ) -> tuple[PlanVersion, bool]:
         key = scoped_plan_key(user_id=user_id, client_key=client_idempotency_key)
-        fingerprint = plan_request_fingerprint(
-            {"operation": "confirm", "plan_id": plan_id}
-        )
+        fingerprint = plan_request_fingerprint({"operation": "confirm", "plan_id": plan_id})
         result = await self._plans.confirm(
             user_id=user_id,
             plan_id=plan_id,
@@ -554,9 +674,7 @@ class PlanExperienceService:
             JobCreate(
                 user_id=user_id,
                 job_type=PLAN_GENERATION_JOB_TYPE,
-                payload=PlanJobPayload(
-                    plan_id=existing.target_plan_id
-                ).model_dump(mode="json"),
+                payload=PlanJobPayload(plan_id=existing.target_plan_id).model_dump(mode="json"),
                 run_at=existing.decided_at or existing.created_at,
                 idempotency_key=key,
                 trace_id=run.trace_id,
@@ -821,9 +939,7 @@ class PlanGenerationJobHandler:
                         user_id=job.user_id,
                         action=ApprovalAction.EXTERNAL_PLACE_SUPPLEMENT,
                         target_plan_id=plan.id,
-                        external_requirement_id=(
-                            result.approval_requirement.approval_id
-                        ),
+                        external_requirement_id=(result.approval_requirement.approval_id),
                         display_text=result.approval_requirement.display_text,
                         status=ApprovalStatus.PENDING,
                         created_at=timestamp,

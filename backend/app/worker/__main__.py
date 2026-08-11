@@ -18,6 +18,7 @@ from app.application.plan_experience import (
     ExistingPlanServicesExecutor,
     PlanGenerationJobHandler,
 )
+from app.application.plan_proposals import PlanProposalService
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.text_collection_workflow import IdempotencyLockRegistry
 from app.config import load_settings
@@ -45,9 +46,7 @@ async def _run() -> None:
         loop.add_signal_handler(signal_number, stop.set)
     provider = configured_model_provider(settings)
     map_provider = (
-        None
-        if settings.amap_api_key is None
-        else AmapMapProvider.from_settings(settings)
+        None if settings.amap_api_key is None else AmapMapProvider.from_settings(settings)
     )
     pricing = ConfiguredPricingPolicy.from_settings(settings)
     locks = IdempotencyLockRegistry()
@@ -76,7 +75,7 @@ async def _run() -> None:
         CONTENT_IMPORT_JOB_TYPE: content_handler,
         AGENT_MESSAGE_JOB_TYPE: content_handler,
     }
-    if map_provider is not None:
+    if map_provider is not None and provider is not None:
         handlers[PLAN_GENERATION_JOB_TYPE] = PlanGenerationJobHandler(
             session_factory=database.session_factory,
             pricing=pricing,
@@ -89,15 +88,17 @@ async def _run() -> None:
                     map_provider=map_provider,
                     matching_policy=settings.place_matching_policy(),
                 ),
+                proposals=PlanProposalService(
+                    provider,
+                    structured_output_mode=settings.extraction_structured_output_mode(),
+                ),
             ),
             adjustment_parser=(
                 None
                 if provider is None
                 else PlanAdjustmentParser(
                     provider,
-                    structured_output_mode=(
-                        settings.extraction_structured_output_mode()
-                    ),
+                    structured_output_mode=(settings.extraction_structured_output_mode()),
                 )
             ),
         )
@@ -122,9 +123,7 @@ async def _run() -> None:
             web_provider=web_provider,
             storage=demo_storage,
             storage_config=settings.demo_storage_provider_settings(),
-            structured_output_mode=(
-                settings.extraction_structured_output_mode()
-            ),
+            structured_output_mode=(settings.extraction_structured_output_mode()),
             map_provider=map_provider,
             matching_policy=settings.place_matching_policy(),
         )
@@ -133,7 +132,7 @@ async def _run() -> None:
             CONTENT_IMPORT_JOB_TYPE: demo_content_handler,
             AGENT_MESSAGE_JOB_TYPE: demo_content_handler,
         }
-        if map_provider is not None:
+        if map_provider is not None and provider is not None:
             demo_handlers[PLAN_GENERATION_JOB_TYPE] = PlanGenerationJobHandler(
                 session_factory=demo_database.session_factory,
                 pricing=pricing,
@@ -146,15 +145,17 @@ async def _run() -> None:
                         map_provider=map_provider,
                         matching_policy=settings.place_matching_policy(),
                     ),
+                    proposals=PlanProposalService(
+                        provider,
+                        structured_output_mode=settings.extraction_structured_output_mode(),
+                    ),
                 ),
                 adjustment_parser=(
                     None
                     if provider is None
                     else PlanAdjustmentParser(
                         provider,
-                        structured_output_mode=(
-                            settings.extraction_structured_output_mode()
-                        ),
+                        structured_output_mode=(settings.extraction_structured_output_mode()),
                     )
                 ),
             )

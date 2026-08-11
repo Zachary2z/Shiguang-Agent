@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -31,6 +32,7 @@ from app.application.plan_experience import (
     ExistingPlanServicesExecutor,
     PlanGenerationOutcome,
 )
+from app.application.plan_proposals import PlanProposalService
 from app.application.pricing import ConfiguredPricingPolicy
 from app.application.structured_collection_retrieval import (
     StructuredCollectionRetrievalService,
@@ -279,9 +281,7 @@ def _text_event_response(
     fields: tuple[CandidateField, ...],
 ) -> ModelResponse:
     del quote, fields
-    return fake_response(
-        content=ExtractionResult.with_candidates((event,)).model_dump_json()
-    )
+    return fake_response(content=ExtractionResult.with_candidates((event,)).model_dump_json())
 
 
 def _web_success() -> WebPageContent:
@@ -531,7 +531,7 @@ async def test_official_amap_place_url_binds_exact_target_without_web_or_model(
                         city_code=PlanCity.SHENZHEN,
                         start_at=datetime(2026, 8, 3, 2, 0, tzinfo=UTC),
                         end_at=datetime(2026, 8, 3, 6, 0, tzinfo=UTC),
-                            area=ActivityArea(labels=("地点",)),
+                        area=ActivityArea(labels=("地点",)),
                         created_at=datetime(2026, 8, 2, 1, 0, tzinfo=UTC),
                         expires_at=datetime(2026, 8, 4, 1, 0, tzinfo=UTC),
                     ),
@@ -650,9 +650,7 @@ async def test_text_url_and_image_first_place_save_use_one_matching_entry(
         poi_type=PoiType.MUSEUM,
     )
     map_provider = StubMapProvider(
-        search_results={
-            search: PoiSearchResult(city_code="shenzhen", pois=(poi,))
-        },
+        search_results={search: PoiSearchResult(city_code="shenzhen", pois=(poi,))},
         call_hook=record_call,
     )
 
@@ -693,10 +691,7 @@ async def test_text_url_and_image_first_place_save_use_one_matching_entry(
     assert all(result.status_code == 200 for result in results)
     statuses = [result.json()["collections"][0]["status"] for result in results]
     assert statuses == ["active", "active", "active"]
-    assert all(
-        result.json()["collections"][0]["planning_eligible"] is True
-        for result in results
-    )
+    assert all(result.json()["collections"][0]["planning_eligible"] is True for result in results)
     assert all(replay.status_code == 200 for replay in replays)
     assert all(replay.json()["replayed"] is True for replay in replays)
     assert len(calls) == 3
@@ -931,9 +926,7 @@ async def test_official_amap_link_without_identity_never_follows_arbitrary_redir
 ) -> None:
     provider = FakeProvider([])
     web = StubWebProvider(
-        _web_success().model_copy(
-            update={"final_url": "https://evil.example/place/B0SZ000001"}
-        )
+        _web_success().model_copy(update={"final_url": "https://evil.example/place/B0SZ000001"})
     )
     async with _client(test_settings, provider, web=web) as (_api, client, _storage):
         session_id = await _demo(client)
@@ -1043,10 +1036,7 @@ async def test_event_import_requires_explicit_poi_choice_before_plan_use(
             (
                 _text_event_response(
                     event,
-                    quote=(
-                        "准确场次，2026年7月31日14:00至17:00，"
-                        "海上世界文化艺术中心"
-                    ),
+                    quote=("准确场次，2026年7月31日14:00至17:00，海上世界文化艺术中心"),
                     fields=(
                         CandidateField.EVENT_START_AT,
                         CandidateField.EVENT_END_AT,
@@ -1056,7 +1046,30 @@ async def test_event_import_requires_explicit_poi_choice_before_plan_use(
                 else fake_response(
                     content=ExtractionResult.with_candidates((event,)).model_dump_json()
                 )
-            )
+            ),
+            fake_response(
+                content=json.dumps(
+                    {
+                        "options": [
+                            {
+                                "role": role,
+                                "items": [
+                                    {
+                                        "candidate_key": "candidate_0",
+                                        "visit_duration_seconds": duration,
+                                    }
+                                ],
+                                "reason": f"event {duration}",
+                            }
+                            for role, duration in (
+                                ("main", 3600),
+                                ("alternative", 4200),
+                                ("alternative", 4800),
+                            )
+                        ]
+                    }
+                )
+            ),
         ]
     )
     poi = Poi(
@@ -1121,10 +1134,7 @@ async def test_event_import_requires_explicit_poi_choice_before_plan_use(
                 json={
                     "type": "text",
                     "idempotency_key": "event-location-flow-text",
-                    "text": (
-                        "准确场次，2026年7月31日14:00至17:00，"
-                        "海上世界文化艺术中心"
-                    ),
+                    "text": ("准确场次，2026年7月31日14:00至17:00，海上世界文化艺术中心"),
                 },
             )
         else:
@@ -1182,6 +1192,10 @@ async def test_event_import_requires_explicit_poi_choice_before_plan_use(
                     map_provider=map_provider,
                     matching_policy=test_settings.place_matching_policy(),
                 ),
+                proposals=PlanProposalService(
+                    provider,
+                    structured_output_mode=(test_settings.extraction_structured_output_mode()),
+                ),
             ).execute(
                 user_id=user_id,
                 constraints=plan_constraints,
@@ -1215,11 +1229,7 @@ async def test_event_import_uses_supported_or_default_city_search_scope(
         }
     )
     provider = FakeProvider(
-        [
-            fake_response(
-                content=ExtractionResult.with_candidates((event,)).model_dump_json()
-            )
-        ]
+        [fake_response(content=ExtractionResult.with_candidates((event,)).model_dump_json())]
     )
     map_calls: list[object] = []
 
@@ -1234,13 +1244,13 @@ async def test_event_import_uses_supported_or_default_city_search_scope(
         session_id = await _demo(client)
         imported = await client.post(
             f"/api/v1/sessions/{session_id}/messages",
-                json={
-                    "type": "text",
-                    "idempotency_key": (
-                        "event-city-scope-other"
-                        if city_hint is not None
-                        else "event-city-scope-pending"
-                    ),
+            json={
+                "type": "text",
+                "idempotency_key": (
+                    "event-city-scope-other"
+                    if city_hint is not None
+                    else "event-city-scope-pending"
+                ),
                 "text": "外地或城市待确认的准确场次",
             },
         )
@@ -1313,7 +1323,7 @@ async def test_event_none_of_above_clears_snapshot_replays_and_conflicts_safely(
             json={
                 "type": "text",
                 "idempotency_key": "event-none-import",
-                    "text": source_text,
+                "text": source_text,
             },
         )
         original = imported.json()["collections"][0]
@@ -1324,6 +1334,7 @@ async def test_event_none_of_above_clears_snapshot_replays_and_conflicts_safely(
             "snapshot_fingerprint": choices.json()["snapshot_fingerprint"],
             "choice": "none_of_above",
         }
+
         async def choose(key: str) -> tuple[str, httpx.Response]:
             return (
                 key,
@@ -1337,12 +1348,8 @@ async def test_event_none_of_above_clears_snapshot_replays_and_conflicts_safely(
             choose("event-none-first"),
             choose("event-none-second"),
         )
-        winner_key, winner = next(
-            attempt for attempt in attempts if attempt[1].status_code == 200
-        )
-        loser = next(
-            response for _key, response in attempts if response.status_code != 200
-        )
+        winner_key, winner = next(attempt for attempt in attempts if attempt[1].status_code == 200)
+        loser = next(response for _key, response in attempts if response.status_code != 200)
         replay = await client.post(
             f"/api/v1/collections/{item_id}/poi-selection",
             json={**request_body, "idempotency_key": winner_key},
@@ -1457,13 +1464,10 @@ async def test_invalid_and_different_image_payloads_never_duplicate_or_leak_file
         / "demo-private"
     )
     objects = list((private_root / "objects").iterdir())
-    combined = (
-        invalid.text
-        + repr(
-            ImageInput.from_bytes(
-                PNG_SCREENSHOT,
-                content_type="image/png",
-            )
+    combined = invalid.text + repr(
+        ImageInput.from_bytes(
+            PNG_SCREENSHOT,
+            content_type="image/png",
         )
     )
     assert invalid.status_code == 422
@@ -1676,9 +1680,7 @@ async def test_url_timeout_is_terminal_replayable_and_does_not_retry(
             json=payload,
         )
         run = await client.get(f"/api/v1/agent-runs/{timed_out.json()['trace_id']}")
-        events = await client.get(
-            f"/api/v1/agent-runs/{timed_out.json()['trace_id']}/events"
-        )
+        events = await client.get(f"/api/v1/agent-runs/{timed_out.json()['trace_id']}/events")
         async with api.state.demo_database.session() as session:
             job_summary = await session.scalar(
                 select(ScheduledJobModel.result_summary_json).where(
@@ -1692,8 +1694,8 @@ async def test_url_timeout_is_terminal_replayable_and_does_not_retry(
     assert run.json()["status"] == "failed"
     assert run.json()["tool_runs"][0]["status"] == "cancelled"
     assert run.json()["tool_runs"][0]["error_code"] == "RUN_TIMEOUT"
-    assert events.text.count('event: result.updated') == 1
-    assert events.text.count('event: run.failed') == 1
+    assert events.text.count("event: result.updated") == 1
+    assert events.text.count("event: run.failed") == 1
     assert job_summary == {"outcome": "failed"}
 
 
@@ -1898,9 +1900,7 @@ async def test_image_outer_deadline_cancels_longer_provider_safety_cap(
         Path(test_settings.database_url.removeprefix("sqlite+aiosqlite:///")).parent
         / "provider-cancellation-private"
     )
-    storage_settings = test_settings.model_copy(
-        update={"demo_storage_private_root": private_root}
-    )
+    storage_settings = test_settings.model_copy(update={"demo_storage_private_root": private_root})
     storage_config = storage_settings.demo_storage_provider_settings()
     storage = LocalPrivateStorageProvider(config=storage_config)
     recognition = ImageRecognitionService(

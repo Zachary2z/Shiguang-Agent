@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from decimal import Decimal
-from unicodedata import normalize
 
 from app.domain.collections import PRICE_CURRENCY_CNY, CollectionKind
 from app.domain.places import TransportMode
@@ -28,7 +27,7 @@ from app.domain.plans.drafts import (
     PlanItemSource,
     PlanItemSourceKind,
     PlanOption,
-    PlanOptionRole,
+    PlanProposalSet,
     PlanRiskCode,
     PlanRouteLeg,
     PlanSelectionReasonCode,
@@ -44,10 +43,6 @@ _BUFFER_SECONDS: dict[PlanPace, tuple[int, int]] = {
     PlanPace.BALANCED: (15 * 60, 20 * 60),
     PlanPace.RELAXED: (20 * 60, 30 * 60),
 }
-
-
-def _identity(value: str) -> str:
-    return "".join(normalize("NFKC", value).casefold().split())
 
 
 def _option_cost(items: tuple[PlanItem, ...]) -> tuple[Decimal | None, str | None]:
@@ -83,9 +78,7 @@ def _item_risks(
     selected: set[PlanRiskCode] = set()
     if price_amount is None:
         selected.add(
-            PlanRiskCode.BUDGET_UNVERIFIED
-            if budget is not None
-            else PlanRiskCode.PRICE_UNKNOWN
+            PlanRiskCode.BUDGET_UNVERIFIED if budget is not None else PlanRiskCode.PRICE_UNKNOWN
         )
     if not route_known:
         selected.add(PlanRiskCode.ROUTE_UNKNOWN)
@@ -101,90 +94,77 @@ class PlanDraftService:
         constraints: PlanConstraints,
         collections: StructuredCollectionResult,
         facts: PlanDraftFactSnapshot,
-        external_candidate: ExternalDraftCandidate | None = None,
+        proposals: PlanProposalSet | None,
+        candidate_keys: dict[str, tuple[str, ...]],
+        external_candidates: dict[str, ExternalDraftCandidate] | None = None,
     ) -> PlanDraftResult:
         exclusions = self._exclusions(collections)
-        if not collections.included and external_candidate is None:
+        if not collections.included or proposals is None:
             return self._failure(PlanDraftFailureCode.NO_INCLUDED_CANDIDATES, exclusions)
 
+        included = {item.collection_item_ids: item for item in collections.included}
         candidate_facts = {item.collection_item_ids: item for item in facts.candidates}
         routes = {item.identity: item for item in facts.routes}
-        ranked = sorted(
-            collections.included,
-            key=lambda item: self._rank_key(item, routes),
-        )
         switch_buffer, end_buffer = _BUFFER_SECONDS[constraints.pace]
         options: list[PlanOption] = []
-        seen_sequences: set[tuple[tuple[str, ...], ...]] = set()
-
-        for core in ranked:
-            if len(options) == 3:
-                break
-            core_item = self._schedule_item(
-                decision=core,
-                role=PlanItemRole.CORE,
-                reason=(
-                    PlanSelectionReasonCode.PRIMARY_STABLE_RANK
-                    if not options
-                    else PlanSelectionReasonCode.STABLE_ALTERNATIVE
-                ),
-                earliest_departure=constraints.start_at,
-                from_ids=(),
-                constraints=constraints,
-                candidate_facts=candidate_facts,
-                routes=routes,
-                end_buffer_seconds=end_buffer,
-                existing_items=(),
-            )
-            if core_item is None:
-                continue
-
-            items: tuple[PlanItem, ...] = (core_item,)
-            if external_candidate is not None and not options:
-                external_item = self._schedule_external_item(
-                    candidate=external_candidate,
-                    role=PlanItemRole.AUXILIARY,
-                    earliest_departure=core_item.end_at
-                    + timedelta(seconds=switch_buffer),
-                    from_ids=core.collection_item_ids,
-                    constraints=constraints,
-                    end_buffer_seconds=end_buffer,
-                    existing_items=items,
-                )
-                if external_item is not None:
-                    items = (core_item, external_item)
-            for auxiliary in ranked:
-                if len(items) == 2:
+        for proposal in proposals.options:
+            items: list[PlanItem] = []
+            previous_ids: tuple[str, ...] = ()
+            previous_end = constraints.start_at
+            for index, proposal_item in enumerate(proposal.items):
+                ids = candidate_keys.get(proposal_item.candidate_key)
+                decision = None if ids is None else included.get(ids)
+                if decision is None:
+                    external = (external_candidates or {}).get(proposal_item.candidate_key)
+                    item = (
+                        None
+                        if external is None
+                        else self._schedule_external_item(
+                            candidate=external.model_copy(
+                                update={
+                                    "visit_duration_seconds": proposal_item.visit_duration_seconds
+                                }
+                            ),
+                            role=(PlanItemRole.CORE if index == 0 else PlanItemRole.AUXILIARY),
+                            earliest_departure=previous_end
+                            + timedelta(seconds=switch_buffer if index else 0),
+                            from_ids=previous_ids,
+                            constraints=constraints,
+                            end_buffer_seconds=end_buffer,
+                            existing_items=tuple(items),
+                        )
+                    )
+                else:
+                    item = self._schedule_item(
+                        decision=decision,
+                        role=PlanItemRole.CORE if index == 0 else PlanItemRole.AUXILIARY,
+                        reason=PlanSelectionReasonCode.MODEL_PROPOSAL,
+                        visit_duration_seconds=proposal_item.visit_duration_seconds,
+                        earliest_departure=previous_end
+                        + timedelta(seconds=switch_buffer if index else 0),
+                        from_ids=previous_ids,
+                        constraints=constraints,
+                        candidate_facts=candidate_facts,
+                        routes=routes,
+                        end_buffer_seconds=end_buffer,
+                        existing_items=tuple(items),
+                    )
+                if item is None:
+                    items = []
                     break
-                if auxiliary.collection_item_ids == core.collection_item_ids:
-                    continue
-                auxiliary_item = self._schedule_item(
-                    decision=auxiliary,
-                    role=PlanItemRole.AUXILIARY,
-                    reason=PlanSelectionReasonCode.AUXILIARY_FITS_KNOWN_ROUTE,
-                    earliest_departure=core_item.end_at + timedelta(seconds=switch_buffer),
-                    from_ids=core.collection_item_ids,
-                    constraints=constraints,
-                    candidate_facts=candidate_facts,
-                    routes=routes,
-                    end_buffer_seconds=end_buffer,
-                    existing_items=items,
-                )
-                if auxiliary_item is not None:
-                    items = (core_item, auxiliary_item)
-                    break
-
-            sequence = tuple(item.source.collection_item_ids for item in items)
-            if sequence in seen_sequences:
+                items.append(item)
+                previous_ids = () if ids is None else ids
+                previous_end = item.end_at
+            if not items:
                 continue
-            seen_sequences.add(sequence)
-            total_amount, total_currency = _option_cost(items)
-            risks = _option_risks(items, facts.weather_status)
+            scheduled = tuple(items)
+            total_amount, total_currency = _option_cost(scheduled)
+            risks = _option_risks(scheduled, facts.weather_status)
             options.append(
                 PlanOption(
-                    role=(PlanOptionRole.MAIN if not options else PlanOptionRole.ALTERNATIVE),
-                    items=items,
-                    switch_buffer_seconds=switch_buffer if len(items) == 2 else None,
+                    role=proposal.role,
+                    items=scheduled,
+                    switch_buffer_seconds=switch_buffer if len(scheduled) > 1 else None,
                     end_buffer_seconds=end_buffer,
                     total_cost_amount=total_amount,
                     total_cost_currency=total_currency,
@@ -192,31 +172,6 @@ class PlanDraftService:
                     risks=tuple(RISK_SUMMARIES[risk] for risk in risks),
                 )
             )
-
-        if not options and external_candidate is not None:
-            external_item = self._schedule_external_item(
-                candidate=external_candidate,
-                role=PlanItemRole.CORE,
-                earliest_departure=constraints.start_at,
-                from_ids=(),
-                constraints=constraints,
-                end_buffer_seconds=end_buffer,
-                existing_items=(),
-            )
-            if external_item is not None:
-                total_amount, total_currency = _option_cost((external_item,))
-                risks = _option_risks((external_item,), facts.weather_status)
-                options.append(
-                    PlanOption(
-                        role=PlanOptionRole.MAIN,
-                        items=(external_item,),
-                        end_buffer_seconds=end_buffer,
-                        total_cost_amount=total_amount,
-                        total_cost_currency=total_currency,
-                        risk_codes=risks,
-                        risks=tuple(RISK_SUMMARIES[risk] for risk in risks),
-                    )
-                )
 
         if not options:
             return self._failure(PlanDraftFailureCode.NO_EXECUTABLE_OPTION, exclusions)
@@ -235,7 +190,9 @@ class PlanDraftService:
             constraints=constraints,
             collections=collections,
             facts=facts,
-            external_candidate=external_candidate,
+            proposals=proposals,
+            candidate_keys=candidate_keys,
+            external_candidates=external_candidates,
         )
         if not validation.is_valid:
             return self._failure(
@@ -251,7 +208,9 @@ class PlanDraftService:
         constraints: PlanConstraints,
         collections: StructuredCollectionResult,
         facts: PlanDraftFactSnapshot,
-        external_candidate: ExternalDraftCandidate | None = None,
+        proposals: PlanProposalSet,
+        candidate_keys: dict[str, tuple[str, ...]],
+        external_candidates: dict[str, ExternalDraftCandidate] | None = None,
     ) -> PlanDraftValidation:
         """Re-run every known scheduling invariant against the immutable facts."""
 
@@ -282,22 +241,32 @@ class PlanDraftService:
         candidate_facts = {item.collection_item_ids: item for item in facts.candidates}
         routes = {item.identity: item for item in facts.routes}
         expected_switch, expected_end = _BUFFER_SECONDS[constraints.pace]
-        sequences: set[tuple[tuple[str, ...], ...]] = set()
-        external_item_count = 0
+        proposal_by_sequence = {
+            tuple(
+                (
+                    candidate_keys.get(item.candidate_key, ()),
+                    item.visit_duration_seconds,
+                )
+                for item in proposal.items
+            ): proposal
+            for proposal in proposals.options
+        }
 
-        for option_index, option in enumerate(draft.options):
-            if not 1 <= len(option.items) <= 2:
+        for option in draft.options:
+            if not option.items:
                 violations.add(PlanDraftViolationCode.RESULT_SHAPE_INVALID)
-            expected_role = PlanOptionRole.MAIN if option_index == 0 else PlanOptionRole.ALTERNATIVE
-            if option.role is not expected_role:
+            sequence = tuple(
+                (item.source.collection_item_ids, item.visit_duration_seconds)
+                for item in option.items
+            )
+            proposal = proposal_by_sequence.get(sequence)
+            if proposal is None:
+                violations.add(PlanDraftViolationCode.FACTS_MISSING_OR_MISMATCHED)
+            elif option.role is not proposal.role:
                 violations.add(PlanDraftViolationCode.OPTION_ROLE_INVALID)
-            sequence = tuple(item.source.collection_item_ids for item in option.items)
-            if sequence in sequences:
-                violations.add(PlanDraftViolationCode.OPTION_DUPLICATED)
-            sequences.add(sequence)
             if option.end_buffer_seconds != expected_end:
                 violations.add(PlanDraftViolationCode.END_BUFFER_INVALID)
-            expected_option_switch = expected_switch if len(option.items) == 2 else None
+            expected_option_switch = expected_switch if len(option.items) > 1 else None
             if option.switch_buffer_seconds != expected_option_switch:
                 violations.add(PlanDraftViolationCode.SWITCH_BUFFER_INVALID)
 
@@ -311,14 +280,20 @@ class PlanDraftService:
                 if item.role is not expected_item_role:
                     violations.add(PlanDraftViolationCode.ITEM_ROLE_INVALID)
                 if item.source.kind is PlanItemSourceKind.EXTERNAL_PLACE:
-                    external_item_count += 1
+                    candidate = next(
+                        (
+                            value
+                            for value in (external_candidates or {}).values()
+                            if value.poi == item.source.concrete_poi
+                        ),
+                        None,
+                    )
                     self._validate_external_item(
                         item=item,
-                        candidate=external_candidate,
+                        candidate=candidate,
                         previous_end=previous_end,
                         previous_ids=previous_ids,
                         item_index=item_index,
-                        option_index=option_index,
                         constraints=constraints,
                         expected_switch=expected_switch,
                         expected_end=expected_end,
@@ -334,7 +309,10 @@ class PlanDraftService:
                     violations.add(PlanDraftViolationCode.SOURCE_NOT_INCLUDED)
                     continue
                 visit = candidate_facts.get(item.source.collection_item_ids)
-                if visit is None or item.visit_duration_seconds != visit.visit_duration_seconds:
+                proposed_duration = (
+                    None if proposal is None else proposal.items[item_index].visit_duration_seconds
+                )
+                if visit is None or item.visit_duration_seconds != proposed_duration:
                     violations.add(PlanDraftViolationCode.FACTS_MISSING_OR_MISMATCHED)
                     continue
                 if (
@@ -374,14 +352,14 @@ class PlanDraftService:
                     violations.add(PlanDraftViolationCode.ROUTE_MISSING_OR_MISMATCHED)
 
                 departure = previous_end
-                if item_index == 1:
+                if item_index > 0:
                     departure += timedelta(seconds=expected_switch)
                 expected_start = departure + timedelta(
                     seconds=0 if route is None else route.duration_seconds
                 )
                 if visit.event_start_at is not None:
                     expected_start = max(expected_start, visit.event_start_at)
-                expected_item_end = expected_start + timedelta(seconds=visit.visit_duration_seconds)
+                expected_item_end = expected_start + timedelta(seconds=item.visit_duration_seconds)
                 if item.start_at != expected_start or item.end_at != expected_item_end:
                     violations.add(PlanDraftViolationCode.TIME_WINDOW_VIOLATED)
                 if item.start_at < constraints.start_at or (
@@ -417,13 +395,7 @@ class PlanDraftService:
                     if decision.poi_identity in seen_pois:
                         violations.add(PlanDraftViolationCode.DUPLICATE_POI)
                     seen_pois.add(decision.poi_identity)
-                expected_reason = (
-                    PlanSelectionReasonCode.PRIMARY_STABLE_RANK
-                    if option_index == 0 and item_index == 0
-                    else PlanSelectionReasonCode.STABLE_ALTERNATIVE
-                    if item_index == 0
-                    else PlanSelectionReasonCode.AUXILIARY_FITS_KNOWN_ROUTE
-                )
+                expected_reason = PlanSelectionReasonCode.MODEL_PROPOSAL
                 if item.selection_reason_code is not expected_reason:
                     violations.add(PlanDraftViolationCode.FACTS_MISSING_OR_MISMATCHED)
                 if item.selection_reason != SELECTION_REASON_SUMMARIES[expected_reason]:
@@ -457,8 +429,6 @@ class PlanDraftService:
             ):
                 violations.add(PlanDraftViolationCode.BUDGET_VIOLATED)
 
-        if external_item_count > 1:
-            violations.add(PlanDraftViolationCode.SOURCE_NOT_INCLUDED)
         return self._validation(violations)
 
     @staticmethod
@@ -495,12 +465,10 @@ class PlanDraftService:
         route = candidate.inbound_route
         if route.from_collection_item_ids != from_ids:
             return None
+        if (from_ids or constraints.origin is not None) and route.duration_seconds is None:
+            return None
         risks = self._external_risks(candidate, constraints)
-        reason = (
-            PlanSelectionReasonCode.PRIMARY_STABLE_RANK
-            if role is PlanItemRole.CORE
-            else PlanSelectionReasonCode.AUXILIARY_FITS_KNOWN_ROUTE
-        )
+        reason = PlanSelectionReasonCode.MODEL_PROPOSAL
         return self._schedule_known_item(
             role=role,
             title=candidate.poi.name,
@@ -533,7 +501,6 @@ class PlanDraftService:
         previous_end: datetime,
         previous_ids: tuple[str, ...],
         item_index: int,
-        option_index: int,
         constraints: PlanConstraints,
         expected_switch: int,
         expected_end: int,
@@ -548,7 +515,7 @@ class PlanDraftService:
             candidate=candidate,
             role=expected_role,
             earliest_departure=previous_end
-            + timedelta(seconds=expected_switch if item_index == 1 else 0),
+            + timedelta(seconds=expected_switch if item_index > 0 else 0),
             from_ids=previous_ids,
             constraints=constraints,
             end_buffer_seconds=expected_end,
@@ -558,32 +525,8 @@ class PlanDraftService:
         if identity in seen_pois:
             violations.add(PlanDraftViolationCode.DUPLICATE_POI)
         seen_pois.add(identity)
-        if (
-            option_index != 0
-            or expected is None
-            or item != expected
-        ):
+        if expected is None or item != expected:
             violations.add(PlanDraftViolationCode.FACTS_MISSING_OR_MISMATCHED)
-
-    @staticmethod
-    def _rank_key(
-        decision: CollectionCandidateDecision,
-        routes: dict[tuple[tuple[str, ...], tuple[str, ...]], DraftRouteFacts],
-    ) -> tuple[object, ...]:
-        origin_route = routes.get(((), decision.collection_item_ids))
-        route_duration = 2**63 if origin_route is None else origin_route.duration_seconds
-        poi_key = (
-            ("", "")
-            if decision.poi_identity is None
-            else (decision.poi_identity[0].value, decision.poi_identity[1])
-        )
-        return (
-            -decision.preference_score,
-            route_duration,
-            _identity(decision.title),
-            poi_key,
-            decision.collection_item_ids,
-        )
 
     def _schedule_item(
         self,
@@ -591,6 +534,7 @@ class PlanDraftService:
         decision: CollectionCandidateDecision,
         role: PlanItemRole,
         reason: PlanSelectionReasonCode,
+        visit_duration_seconds: int,
         earliest_departure: datetime,
         from_ids: tuple[str, ...],
         constraints: PlanConstraints,
@@ -644,7 +588,7 @@ class PlanDraftService:
             role=role,
             title=decision.title,
             kind=decision.kind,
-            visit_duration_seconds=visit.visit_duration_seconds,
+            visit_duration_seconds=visit_duration_seconds,
             event_start_at=visit.event_start_at,
             event_end_at=visit.event_end_at,
             route=inbound_route,
@@ -652,9 +596,7 @@ class PlanDraftService:
             source=PlanItemSource(
                 collection_item_ids=decision.collection_item_ids,
                 any_branch_collection_item_ids=decision.any_branch_collection_item_ids,
-                concrete_poi=(
-                    None if decision.poi is None else decision.poi.model_copy(deep=True)
-                ),
+                concrete_poi=(None if decision.poi is None else decision.poi.model_copy(deep=True)),
                 poi_queried_at=(
                     visit.poi_queried_at if decision.any_branch_collection_item_ids else None
                 ),
@@ -703,8 +645,7 @@ class PlanDraftService:
         prices = [item.price_amount for item in existing_items]
         prices.append(price_amount)
         if constraints.budget is not None and (
-            sum((price for price in prices if price is not None), Decimal())
-            > constraints.budget
+            sum((price for price in prices if price is not None), Decimal()) > constraints.budget
         ):
             return None
         return PlanItem(

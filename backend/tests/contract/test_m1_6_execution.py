@@ -80,7 +80,7 @@ def _constraints() -> PlanConstraints:
 def _draft(collection_id: str) -> PlanDraftResult:
     start = datetime(2026, 7, 29, 2, 30, tzinfo=UTC)
     reason = SELECTION_REASON_SUMMARIES[
-        PlanSelectionReasonCode.PRIMARY_STABLE_RANK
+        PlanSelectionReasonCode.MODEL_PROPOSAL
     ]
     first = PlanItem(
         role=PlanItemRole.CORE,
@@ -99,7 +99,7 @@ def _draft(collection_id: str) -> PlanDraftResult:
             collection_item_ids=(collection_id,),
             concrete_poi=SHENZHEN_MUSEUM,
         ),
-        selection_reason_code=PlanSelectionReasonCode.PRIMARY_STABLE_RANK,
+        selection_reason_code=PlanSelectionReasonCode.MODEL_PROPOSAL,
         selection_reason=reason,
     )
     second = PlanItem(
@@ -124,7 +124,7 @@ def _draft(collection_id: str) -> PlanDraftResult:
             supplement_reason="补足休息环节",
             source_label="高德补充 · 未收藏",
         ),
-        selection_reason_code=PlanSelectionReasonCode.PRIMARY_STABLE_RANK,
+        selection_reason_code=PlanSelectionReasonCode.MODEL_PROPOSAL,
         selection_reason=reason,
     )
     return PlanDraftResult(
