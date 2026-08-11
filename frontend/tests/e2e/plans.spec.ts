@@ -11,6 +11,7 @@ const plan = {
     end_at: "2026-07-29T10:00:00Z",
     area_districts: ["南山区"],
     area_labels: ["海上世界"],
+    has_exact_origin: true,
     budget: null,
     pace: "balanced",
     transport_modes: ["transit"],
@@ -111,7 +112,7 @@ test("refreshed plan shows authoritative rail and explicit confirmation", async 
   await expect(page.getByText("来自收藏").first()).toBeVisible();
   await expect(page.getByText(/公共交通 · 15 分钟 · 3.2 km/)).toBeVisible();
   await expect(page.getByText("未知", { exact: true })).toBeVisible();
-  const confirm = page.getByRole("button", { name: "明确确认 V1" });
+  const confirm = page.getByRole("button", { name: "确认 V1 · 主方案" });
   await expect(confirm).toBeVisible();
   await confirm.focus();
   await expect(confirm).toBeFocused();
@@ -123,6 +124,9 @@ test("real offline stack creates, adjusts, confirms, restarts, and recovers a pl
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/plans");
 
+  await page.getByLabel("起点纬度（确认前必填）").fill("22.4798");
+  await page.getByLabel("起点经度（确认前必填）").fill("113.9158");
+
   await page.getByRole("button", { name: "检查生成条件" }).click();
   await page.getByRole("button", { name: "确认并生成" }).click();
   await expect(page.getByRole("heading", { level: 3, name: "海上世界散步公园" })).toBeVisible({
@@ -131,7 +135,7 @@ test("real offline stack creates, adjusts, confirms, restarts, and recovers a pl
   await expect(page.getByText("来自收藏").first()).toBeVisible();
 
   await page
-    .getByLabel("想怎么调整？")
+    .getByLabel("基于主方案怎么调整？")
     .fill("不要咖啡店，换成适合散步的地方，其他不变。");
   await page.getByRole("button", { name: "生成新版本" }).click();
   await expect(page.getByRole("button", { name: "V2", exact: true })).toHaveAttribute(
@@ -145,7 +149,7 @@ test("real offline stack creates, adjusts, confirms, restarts, and recovers a pl
     "page",
   );
   await page.getByRole("button", { name: "V2", exact: true }).click();
-  await page.getByRole("button", { name: "明确确认 V2" }).click();
+  await page.getByRole("button", { name: "确认 V2 · 主方案" }).click();
   await expect(page.getByText("这一版已确认")).toBeVisible();
 
   await page.getByRole("button", { name: "查看路线、日历与完成反馈" }).click();
@@ -178,6 +182,8 @@ test("real offline stack creates, adjusts, confirms, restarts, and recovers a pl
   await expect(page.getByText("第 2 次记录")).toBeVisible();
 
   await page.getByRole("button", { name: "新建计划" }).click();
+  await page.getByLabel("起点纬度（确认前必填）").fill("22.4798");
+  await page.getByLabel("起点经度（确认前必填）").fill("113.9158");
   await page.getByRole("button", { name: "检查生成条件" }).click();
   await page.getByRole("button", { name: "确认并生成" }).click();
   await expect(page.getByRole("button", { name: "V1", exact: true })).toHaveAttribute(
@@ -186,10 +192,10 @@ test("real offline stack creates, adjusts, confirms, restarts, and recovers a pl
     { timeout: 20_000 },
   );
 
-  await page.getByLabel("想怎么调整？").fill("把地点换成广州塔");
+  await page.getByLabel("基于主方案怎么调整？").fill("把地点换成广州塔");
   await page.getByRole("button", { name: "生成新版本" }).click();
   await expect(
-    page.getByText("暂不支持直接调整精确地点，请新建计划修改活动范围。"),
+    page.getByText("没有理解这次调整，请换一种更明确的说法。"),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "V2", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "V1", exact: true })).toHaveAttribute(

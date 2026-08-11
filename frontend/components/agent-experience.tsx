@@ -95,6 +95,18 @@ type ImportResult = {
   memory_id: string | null;
 };
 
+type AgentPlanSummary = {
+  id: string;
+  version: number;
+  status: string;
+  draft: {
+    options: Array<{ items: Array<{ title: string }> }>;
+    base_option_index?: number | null;
+    change_summary?: string | null;
+  } | null;
+  versions: Array<{ id: string }>;
+};
+
 type RunEventData = {
   summary?: { stage?: string; status?: string; error_code?: string };
 };
@@ -250,6 +262,7 @@ export function AgentExperience() {
   const [feedback, setFeedback] = useState("");
   const [stage, setStage] = useState("准备接收");
   const [result, setResult] = useState<ImportResult | null>(null);
+  const [planSummary, setPlanSummary] = useState<AgentPlanSummary | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
   const [draftDistrict, setDraftDistrict] = useState("");
@@ -263,6 +276,32 @@ export function AgentExperience() {
   const mainInput = useRef<HTMLTextAreaElement | null>(null);
   const preparedSubmissionKey = useRef<string | null>(null);
   const operationGeneration = useRef(0);
+
+  useEffect(() => {
+    if (!result?.plan_id) {
+      return;
+    }
+    let active = true;
+    void (async () => {
+      try {
+        let summary = await apiClient.request<AgentPlanSummary>(
+          `/api/v1/plans/${result.plan_id}`,
+        );
+        const latest = summary?.versions?.at(-1);
+        if (latest && latest.id !== summary.id) {
+          summary = await apiClient.request<AgentPlanSummary>(
+            `/api/v1/plans/${latest.id}`,
+          );
+        }
+        if (active && summary) setPlanSummary(summary);
+      } catch {
+        if (active) setPlanSummary(null);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [result?.plan_id]);
 
   const cancelObservation = useCallback(() => {
     observationToken.current += 1;
@@ -745,6 +784,8 @@ export function AgentExperience() {
     result.run_status !== "cancelled"
       ? resultState(result)
       : state;
+  const activePlanSummary =
+    planSummary?.id === result?.plan_id ? planSummary : null;
 
   return (
     <section className="agent-page" aria-labelledby="agent-title">
@@ -948,7 +989,20 @@ export function AgentExperience() {
                     : "需要补充"}
               </h2>
               <p>{result.question ?? "已进入对应任务。"}</p>
-              {result.plan_id && <a href={`/plans?plan=${result.plan_id}`}>查看计划进度</a>}
+              {result.plan_id && (
+                <>
+                  <p>
+                    计划进度：{activePlanSummary ? `V${activePlanSummary.version} · ${activePlanSummary.status}` : "正在读取"}
+                  </p>
+                  {activePlanSummary?.draft?.options.map((option, index) => (
+                    <p key={index}>
+                      {index === 0 ? "主方案" : `备选 ${index}`}：{option.items.map((item) => item.title).join(" → ")}
+                    </p>
+                  ))}
+                  {activePlanSummary?.draft?.change_summary && <p>本版调整：{activePlanSummary.draft.change_summary}</p>}
+                  <a href={`/plans?plan=${result.plan_id}`}>查看计划与方案</a>
+                </>
+              )}
               {result.memory_id && <a href="/me">在“我的”中管理</a>}
             </div>
           </article>

@@ -41,6 +41,7 @@ type PlanItem = {
   price_currency: string | null;
   source: { kind: "collection_derived" | "external_place"; source_label: string | null };
   selection_reason_code:
+    | "MODEL_PROPOSAL"
     | "PRIMARY_STABLE_RANK"
     | "STABLE_ALTERNATIVE"
     | "AUXILIARY_FITS_KNOWN_ROUTE";
@@ -74,6 +75,7 @@ type Plan = {
     end_at: string;
     area_districts: string[];
     area_labels: string[];
+    has_exact_origin: boolean;
     budget: string | null;
     pace: "relaxed" | "balanced" | "packed";
     pace_source: "user_request" | "system_default" | "memory_default";
@@ -82,6 +84,7 @@ type Plan = {
     exclude: string[];
     collection_only: boolean;
     selected_collection_item_ids: string[];
+    required_collection_item_ids: string[];
   };
   adjustment_text: string | null;
   draft: {
@@ -91,6 +94,9 @@ type Plan = {
     weather_source?: string | null;
     weather_queried_at?: string | null;
     weather_summary?: string | null;
+    base_option_index?: number | null;
+    change_summary?: string | null;
+    confirmed_option_index?: number | null;
   } | null;
   trace_id: string;
   events_url: `/${string}`;
@@ -192,6 +198,7 @@ const completionLabels: Partial<Record<PlanStatus, string>> = {
   not_completed: "未完成",
 };
 const selectionReasonLabels: Readonly<Record<PlanItem["selection_reason_code"], string>> = {
+  MODEL_PROPOSAL: "由模型按当前条件与候选事实选入。",
   PRIMARY_STABLE_RANK: "优先选择路线已知且排序稳定的收藏。",
   STABLE_ALTERNATIVE: "从其余可执行候选中选为稳定备选。",
   AUXILIARY_FITS_KNOWN_ROUTE: "停留和路线时间适合当前剩余窗口。",
@@ -211,9 +218,10 @@ const weatherStatusLabels: Readonly<Record<string, string>> = {
   provider_failed: "天气信息暂时不可用",
 };
 
-function localInput(offsetHours: number) {
-  const value = new Date(Date.now() + offsetHours * 3_600_000);
-  value.setMinutes(Math.ceil(value.getMinutes() / 15) * 15, 0, 0);
+function localInput(dayOffset: number, hour: number) {
+  const value = new Date();
+  value.setDate(value.getDate() + dayOffset);
+  value.setHours(hour, 0, 0, 0);
   const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
   return local.toISOString().slice(0, 16);
 }
@@ -253,6 +261,8 @@ function failureMessage(errorCode: string | null) {
     POST_GENERATION_VALIDATION_FAILED: "候选方案未通过硬约束复核，因此没有保存伪成功计划。",
     PLAN_CONSTRAINTS_EXPIRED: "本次计划条件已经过期，请重新确认时间后生成。",
     PLAN_ADJUSTMENT_NOT_UNDERSTOOD: "没有理解这次调整，请换一种更明确的说法。",
+    PLAN_ADJUSTMENT_CONFLICT: "调整后的地点与新条件冲突，原方案没有被覆盖。",
+    REQUIRED_COLLECTION_CONFLICT: "必须安排的收藏无法放入当前条件，请调整时间或范围。",
     PLAN_ADJUSTMENT_UNSUPPORTED: "暂不支持直接调整精确地点，请新建计划修改活动范围。",
     STALE_VERSION: "计划版本已经更新，旧任务没有覆盖当前版本。",
     PROVIDER_TIMEOUT: "计划服务等待超时，未保存伪成功结果。",
@@ -303,17 +313,26 @@ function routeLabel(route: PlanItem["inbound_route"]) {
 
 export function PlansExperience() {
   const searchParams = useSearchParams();
+  const requestedPlanId = searchParams?.get("plan") ?? null;
   const selectedCollectionItemIds = useMemo(
     () => Array.from(new Set(searchParams?.getAll("collection") ?? [])).slice(0, 20),
     [searchParams],
   );
+  const requiredCollectionItemIds = useMemo(() => {
+    const selected = new Set(selectedCollectionItemIds);
+    return Array.from(new Set(searchParams?.getAll("required") ?? []))
+      .filter((identifier) => selected.has(identifier))
+      .slice(0, 20);
+  }, [searchParams, selectedCollectionItemIds]);
   const [session, setSession] = useState<DemoSession | null>(null);
   const [phase, setPhase] = useState<Phase>("recovering");
   const [plan, setPlan] = useState<Plan | null>(null);
-  const [startAt, setStartAt] = useState(() => localInput(24));
-  const [endAt, setEndAt] = useState(() => localInput(32));
+  const [startAt, setStartAt] = useState(() => localInput(1, 10));
+  const [endAt, setEndAt] = useState(() => localInput(1, 18));
   const [district, setDistrict] = useState("南山区");
   const [areaLabel, setAreaLabel] = useState("海上世界");
+  const [originLatitude, setOriginLatitude] = useState("");
+  const [originLongitude, setOriginLongitude] = useState("");
   const [budget, setBudget] = useState("");
   const [pace, setPace] = useState<keyof typeof paceLabels>("balanced");
   const [transport, setTransport] = useState("transit");
@@ -355,7 +374,7 @@ export function PlansExperience() {
       setPlan(authoritative);
       setExecution(null);
       setFeedbackMode(null);
-      setOptionIndex(0);
+      setOptionIndex(authoritative.draft?.confirmed_option_index ?? 0);
       setPhase(
         authoritative.status === "waiting_approval"
           ? "waiting"
@@ -441,15 +460,20 @@ export function PlansExperience() {
         );
         if (generation.current !== owner) return;
         setSession(activeSession);
-        const list = await apiClient.request<PlanList>("/api/v1/plans");
+        const list = requestedPlanId
+          ? null
+          : await apiClient.request<PlanList>("/api/v1/plans");
         if (generation.current !== owner) return;
-        const latest = list.items[0];
+        const latest = requestedPlanId
+          ? await apiClient.request<Plan>(`/api/v1/plans/${requestedPlanId}`)
+          : list?.items[0];
         if (!latest) {
           setPhase("editing");
           return;
         }
         currentPlanId.current = latest.id;
         setPlan(latest);
+        setOptionIndex(latest.draft?.confirmed_option_index ?? 0);
         if (latest.status === "generating") {
           follow(
             {
@@ -486,7 +510,7 @@ export function PlansExperience() {
       requestController.current?.abort();
       cancelSse.current?.();
     };
-  }, [follow]);
+  }, [follow, requestedPlanId]);
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
@@ -502,6 +526,14 @@ export function PlansExperience() {
       start_at: inputToIso(startAt),
       end_at: inputToIso(endAt),
       area: { districts: district.trim() ? [district.trim()] : [], labels: areaLabel.trim() ? [areaLabel.trim()] : [] },
+      origin:
+        originLatitude.trim() && originLongitude.trim()
+          ? {
+              latitude: Number(originLatitude),
+              longitude: Number(originLongitude),
+              coordinate_system: "gcj_02",
+            }
+          : null,
       budget: budget.trim() || null,
       pace,
       transport_modes: [transport],
@@ -509,8 +541,9 @@ export function PlansExperience() {
       exclude: exclude.trim() ? [exclude.trim()] : [],
       collection_only: selectedCollectionItemIds.length > 0 || collectionOnly,
       selected_collection_item_ids: selectedCollectionItemIds,
+      required_collection_item_ids: requiredCollectionItemIds,
     }),
-    [areaLabel, budget, collectionOnly, district, endAt, exclude, include, pace, selectedCollectionItemIds, startAt, transport],
+    [areaLabel, budget, collectionOnly, district, endAt, exclude, include, originLatitude, originLongitude, pace, requiredCollectionItemIds, selectedCollectionItemIds, startAt, transport],
   );
 
   function beginReview(event: FormEvent) {
@@ -566,7 +599,7 @@ export function PlansExperience() {
     setPhase("submitting");
     setStage("正在创建新版本");
     const instruction = adjustment.trim();
-    const fingerprint = JSON.stringify({ plan_id: plan.id, instruction });
+    const fingerprint = JSON.stringify({ plan_id: plan.id, optionIndex, instruction });
     const idempotencyKey = keyForAttempt(adjustmentAttempt, fingerprint);
     try {
       const accepted = await apiClient.request<AdjustmentAccepted>(
@@ -576,6 +609,7 @@ export function PlansExperience() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             idempotency_key: idempotencyKey,
+            base_option_index: optionIndex,
             instruction,
           }),
           csrfToken: session.csrf_token,
@@ -661,13 +695,17 @@ export function PlansExperience() {
     }
   }
 
-  async function confirmPlan() {
+  async function confirmPlan(selectedOptionIndex = optionIndex) {
     if (!session || !plan) return;
+    if (!plan.constraints.has_exact_origin) {
+      setFeedback("确认和导航前必须补充精确起点。请回到 Agent 说明出发地点后重新生成计划。");
+      return;
+    }
     const owner = ++generation.current;
     setPhase("submitting");
     const idempotencyKey = keyForAttempt(
       confirmationAttempt,
-      JSON.stringify({ plan_id: plan.id }),
+      JSON.stringify({ plan_id: plan.id, option_index: selectedOptionIndex }),
     );
     try {
       const result = await apiClient.request<{ plan: Plan }>(
@@ -675,7 +713,10 @@ export function PlansExperience() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ idempotency_key: idempotencyKey }),
+          body: JSON.stringify({
+            idempotency_key: idempotencyKey,
+            option_index: selectedOptionIndex,
+          }),
           csrfToken: session.csrf_token,
         },
       );
@@ -683,6 +724,7 @@ export function PlansExperience() {
       currentPlanId.current = result.plan.id;
       confirmationAttempt.current = null;
       setPlan(result.plan);
+      setOptionIndex(selectedOptionIndex);
       setPhase("ready");
       setFeedback("已确认这一版本。只有已确认计划才可进入后续执行。");
     } catch (error) {
@@ -939,13 +981,15 @@ export function PlansExperience() {
           <form className="plan-form" noValidate onSubmit={beginReview}>
             <div className="plan-section-title"><span>01</span><h2>时间与范围</h2></div>
             {selectedCollectionItemIds.length > 0 ? (
-              <p className="plan-selected-collections">已选择 {selectedCollectionItemIds.length} 个收藏，本次只围绕这些收藏规划。</p>
+              <p className="plan-selected-collections">已选择 {selectedCollectionItemIds.length} 个收藏，其中 {requiredCollectionItemIds.length} 个必须安排；其余由模型按条件取舍。</p>
             ) : null}
             <div className="plan-form-grid">
               <label>开始时间<input name="start_at" type="datetime-local" value={startAt} onChange={(event) => { setStartAt(event.target.value); setDirty(true); }} autoComplete="off" required /></label>
               <label>结束时间<input name="end_at" type="datetime-local" value={endAt} onChange={(event) => { setEndAt(event.target.value); setDirty(true); }} autoComplete="off" required /></label>
               <label>行政区<input name="district" value={district} onChange={(event) => { setDistrict(event.target.value); setDirty(true); }} autoComplete="address-level2" placeholder="例如：南山区" /></label>
               <label>活动范围<input name="area_label" value={areaLabel} onChange={(event) => { setAreaLabel(event.target.value); setDirty(true); }} autoComplete="off" placeholder="例如：海上世界" /></label>
+              <label>起点纬度（确认前必填）<input name="origin_latitude" type="number" min="-90" max="90" step="any" value={originLatitude} onChange={(event) => { setOriginLatitude(event.target.value); setDirty(true); }} inputMode="decimal" autoComplete="off" placeholder="例如：22.5431" /></label>
+              <label>起点经度（确认前必填）<input name="origin_longitude" type="number" min="-180" max="180" step="any" value={originLongitude} onChange={(event) => { setOriginLongitude(event.target.value); setDirty(true); }} inputMode="decimal" autoComplete="off" placeholder="例如：114.0579" /></label>
             </div>
             <div className="plan-section-title"><span>02</span><h2>可选偏好</h2></div>
             <div className="plan-form-grid">
@@ -1013,11 +1057,27 @@ export function PlansExperience() {
 
       {plan?.draft && ["ready", "failed"].includes(phase) && (
         <>
+          {plan.draft.base_option_index !== null && plan.draft.base_option_index !== undefined && (
+            <p className="plan-version-summary">
+              V{plan.version} · 基于 V{plan.version - 1} 的{plan.draft.base_option_index === 0 ? "主方案" : `备选 ${plan.draft.base_option_index}`}调整：{plan.draft.change_summary}
+            </p>
+          )}
           <div className="option-tabs" role="tablist" aria-label="计划方案">
             {plan.draft.options.map((candidate, index) => (
-              <button key={`${candidate.role}-${index}`} type="button" role="tab" aria-selected={index === optionIndex} onClick={() => setOptionIndex(index)}>
-                {candidate.role === "main" ? "主方案" : `备选 ${index}`}
-              </button>
+              <div className="option-choice" key={`${candidate.role}-${index}`}>
+                <button type="button" role="tab" aria-selected={index === optionIndex} onClick={() => setOptionIndex(index)}>
+                  {candidate.role === "main" ? "主方案" : `备选 ${index}`}
+                </button>
+                {plan.is_current_version && plan.status === "draft" && (
+                  <div>
+                    <button type="button" onClick={() => {
+                      setOptionIndex(index);
+                      requestAnimationFrame(() => document.getElementById("plan-adjustment")?.focus());
+                    }}>基于此方案调整</button>
+                    <button type="button" onClick={() => void confirmPlan(index)}>确认使用</button>
+                  </div>
+                )}
+              </div>
             ))}
           </div>
           {option && (
@@ -1053,7 +1113,7 @@ export function PlansExperience() {
           )}
           {plan.is_current_version && plan.status === "draft" && (
             <form className="adjust-card" onSubmit={adjustPlan}>
-              <label htmlFor="plan-adjustment">想怎么调整？</label>
+              <label htmlFor="plan-adjustment">基于{optionIndex === 0 ? "主方案" : `备选 ${optionIndex}`}怎么调整？</label>
               <div><input id="plan-adjustment" name="instruction" value={adjustment} onChange={(event) => setAdjustment(event.target.value)} autoComplete="off" placeholder="例如：节奏轻松一点，预算改成 300" /><button type="submit" disabled={!adjustment.trim()}>生成新版本</button></div>
               <p>每次有效调整都会保留上一版，并创建不可变的新版本。</p>
             </form>
@@ -1063,7 +1123,7 @@ export function PlansExperience() {
               <strong>{executable ? "这一版已确认" : priorConfirmed && plan.is_current_version ? "已有确认版本，但有新草案" : plan.is_current_version ? "确认当前版本" : "这是历史版本"}</strong>
               <span>{executable ? "执行入口与反馈只属于这一确认版本" : priorConfirmed && plan.is_current_version ? `V${priorConfirmed.version} 仍是日历、路线和分享的执行版本` : "未确认计划不会产生执行动作"}</span>
             </div>
-            <button className="primary-button" type="button" disabled={!plan.is_current_version || plan.status !== "draft"} onClick={() => void confirmPlan()}>{executable ? "已确认" : "明确确认 V" + plan.version}</button>
+            <button className="primary-button" type="button" disabled={!plan.is_current_version || plan.status !== "draft"} onClick={() => void confirmPlan()}>{executable ? "已确认" : `确认 V${plan.version} · ${optionIndex === 0 ? "主方案" : `备选 ${optionIndex}`}`}</button>
           </div>
         </>
       )}

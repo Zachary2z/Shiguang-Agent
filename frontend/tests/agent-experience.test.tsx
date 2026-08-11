@@ -367,7 +367,7 @@ describe("Agent experience", () => {
     await user.click(screen.getByRole("button", { name: "发送" }));
 
     expect(await screen.findByRole("heading", { name: "计划任务" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "查看计划进度" })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: "查看计划与方案" })).toHaveAttribute(
       "href",
       "/plans?plan=pln_0123456789abcdef0123456789abcdef",
     );

@@ -304,6 +304,7 @@ export function CollectionsExperience() {
   const [feedback, setFeedback] = useState("");
   const [deletedItem, setDeletedItem] = useState<CollectionItem | null>(null);
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set());
+  const [requiredItems, setRequiredItems] = useState<Set<string>>(new Set());
   const [detail, setDetail] = useState<CollectionDetail | null>(null);
   const [candidates, setCandidates] = useState<CandidatePage | null>(null);
   const [candidateLoadState, setCandidateLoadState] =
@@ -1055,6 +1056,7 @@ export function CollectionsExperience() {
           onClick={() => {
             const params = new URLSearchParams();
             for (const identifier of selectedItems) params.append("collection", identifier);
+            for (const identifier of requiredItems) params.append("required", identifier);
             router.push(`/plans?${params}`);
           }}
         >
@@ -1092,13 +1094,37 @@ export function CollectionsExperience() {
                     setSelectedItems((current) => {
                       const next = new Set(current);
                       if (event.target.checked) next.add(item.id);
-                      else next.delete(item.id);
+                      else {
+                        next.delete(item.id);
+                        setRequiredItems((required) => {
+                          const remaining = new Set(required);
+                          remaining.delete(item.id);
+                          return remaining;
+                        });
+                      }
                       return next;
                     });
                   }}
                   aria-label={`选择收藏：${item.title}`}
                 />
               </label>
+              {selectedItems.has(item.id) && (
+                <label className="collection-required-control">
+                  <input
+                    type="checkbox"
+                    checked={requiredItems.has(item.id)}
+                    onChange={(event) => {
+                      setRequiredItems((current) => {
+                        const next = new Set(current);
+                        if (event.target.checked) next.add(item.id);
+                        else next.delete(item.id);
+                        return next;
+                      });
+                    }}
+                  />
+                  必须安排
+                </label>
+              )}
             <button
               type="button"
               className="collection-card"

@@ -216,6 +216,14 @@ a {
   margin: 0;
 }
 
+.collection-required-control {
+  align-items: center;
+  display: flex;
+  font-size: 0.75rem;
+  gap: 0.35rem;
+  padding: 0.35rem 0.6rem;
+}
+
 .collection-plan-selection {
   display: flex;
   align-items: center;
@@ -894,6 +902,25 @@ a {
   gap: var(--space-2);
   overflow-x: auto;
   padding-bottom: var(--space-1);
+}
+
+.option-choice {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.option-choice > div {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.option-choice > div button {
+  font-size: 0.72rem;
+}
+
+.plan-version-summary {
+  border-left: 3px solid var(--color-warning);
+  padding-left: 0.8rem;
 }
 
 .version-strip button,

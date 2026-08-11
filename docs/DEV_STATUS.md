@@ -4,10 +4,32 @@
 |---|---|
 | 当前总阶段 | 模型驱动计划生成：开发中 |
 | 当前子阶段 | 模型驱动计划生成第三批：方案调整、版本与确认交互 |
-| 状态 | 第二批已集成；第三批未开始；M2-0 未开始 |
-| 当前分支 | main |
+| 状态 | 第三批开发完成，等待主控验收；M2-0 未开始 |
+| 当前分支 | codex/m1-model-driven-plan-interactions |
 | 最近更新 | 2026-08-11 |
-| 阻塞项 | 无未关闭 P0/P1；当前只允许开始第三批，不得开始 M2-0 |
+| 阻塞项 | 无未关闭 P0/P1；第三批等待主控验收，不得开始 M2-0 |
+
+## 2026-08-11 模型驱动计划生成第三批：方案调整、版本与确认交互
+
+- 第三批开发完成，等待主控验收；M2-0 未开始。初次生成继续由唯一
+  `PlanProposalService` 输出一个主方案和两个备选；任一方案均可携带明确序号确认或
+  作为调整基础，调整只产生一个来源明确的单方案新版本，并保留未涉及地点。
+- 调整复用同一模型 JSON 契约，支持新增、删除、替换、调序、停留时长和约束修改；已
+  删除 `PlanAdjustmentParser`、`PlanAdjustmentPatch` 及整份 include/exclude 替换重建
+  路径，没有第二套 Provider、Planner、Proposal、Draft、Repository、状态机、解析器、
+  规则 fallback、自动重试、迁移或依赖。
+- 确认方案序号写入既有 `draft_json`；日历、导航、执行、反馈和分享统一读取已确认方案，
+  旧 JSON 缺少序号时兼容主方案。较新草稿在明确确认前不替代上一已确认版本。缺少精确
+  起点仍可查看草稿，但确认与导航返回明确补充起点要求。
+- 收藏多选继续复用计划创建主链路：所选收藏为 preferred，只有用户明确勾选的收藏写入
+  `required_collection_item_ids` 并强制每个初始方案包含；无法排入时明确冲突，
+  `collection_only` 继续禁止外部候选。Web/H5 展示三个方案的独立调整与确认动作，Agent
+  页展示计划进度和方案摘要。
+- 验证通过：pip check、Ruff、strict mypy（142 个源文件）；指定后端聚焦 `202 passed`；
+  非真实 Provider/Map 全集 `1779 passed, 18 skipped, 2 deselected`；Alembic 唯一 head
+  `20260729_0017`；前端 lint、typecheck、production build、Vitest `145 passed` 及指定
+  Playwright `9 passed`。未读取 `.env`，真实模型、地图、网页及其他外部 API 调用为 0；
+  未合并、未推送。
 
 ## 2026-08-11 模型驱动计划生成第二批最终主控集成
 

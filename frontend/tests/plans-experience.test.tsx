@@ -23,12 +23,15 @@ const plan = {
     end_at: "2026-07-29T10:00:00Z",
     area_districts: ["南山区"],
     area_labels: ["海上世界"],
+    has_exact_origin: true,
     budget: null,
     pace: "balanced",
     transport_modes: ["transit"],
     include: [],
     exclude: [],
     collection_only: false,
+    selected_collection_item_ids: [],
+    required_collection_item_ids: [],
   },
   adjustment_text: null,
   draft: {
@@ -192,11 +195,11 @@ function bootstrap(items: object[] = []) {
 describe("PlansExperience", () => {
   it("keeps selected collection IDs in the existing create request", async () => {
     const selected = "col_0123456789abcdef0123456789abcdef";
-    currentQuery = `collection=${selected}&collection=${selected}`;
+    currentQuery = `collection=${selected}&collection=${selected}&required=${selected}`;
     const request = bootstrap();
     render(<PlansExperience />);
 
-    expect(await screen.findByText("已选择 1 个收藏，本次只围绕这些收藏规划。")).toBeInTheDocument();
+    expect(await screen.findByText("已选择 1 个收藏，其中 1 个必须安排；其余由模型按条件取舍。")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "检查生成条件" }));
     request.mockResolvedValueOnce({
       plan_id: plan.id,
@@ -215,6 +218,7 @@ describe("PlansExperience", () => {
       const body = JSON.parse(String(call?.[1]?.body));
       expect(body.collection_only).toBe(true);
       expect(body.selected_collection_item_ids).toEqual([selected]);
+      expect(body.required_collection_item_ids).toEqual([selected]);
     });
   });
 
@@ -471,7 +475,7 @@ describe("PlansExperience", () => {
     render(<PlansExperience />);
     await screen.findAllByText("海边咖啡");
     await userEvent.type(
-      screen.getByRole("textbox", { name: "想怎么调整？" }),
+      screen.getByRole("textbox", { name: "基于主方案怎么调整？" }),
       "节奏轻松一点",
     );
     await userEvent.click(screen.getByRole("button", { name: "生成新版本" }));
@@ -508,7 +512,7 @@ describe("PlansExperience", () => {
     render(<PlansExperience />);
     await screen.findAllByText("海边咖啡");
     await userEvent.type(
-      screen.getByRole("textbox", { name: "想怎么调整？" }),
+      screen.getByRole("textbox", { name: "基于主方案怎么调整？" }),
       "把地点换成广州塔",
     );
     await userEvent.click(screen.getByRole("button", { name: "生成新版本" }));
@@ -1023,7 +1027,7 @@ describe("PlansExperience", () => {
     await screen.findAllByText("海边咖啡");
 
     await userEvent.type(
-      screen.getByRole("textbox", { name: "想怎么调整？" }),
+      screen.getByRole("textbox", { name: "基于主方案怎么调整？" }),
       "节奏轻松一点",
     );
     await userEvent.click(screen.getByRole("button", { name: "生成新版本" }));
@@ -1034,12 +1038,14 @@ describe("PlansExperience", () => {
     );
 
     await userEvent.click(screen.getByRole("button", { name: "停止等待" }));
-    await userEvent.click(screen.getByRole("button", { name: "明确确认 V1" }));
+    await userEvent.click(screen.getByRole("button", { name: "确认 V1 · 主方案" }));
     await screen.findByText("计划暂时没有完成，请稍后重试。");
-    await userEvent.click(screen.getByRole("button", { name: "明确确认 V1" }));
+    await userEvent.click(screen.getByRole("button", { name: "确认 V1 · 主方案" }));
     expect(confirmationBodies[0].idempotency_key).toBe(
       confirmationBodies[1].idempotency_key,
     );
+    expect(adjustmentBodies[0]).toMatchObject({ base_option_index: 0 });
+    expect(confirmationBodies[0]).toMatchObject({ option_index: 0 });
   });
 
   it("recovers a broken SSE stream from the authoritative plan", async () => {
